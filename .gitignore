@@ -1,0 +1,28 @@
+# Python
+raibis/.venv/
+raibis/__pycache__/
+raibis/**/__pycache__/
+raibis/**/*.pyc
+raibis/**/*.pyo
+raibis/*.egg-info/
+raibis/.env
+raibis/data/*.db
+
+# Go
+raibis-go/raibis-tui
+raibis-go/raibis-server
+raibis-go/server
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
