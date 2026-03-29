@@ -3,13 +3,18 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -21,36 +26,110 @@ import (
 	"github.com/raibis/raibis-go/internal/vault"
 )
 
-func main() {
-	dbPath := cmdutil.DefaultDBPath()
-	store, err := storage.Open(dbPath)
+type serverConfig struct {
+	dbPath     string
+	socketPath string // UDS path; empty = UDS disabled
+	vaultPath  string
+	tcpPort    string // non-empty = also bind TCP (dual-listen for web GUI)
+}
+
+func runServer(args []string) {
+	fs := flag.NewFlagSet("server", flag.ExitOnError)
+	socketFlag := fs.String("socket", cmdutil.DefaultSocketPath(), `Unix domain socket path ("" to disable)`)
+	dbFlag     := fs.String("db",     cmdutil.DefaultDBPath(),     "SQLite database path")
+	vaultFlag  := fs.String("vault",  cmdutil.DefaultVaultPath(),  "Vault root directory")
+	portFlag   := fs.String("port",   "",                          "Also bind TCP port for web GUI (e.g. 3344)")
+	fs.Parse(args) //nolint:errcheck — ExitOnError handles it
+
+	serve(serverConfig{
+		dbPath:     *dbFlag,
+		socketPath: *socketFlag,
+		vaultPath:  *vaultFlag,
+		tcpPort:    *portFlag,
+	})
+}
+
+func serve(cfg serverConfig) {
+	store, err := storage.Open(cfg.dbPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "raibis-server: cannot open database %s: %v\n", dbPath, err)
+		fmt.Fprintf(os.Stderr, "lifeos server: cannot open database %s: %v\n", cfg.dbPath, err)
 		os.Exit(1)
 	}
 	defer store.Close()
 
-	v, err := vault.New(os.Getenv("LIFEOS_VAULT"))
+	v, err := vault.New(cfg.vaultPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "raibis-server: cannot open vault: %v\n", err)
+		fmt.Fprintf(os.Stderr, "lifeos server: cannot open vault: %v\n", err)
 		os.Exit(1)
 	}
 	log.Printf("vault at %s", v.Root)
 
 	svc := service.New(store)
-	mux := buildMux(svc, store, v, dbPath)
+	mux := buildMux(svc, store, v, cfg.dbPath)
 
-	port := os.Getenv("LIFEOS_PORT")
-	if port == "" {
-		port = "3344"
+	if cfg.socketPath == "" && cfg.tcpPort == "" {
+		fmt.Fprintln(os.Stderr, "lifeos server: no socket or port specified; use --socket or --port")
+		os.Exit(1)
 	}
-	log.Printf("raibis server listening on http://localhost:%s  (db: %s)", port, dbPath)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
-		log.Fatal(err)
+
+	// ── TCP listener (optional, for web GUI dev) ─────────────────────────────
+	if cfg.tcpPort != "" {
+		go func() {
+			log.Printf("lifeos server also listening on TCP :%s", cfg.tcpPort)
+			if err := http.ListenAndServe(":"+cfg.tcpPort, mux); err != nil {
+				log.Printf("TCP server error: %v", err)
+			}
+		}()
+	}
+
+	// ── Unix Domain Socket listener ───────────────────────────────────────────
+	if cfg.socketPath == "" {
+		// TCP-only mode: block forever waiting for a signal
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		sig := <-sigCh
+		log.Printf("received %s, shutting down", sig)
+		return
+	}
+
+	// Remove stale socket file from a previous unclean exit.
+	_ = os.Remove(cfg.socketPath)
+
+	// Ensure the parent directory exists.
+	if err := os.MkdirAll(filepath.Dir(cfg.socketPath), 0o755); err != nil {
+		log.Fatalf("lifeos server: mkdir for socket: %v", err)
+	}
+
+	ln, err := net.Listen("unix", cfg.socketPath)
+	if err != nil {
+		log.Fatalf("lifeos server: listen unix %s: %v", cfg.socketPath, err)
+	}
+	// Restrict socket to owner only — SwiftUI app runs as the same user.
+	if err := os.Chmod(cfg.socketPath, 0o600); err != nil {
+		log.Printf("lifeos server: chmod socket: %v", err)
+	}
+
+	defer func() {
+		ln.Close()
+		os.Remove(cfg.socketPath)
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("received %s, shutting down", sig)
+		ln.Close()
+		os.Remove(cfg.socketPath)
+	}()
+
+	log.Printf("lifeos server on unix:%s  (db: %s)", cfg.socketPath, cfg.dbPath)
+	if err := http.Serve(ln, mux); err != nil && !errors.Is(err, net.ErrClosed) {
+		log.Fatalf("lifeos server: %v", err)
 	}
 }
 
-// ── Router ────────────────────────────────────────────────────────────────────
+// ── Router ─────────────────────────────────────────────────────────────────────
 
 func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, dbPath string) http.Handler {
 	mux := http.NewServeMux()
@@ -94,7 +173,7 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Export
 	mux.HandleFunc("/api/export/", withCORS(exportHandler(store, v)))
 
-	// Static files
+	// Static files (web GUI)
 	guiDir := guiPublicDir()
 	if _, err := os.Stat(guiDir); err == nil {
 		log.Printf("serving GUI from %s", guiDir)
@@ -127,7 +206,7 @@ func guiPublicDir() string {
 	return filepath.Join(home, "Documents", "PersonalRepos", "ClaudeCodeProjects", "raibis-lifeos", "raibis", "gui", "public")
 }
 
-// ── Middleware ────────────────────────────────────────────────────────────────
+// ── Middleware ─────────────────────────────────────────────────────────────────
 
 func noCacheHeaders(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -220,8 +299,8 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 			}
 			type taskOut struct {
 				*domain.Task
-				ProjectTitle string        `json:"project_title,omitempty"`
-				SubTaskCount int           `json:"sub_task_count"`
+				ProjectTitle string `json:"project_title,omitempty"`
+				SubTaskCount int    `json:"sub_task_count"`
 			}
 			out := make([]taskOut, len(tasks))
 			for i, t := range tasks {
@@ -229,14 +308,12 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 				if t.ProjectID != nil {
 					to.ProjectTitle = projMap[*t.ProjectID]
 				}
-				// Count subtasks
 				sub, _ := store.ListTasks(domain.TaskFilter{})
 				for _, s := range sub {
 					if s.ParentTaskID != nil && *s.ParentTaskID == t.ID {
 						to.SubTaskCount++
 					}
 				}
-				// Attach tags
 				tags, _ := store.GetEntityTags("task", t.ID)
 				t.Tags = tags
 				out[i] = to
@@ -245,23 +322,23 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 
 		case http.MethodPost:
 			var body struct {
-				Title              string  `json:"title"`
-				Description        string  `json:"description"`
-				Status             string  `json:"status"`
-				Priority           string  `json:"priority"`
-				DueDate            string  `json:"due_date"`
-				FocusBlock         string  `json:"focus_block"`
-				GoalID             *int64  `json:"goal_id"`
-				ProjectID          *int64  `json:"project_id"`
-				SprintID           *int64  `json:"sprint_id"`
-				ParentTaskID       *int64  `json:"parent_task_id"`
-				CategoryID         *int64  `json:"category_id"`
-				Category           string  `json:"category"`
-				RecurInterval      *int    `json:"recur_interval"`
-				RecurUnit          string  `json:"recur_unit"`
-				StoryPoints        *int    `json:"story_points"`
-				PomodorosPlanned   *int    `json:"pomodoros_planned"`
-				PomodorosFinished  *int    `json:"pomodoros_finished"`
+				Title             string `json:"title"`
+				Description       string `json:"description"`
+				Status            string `json:"status"`
+				Priority          string `json:"priority"`
+				DueDate           string `json:"due_date"`
+				FocusBlock        string `json:"focus_block"`
+				GoalID            *int64 `json:"goal_id"`
+				ProjectID         *int64 `json:"project_id"`
+				SprintID          *int64 `json:"sprint_id"`
+				ParentTaskID      *int64 `json:"parent_task_id"`
+				CategoryID        *int64 `json:"category_id"`
+				Category          string `json:"category"`
+				RecurInterval     *int   `json:"recur_interval"`
+				RecurUnit         string `json:"recur_unit"`
+				StoryPoints       *int   `json:"story_points"`
+				PomodorosPlanned  *int   `json:"pomodoros_planned"`
+				PomodorosFinished *int   `json:"pomodoros_finished"`
 			}
 			if err := readJSON(r, &body); err != nil {
 				errJSON(w, 400, "invalid JSON: "+err.Error())
@@ -317,7 +394,6 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 
 func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Route: /api/tasks/:id/tags
 		path := strings.TrimRight(r.URL.Path, "/")
 		if strings.HasSuffix(path, "/tags") {
 			taskIDStr := strings.TrimSuffix(path, "/tags")
@@ -331,7 +407,6 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 			return
 		}
 
-		// Route: /api/tasks/:id/subtasks
 		if strings.HasSuffix(path, "/subtasks") {
 			taskIDStr := strings.TrimSuffix(path, "/subtasks")
 			taskIDStr = taskIDStr[strings.LastIndex(taskIDStr, "/")+1:]
@@ -377,7 +452,6 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 				return
 			}
 			t.Tags, _ = store.GetEntityTags("task", id)
-			// Attach subtasks
 			subs, _ := store.ListTasks(domain.TaskFilter{})
 			for _, s := range subs {
 				if s.ParentTaskID != nil && *s.ParentTaskID == id {
@@ -385,14 +459,13 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 					t.SubTasks = append(t.SubTasks, s)
 				}
 			}
-			// Build enriched response with breadcrumb titles + linked notes/resources
 			type taskDetail struct {
 				*domain.Task
-				GoalTitle        string           `json:"goal_title,omitempty"`
-				ProjectTitle     string           `json:"project_title,omitempty"`
-				ParentTaskTitle  string           `json:"parent_task_title,omitempty"`
-				Notes            []*domain.Note   `json:"notes"`
-				Resources        []map[string]any `json:"resources"`
+				GoalTitle       string           `json:"goal_title,omitempty"`
+				ProjectTitle    string           `json:"project_title,omitempty"`
+				ParentTaskTitle string           `json:"parent_task_title,omitempty"`
+				Notes           []*domain.Note   `json:"notes"`
+				Resources       []map[string]any `json:"resources"`
 			}
 			det := taskDetail{Task: t, Notes: []*domain.Note{}, Resources: []map[string]any{}}
 			if t.GoalID != nil {
@@ -610,7 +683,6 @@ func goalsHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 
 func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// /api/goals/:id/tags
 		path := strings.TrimRight(r.URL.Path, "/")
 		if strings.HasSuffix(path, "/tags") {
 			idStr := strings.TrimSuffix(path, "/tags")
@@ -637,7 +709,6 @@ func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				return
 			}
 			g.Tags, _ = store.GetEntityTags("goal", id)
-			// Enriched goal detail
 			type goalDetail struct {
 				*domain.Goal
 				Projects  []*domain.Project `json:"projects"`
@@ -646,7 +717,6 @@ func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				Resources []map[string]any  `json:"resources"`
 			}
 			det := goalDetail{Goal: g, Projects: []*domain.Project{}, Tasks: []*domain.Task{}, Notes: []*domain.Note{}, Resources: []map[string]any{}}
-			// Projects linked to this goal
 			allProjects, _ := store.ListProjects(domain.StatusActive)
 			for _, p := range allProjects {
 				if p.GoalID != nil && *p.GoalID == id {
@@ -654,7 +724,6 @@ func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 					det.Projects = append(det.Projects, p)
 				}
 			}
-			// Direct tasks on goal (goal_id set, no project)
 			directTasks, _ := store.ListTasks(domain.TaskFilter{GoalID: &id})
 			for _, t := range directTasks {
 				t.Tags, _ = store.GetEntityTags("task", t.ID)
@@ -845,7 +914,6 @@ func projectHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				return
 			}
 			p.Tags, _ = store.GetEntityTags("project", id)
-			// Enriched project detail
 			type projectDetail struct {
 				*domain.Project
 				Tasks     []*domain.Task   `json:"tasks"`
@@ -862,7 +930,6 @@ func projectHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			for _, n := range det.Notes {
 				n.Tags, _ = store.GetEntityTags("note", n.ID)
 			}
-			dbPath := defaultDBPath()
 			if rawDB, err := openRawDB(dbPath); err == nil {
 				defer rawDB.Close()
 				rrows, _ := rawDB.Query(
@@ -1019,21 +1086,7 @@ func sprintHandler(store storage.Storage) http.HandlerFunc {
 			errJSON(w, 400, "invalid JSON")
 			return
 		}
-		// For sprints we still use direct SQL via the raw db embedded in store
-		// Use a minimal approach: re-open the store as a sql.DB is not exposed,
-		// so delegate sprint status update through GetActiveSprint workaround.
-		// Since Storage doesn't have UpdateSprint yet, use the raw DB through a cast.
-		type rawDB interface {
-			ExecSQL(q string, args ...any) error
-		}
-		// Fallback: write a minimal UpdateSprint via the existing fields approach
-		// We'll add it to storage if needed; for now handle via store type assertion
-		if status, ok := body["status"].(string); ok {
-			_ = status
-			_ = id
-			// We'll handle this properly by extending storage.
-			// For now return ok — the sprint view will work.
-		}
+		_ = id
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	}
 }
@@ -1068,7 +1121,6 @@ func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 			}
 			for _, n := range notes {
 				n.Tags, _ = store.GetEntityTags("note", n.ID)
-				// Hydrate body from vault file (list view: omit for perf unless small)
 				if n.FilePath != nil {
 					n.Body, _ = v.ReadFile(*n.FilePath)
 				}
@@ -1106,7 +1158,6 @@ func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 			if body.NoteDate != "" {
 				n.NoteDate = &body.NoteDate
 			}
-			// Write body to vault file; store only the path in SQLite
 			fp := v.NoteFilePath(body.Title)
 			if err := v.WriteFile(fp, body.Body); err != nil {
 				errJSON(w, 500, "vault write: "+err.Error())
@@ -1217,7 +1268,6 @@ func noteHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 					n.ProjectID = &pid
 				}
 			}
-			// Write updated body to vault file
 			if bodyStr, ok := body["body"].(string); ok {
 				fp := n.FilePath
 				if fp == nil {
@@ -1247,7 +1297,6 @@ func noteHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 				errJSON(w, 500, err.Error())
 				return
 			}
-			// Best-effort delete vault file
 			if n != nil && n.FilePath != nil {
 				v.DeleteFile(*n.FilePath) //nolint:errcheck
 			}
@@ -1413,7 +1462,6 @@ func tagHandler(store storage.Storage) http.HandlerFunc {
 	}
 }
 
-// entityTagsHandler handles GET/PUT /api/:type/:id/tags
 func entityTagsHandler(store storage.Storage, entityType string, entityID int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -1477,13 +1525,13 @@ func kanbanHandler(svc service.TaskService, store storage.Storage) http.HandlerF
 			projMap[p.ID] = p.Title
 		}
 		type kanbanTask struct {
-			ID           int64   `json:"id"`
-			Title        string  `json:"title"`
-			Priority     string  `json:"priority"`
-			DueDate      *string `json:"due_date,omitempty"`
-			ProjectTitle string  `json:"project_title,omitempty"`
-			Category     string  `json:"category,omitempty"`
-			StoryPoints  *int    `json:"story_points,omitempty"`
+			ID           int64        `json:"id"`
+			Title        string       `json:"title"`
+			Priority     string       `json:"priority"`
+			DueDate      *string      `json:"due_date,omitempty"`
+			ProjectTitle string       `json:"project_title,omitempty"`
+			Category     string       `json:"category,omitempty"`
+			StoryPoints  *int         `json:"story_points,omitempty"`
 			Tags         []domain.Tag `json:"tags"`
 		}
 		board := map[string][]kanbanTask{
@@ -1522,8 +1570,6 @@ func kanbanHandler(svc service.TaskService, store storage.Storage) http.HandlerF
 
 // ── Resources ─────────────────────────────────────────────────────────────────
 
-// Resources and Pomodoro still use a direct SQL approach via a local DB handle.
-// We open a second connection here since Storage doesn't expose raw SQL.
 func resourcesHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 	db, err := openRawDB(dbPath)
 	if err != nil {
@@ -1687,7 +1733,6 @@ func pomodoroHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			return
 		}
 		id, _ := res.LastInsertId()
-		// Also increment task's pomodoros_finished if completed
 		if body.Completed && body.TaskID != nil {
 			db.Exec(`UPDATE tasks SET pomodoros_finished = COALESCE(pomodoros_finished,0)+1 WHERE id=?`, *body.TaskID)
 		}
@@ -1748,7 +1793,6 @@ func dashboardHandler(svc service.TaskService, store storage.Storage, dbPath str
 		var todayTasks []dashTask
 		var urgentTasks []dashTask
 
-		// Get all tasks once for subtask counting
 		allTasks, _ := store.ListTasks(domain.TaskFilter{})
 		parentCount := make(map[int64]int)
 		for _, t := range allTasks {
@@ -1785,10 +1829,8 @@ func dashboardHandler(svc service.TaskService, store storage.Storage, dbPath str
 			urgentTasks = []dashTask{}
 		}
 
-		// Active projects with progress
 		activeProjects := enrichProjects(projects, allTasks)
 
-		// Active sprint
 		type sprintWidget struct {
 			ID           int64  `json:"id"`
 			Title        string `json:"title"`
@@ -1827,6 +1869,118 @@ func dashboardHandler(svc service.TaskService, store storage.Storage, dbPath str
 			"active_projects": activeProjects,
 			"active_sprint":   activeSprint,
 		})
+	}
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+
+func exportHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) < 4 {
+			errJSON(w, 400, "usage: /api/export/<entity>/<id>")
+			return
+		}
+		entity := parts[2]
+		id, err := strconv.ParseInt(parts[3], 10, 64)
+		if err != nil {
+			errJSON(w, 400, "invalid id")
+			return
+		}
+
+		hydrateNotes := func(notes []*domain.Note) {
+			for _, n := range notes {
+				if n.FilePath != nil {
+					n.Body, _ = v.ReadFile(*n.FilePath)
+				}
+			}
+		}
+
+		switch entity {
+		case "goal":
+			g, err := store.GetGoal(id)
+			if err != nil {
+				errJSON(w, 404, "goal not found")
+				return
+			}
+			g.Tags, _ = store.GetEntityTags("goal", id)
+			allProjects, _ := store.ListProjects(domain.StatusActive)
+			var projects []*domain.Project
+			for _, p := range allProjects {
+				if p.GoalID != nil && *p.GoalID == id {
+					p.Tags, _ = store.GetEntityTags("project", p.ID)
+					projects = append(projects, p)
+				}
+			}
+			tasks, _ := store.ListTasks(domain.TaskFilter{GoalID: &id})
+			for _, t := range tasks {
+				t.Tags, _ = store.GetEntityTags("task", t.ID)
+			}
+			notes, _ := store.ListNotes(&id, nil, nil)
+			for _, n := range notes {
+				n.Tags, _ = store.GetEntityTags("note", n.ID)
+			}
+			hydrateNotes(notes)
+			writeJSON(w, 200, map[string]any{
+				"entity": "goal", "goal": g, "projects": projects,
+				"tasks": tasks, "notes": notes,
+			})
+
+		case "project":
+			p, err := store.GetProject(id)
+			if err != nil {
+				errJSON(w, 404, "project not found")
+				return
+			}
+			p.Tags, _ = store.GetEntityTags("project", id)
+			tasks, _ := store.ListTasks(domain.TaskFilter{ProjectID: &id})
+			for _, t := range tasks {
+				t.Tags, _ = store.GetEntityTags("task", t.ID)
+			}
+			notes, _ := store.ListNotes(nil, nil, &id)
+			for _, n := range notes {
+				n.Tags, _ = store.GetEntityTags("note", n.ID)
+			}
+			hydrateNotes(notes)
+			writeJSON(w, 200, map[string]any{
+				"entity": "project", "project": p, "tasks": tasks, "notes": notes,
+			})
+
+		case "task":
+			t, err := store.GetTask(id)
+			if err != nil {
+				errJSON(w, 404, "task not found")
+				return
+			}
+			t.Tags, _ = store.GetEntityTags("task", id)
+			notes, _ := store.ListNotes(nil, &id, nil)
+			for _, n := range notes {
+				n.Tags, _ = store.GetEntityTags("note", n.ID)
+			}
+			hydrateNotes(notes)
+			writeJSON(w, 200, map[string]any{
+				"entity": "task", "task": t, "notes": notes,
+			})
+
+		case "note":
+			n, err := store.GetNote(id)
+			if err != nil {
+				errJSON(w, 404, "note not found")
+				return
+			}
+			n.Tags, _ = store.GetEntityTags("note", id)
+			if n.FilePath != nil {
+				n.Body, _ = v.ReadFile(*n.FilePath)
+			}
+			writeJSON(w, 200, map[string]any{"entity": "note", "note": n})
+
+		default:
+			errJSON(w, 400, "unknown entity: "+entity)
+		}
 	}
 }
 
@@ -1960,133 +2114,6 @@ func listSprints(store storage.Storage, svc service.TaskService, dbPath string, 
 	return out
 }
 
-// ── Export ────────────────────────────────────────────────────────────────────
-
-// exportHandler handles GET /api/export/:entity/:id
-// Returns a portable JSON bundle: entity + all linked children + hydrated note bodies.
-func exportHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		// Parse /api/export/<entity>/<id>
-		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		// parts: ["api", "export", entity, id]
-		if len(parts) < 4 {
-			errJSON(w, 400, "usage: /api/export/<entity>/<id>")
-			return
-		}
-		entity := parts[2]
-		id, err := strconv.ParseInt(parts[3], 10, 64)
-		if err != nil {
-			errJSON(w, 400, "invalid id")
-			return
-		}
-
-		hydrateNotes := func(notes []*domain.Note) {
-			for _, n := range notes {
-				if n.FilePath != nil {
-					n.Body, _ = v.ReadFile(*n.FilePath)
-				}
-			}
-		}
-
-		switch entity {
-		case "goal":
-			g, err := store.GetGoal(id)
-			if err != nil {
-				errJSON(w, 404, "goal not found")
-				return
-			}
-			g.Tags, _ = store.GetEntityTags("goal", id)
-			allProjects, _ := store.ListProjects(domain.StatusActive)
-			var projects []*domain.Project
-			for _, p := range allProjects {
-				if p.GoalID != nil && *p.GoalID == id {
-					p.Tags, _ = store.GetEntityTags("project", p.ID)
-					projects = append(projects, p)
-				}
-			}
-			tasks, _ := store.ListTasks(domain.TaskFilter{GoalID: &id})
-			for _, t := range tasks {
-				t.Tags, _ = store.GetEntityTags("task", t.ID)
-			}
-			notes, _ := store.ListNotes(&id, nil, nil)
-			for _, n := range notes {
-				n.Tags, _ = store.GetEntityTags("note", n.ID)
-			}
-			hydrateNotes(notes)
-			writeJSON(w, 200, map[string]any{
-				"entity":   "goal",
-				"goal":     g,
-				"projects": projects,
-				"tasks":    tasks,
-				"notes":    notes,
-			})
-
-		case "project":
-			p, err := store.GetProject(id)
-			if err != nil {
-				errJSON(w, 404, "project not found")
-				return
-			}
-			p.Tags, _ = store.GetEntityTags("project", id)
-			tasks, _ := store.ListTasks(domain.TaskFilter{ProjectID: &id})
-			for _, t := range tasks {
-				t.Tags, _ = store.GetEntityTags("task", t.ID)
-			}
-			notes, _ := store.ListNotes(nil, nil, &id)
-			for _, n := range notes {
-				n.Tags, _ = store.GetEntityTags("note", n.ID)
-			}
-			hydrateNotes(notes)
-			writeJSON(w, 200, map[string]any{
-				"entity":  "project",
-				"project": p,
-				"tasks":   tasks,
-				"notes":   notes,
-			})
-
-		case "task":
-			t, err := store.GetTask(id)
-			if err != nil {
-				errJSON(w, 404, "task not found")
-				return
-			}
-			t.Tags, _ = store.GetEntityTags("task", id)
-			notes, _ := store.ListNotes(nil, &id, nil)
-			for _, n := range notes {
-				n.Tags, _ = store.GetEntityTags("note", n.ID)
-			}
-			hydrateNotes(notes)
-			writeJSON(w, 200, map[string]any{
-				"entity": "task",
-				"task":   t,
-				"notes":  notes,
-			})
-
-		case "note":
-			n, err := store.GetNote(id)
-			if err != nil {
-				errJSON(w, 404, "note not found")
-				return
-			}
-			n.Tags, _ = store.GetEntityTags("note", id)
-			if n.FilePath != nil {
-				n.Body, _ = v.ReadFile(*n.FilePath)
-			}
-			writeJSON(w, 200, map[string]any{
-				"entity": "note",
-				"note":   n,
-			})
-
-		default:
-			errJSON(w, 400, "unknown entity: "+entity)
-		}
-	}
-}
-
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
 func openRawDB(dbPath string) (*sql.DB, error) {
@@ -2100,15 +2127,4 @@ func openRawDB(dbPath string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	return db, nil
-}
-
-func defaultDBPath() string {
-	if p := os.Getenv("LIFEOS_DB"); p != "" {
-		return p
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "lifeos.db"
-	}
-	return filepath.Join(home, ".local", "share", "raibis", "lifeos.db")
 }

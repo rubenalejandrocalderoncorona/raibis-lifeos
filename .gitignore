@@ -8,10 +8,11 @@ raibis/*.egg-info/
 raibis/.env
 raibis/data/*.db
 
-# Go
+# Go compiled binaries
 raibis-go/raibis-tui
 raibis-go/raibis-server
 raibis-go/server
+raibis-go/lifeos
 
 # SQLite
 *.db

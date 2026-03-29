@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -12,17 +13,19 @@ import (
 	"github.com/raibis/raibis-go/internal/tui"
 )
 
-func main() {
-	dbPath := cmdutil.DefaultDBPath()
-	store, err := storage.Open(dbPath)
+func runTUI(args []string) {
+	fs := flag.NewFlagSet("tui", flag.ExitOnError)
+	dbFlag := fs.String("db", cmdutil.DefaultDBPath(), "SQLite database path")
+	fs.Parse(args) //nolint:errcheck — ExitOnError handles it
+
+	store, err := storage.Open(*dbFlag)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "raibis: cannot open database %s: %v\n", dbPath, err)
+		fmt.Fprintf(os.Stderr, "lifeos tui: cannot open database %s: %v\n", *dbFlag, err)
 		os.Exit(1)
 	}
 	defer store.Close()
 
 	svc := service.New(store)
-
 	p := tea.NewProgram(
 		tui.New(svc),
 		tea.WithAltScreen(),
