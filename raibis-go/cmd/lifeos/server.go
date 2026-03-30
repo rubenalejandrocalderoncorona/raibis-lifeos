@@ -21,6 +21,7 @@ import (
 
 	"github.com/raibis/raibis-go/internal/cmdutil"
 	"github.com/raibis/raibis-go/internal/domain"
+	"github.com/raibis/raibis-go/internal/gui"
 	"github.com/raibis/raibis-go/internal/service"
 	"github.com/raibis/raibis-go/internal/storage"
 	"github.com/raibis/raibis-go/internal/vault"
@@ -31,6 +32,7 @@ type serverConfig struct {
 	socketPath string // UDS path; empty = UDS disabled
 	vaultPath  string
 	tcpPort    string // non-empty = also bind TCP (dual-listen for web GUI)
+	host       string // TCP bind address; "127.0.0.1" (default) or "0.0.0.0" (Flutter/LAN)
 }
 
 func runServer(args []string) {
@@ -39,6 +41,7 @@ func runServer(args []string) {
 	dbFlag     := fs.String("db",     cmdutil.DefaultDBPath(),     "SQLite database path")
 	vaultFlag  := fs.String("vault",  cmdutil.DefaultVaultPath(),  "Vault root directory")
 	portFlag   := fs.String("port",   "",                          "Also bind TCP port for web GUI (e.g. 3344)")
+	hostFlag   := fs.String("host",   "127.0.0.1",                 `TCP bind address ("0.0.0.0" for LAN/Flutter access)`)
 	fs.Parse(args) //nolint:errcheck — ExitOnError handles it
 
 	serve(serverConfig{
@@ -46,6 +49,7 @@ func runServer(args []string) {
 		socketPath: *socketFlag,
 		vaultPath:  *vaultFlag,
 		tcpPort:    *portFlag,
+		host:       *hostFlag,
 	})
 }
 
@@ -72,11 +76,12 @@ func serve(cfg serverConfig) {
 		os.Exit(1)
 	}
 
-	// ── TCP listener (optional, for web GUI dev) ─────────────────────────────
+	// ── TCP listener (optional, for web GUI / Flutter) ───────────────────────
 	if cfg.tcpPort != "" {
 		go func() {
-			log.Printf("lifeos server also listening on TCP :%s", cfg.tcpPort)
-			if err := http.ListenAndServe(":"+cfg.tcpPort, mux); err != nil {
+			addr := cfg.host + ":" + cfg.tcpPort
+			log.Printf("lifeos server also listening on TCP %s", addr)
+			if err := http.ListenAndServe(addr, mux); err != nil {
 				log.Printf("TCP server error: %v", err)
 			}
 		}()
@@ -173,37 +178,15 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Export
 	mux.HandleFunc("/api/export/", withCORS(exportHandler(store, v)))
 
-	// Static files (web GUI)
-	guiDir := guiPublicDir()
-	if _, err := os.Stat(guiDir); err == nil {
-		log.Printf("serving GUI from %s", guiDir)
-		mux.Handle("/", noCacheHeaders(http.FileServer(http.Dir(guiDir))))
-	} else {
-		log.Printf("GUI dir not found (%s) — API-only mode", guiDir)
+	// Embedded Web GUI — self-contained, no external /public folder needed.
+	// Serves index.html + assets for all non-/api/ requests.
+	sub, err := gui.Sub()
+	if err != nil {
+		log.Fatalf("lifeos: embed GUI FS: %v", err)
 	}
+	mux.Handle("/", noCacheHeaders(http.FileServer(http.FS(sub))))
 
 	return mux
-}
-
-// guiPublicDir returns the absolute path to raibis/gui/public/.
-func guiPublicDir() string {
-	if p := os.Getenv("RAIBIS_GUI"); p != "" {
-		return p
-	}
-	exe, err := os.Executable()
-	if err == nil {
-		exe, _ = filepath.EvalSymlinks(exe)
-		dir := filepath.Dir(exe)
-		for i := 0; i < 6; i++ {
-			candidate := filepath.Join(dir, "raibis", "gui", "public")
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate
-			}
-			dir = filepath.Dir(dir)
-		}
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Documents", "PersonalRepos", "ClaudeCodeProjects", "raibis-lifeos", "raibis", "gui", "public")
 }
 
 // ── Middleware ─────────────────────────────────────────────────────────────────

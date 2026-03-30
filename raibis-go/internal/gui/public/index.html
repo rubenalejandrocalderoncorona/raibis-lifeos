@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>raibis — LifeOS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css?v=2.1.0" />
+</head>
+<body>
+  <header class="mobile-header">
+    <button class="mob-menu-btn" id="mob-menu-btn" aria-label="Menu">&#9776;</button>
+    <span class="mob-title">raibis</span>
+    <button class="theme-btn" id="mob-theme-btn" aria-label="Toggle theme">&#9790;</button>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-inner">
+        <div class="sidebar-brand">
+          <span class="brand-icon">◈</span>
+          <span class="brand-name">raibis</span>
+          <button class="theme-btn" id="theme-btn" aria-label="Toggle theme" title="Toggle theme">&#9790;</button>
+        </div>
+
+        <nav class="sidebar-nav">
+          <div class="nav-section-label">Workspace</div>
+          <a class="nav-item active" data-view="dashboard" href="#">
+            <span class="nav-icon">⊞</span> Dashboard
+          </a>
+          <a class="nav-item" data-view="tasks" href="#">
+            <span class="nav-icon">✓</span> Tasks
+          </a>
+          <a class="nav-item" data-view="projects" href="#">
+            <span class="nav-icon">◆</span> Projects
+          </a>
+          <a class="nav-item" data-view="goals" href="#">
+            <span class="nav-icon">◈</span> Goals
+          </a>
+          <a class="nav-item" data-view="notes" href="#">
+            <span class="nav-icon">◎</span> Notes
+          </a>
+          <a class="nav-item" data-view="resources" href="#">
+            <span class="nav-icon">⬡</span> Resources
+          </a>
+          <a class="nav-item" data-view="sprints" href="#">
+            <span class="nav-icon">⚡</span> Sprints
+          </a>
+
+          <div class="nav-section-label" style="margin-top:12px">Taxonomy</div>
+          <a class="nav-item" data-view="categories" href="#">
+            <span class="nav-icon">◉</span> Categories
+          </a>
+          <a class="nav-item" data-view="tags" href="#">
+            <span class="nav-icon">⬖</span> Tags
+          </a>
+        </nav>
+
+        <div class="sidebar-footer">
+          <a class="ext-link version-btn" id="version-btn" href="https://github.com/raibis/raibis-go" target="_blank" rel="noopener" title="View source">
+            <span class="nav-icon">⬡</span> v1.0.0-alpha.2
+          </a>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main" id="main-content"></main>
+  </div>
+
+  <div class="grain" aria-hidden="true"></div>
+  <div class="modal-backdrop" id="modal-backdrop"></div>
+
+  <!-- Slide-over panel for task detail -->
+  <div class="slideover" id="slideover">
+    <div class="slideover-header">
+      <h2 class="slideover-title" id="slideover-title">Task Detail</h2>
+      <button class="modal-close" id="slideover-close">&times;</button>
+    </div>
+    <div class="slideover-body" id="slideover-body"></div>
+  </div>
+
+  <!-- Modal -->
+  <div class="modal" id="modal" role="dialog" aria-modal="true">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-title">New Item</h2>
+      <button class="modal-close" id="modal-close">&times;</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+
+  <script src="app.js?v=2.1.0"></script>
+</body>
+</html>
