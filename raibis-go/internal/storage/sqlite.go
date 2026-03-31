@@ -847,12 +847,14 @@ func scanNote(sc scanner) (*domain.Note, error) {
 	var (
 		createdAt, updatedAt string
 		archived             int
-		categoryID           sql.NullInt64
-		goalID               sql.NullInt64
 		filePath             sql.NullString
+		goalID               sql.NullInt64
+		taskID               sql.NullInt64
+		projectID            sql.NullInt64
+		categoryID           sql.NullInt64
 	)
 	if err := sc.Scan(
-		&n.ID, &n.Title, &filePath, &goalID, &n.TaskID, &n.ProjectID,
+		&n.ID, &n.Title, &filePath, &goalID, &taskID, &projectID,
 		&createdAt, &updatedAt,
 		&categoryID, &n.CategoryName,
 		&archived, &n.NoteDate,
@@ -867,6 +869,12 @@ func scanNote(sc scanner) (*domain.Note, error) {
 	}
 	if goalID.Valid {
 		n.GoalID = &goalID.Int64
+	}
+	if taskID.Valid {
+		n.TaskID = &taskID.Int64
+	}
+	if projectID.Valid {
+		n.ProjectID = &projectID.Int64
 	}
 	if categoryID.Valid {
 		n.CategoryID = &categoryID.Int64

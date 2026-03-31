@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -178,6 +179,10 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Export
 	mux.HandleFunc("/api/export/", withCORS(exportHandler(store, v)))
 
+	// Search & Version
+	mux.HandleFunc("/api/search", withCORS(searchHandler(store, dbPath)))
+	mux.HandleFunc("/api/version", withCORS(versionHandler()))
+
 	// Embedded Web GUI — self-contained, no external /public folder needed.
 	// Serves index.html + assets for all non-/api/ requests.
 	sub, err := gui.Sub()
@@ -243,6 +248,13 @@ func nullStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+func nullInt(n sql.NullInt64) any {
+	if !n.Valid {
+		return nil
+	}
+	return n.Int64
 }
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────
@@ -1670,15 +1682,83 @@ func resourceHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			errJSON(w, 400, "invalid resource id")
 			return
 		}
-		if r.Method != http.MethodDelete {
+		switch r.Method {
+		case http.MethodPatch:
+			var body struct {
+				Title        string  `json:"title"`
+				URL          string  `json:"url"`
+				Body         string  `json:"body"`
+				ResourceType string  `json:"resource_type"`
+				GoalID       *int64  `json:"goal_id"`
+				ProjectID    *int64  `json:"project_id"`
+				TaskID       *int64  `json:"task_id"`
+			}
+			if err := readJSON(r, &body); err != nil {
+				errJSON(w, 400, "invalid JSON: "+err.Error())
+				return
+			}
+			// Read current state then apply partial updates
+			var cur struct {
+				title        string
+				url          string
+				body         string
+				resourceType string
+				goalID       sql.NullInt64
+				projectID    sql.NullInt64
+				taskID       sql.NullInt64
+			}
+			row := db.QueryRow(`SELECT title, COALESCE(url,''), COALESCE(body,''), resource_type,
+				goal_id, project_id, task_id FROM resources WHERE id=?`, id)
+			if err := row.Scan(&cur.title, &cur.url, &cur.body, &cur.resourceType,
+				&cur.goalID, &cur.projectID, &cur.taskID); err != nil {
+				errJSON(w, 404, "resource not found")
+				return
+			}
+			if body.Title != "" {
+				cur.title = body.Title
+			}
+			if body.URL != "" {
+				cur.url = body.URL
+			}
+			if body.Body != "" {
+				cur.body = body.Body
+			}
+			if body.ResourceType != "" {
+				cur.resourceType = body.ResourceType
+			}
+			// FK fields always overwrite (allow explicit null via pointer)
+			goalID := cur.goalID
+			if body.GoalID != nil {
+				goalID = sql.NullInt64{Int64: *body.GoalID, Valid: true}
+			}
+			projectID := cur.projectID
+			if body.ProjectID != nil {
+				projectID = sql.NullInt64{Int64: *body.ProjectID, Valid: true}
+			}
+			taskID := cur.taskID
+			if body.TaskID != nil {
+				taskID = sql.NullInt64{Int64: *body.TaskID, Valid: true}
+			}
+			if _, err := db.Exec(
+				`UPDATE resources SET title=?, url=?, body=?, resource_type=?,
+				 goal_id=?, project_id=?, task_id=?, updated_at=datetime('now')
+				 WHERE id=?`,
+				nullStr(cur.title), nullStr(cur.url), nullStr(cur.body), cur.resourceType,
+				nullInt(goalID), nullInt(projectID), nullInt(taskID), id,
+			); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]any{"id": id, "ok": true})
+		case http.MethodDelete:
+			if _, err := db.Exec(`DELETE FROM resources WHERE id=?`, id); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
 		}
-		if _, err := db.Exec(`DELETE FROM resources WHERE id=?`, id); err != nil {
-			errJSON(w, 500, err.Error())
-			return
-		}
-		writeJSON(w, 200, map[string]bool{"ok": true})
 	}
 }
 
@@ -2110,4 +2190,173 @@ func openRawDB(dbPath string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	return db, nil
+}
+
+// ── Version ───────────────────────────────────────────────────────────────────
+
+func versionHandler() http.HandlerFunc {
+	// Read the build info once at startup (baked in at compile time via -buildvcs).
+	sha := "unknown"
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" {
+				sha = s.Value
+				break
+			}
+		}
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, 200, map[string]string{
+			"sha":  sha,
+			"repo": "https://github.com/rubenalejandrocalderoncorona/lifeos-raibis",
+		})
+	}
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
+
+// searchHandler implements GET /api/search?q=<query>
+// It executes a UNION text search across goals, projects, tasks, and notes,
+// and includes tag matches by joining entity_tags.
+func searchHandler(store storage.Storage, dbPath string) http.HandlerFunc {
+	db, err := openRawDB(dbPath)
+	if err != nil {
+		return func(w http.ResponseWriter, r *http.Request) {
+			errJSON(w, 500, "db unavailable")
+		}
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		q := strings.TrimSpace(r.URL.Query().Get("q"))
+		if q == "" {
+			writeJSON(w, 200, map[string]any{
+				"goals":    []any{},
+				"projects": []any{},
+				"tasks":    []any{},
+				"notes":    []any{},
+			})
+			return
+		}
+		like := "%" + q + "%"
+
+		type result struct {
+			ID    int64  `json:"id"`
+			Title string `json:"title"`
+			Type  string `json:"type"`
+			Extra string `json:"extra,omitempty"` // e.g. parent project/goal title
+		}
+
+		const unionSQL = `
+			SELECT 'goal' AS type, g.id, g.title, '' AS extra
+			FROM goals g
+			WHERE g.title LIKE ? OR g.description LIKE ?
+
+			UNION ALL
+
+			SELECT 'goal' AS type, g.id, g.title, '' AS extra
+			FROM goals g
+			JOIN entity_tags et ON et.entity_type='goal' AND et.entity_id=g.id
+			JOIN tags t ON t.id=et.tag_id
+			WHERE t.name LIKE ?
+
+			UNION ALL
+
+			SELECT 'project' AS type, p.id, p.title, COALESCE(g.title,'') AS extra
+			FROM projects p
+			LEFT JOIN goals g ON p.goal_id=g.id
+			WHERE p.title LIKE ? OR p.description LIKE ?
+
+			UNION ALL
+
+			SELECT 'project' AS type, p.id, p.title, COALESCE(g.title,'') AS extra
+			FROM projects p
+			LEFT JOIN goals g ON p.goal_id=g.id
+			JOIN entity_tags et ON et.entity_type='project' AND et.entity_id=p.id
+			JOIN tags tg ON tg.id=et.tag_id
+			WHERE tg.name LIKE ?
+
+			UNION ALL
+
+			SELECT 'task' AS type, t.id, t.title, COALESCE(p.title,'') AS extra
+			FROM tasks t
+			LEFT JOIN projects p ON t.project_id=p.id
+			WHERE t.title LIKE ? OR t.description LIKE ?
+
+			UNION ALL
+
+			SELECT 'task' AS type, t.id, t.title, COALESCE(p.title,'') AS extra
+			FROM tasks t
+			LEFT JOIN projects p ON t.project_id=p.id
+			JOIN entity_tags et ON et.entity_type='task' AND et.entity_id=t.id
+			JOIN tags tg ON tg.id=et.tag_id
+			WHERE tg.name LIKE ?
+
+			UNION ALL
+
+			SELECT 'note' AS type, n.id, COALESCE(n.title,'') AS title, '' AS extra
+			FROM notes n
+			WHERE n.title LIKE ?
+
+			ORDER BY type, title
+			LIMIT 100
+		`
+
+		rows, err := db.Query(unionSQL,
+			like, like,     // goal text
+			like,           // goal tag
+			like, like,     // project text
+			like,           // project tag
+			like, like,     // task text
+			like,           // task tag
+			like,           // note title
+		)
+		if err != nil {
+			errJSON(w, 500, err.Error())
+			return
+		}
+		defer rows.Close()
+
+		goals := []result{}
+		projects := []result{}
+		tasks := []result{}
+		notes := []result{}
+
+		// Deduplicate by (type, id)
+		seen := make(map[string]bool)
+		for rows.Next() {
+			var res result
+			if err := rows.Scan(&res.Type, &res.ID, &res.Title, &res.Extra); err != nil {
+				continue
+			}
+			key := res.Type + ":" + strconv.FormatInt(res.ID, 10)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			switch res.Type {
+			case "goal":
+				goals = append(goals, res)
+			case "project":
+				projects = append(projects, res)
+			case "task":
+				tasks = append(tasks, res)
+			case "note":
+				notes = append(notes, res)
+			}
+		}
+
+		writeJSON(w, 200, map[string]any{
+			"goals":    goals,
+			"projects": projects,
+			"tasks":    tasks,
+			"notes":    notes,
+		})
+	}
 }
