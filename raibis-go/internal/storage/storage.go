@@ -30,6 +30,7 @@ type Storage interface {
 	CreateSprint(s *domain.Sprint) (int64, error)
 	ListSprints(projectID int64) ([]*domain.Sprint, error)
 	GetActiveSprint(projectID int64) (*domain.Sprint, error)
+	UpdateSprintStatus(id int64, status string) error
 
 	// ── Notes ────────────────────────────────────────────────────────────────
 	CreateNote(n *domain.Note) (int64, error)

@@ -1061,20 +1061,11 @@ func sprintHandler(store storage.Storage) http.HandlerFunc {
 			errJSON(w, 400, "invalid JSON")
 			return
 		}
-		// For sprints we still use direct SQL via the raw db embedded in store
-		// Use a minimal approach: re-open the store as a sql.DB is not exposed,
-		// so delegate sprint status update through GetActiveSprint workaround.
-		// Since Storage doesn't have UpdateSprint yet, use the raw DB through a cast.
-		type rawDB interface {
-			ExecSQL(q string, args ...any) error
-		}
-		// Fallback: write a minimal UpdateSprint via the existing fields approach
-		// We'll add it to storage if needed; for now handle via store type assertion
 		if status, ok := body["status"].(string); ok {
-			_ = status
-			_ = id
-			// We'll handle this properly by extending storage.
-			// For now return ok — the sprint view will work.
+			if err := store.UpdateSprintStatus(id, status); err != nil {
+				errJSON(w, 500, "update sprint: "+err.Error())
+				return
+			}
 		}
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	}

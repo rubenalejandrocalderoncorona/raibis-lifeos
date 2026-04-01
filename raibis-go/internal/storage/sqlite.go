@@ -477,6 +477,13 @@ func (s *sqliteStorage) GetActiveSprint(projectID int64) (*domain.Sprint, error)
 	return scanSprint(row)
 }
 
+func (s *sqliteStorage) UpdateSprintStatus(id int64, status string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE sprints SET status=? WHERE id=?`, status, id)
+	return err
+}
+
 // ── Notes ─────────────────────────────────────────────────────────────────────
 
 func (s *sqliteStorage) CreateNote(n *domain.Note) (int64, error) {

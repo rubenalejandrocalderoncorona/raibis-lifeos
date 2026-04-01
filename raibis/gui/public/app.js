@@ -15,6 +15,7 @@ const COLOR_HEX = {blue:'#378ADD',green:'#6dcc8a',red:'#e07070',yellow:'#d4a84b'
 
 /* ─── State ──────────────────────────────────────────────────────────── */
 let currentView = 'dashboard';
+let currentParams = null;
 let navHistory = []; // [{view, params, label}]
 let allTags = [];
 let allCategories = [];
@@ -255,8 +256,8 @@ function taskRowHtml(task, showProject, indent) {
   const hasChildren = (task.sub_task_count || task.subtask_count || 0) > 0;
   const isExpanded = expandedTasks.has(String(task.id));
   const toggleArrow = hasChildren
-    ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${task.id}">▶</span>`
-    : `<span class="task-toggle-placeholder"></span>`;
+    ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${task.id}" title="Toggle subtasks">▶</span>`
+    : `<span class="task-add-sub-btn" data-add-sub-id="${task.id}" title="Add subtask">+</span>`;
   const tagChips = (task.tags || []).slice(0, 2).map(t => tagHtml(t)).join('');
   const recurBadge = task.recur_interval > 0 ? `<span class="task-recur-badge" title="Repeats every ${task.recur_interval} ${task.recur_unit||'days'}">↺</span>` : '';
   const indentStyle = indent ? `padding-left:${indent * 24 + 12}px` : '';
@@ -391,7 +392,14 @@ function updateBreadcrumb(view, params, detailLabel) {
 
 function renderView(view, params) {
   currentView = view;
+  currentParams = params || null;
   closeSlideover();
+
+  // Sync sidebar active state: detail views highlight their parent nav item
+  const sidebarView = { 'project-detail': 'projects', 'goal-detail': 'goals' }[view] || view;
+  document.querySelectorAll('[data-view]').forEach(l => l.classList.remove('active'));
+  document.querySelectorAll(`[data-view="${sidebarView}"]`).forEach(l => l.classList.add('active'));
+
   const main = document.getElementById('main-content');
   main.innerHTML = `<div class="view"><div class="loading">Loading…</div></div>`;
   updateBreadcrumb(view, params);
@@ -418,13 +426,14 @@ function renderView(view, params) {
 let dashboardMode = localStorage.getItem('dashboardMode') || 'tables';
 
 async function renderDashboard() {
-  let data = {}, goals = [], notes = [], resources = [];
+  let data = {}, goals = [], notes = [], resources = [], allTasks = [];
   try {
-    [data, goals, notes, resources] = await Promise.all([
+    [data, goals, notes, resources, allTasks] = await Promise.all([
       api('GET', '/api/dashboard'),
       api('GET', '/api/goals'),
       api('GET', '/api/notes'),
       api('GET', '/api/resources'),
+      api('GET', '/api/tasks'),
     ]);
   } catch(e) { data = {}; }
 
@@ -436,6 +445,8 @@ async function renderDashboard() {
   const projects = data.active_projects || [];
   const todayTasks = data.today_tasks || [];
   const urgentTasks = data.urgent_tasks || [];
+  // Active tasks = all non-done tasks for the "All Tasks" section
+  const activeTasks = (allTasks || []).filter(t => t.status !== 'done' && !t.parent_task_id);
 
   const sprintPct = sprint && sprint.total > 0 ? Math.round((sprint.done / sprint.total) * 100) : 0;
 
@@ -547,8 +558,24 @@ async function renderDashboard() {
     <div class="cc-grid wide">
       <div class="widget">
         <div class="widget-header">
+          <span class="widget-title">All Tasks</span>
+          <div style="display:flex;gap:6px;align-items:center">
+            <select id="dash-task-status-filter" style="font-size:11px;padding:2px 6px">
+              <option value="">All statuses</option>
+              <option value="todo">Todo</option>
+              <option value="in_progress">In Progress</option>
+              <option value="blocked">Blocked</option>
+            </select>
+            <button class="btn btn-sm btn-ghost widget-action" id="dash-add-task">+ Add Task</button>
+          </div>
+        </div>
+        <ul class="task-list" id="dash-all-tasks-list">${activeTasks.map(t => taskRowHtml(t, true)).join('') || '<li style="padding:12px;color:var(--text-muted);font-size:13px">No open tasks</li>'}</ul>
+      </div>
+    </div>
+    <div class="cc-grid wide">
+      <div class="widget">
+        <div class="widget-header">
           <span class="widget-title">Today's Tasks</span>
-          <button class="btn btn-sm btn-ghost widget-action" id="dash-add-task">+ Add Task</button>
         </div>
         <ul class="task-list">${todayRows}</ul>
       </div>
@@ -612,6 +639,19 @@ async function renderDashboard() {
   document.querySelectorAll('.proj-row').forEach(el => {
     el.onclick = () => renderView('project-detail', el.dataset.projId);
   });
+
+  // All Tasks status filter
+  const taskStatusFilter = document.getElementById('dash-task-status-filter');
+  if (taskStatusFilter) {
+    taskStatusFilter.onchange = () => {
+      const status = taskStatusFilter.value;
+      const list = document.getElementById('dash-all-tasks-list');
+      if (!list) return;
+      const filtered = status ? activeTasks.filter(t => t.status === status) : activeTasks;
+      list.innerHTML = filtered.map(t => taskRowHtml(t, true)).join('') || '<li style="padding:12px;color:var(--text-muted);font-size:13px">No tasks</li>';
+      bindTaskListEvents();
+    };
+  }
 
   // Daily notes widget
   const dailyNoteDateEl = document.getElementById('daily-note-date');
@@ -891,7 +931,7 @@ async function renderTasks() {
   render();
 
   function bindTasksContentEvents() {
-    // Toggle arrows
+    // Toggle arrows (tasks with subtasks)
     document.querySelectorAll('.task-toggle-arrow').forEach(arrow => {
       arrow.onclick = async (e) => {
         e.stopPropagation();
@@ -899,6 +939,22 @@ async function renderTasks() {
         if (expandedTasks.has(id)) expandedTasks.delete(id);
         else expandedTasks.add(id);
         render();
+      };
+    });
+
+    // Add-subtask hover button (tasks without subtasks)
+    document.querySelectorAll('.task-add-sub-btn').forEach(btn => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const parentId = parseInt(btn.dataset.addSubId);
+        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+          allTasksFull = await api('GET', '/api/tasks?all=1');
+          allTasksCache = allTasksFull;
+          const parent = topLevel.find(t => t.id === parentId);
+          if (parent) { parent.sub_task_count = (parent.sub_task_count || 0) + 1; }
+          expandedTasks.add(String(parentId));
+          render();
+        });
       };
     });
 
@@ -921,9 +977,10 @@ async function renderTasks() {
     document.querySelectorAll('.task-row').forEach(row => {
       row.onclick = (e) => {
         if (e.target.classList.contains('task-toggle-arrow') ||
+            e.target.classList.contains('task-add-sub-btn') ||
             e.target.classList.contains('task-check') ||
             e.target.dataset.checkId ||
-            e.target.closest('.task-toggle-arrow, .inline-subtask-input')) return;
+            e.target.closest('.task-toggle-arrow, .task-add-sub-btn, .inline-subtask-input')) return;
         showTaskSlideover(row.dataset.taskId);
       };
     });
@@ -2214,7 +2271,15 @@ async function showTaskSlideover(taskId) {
   openSlideover(task.title, body);
 
   async function patchTask(data) {
-    try { await api('PATCH', `/api/tasks/${taskId}`, data); } catch(e) {}
+    try { await api('PATCH', `/api/tasks/${taskId}`, data); } catch(e) { return; }
+    // Refresh background view without closing the slideover (call render functions directly)
+    const v = currentView;
+    if (v === 'tasks') renderTasks();
+    else if (v === 'dashboard') renderDashboard();
+    else if (v === 'project-detail' && currentParams) renderProjectDetail(currentParams);
+    else if (v === 'goal-detail' && currentParams) renderGoalDetail(currentParams);
+    // Re-fetch and re-render the slideover body with updated data
+    showTaskSlideover(taskId);
   }
 
   async function handleStatusChange(newStatus) {
@@ -2370,6 +2435,11 @@ async function renderCalendarView() {
     allTasksCache = tasks;
   } catch(e) {}
 
+  // Build sprint date ranges for background shading
+  const sprintRanges = sprints
+    .filter(s => s.status === 'active' && s.start_date && s.end_date)
+    .map(s => ({ title: s.title, start: stripDate(s.start_date), end: stripDate(s.end_date) }));
+
   // Build unified event list with dates
   const events = [];
   tasks.forEach(t => {
@@ -2410,6 +2480,8 @@ async function renderCalendarView() {
         const isTodayCell = cellDate.getTime() === todayD.getTime();
         const dateStr = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(cellDate.getDate()).padStart(2,'0')}`;
         const dayEvents = events.filter(e => e.date === dateStr && calEventTypes.includes(e.type.split('-')[0]));
+        const isInSprint = sprintRanges.some(r => dateStr >= r.start && dateStr <= r.end);
+        const sprintStyle = isInSprint ? 'background:var(--accent-glow);border-left:2px solid var(--accent);' : '';
         const CHIP_LIMIT = 3;
         const visibleEvents = dayEvents.slice(0, CHIP_LIMIT);
         const overflow = dayEvents.length - CHIP_LIMIT;
@@ -2421,7 +2493,7 @@ async function renderCalendarView() {
         const overflowChip = overflow > 0
           ? `<div class="cal-overflow-btn" data-date="${dateStr}">+${overflow} more</div>`
           : '';
-        cells += `<div class="calendar-day ${isCurrentMonth?'':'other-month'} ${isTodayCell?'today':''}">
+        cells += `<div class="calendar-day ${isCurrentMonth?'':'other-month'} ${isTodayCell?'today':''}" style="${sprintStyle}">
           <div class="cal-day-num">${cellDate.getDate()}</div>
           <div class="cal-tasks">${chips}${overflowChip}</div>
         </div>`;
@@ -2653,8 +2725,16 @@ function bindTaskListEvents() {
   document.querySelectorAll('.task-row').forEach(row => {
     row.onclick = (e) => {
       if (e.target.classList.contains('task-check') || e.target.dataset.checkId ||
-          e.target.classList.contains('task-toggle-arrow') || e.target.closest('.task-toggle-arrow')) return;
+          e.target.classList.contains('task-toggle-arrow') || e.target.closest('.task-toggle-arrow') ||
+          e.target.classList.contains('task-add-sub-btn') || e.target.closest('.task-add-sub-btn')) return;
       showTaskSlideover(row.dataset.taskId);
+    };
+  });
+  document.querySelectorAll('.task-add-sub-btn').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const parentId = parseInt(btn.dataset.addSubId);
+      showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, () => renderDashboard());
     };
   });
   document.querySelectorAll('.task-check').forEach(el => {
@@ -2673,7 +2753,8 @@ function bindDetailTaskEvents(onRefresh) {
   document.querySelectorAll('.task-row').forEach(row => {
     row.onclick = (e) => {
       if (e.target.classList.contains('task-check') || e.target.dataset.checkId ||
-          e.target.classList.contains('task-toggle-arrow') || e.target.closest('.task-toggle-arrow')) return;
+          e.target.classList.contains('task-toggle-arrow') || e.target.closest('.task-toggle-arrow') ||
+          e.target.classList.contains('task-add-sub-btn') || e.target.closest('.task-add-sub-btn')) return;
       showTaskSlideover(row.dataset.taskId);
     };
   });
@@ -2693,6 +2774,16 @@ function bindDetailTaskEvents(onRefresh) {
       if (expandedTasks.has(id)) expandedTasks.delete(id);
       else expandedTasks.add(id);
       if (onRefresh) onRefresh();
+    };
+  });
+  document.querySelectorAll('.task-add-sub-btn').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const parentId = parseInt(btn.dataset.addSubId);
+      showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+        allTasksCache = await api('GET', '/api/tasks?all=1');
+        if (onRefresh) onRefresh();
+      });
     };
   });
   document.querySelectorAll('.add-subtask-inline-btn').forEach(btn => {
