@@ -571,7 +571,7 @@ func (s *sqliteStorage) DeleteNote(id int64) error {
 const noteSelectCols = `
 SELECT n.id, n.title, n.file_path, n.goal_id, n.task_id, n.project_id, n.created_at, n.updated_at,
        n.category_id, COALESCE(c.name,'') AS category_name,
-       n.archived, n.note_date
+       n.archived, n.note_date, COALESCE(n.body,'')
 FROM notes n
 LEFT JOIN categories c ON n.category_id = c.id`
 
@@ -859,12 +859,13 @@ func scanNote(sc scanner) (*domain.Note, error) {
 		taskID               sql.NullInt64
 		projectID            sql.NullInt64
 		categoryID           sql.NullInt64
+		dbBody               string
 	)
 	if err := sc.Scan(
 		&n.ID, &n.Title, &filePath, &goalID, &taskID, &projectID,
 		&createdAt, &updatedAt,
 		&categoryID, &n.CategoryName,
-		&archived, &n.NoteDate,
+		&archived, &n.NoteDate, &dbBody,
 	); err != nil {
 		return nil, err
 	}
@@ -873,6 +874,10 @@ func scanNote(sc scanner) (*domain.Note, error) {
 	n.Archived = archived == 1
 	if filePath.Valid {
 		n.FilePath = &filePath.String
+	}
+	// Use inline body from DB as fallback (for notes created before vault migration)
+	if dbBody != "" {
+		n.Body = dbBody
 	}
 	if goalID.Valid {
 		n.GoalID = &goalID.Int64

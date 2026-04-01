@@ -257,7 +257,7 @@ function taskRowHtml(task, showProject, indent) {
   const isExpanded = expandedTasks.has(String(task.id));
   const toggleArrow = hasChildren
     ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${task.id}" title="Toggle subtasks">▶</span>`
-    : `<span class="task-add-sub-btn" data-add-sub-id="${task.id}" title="Add subtask">+</span>`;
+    : `<span class="task-add-sub-btn" data-add-sub-id="${task.id}" title="Add subtask">▶</span>`;
   const tagChips = (task.tags || []).slice(0, 2).map(t => tagHtml(t)).join('');
   const recurBadge = task.recur_interval > 0 ? `<span class="task-recur-badge" title="Repeats every ${task.recur_interval} ${task.recur_unit||'days'}">↺</span>` : '';
   const indentStyle = indent ? `padding-left:${indent * 24 + 12}px` : '';
@@ -817,11 +817,11 @@ async function renderTasks() {
       const children = allTasks.filter(s => s.parent_task_id === t.id);
       if (isExpanded && children.length > 0) {
         html += buildTaskTreeRows(children, allTasks, depth + 1, false);
+        // Show add subtask button only when expanded, at end of subtask list
+        html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
+          <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px;opacity:0.6">+ Add Subtask</button>
+        </li>`;
       }
-      // Always show add subtask button (collapsed or expanded, with or without children)
-      html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
-        <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px;opacity:0.6">+ Add Subtask</button>
-      </li>`;
     }
     return html;
   }
@@ -851,19 +851,15 @@ async function renderTasks() {
         const hasChildren = children.length > 0;
         const isExpanded = expandedTasks.has(String(t.id));
         const toggleBtn = hasChildren
-          ? `<span class="task-toggle-arrow" data-toggle-id="${t.id}" style="cursor:pointer;display:inline-block;width:16px;text-align:center;transition:transform 0.15s;${isExpanded?'transform:rotate(90deg)':''}">▶</span>`
-          : `<span style="display:inline-block;width:16px"></span>`;
-        html += `<tr data-task-id="${t.id}">
+          ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${t.id}" style="cursor:pointer;display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;font-size:8px;border-radius:3px;transition:transform 160ms cubic-bezier(0.4,0,0.2,1),color 120ms,background 120ms;color:var(--text-dim);opacity:0.5" title="Toggle subtasks">▶</span>`
+          : `<span class="task-add-sub-btn" data-add-sub-id="${t.id}" style="cursor:pointer;display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;font-size:8px;border-radius:3px;transition:opacity 120ms,color 120ms,background 120ms,transform 160ms cubic-bezier(0.4,0,0.2,1);color:var(--text-dim);opacity:0" title="Add subtask">▶</span>`;
+        html += `<tr class="task-table-row" data-task-id="${t.id}" style="position:relative">
           ${cols.map(c => colDef[c] ? (c === 'title' ? colDef.title.cell(t, depth, toggleBtn) : colDef[c].cell(t)) : '').join('')}
           <td><button class="btn btn-sm btn-danger task-del-btn" data-task-id="${t.id}">×</button></td>
         </tr>`;
         if (isExpanded && hasChildren) {
           html += tableRows(children, depth + 1);
         }
-        // Always show add-subtask row
-        html += `<tr><td colspan="${cols.length+1}" style="padding-left:${(depth+1)*20+24}px;padding-top:0;padding-bottom:2px">
-          <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px;opacity:0.6">+ Add Subtask</button>
-        </td></tr>`;
       });
       return html;
     }

@@ -61,11 +61,11 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 
 	// Goals
 	mux.HandleFunc("/api/goals", withCORS(goalsHandler(svc, store)))
-	mux.HandleFunc("/api/goals/", withCORS(goalHandler(store, dbPath)))
+	mux.HandleFunc("/api/goals/", withCORS(goalHandler(store, v, dbPath)))
 
 	// Projects
 	mux.HandleFunc("/api/projects", withCORS(projectsHandler(svc, store)))
-	mux.HandleFunc("/api/projects/", withCORS(projectHandler(store, dbPath)))
+	mux.HandleFunc("/api/projects/", withCORS(projectHandler(store, v, dbPath)))
 
 	// Sprints
 	mux.HandleFunc("/api/sprints", withCORS(sprintsHandler(svc, store, dbPath)))
@@ -633,7 +633,7 @@ func goalsHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 	}
 }
 
-func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
+func goalHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// /api/goals/:id/tags
 		path := strings.TrimRight(r.URL.Path, "/")
@@ -705,6 +705,7 @@ func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			det.Notes, _ = store.ListNotes(&id, nil, nil)
 			for _, n := range det.Notes {
 				n.Tags, _ = store.GetEntityTags("note", n.ID)
+				if n.FilePath != nil { n.Body, _ = vlt.ReadFile(*n.FilePath) }
 			}
 			if rawDB, err := openRawDB(dbPath); err == nil {
 				defer rawDB.Close()
@@ -859,7 +860,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage) http.Handle
 	}
 }
 
-func projectHandler(store storage.Storage, dbPath string) http.HandlerFunc {
+func projectHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
 		if strings.HasSuffix(path, "/tags") {
@@ -903,6 +904,7 @@ func projectHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			det.Notes, _ = store.ListNotes(nil, nil, &id)
 			for _, n := range det.Notes {
 				n.Tags, _ = store.GetEntityTags("note", n.ID)
+				if n.FilePath != nil { n.Body, _ = vlt.ReadFile(*n.FilePath) }
 			}
 			dbPath := defaultDBPath()
 			if rawDB, err := openRawDB(dbPath); err == nil {
