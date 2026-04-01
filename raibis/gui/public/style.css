@@ -208,11 +208,49 @@ input:focus, select:focus, textarea:focus {
 .version-btn:hover { opacity: 1; border-color: var(--accent); }
 
 /* ─── Main ────────────────────────────────────────────────────────── */
+.main-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
 .main {
   flex: 1;
   overflow-y: auto;
   min-width: 0;
 }
+
+/* ─── Breadcrumb ──────────────────────────────────────────────────── */
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 28px;
+  font-size: 12px;
+  font-family: 'DM Mono', monospace;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-light);
+  background: var(--bg-card);
+  flex-shrink: 0;
+  min-height: 32px;
+  flex-wrap: wrap;
+}
+.breadcrumb:empty { display: none; }
+.bc-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+}
+.bc-item a {
+  color: var(--text-muted);
+  text-decoration: none;
+  cursor: pointer;
+}
+.bc-item a:hover { color: var(--accent); }
+.bc-item:last-child a, .bc-item:last-child span { color: var(--text); }
+.bc-sep { color: var(--border); font-size: 10px; }
 
 .view {
   max-width: 960px;
@@ -1208,7 +1246,10 @@ tr:hover td { background: var(--bg-card-hover); }
   background: var(--bg-card);
   min-height: 80px;
   padding: 6px;
+  overflow: hidden;
+  transition: min-height 0.2s;
 }
+.calendar-day.expanded { min-height: 120px; overflow: visible; }
 .calendar-day:hover { background: var(--bg-card-hover); }
 .calendar-day.other-month { opacity: 0.35; pointer-events: none; }
 .calendar-day.today { background: var(--accent-glow); }
@@ -1241,6 +1282,15 @@ tr:hover td { background: var(--bg-card-hover); }
   line-height: 1.4;
 }
 .cal-task-chip:hover { opacity: 0.75; }
+.cal-overflow-btn {
+  font-size: 10px;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 2px;
+  font-family: 'DM Mono', monospace;
+}
+.cal-overflow-btn:hover { background: var(--accent-glow); }
 
 /* ─── Add subtask inline button ──────────────────────────────────── */
 .inline-subtask-input-row {
@@ -1481,6 +1531,33 @@ tr:hover td { background: var(--bg-card-hover); }
 .ai-voice-status { font-size: 12px; color: var(--text-muted); font-family: 'DM Mono', monospace; }
 .ai-voice-preview { font-size: 12px; color: var(--text-dim); font-style: italic; min-height: 16px; }
 .hidden { display: none !important; }
+
+/* ─── Column / Property picker dropdown ──────────────────────────── */
+.col-picker-wrap { position: relative; }
+.col-picker-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  z-index: 400;
+  min-width: 140px;
+  padding: 6px 0;
+}
+.col-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+  white-space: nowrap;
+}
+.col-picker-item:hover { background: var(--accent-glow); }
+.col-picker-item input[type="checkbox"] { width: auto; margin: 0; cursor: pointer; }
 
 
 

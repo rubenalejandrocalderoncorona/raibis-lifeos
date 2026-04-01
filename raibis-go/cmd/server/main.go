@@ -103,6 +103,13 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 		log.Printf("GUI dir not found (%s) — API-only mode", guiDir)
 	}
 
+	// raibis-chat companion app
+	chatDir := raibisChatDir()
+	if _, err := os.Stat(chatDir); err == nil {
+		log.Printf("serving raibis-chat from %s", chatDir)
+		mux.Handle("/raibis-chat/", noCacheHeaders(http.StripPrefix("/raibis-chat/", http.FileServer(http.Dir(chatDir)))))
+	}
+
 	return mux
 }
 
@@ -125,6 +132,15 @@ func guiPublicDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "Documents", "PersonalRepos", "ClaudeCodeProjects", "raibis-lifeos", "raibis", "gui", "public")
+}
+
+// raibisChatDir returns the absolute path to the raibis-chat companion app.
+func raibisChatDir() string {
+	if p := os.Getenv("RAIBIS_CHAT"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Documents", "PersonalRepos", "ClaudeCodeProjects", "raibis-chat")
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────

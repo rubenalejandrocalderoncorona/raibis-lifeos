@@ -15,6 +15,7 @@ const COLOR_HEX = {blue:'#378ADD',green:'#6dcc8a',red:'#e07070',yellow:'#d4a84b'
 
 /* ─── State ──────────────────────────────────────────────────────────── */
 let currentView = 'dashboard';
+let navHistory = []; // [{view, params, label}]
 let allTags = [];
 let allCategories = [];
 let allTasksCache = [];
@@ -30,6 +31,12 @@ let pomState = { running: false, seconds: 25*60, mode: 'work', taskId: null, tas
 let calYear = new Date().getFullYear();
 let calMonth = new Date().getMonth();
 let globalSearchDebounce = null;
+
+// Column visibility for table views
+const TASK_TABLE_COLS = ['title','project','status','priority','due','tags'];
+let taskTableCols = JSON.parse(localStorage.getItem('taskTableCols') || 'null') || [...TASK_TABLE_COLS];
+const CAL_EVENT_TYPES = ['task','goal','project','sprint'];
+let calEventTypes = JSON.parse(localStorage.getItem('calEventTypes') || 'null') || [...CAL_EVENT_TYPES];
 
 /* ─── Utilities ──────────────────────────────────────────────────────── */
 async function api(method, path, body) {
@@ -342,11 +349,52 @@ function closeFormSlideover() {
 }
 
 /* ─── View Dispatcher ────────────────────────────────────────────────── */
+const VIEW_LABELS = {
+  dashboard: 'Dashboard', tasks: 'Tasks', projects: 'Projects', goals: 'Goals',
+  notes: 'Notes', resources: 'Resources', sprints: 'Sprints', calendar: 'Calendar',
+  pomodoro: 'Pomodoro', categories: 'Categories', tags: 'Tags',
+};
+
+function updateBreadcrumb(view, params, detailLabel) {
+  const bc = document.getElementById('breadcrumb');
+  if (!bc) return;
+
+  // Build crumb list
+  const crumbs = [];
+
+  // Top-level detail views get a parent crumb
+  const parentMap = { 'project-detail': 'projects', 'goal-detail': 'goals' };
+  if (parentMap[view]) {
+    crumbs.push({ label: VIEW_LABELS[parentMap[view]], view: parentMap[view] });
+  } else if (view !== 'dashboard') {
+    // Add Dashboard as root only if not already dashboard
+  }
+
+  const label = detailLabel || VIEW_LABELS[view] || view;
+  crumbs.push({ label, view, params, current: true });
+
+  if (crumbs.length <= 1 && view === 'dashboard') {
+    bc.innerHTML = '';
+    return;
+  }
+
+  bc.innerHTML = crumbs.map((c, i) => {
+    const sep = i > 0 ? `<span class="bc-sep">›</span>` : '';
+    if (c.current) return `${sep}<span class="bc-item"><span>${c.label}</span></span>`;
+    return `${sep}<span class="bc-item"><a class="bc-link" data-bc-view="${c.view}" ${c.params ? `data-bc-params="${c.params}"` : ''}>${c.label}</a></span>`;
+  }).join('');
+
+  bc.querySelectorAll('.bc-link').forEach(a => {
+    a.onclick = (e) => { e.preventDefault(); renderView(a.dataset.bcView, a.dataset.bcParams); };
+  });
+}
+
 function renderView(view, params) {
   currentView = view;
   closeSlideover();
   const main = document.getElementById('main-content');
   main.innerHTML = `<div class="view"><div class="loading">Loading…</div></div>`;
+  updateBreadcrumb(view, params);
   switch (view) {
     case 'dashboard':       renderDashboard(); break;
     case 'tasks':           renderTasks(); break;
@@ -620,11 +668,19 @@ async function renderTasks() {
     <button class="view-toggle-btn ${tasksViewMode==='dashboard'?'active':''}" data-mode="dashboard" title="Dashboard">▦</button>
   </div>`;
 
+  const colPickerHtml = `<div class="col-picker-wrap" style="position:relative">
+    <button class="btn btn-sm btn-ghost" id="col-picker-btn" title="Show/hide columns">⊟ Columns</button>
+    <div class="col-picker-dropdown hidden" id="col-picker-dropdown">
+      ${TASK_TABLE_COLS.map(col => `<label class="col-picker-item"><input type="checkbox" class="col-picker-check" data-col="${col}" ${taskTableCols.includes(col)?'checked':''}> ${col}</label>`).join('')}
+    </div>
+  </div>`;
+
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
       <h1 class="view-title">Tasks</h1>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         ${viewToggle}
+        ${colPickerHtml}
         <button class="btn btn-primary" id="new-task-btn">+ New Task</button>
       </div>
     </div>
@@ -638,6 +694,24 @@ async function renderTasks() {
   </div>`;
 
   document.getElementById('new-task-btn').onclick = () => showNewTaskModal({});
+
+  // Column picker
+  const colPickerBtn = document.getElementById('col-picker-btn');
+  const colPickerDrop = document.getElementById('col-picker-dropdown');
+  if (colPickerBtn) {
+    colPickerBtn.onclick = (e) => { e.stopPropagation(); colPickerDrop.classList.toggle('hidden'); };
+    document.addEventListener('click', (e) => {
+      if (!colPickerBtn.contains(e.target)) colPickerDrop.classList.add('hidden');
+    }, { once: false, capture: false });
+    document.querySelectorAll('.col-picker-check').forEach(chk => {
+      chk.onchange = () => {
+        taskTableCols = [...document.querySelectorAll('.col-picker-check:checked')].map(c => c.dataset.col);
+        if (!taskTableCols.length) taskTableCols = ['title']; // always keep title
+        localStorage.setItem('taskTableCols', JSON.stringify(taskTableCols));
+        render();
+      };
+    });
+  }
 
   // View toggle
   document.querySelectorAll('.view-toggle-btn').forEach(btn => {
@@ -700,14 +774,14 @@ async function renderTasks() {
     for (const t of tasks) {
       html += taskRowHtml(t, showProject && depth === 0, depth);
       const isExpanded = expandedTasks.has(String(t.id));
-      const childCount = allTasks.filter(s => s.parent_task_id === t.id).length;
-      if (isExpanded && childCount > 0) {
-        const subs = allTasks.filter(s => s.parent_task_id === t.id);
-        html += buildTaskTreeRows(subs, allTasks, depth + 1, false);
-        html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
-          <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px">+ Add Subtask</button>
-        </li>`;
+      const children = allTasks.filter(s => s.parent_task_id === t.id);
+      if (isExpanded && children.length > 0) {
+        html += buildTaskTreeRows(children, allTasks, depth + 1, false);
       }
+      // Always show add subtask button (collapsed or expanded, with or without children)
+      html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
+        <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px;opacity:0.6">+ Add Subtask</button>
+      </li>`;
     }
     return html;
   }
@@ -720,38 +794,43 @@ async function renderTasks() {
   function buildTableView(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">✓</div><div class="empty-state-text">No tasks found</div></div>`;
 
+    const cols = taskTableCols.length ? taskTableCols : TASK_TABLE_COLS;
+    const colDef = {
+      title:    { header: 'Title',    cell: (t, depth, toggleBtn) => `<td style="${depth>0?`padding-left:${depth*20}px`:''}>${toggleBtn}<span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span></td>` },
+      project:  { header: 'Project',  cell: (t) => `<td>${t.project_title ? `<span class="badge badge-todo">${t.project_title}</span>` : '—'}</td>` },
+      status:   { header: 'Status',   cell: (t) => { const sopts = TASK_STATUSES.map(s => `<option value="${s}" ${t.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join(''); return `<td><select class="inline-status-select" data-task-id="${t.id}" style="font-size:11px;padding:2px 6px;border-radius:3px">${sopts}</select></td>`; } },
+      priority: { header: 'Priority', cell: (t) => `<td>${priorityBadge(t.priority)}</td>` },
+      due:      { header: 'Due',      cell: (t) => `<td class="${isOverdue(t.due_date)?'task-due overdue':isToday(t.due_date)?'task-due today':''}">${fmtDate(t.due_date)||'—'}</td>` },
+      tags:     { header: 'Tags',     cell: (t) => `<td>${(t.tags||[]).map(tg=>tagHtml(tg)).join('')}</td>` },
+    };
+
     function tableRows(tasks, depth) {
       let html = '';
       tasks.forEach(t => {
         const children = allTasksFull.filter(c => c.parent_task_id && String(c.parent_task_id) === String(t.id));
         const hasChildren = children.length > 0;
         const isExpanded = expandedTasks.has(String(t.id));
-        const statusOpts = TASK_STATUSES.map(s => `<option value="${s}" ${t.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
-        const indent = depth > 0 ? `padding-left:${depth*20}px` : '';
         const toggleBtn = hasChildren
           ? `<span class="task-toggle-arrow" data-toggle-id="${t.id}" style="cursor:pointer;display:inline-block;width:16px;text-align:center;transition:transform 0.15s;${isExpanded?'transform:rotate(90deg)':''}">▶</span>`
           : `<span style="display:inline-block;width:16px"></span>`;
         html += `<tr data-task-id="${t.id}">
-          <td style="${indent}">
-            ${toggleBtn}
-            <span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span>
-          </td>
-          <td>${t.project_title ? `<span class="badge badge-todo">${t.project_title}</span>` : '—'}</td>
-          <td><select class="inline-status-select" data-task-id="${t.id}" style="font-size:11px;padding:2px 6px;border-radius:3px">${statusOpts}</select></td>
-          <td>${priorityBadge(t.priority)}</td>
-          <td class="${isOverdue(t.due_date)?'task-due overdue':isToday(t.due_date)?'task-due today':''}">${fmtDate(t.due_date)||'—'}</td>
-          <td>${(t.tags||[]).map(tg=>tagHtml(tg)).join('')}</td>
+          ${cols.map(c => colDef[c] ? (c === 'title' ? colDef.title.cell(t, depth, toggleBtn) : colDef[c].cell(t)) : '').join('')}
           <td><button class="btn btn-sm btn-danger task-del-btn" data-task-id="${t.id}">×</button></td>
         </tr>`;
-        if (hasChildren && isExpanded) {
+        if (isExpanded && hasChildren) {
           html += tableRows(children, depth + 1);
         }
+        // Always show add-subtask row
+        html += `<tr><td colspan="${cols.length+1}" style="padding-left:${(depth+1)*20+24}px;padding-top:0;padding-bottom:2px">
+          <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px;opacity:0.6">+ Add Subtask</button>
+        </td></tr>`;
       });
       return html;
     }
 
+    const headers = cols.map(c => colDef[c] ? `<th>${colDef[c].header}</th>` : '').join('') + '<th></th>';
     return `<div class="notion-table-wrap"><table class="notion-table">
-      <thead><tr><th>Title</th><th>Project</th><th>Status</th><th>Priority</th><th>Due</th><th>Tags</th><th></th></tr></thead>
+      <thead><tr>${headers}</tr></thead>
       <tbody>${tableRows(list, 0)}</tbody></table></div>`;
   }
 
@@ -1719,6 +1798,7 @@ async function renderProjectDetail(projectId) {
     document.getElementById('main-content').innerHTML = `<div class="view"><div class="empty-state"><div class="empty-state-text">Project not found</div></div></div>`;
     return;
   }
+  updateBreadcrumb('project-detail', projectId, p.title);
 
   const tasks = p.tasks || [];
   const notes = p.notes || [];
@@ -1747,7 +1827,9 @@ async function renderProjectDetail(projectId) {
 
   function buildTaskList() {
     if (!tasks.length) return `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No tasks</div></div>`;
-    return '<ul class="task-list">' + buildTaskTreeRows(tasks, allTasksCache, 0) + '</ul>';
+    const taskIds = new Set(tasks.map(t => t.id));
+    const topLevel = tasks.filter(t => !t.parent_task_id || !taskIds.has(t.parent_task_id));
+    return '<ul class="task-list">' + buildTaskTreeRows(topLevel, tasks, 0) + '</ul>';
   }
 
   function renderTaskList() {
@@ -1838,6 +1920,7 @@ async function renderGoalDetail(goalId) {
     document.getElementById('main-content').innerHTML = `<div class="view"><div class="empty-state"><div class="empty-state-text">Goal not found</div></div></div>`;
     return;
   }
+  updateBreadcrumb('goal-detail', goalId, g.title);
 
   const projects = g.projects || [];
   const tasks = g.tasks || [];
@@ -1878,8 +1961,10 @@ async function renderGoalDetail(goalId) {
     return html;
   }
 
+  const taskIds = new Set(tasks.map(t => t.id));
+  const topLevelTasks = tasks.filter(t => !t.parent_task_id || !taskIds.has(t.parent_task_id));
   const taskRows = tasks.length
-    ? '<ul class="task-list">' + buildGoalTaskTreeRows(tasks, allTasksCache, 0) + '</ul>'
+    ? '<ul class="task-list">' + buildGoalTaskTreeRows(topLevelTasks, tasks, 0) + '</ul>'
     : `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No direct tasks</div></div>`;
 
   const noteCards = notes.map(n => `<div class="note-card clickable-note" data-note-id="${n.id}" style="cursor:pointer">
@@ -2324,15 +2409,21 @@ async function renderCalendarView() {
         const isCurrentMonth = cellDate.getMonth() === calMonth;
         const isTodayCell = cellDate.getTime() === todayD.getTime();
         const dateStr = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(cellDate.getDate()).padStart(2,'0')}`;
-        const dayEvents = events.filter(e => e.date === dateStr);
-        const chips = dayEvents.slice(0,3).map(ev => {
+        const dayEvents = events.filter(e => e.date === dateStr && calEventTypes.includes(e.type.split('-')[0]));
+        const CHIP_LIMIT = 3;
+        const visibleEvents = dayEvents.slice(0, CHIP_LIMIT);
+        const overflow = dayEvents.length - CHIP_LIMIT;
+        const chips = visibleEvents.map(ev => {
           const color = ev.priority ? ({ urgent:'var(--danger)', high:'var(--danger)', medium:'var(--warning)', low:'var(--text-muted)' }[ev.priority] || 'var(--accent)') : (typeColors[ev.type] || 'var(--accent)');
           const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
           return `<div class="cal-task-chip ${ev.type === 'task' ? 'cal-event-task' : 'cal-event-other'}" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
         }).join('');
+        const overflowChip = overflow > 0
+          ? `<div class="cal-overflow-btn" data-date="${dateStr}">+${overflow} more</div>`
+          : '';
         cells += `<div class="calendar-day ${isCurrentMonth?'':'other-month'} ${isTodayCell?'today':''}">
           <div class="cal-day-num">${cellDate.getDate()}</div>
-          <div class="cal-tasks">${chips}</div>
+          <div class="cal-tasks">${chips}${overflowChip}</div>
         </div>`;
       }
       if (dayNum > lastDay.getDate() + 1) break;
@@ -2348,6 +2439,12 @@ async function renderCalendarView() {
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
       <h1 class="view-title">Calendar</h1>
+      <div class="col-picker-wrap" style="position:relative">
+        <button class="btn btn-sm btn-ghost" id="cal-filter-btn" title="Filter event types">⊟ Filter</button>
+        <div class="col-picker-dropdown hidden" id="cal-filter-dropdown">
+          ${CAL_EVENT_TYPES.map(t => `<label class="col-picker-item"><input type="checkbox" class="cal-type-check" data-type="${t}" ${calEventTypes.includes(t)?'checked':''}> ${t}s</label>`).join('')}
+        </div>
+      </div>
     </div>
     <div class="cal-legend" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;font-size:12px">
       <span><span style="display:inline-block;width:8px;height:8px;background:var(--accent);border-radius:50%;margin-right:4px"></span>Tasks</span>
@@ -2358,11 +2455,48 @@ async function renderCalendarView() {
     <div id="cal-content">${buildCal()}</div>
   </div>`;
 
+  // Calendar filter picker
+  const calFilterBtn = document.getElementById('cal-filter-btn');
+  const calFilterDrop = document.getElementById('cal-filter-dropdown');
+  calFilterBtn.onclick = (e) => { e.stopPropagation(); calFilterDrop.classList.toggle('hidden'); };
+  document.querySelectorAll('.cal-type-check').forEach(chk => {
+    chk.onchange = () => {
+      calEventTypes = [...document.querySelectorAll('.cal-type-check:checked')].map(c => c.dataset.type);
+      if (!calEventTypes.length) calEventTypes = ['task'];
+      localStorage.setItem('calEventTypes', JSON.stringify(calEventTypes));
+      document.getElementById('cal-content').innerHTML = buildCal();
+      rebind();
+    };
+  });
+
   function rebind() {
     document.getElementById('cal-prev')?.addEventListener('click', () => { calMonth--; if (calMonth<0){calMonth=11;calYear--;} document.getElementById('cal-content').innerHTML = buildCal(); rebind(); });
     document.getElementById('cal-next')?.addEventListener('click', () => { calMonth++; if (calMonth>11){calMonth=0;calYear++;} document.getElementById('cal-content').innerHTML = buildCal(); rebind(); });
     document.querySelectorAll('.cal-event-task').forEach(chip => {
       chip.onclick = (e) => { e.stopPropagation(); showTaskSlideover(chip.dataset.taskId); };
+    });
+    // Overflow "show more" — expand cell inline
+    document.querySelectorAll('.cal-overflow-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const date = btn.dataset.date;
+        const dayEvents = events.filter(ev => ev.date === date);
+        const cell = btn.closest('.calendar-day');
+        const tasksContainer = cell.querySelector('.cal-tasks');
+        tasksContainer.innerHTML = dayEvents.map(ev => {
+          const color = ev.priority ? ({ urgent:'var(--danger)', high:'var(--danger)', medium:'var(--warning)', low:'var(--text-muted)' }[ev.priority] || 'var(--accent)') : (typeColors[ev.type] || 'var(--accent)');
+          const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
+          return `<div class="cal-task-chip ${ev.type === 'task' ? 'cal-event-task' : 'cal-event-other'}" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
+        }).join('') + `<div class="cal-overflow-btn cal-collapse-btn">▲ less</div>`;
+        cell.querySelector('.cal-collapse-btn').onclick = (e2) => {
+          e2.stopPropagation();
+          document.getElementById('cal-content').innerHTML = buildCal();
+          rebind();
+        };
+        cell.querySelectorAll('.cal-event-task').forEach(chip => {
+          chip.onclick = (e2) => { e2.stopPropagation(); showTaskSlideover(chip.dataset.taskId); };
+        });
+      };
     });
   }
   rebind();
@@ -3197,7 +3331,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const vBtn = document.getElementById('version-btn');
         if (vBtn) {
           vBtn.href = `https://github.com/raibis/raibis-lifeos/commit/${ghData.sha}`;
-          vBtn.innerHTML = `<span class="nav-icon">⬡</span> v1.0.1-alpha.2 · ${sha}`;
+          vBtn.innerHTML = `<span class="nav-icon">⬡</span> v1.0.2-alpha.2 · ${sha}`;
         }
       }
     }
