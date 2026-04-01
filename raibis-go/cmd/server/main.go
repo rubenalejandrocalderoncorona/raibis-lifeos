@@ -214,20 +214,29 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 				return
 			}
 			projects, _ := svc.Projects()
+			goals, _ := svc.Goals()
 			projMap := make(map[int64]string)
 			for _, p := range projects {
 				projMap[p.ID] = p.Title
 			}
+			goalMap := make(map[int64]string)
+			for _, g := range goals {
+				goalMap[g.ID] = g.Title
+			}
 			type taskOut struct {
 				*domain.Task
-				ProjectTitle string        `json:"project_title,omitempty"`
-				SubTaskCount int           `json:"sub_task_count"`
+				ProjectTitle string `json:"project_title,omitempty"`
+				GoalTitle    string `json:"goal_title,omitempty"`
+				SubTaskCount int    `json:"sub_task_count"`
 			}
 			out := make([]taskOut, len(tasks))
 			for i, t := range tasks {
 				to := taskOut{Task: t}
 				if t.ProjectID != nil {
 					to.ProjectTitle = projMap[*t.ProjectID]
+				}
+				if t.GoalID != nil {
+					to.GoalTitle = goalMap[*t.GoalID]
 				}
 				// Count subtasks
 				sub, _ := store.ListTasks(domain.TaskFilter{})
@@ -646,19 +655,36 @@ func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				Resources []map[string]any  `json:"resources"`
 			}
 			det := goalDetail{Goal: g, Projects: []*domain.Project{}, Tasks: []*domain.Task{}, Notes: []*domain.Note{}, Resources: []map[string]any{}}
-			// Projects linked to this goal
-			allProjects, _ := store.ListProjects(domain.StatusActive)
+			// Projects linked to this goal (all statuses)
+			var allProjects []*domain.Project
+			for _, st := range []domain.Status{domain.StatusActive, domain.StatusCompleted, domain.StatusArchived, domain.StatusOnHold} {
+				ps, _ := store.ListProjects(st)
+				allProjects = append(allProjects, ps...)
+			}
 			for _, p := range allProjects {
 				if p.GoalID != nil && *p.GoalID == id {
 					p.Tags, _ = store.GetEntityTags("project", p.ID)
 					det.Projects = append(det.Projects, p)
 				}
 			}
-			// Direct tasks on goal (goal_id set, no project)
+			// Direct tasks on goal (goal_id set)
 			directTasks, _ := store.ListTasks(domain.TaskFilter{GoalID: &id})
+			taskSeen := make(map[int64]bool)
 			for _, t := range directTasks {
 				t.Tags, _ = store.GetEntityTags("task", t.ID)
 				det.Tasks = append(det.Tasks, t)
+				taskSeen[t.ID] = true
+			}
+			// Also include tasks from linked projects
+			for _, p := range det.Projects {
+				projTasks, _ := store.ListTasks(domain.TaskFilter{ProjectID: &p.ID})
+				for _, t := range projTasks {
+					if !taskSeen[t.ID] {
+						t.Tags, _ = store.GetEntityTags("task", t.ID)
+						det.Tasks = append(det.Tasks, t)
+						taskSeen[t.ID] = true
+					}
+				}
 			}
 			det.Notes, _ = store.ListNotes(&id, nil, nil)
 			for _, n := range det.Notes {
@@ -853,7 +879,7 @@ func projectHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				Resources []map[string]any `json:"resources"`
 			}
 			det := projectDetail{Project: p, Tasks: []*domain.Task{}, Notes: []*domain.Note{}, Resources: []map[string]any{}}
-			tasks, _ := store.ListTasks(domain.TaskFilter{ProjectID: &id, TopLevelOnly: true})
+			tasks, _ := store.ListTasks(domain.TaskFilter{ProjectID: &id})
 			for _, t := range tasks {
 				t.Tags, _ = store.GetEntityTags("task", t.ID)
 				det.Tasks = append(det.Tasks, t)
@@ -1603,6 +1629,7 @@ func resourcesHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				URL          string `json:"url"`
 				Body         string `json:"body"`
 				ResourceType string `json:"resource_type"`
+				Type         string `json:"type"`
 				GoalID       *int64 `json:"goal_id"`
 				ProjectID    *int64 `json:"project_id"`
 				TaskID       *int64 `json:"task_id"`
@@ -1610,6 +1637,9 @@ func resourcesHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			if err := readJSON(r, &body); err != nil || body.Title == "" {
 				errJSON(w, 400, "title is required")
 				return
+			}
+			if body.ResourceType == "" {
+				body.ResourceType = body.Type
 			}
 			if body.ResourceType == "" {
 				body.ResourceType = "note"
@@ -1641,15 +1671,41 @@ func resourceHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			errJSON(w, 400, "invalid resource id")
 			return
 		}
-		if r.Method != http.MethodDelete {
+		switch r.Method {
+		case http.MethodPatch:
+			var body struct {
+				Title        string `json:"title"`
+				URL          string `json:"url"`
+				Body         string `json:"body"`
+				ResourceType string `json:"resource_type"`
+				GoalID       *int64 `json:"goal_id"`
+				ProjectID    *int64 `json:"project_id"`
+				TaskID       *int64 `json:"task_id"`
+			}
+			if err := readJSON(r, &body); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			if _, err := db.Exec(
+				`UPDATE resources SET title=COALESCE(NULLIF(?,title),title),
+				 url=?, body=?, resource_type=COALESCE(NULLIF(?,resource_type),resource_type),
+				 goal_id=?, project_id=?, task_id=? WHERE id=?`,
+				body.Title, nullStr(body.URL), nullStr(body.Body), body.ResourceType,
+				body.GoalID, body.ProjectID, body.TaskID, id,
+			); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+		case http.MethodDelete:
+			if _, err := db.Exec(`DELETE FROM resources WHERE id=?`, id); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
 		}
-		if _, err := db.Exec(`DELETE FROM resources WHERE id=?`, id); err != nil {
-			errJSON(w, 500, err.Error())
-			return
-		}
-		writeJSON(w, 200, map[string]bool{"ok": true})
 	}
 }
 

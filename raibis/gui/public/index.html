@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=2.1.0" />
+  <link rel="stylesheet" href="style.css?v=2.2.0" />
 </head>
 <body>
   <header class="mobile-header">
@@ -48,6 +48,12 @@
           <a class="nav-item" data-view="sprints" href="#">
             <span class="nav-icon">⚡</span> Sprints
           </a>
+          <a class="nav-item" data-view="calendar" href="#">
+            <span class="nav-icon">◫</span> Calendar
+          </a>
+          <a class="nav-item" data-view="pomodoro" href="#">
+            <span class="nav-icon">◷</span> Pomodoro
+          </a>
 
           <div class="nav-section-label" style="margin-top:12px">Taxonomy</div>
           <a class="nav-item" data-view="categories" href="#">
@@ -59,8 +65,8 @@
         </nav>
 
         <div class="sidebar-footer">
-          <a class="ext-link version-btn" id="version-btn" href="https://github.com/raibis/raibis-go" target="_blank" rel="noopener" title="View source">
-            <span class="nav-icon">⬡</span> v1.0.0-alpha.2
+          <a class="ext-link version-btn" id="version-btn" href="https://github.com/raibis/raibis-lifeos" target="_blank" rel="noopener" title="View source">
+            <span class="nav-icon">⬡</span> v1.0.1-alpha.2
           </a>
         </div>
       </div>
@@ -81,6 +87,15 @@
     <div class="slideover-body" id="slideover-body"></div>
   </div>
 
+  <!-- Form slide-over panel for create/edit forms -->
+  <div class="form-slideover" id="form-slideover">
+    <div class="slideover-header">
+      <h2 class="slideover-title" id="form-slideover-title">New Item</h2>
+      <button class="modal-close" id="form-slideover-close">&times;</button>
+    </div>
+    <div class="slideover-body" id="form-slideover-body"></div>
+  </div>
+
   <!-- Modal -->
   <div class="modal" id="modal" role="dialog" aria-modal="true">
     <div class="modal-header">
@@ -90,6 +105,40 @@
     <div class="modal-body" id="modal-body"></div>
   </div>
 
-  <script src="app.js?v=2.1.0"></script>
+  <!-- AI Assistant side panel -->
+  <div class="ai-panel" id="ai-panel">
+    <div class="ai-panel-header">
+      <span class="ai-panel-title">◈ AI Assistant</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <a class="btn btn-sm btn-ghost" href="http://localhost:3344/raibis-chat/" target="_blank" rel="noopener" title="Open full raibis-chat" style="font-size:11px;padding:4px 8px">↗ Full</a>
+        <button class="modal-close" id="ai-panel-close">&times;</button>
+      </div>
+    </div>
+    <div class="ai-panel-tabs">
+      <button class="ai-tab active" id="ai-tab-text" data-tab="text">Text</button>
+      <button class="ai-tab" id="ai-tab-voice" data-tab="voice">Voice</button>
+    </div>
+    <div class="ai-chat-feed" id="ai-chat-feed">
+      <div class="ai-empty" id="ai-empty">
+        <div style="font-size:24px;margin-bottom:8px">◈</div>
+        <div style="font-size:13px;color:var(--text-muted)">Ask me anything about your tasks, goals, or life OS</div>
+      </div>
+    </div>
+    <div class="ai-input-area" id="ai-text-area">
+      <textarea class="ai-textarea" id="ai-input" placeholder="Ask anything…" rows="1"></textarea>
+      <button class="btn btn-primary ai-send-btn" id="ai-send-btn">↑</button>
+    </div>
+    <div class="ai-input-area ai-voice-area hidden" id="ai-voice-area">
+      <div id="ai-voice-unsupported" class="hidden" style="color:var(--text-muted);font-size:12px;text-align:center;padding:8px">Voice not supported in this browser</div>
+      <div id="ai-voice-controls" style="display:flex;flex-direction:column;align-items:center;gap:8px;width:100%">
+        <button class="ai-mic-btn" id="ai-mic-btn" title="Click to record">🎤</button>
+        <div class="ai-voice-status" id="ai-voice-status">Tap to speak</div>
+        <div class="ai-voice-preview" id="ai-voice-preview"></div>
+      </div>
+    </div>
+  </div>
+  <button class="ai-fab" id="ai-fab" title="AI Assistant">◈</button>
+
+  <script src="app.js?v=2.2.0"></script>
 </body>
 </html>
