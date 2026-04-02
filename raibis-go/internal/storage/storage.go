@@ -55,6 +55,14 @@ type Storage interface {
 	// GetEntityTags returns all tags attached to an entity.
 	GetEntityTags(entityType string, entityID int64) ([]domain.Tag, error)
 
+	// ── Properties ───────────────────────────────────────────────────────────
+	// SetProperty creates or updates a single key-value property on an entity.
+	SetProperty(entityType string, entityID int64, key, value string) error
+	// DeleteProperty removes a property key from an entity.
+	DeleteProperty(entityType string, entityID int64, key string) error
+	// ListProperties returns all properties for an entity as a map.
+	ListProperties(entityType string, entityID int64) (map[string]string, error)
+
 	// Close releases the database connection.
 	Close() error
 }

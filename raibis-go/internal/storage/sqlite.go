@@ -95,6 +95,19 @@ func applyMigrations(db *sql.DB) error {
 		// Fallback: add if DB never had planned/finished at all
 		`ALTER TABLE tasks ADD COLUMN pomodoros_planned  INTEGER`,
 		`ALTER TABLE tasks ADD COLUMN pomodoros_finished INTEGER`,
+		// ── tasks: start_date for timeline/gantt view ───────────────────────
+		`ALTER TABLE tasks ADD COLUMN start_date DATE`,
+
+		// ── entity_properties: custom key-value pairs for any entity ───────
+		`CREATE TABLE IF NOT EXISTS entity_properties (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity_type TEXT NOT NULL,
+			entity_id   INTEGER NOT NULL,
+			key         TEXT NOT NULL,
+			value       TEXT NOT NULL DEFAULT '',
+			created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_props ON entity_properties(entity_type, entity_id, key)`,
 
 		// ── notes: category + Notion fields ────────────────────────────────
 		`ALTER TABLE notes ADD COLUMN category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL`,
@@ -148,14 +161,14 @@ func (s *sqliteStorage) CreateTask(t *domain.Task) (int64, error) {
 	res, err := s.db.Exec(
 		`INSERT INTO tasks
 		    (goal_id, project_id, sprint_id, parent_task_id, title, description,
-		     status, priority, due_date, estimated_mins, logged_mins,
+		     status, priority, start_date, due_date, estimated_mins, logged_mins,
 		     category, category_id, focus_block, recur_interval, recur_unit,
 		     story_points, pomodoros_planned, pomodoros_finished)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.GoalID, t.ProjectID, t.SprintID, t.ParentTaskID,
 		t.Title, t.Description,
 		string(t.Status), string(t.Priority),
-		nullTime(t.DueDate), t.EstimatedMin, t.LoggedMins,
+		nullTime(t.StartDate), nullTime(t.DueDate), t.EstimatedMin, t.LoggedMins,
 		t.Category, t.CategoryID, t.FocusBlock, t.RecurInterval, t.RecurUnit,
 		t.StoryPoints, t.PomodorosPlanned, t.PomodorosFinished,
 	)
@@ -236,7 +249,7 @@ func (s *sqliteStorage) UpdateTask(t *domain.Task) error {
 		`UPDATE tasks SET
 		    goal_id=?, project_id=?, sprint_id=?, parent_task_id=?,
 		    title=?, description=?, status=?, priority=?,
-		    due_date=?, estimated_mins=?, logged_mins=?,
+		    start_date=?, due_date=?, estimated_mins=?, logged_mins=?,
 		    category=?, category_id=?, focus_block=?, recur_interval=?, recur_unit=?,
 		    story_points=?, pomodoros_planned=?, pomodoros_finished=?,
 		    updated_at=datetime('now')
@@ -244,7 +257,7 @@ func (s *sqliteStorage) UpdateTask(t *domain.Task) error {
 		t.GoalID, t.ProjectID, t.SprintID, t.ParentTaskID,
 		t.Title, t.Description,
 		string(t.Status), string(t.Priority),
-		nullTime(t.DueDate), t.EstimatedMin, t.LoggedMins,
+		nullTime(t.StartDate), nullTime(t.DueDate), t.EstimatedMin, t.LoggedMins,
 		t.Category, t.CategoryID, t.FocusBlock, t.RecurInterval, t.RecurUnit,
 		t.StoryPoints, t.PomodorosPlanned, t.PomodorosFinished,
 		t.ID,
@@ -262,7 +275,7 @@ func (s *sqliteStorage) DeleteTask(id int64) error {
 // taskSelectCols is the shared SELECT + JOIN for GetTask and ListTasks.
 const taskSelectCols = `
 SELECT t.id, t.goal_id, t.project_id, t.sprint_id, t.parent_task_id,
-       t.title, t.description, t.status, t.priority, t.due_date,
+       t.title, t.description, t.status, t.priority, t.start_date, t.due_date,
        t.estimated_mins, t.logged_mins, t.created_at, t.updated_at,
        COALESCE(t.category,''), t.category_id, t.focus_block,
        t.recur_interval, t.recur_unit, t.story_points,
@@ -716,7 +729,51 @@ func (s *sqliteStorage) GetEntityTags(entityType string, entityID int64) ([]doma
 	return tags, rows.Err()
 }
 
-// ── Scan helpers ──────────────────────────────────────────────────────────────
+// ── Properties ────────────────────────────────────────────────────────────────
+
+func (s *sqliteStorage) SetProperty(entityType string, entityID int64, key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO entity_properties (entity_type, entity_id, key, value)
+		 VALUES (?,?,?,?)
+		 ON CONFLICT(entity_type, entity_id, key) DO UPDATE SET value=excluded.value`,
+		entityType, entityID, key, value,
+	)
+	return err
+}
+
+func (s *sqliteStorage) DeleteProperty(entityType string, entityID int64, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`DELETE FROM entity_properties WHERE entity_type=? AND entity_id=? AND key=?`,
+		entityType, entityID, key,
+	)
+	return err
+}
+
+func (s *sqliteStorage) ListProperties(entityType string, entityID int64) (map[string]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT key, value FROM entity_properties WHERE entity_type=? AND entity_id=? ORDER BY created_at ASC`,
+		entityType, entityID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	props := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		props[k] = v
+	}
+	return props, rows.Err()
+}
 
 // scanner abstracts *sql.Row and *sql.Rows so scan functions serve both.
 type scanner interface {
@@ -727,6 +784,7 @@ func scanTask(sc scanner) (*domain.Task, error) {
 	t := &domain.Task{}
 	var (
 		createdAt, updatedAt  string
+		startDate             sql.NullString
 		dueDate               sql.NullString
 		focusBlock            sql.NullString
 		status, priority      string
@@ -741,7 +799,7 @@ func scanTask(sc scanner) (*domain.Task, error) {
 	err := sc.Scan(
 		&t.ID, &goalID, &t.ProjectID, &t.SprintID, &t.ParentTaskID,
 		&t.Title, &t.Description, &status, &priority,
-		&dueDate, &t.EstimatedMin, &t.LoggedMins,
+		&startDate, &dueDate, &t.EstimatedMin, &t.LoggedMins,
 		&createdAt, &updatedAt,
 		&t.Category, &categoryID, &focusBlock,
 		&recurInterval, &recurUnit, &storyPoints,
@@ -755,6 +813,10 @@ func scanTask(sc scanner) (*domain.Task, error) {
 	t.Priority = domain.Priority(priority)
 	if goalID.Valid {
 		t.GoalID = &goalID.Int64
+	}
+	if startDate.Valid {
+		tt, _ := parseTime(startDate.String)
+		t.StartDate = &tt
 	}
 	if dueDate.Valid {
 		tt, _ := parseTime(dueDate.String)

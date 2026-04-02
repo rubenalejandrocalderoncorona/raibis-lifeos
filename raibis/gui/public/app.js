@@ -31,6 +31,8 @@ let pomTimer = null;
 let pomState = { running: false, seconds: 25*60, mode: 'work', taskId: null, taskTitle: '', finished: [] };
 let calYear = new Date().getFullYear();
 let calMonth = new Date().getMonth();
+let calScope = localStorage.getItem('calScope') || 'month'; // 'month'|'week'|'3day'|'day'
+let calAnchorDate = new Date(); // anchor for week/3day/day views
 let globalSearchDebounce = null;
 
 // Column visibility for table views
@@ -228,6 +230,219 @@ function tagFilterRowHtml() {
   return `<div class="tag-filter-row">${chips}</div>`;
 }
 
+/* ─── Notion-style filter bar ─────────────────────────────────────── */
+// filterDefs: [{key, label, options:[{value,label}], multi:bool}]
+// sortDefs: [{key, label}]
+// state: { filters:{key:Set|value}, sort:{key, dir:'asc'|'desc'} }
+function notionFilterBar(containerId, filterDefs, sortDefs, state, onChange) {
+  function chipHtml() {
+    let chips = '';
+    for (const fd of filterDefs) {
+      const active = state.filters[fd.key];
+      if (fd.multi) {
+        if (active && active.size > 0) {
+          const vals = [...active].map(v => {
+            const opt = fd.options.find(o => String(o.value) === String(v));
+            return opt ? opt.label : v;
+          }).join(', ');
+          chips += `<span class="filter-chip" data-filter-key="${fd.key}">
+            <span class="filter-chip-label">${fd.label}:</span>
+            <span class="filter-chip-value">${vals}</span>
+            <span class="filter-chip-remove" data-remove-filter="${fd.key}" title="Remove filter">×</span>
+          </span>`;
+        }
+      } else {
+        if (active) {
+          const opt = fd.options.find(o => String(o.value) === String(active));
+          const val = opt ? opt.label : active;
+          chips += `<span class="filter-chip" data-filter-key="${fd.key}">
+            <span class="filter-chip-label">${fd.label}:</span>
+            <span class="filter-chip-value">${val}</span>
+            <span class="filter-chip-remove" data-remove-filter="${fd.key}" title="Remove filter">×</span>
+          </span>`;
+        }
+      }
+    }
+    return chips;
+  }
+
+  function sortChipHtml() {
+    const { key, dir } = state.sort || {};
+    if (!key) return '';
+    const sd = sortDefs.find(s => s.key === key);
+    if (!sd) return '';
+    const arrow = dir === 'desc' ? '↓' : '↑';
+    return `<span class="filter-chip" data-sort-chip>
+      <span class="filter-chip-label">Sort:</span>
+      <span class="filter-chip-value">${sd.label} ${arrow}</span>
+      <span class="filter-chip-remove" data-remove-sort title="Remove sort">×</span>
+    </span>`;
+  }
+
+  const barHtml = `<div class="notion-filter-bar" id="${containerId}-filter-bar">
+    <div class="filter-bar-wrap" style="position:relative">
+      <button class="filter-sort-btn${(state.sort && state.sort.key) ? ' active' : ''}" id="${containerId}-sort-btn">↑↓ Sort</button>
+      <div class="sort-dropdown hidden" id="${containerId}-sort-dropdown">
+        ${sortDefs.map(sd => {
+          const isActive = state.sort && state.sort.key === sd.key;
+          const dir = isActive ? state.sort.dir : null;
+          return `<div class="sort-dropdown-row" data-sort-key="${sd.key}">
+            <span>${sd.label}</span>
+            <span style="display:flex;gap:4px">
+              <button class="sort-asc-btn${dir==='asc'?' active':''}" data-sort-key="${sd.key}" data-sort-dir="asc">↑</button>
+              <button class="sort-desc-btn${dir==='desc'?' active':''}" data-sort-key="${sd.key}" data-sort-dir="desc">↓</button>
+            </span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+    <div class="filter-bar-wrap" style="position:relative">
+      <button class="filter-add-btn" id="${containerId}-filter-add-btn">+ Filter</button>
+      <div class="filter-dropdown hidden" id="${containerId}-filter-dropdown">
+        ${filterDefs.map(fd => `
+          <div class="filter-dropdown-section">
+            <span class="filter-dropdown-label">${fd.label}</span>
+            ${fd.options.map(opt => {
+              const checked = fd.multi
+                ? (state.filters[fd.key] && state.filters[fd.key].has(String(opt.value)))
+                : String(state.filters[fd.key]) === String(opt.value);
+              return `<div class="filter-dropdown-opt">
+                <input type="checkbox" data-filter-key="${fd.key}" data-filter-val="${opt.value}" data-filter-multi="${fd.multi?'1':'0'}" ${checked?'checked':''} />
+                <span>${opt.label}</span>
+              </div>`;
+            }).join('')}
+          </div>`).join('')}
+      </div>
+    </div>
+    <span class="filter-chip-separator" style="flex:0"></span>
+    ${chipHtml()}
+    ${sortChipHtml()}
+    <input type="text" id="${containerId}-search" placeholder="Search…" style="flex:1;min-width:140px;max-width:280px;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text)" autocomplete="off" value="${state.searchText||''}" />
+  </div>`;
+
+  const container = document.getElementById(containerId);
+  if (container) {
+    container.insertAdjacentHTML('afterbegin', barHtml);
+  }
+
+  function refreshChips() {
+    const bar = document.getElementById(`${containerId}-filter-bar`);
+    if (!bar) return;
+    // Remove old chips (between separator and search input)
+    bar.querySelectorAll('.filter-chip').forEach(c => c.remove());
+    // Insert new chips before the search input
+    const search = document.getElementById(`${containerId}-search`);
+    const newChips = chipHtml() + sortChipHtml();
+    if (newChips && search) {
+      search.insertAdjacentHTML('beforebegin', newChips);
+    }
+    // Re-bind remove buttons
+    bar.querySelectorAll('[data-remove-filter]').forEach(el => {
+      el.onclick = (e) => { e.stopPropagation(); delete state.filters[el.dataset.removeFilter]; refreshChips(); onChange(); };
+    });
+    bar.querySelectorAll('[data-remove-sort]').forEach(el => {
+      el.onclick = (e) => { e.stopPropagation(); state.sort = {}; refreshChips(); onChange(); };
+    });
+    // Update sort button active state
+    const sortBtn2 = document.getElementById(`${containerId}-sort-btn`);
+    if (sortBtn2) sortBtn2.classList.toggle('active', !!(state.sort && state.sort.key));
+  }
+
+  // Bind sort button
+  const sortBtn = document.getElementById(`${containerId}-sort-btn`);
+  const sortDrop = document.getElementById(`${containerId}-sort-dropdown`);
+  if (sortBtn && sortDrop) {
+    sortBtn.onclick = (e) => { e.stopPropagation(); sortDrop.classList.toggle('hidden'); document.getElementById(`${containerId}-filter-dropdown`)?.classList.add('hidden'); };
+    sortDrop.querySelectorAll('[data-sort-dir]').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        state.sort = { key: btn.dataset.sortKey, dir: btn.dataset.sortDir };
+        sortDrop.classList.add('hidden');
+        refreshChips();
+        onChange();
+      };
+    });
+  }
+
+  // Bind filter add button
+  const filterAddBtn = document.getElementById(`${containerId}-filter-add-btn`);
+  const filterDrop = document.getElementById(`${containerId}-filter-dropdown`);
+  if (filterAddBtn && filterDrop) {
+    filterAddBtn.onclick = (e) => { e.stopPropagation(); filterDrop.classList.toggle('hidden'); sortDrop?.classList.add('hidden'); };
+    filterDrop.querySelectorAll('input[data-filter-key]').forEach(chk => {
+      chk.onchange = (e) => {
+        e.stopPropagation();
+        const key = chk.dataset.filterKey;
+        const val = chk.dataset.filterVal;
+        const isMulti = chk.dataset.filterMulti === '1';
+        if (isMulti) {
+          if (!state.filters[key]) state.filters[key] = new Set();
+          if (chk.checked) state.filters[key].add(val);
+          else state.filters[key].delete(val);
+          if (state.filters[key].size === 0) delete state.filters[key];
+        } else {
+          if (chk.checked) state.filters[key] = val;
+          else delete state.filters[key];
+        }
+        refreshChips();
+        onChange();
+      };
+    });
+  }
+
+  // Bind remove chip buttons (initial)
+  const bar = document.getElementById(`${containerId}-filter-bar`);
+  if (bar) {
+    bar.querySelectorAll('[data-remove-filter]').forEach(el => {
+      el.onclick = (e) => { e.stopPropagation(); delete state.filters[el.dataset.removeFilter]; refreshChips(); onChange(); };
+    });
+    bar.querySelectorAll('[data-remove-sort]').forEach(el => {
+      el.onclick = (e) => { e.stopPropagation(); state.sort = {}; refreshChips(); onChange(); };
+    });
+    const search = document.getElementById(`${containerId}-search`);
+    if (search) {
+      search.oninput = () => { state.searchText = search.value; onChange(); };
+    }
+  }
+
+  // Close dropdowns on outside click
+  document.addEventListener('click', () => {
+    sortDrop?.classList.add('hidden');
+    filterDrop?.classList.add('hidden');
+  }, { capture: false });
+}
+
+function applySortFilter(list, state, fieldMap) {
+  let result = [...list];
+  // Apply filters
+  for (const [key, val] of Object.entries(state.filters || {})) {
+    const getter = fieldMap[key];
+    if (!getter) continue;
+    if (val instanceof Set) {
+      if (val.size > 0) result = result.filter(item => val.has(String(getter(item) || '')));
+    } else if (val) {
+      result = result.filter(item => String(getter(item) || '').toLowerCase().includes(String(val).toLowerCase()));
+    }
+  }
+  // Apply search text
+  if (state.searchText && state.searchText.trim()) {
+    const q = state.searchText.toLowerCase();
+    const textGetter = fieldMap._text || (item => item.title || '');
+    result = result.filter(item => String(textGetter(item) || '').toLowerCase().includes(q));
+  }
+  // Apply sort
+  const { key, dir } = state.sort || {};
+  if (key && fieldMap[key]) {
+    result.sort((a, b) => {
+      const av = String(fieldMap[key](a) || '');
+      const bv = String(fieldMap[key](b) || '');
+      const cmp = av.localeCompare(bv, undefined, { numeric: true });
+      return dir === 'desc' ? -cmp : cmp;
+    });
+  }
+  return result;
+}
+
 function tagPickerHtml(selectedIds) {
   if (!allTags.length) return '<span style="font-size:12px;color:var(--text-muted)">No tags available</span>';
   return allTags.map(t => {
@@ -364,7 +579,7 @@ function updateBreadcrumb(view, params, detailLabel) {
   const crumbs = [];
 
   // Top-level detail views get a parent crumb
-  const parentMap = { 'project-detail': 'projects', 'goal-detail': 'goals' };
+  const parentMap = { 'project-detail': 'projects', 'goal-detail': 'goals', 'sprint-detail': 'sprints' };
   if (parentMap[view]) {
     crumbs.push({ label: VIEW_LABELS[parentMap[view]], view: parentMap[view] });
   } else if (view !== 'dashboard') {
@@ -412,6 +627,7 @@ function renderView(view, params) {
     case 'goal-detail':     renderGoalDetail(params); break;
     case 'notes':           renderNotes(); break;
     case 'sprints':         renderSprints(); break;
+    case 'sprint-detail':  renderSprintDetail(params); break;
     case 'resources':       renderResources(); break;
     case 'categories':      renderCategories(); break;
     case 'tags':            renderTags(); break;
@@ -427,6 +643,7 @@ let dashboardMode = localStorage.getItem('dashboardMode') || 'tables';
 
 async function renderDashboard() {
   let data = {}, goals = [], notes = [], resources = [], allTasks = [];
+  let apiError = null;
   try {
     [data, goals, notes, resources, allTasks] = await Promise.all([
       api('GET', '/api/dashboard'),
@@ -435,7 +652,16 @@ async function renderDashboard() {
       api('GET', '/api/resources'),
       api('GET', '/api/tasks'),
     ]);
-  } catch(e) { data = {}; }
+  } catch(e) { data = {}; apiError = e.message || String(e); }
+  if (apiError) {
+    document.getElementById('main-content').innerHTML = `<div class="view">
+      <div class="api-error-banner">⚠ Cannot reach raibis server at <b>localhost:3344</b>. Start the Go server:
+        <code style="background:var(--bg);padding:2px 6px;border-radius:4px;font-size:12px">cd raibis-go && go run ./cmd/server/main.go</code>
+        <br><small style="color:var(--text-muted)">${apiError}</small>
+      </div>
+    </div>`;
+    return;
+  }
 
   const goalsCount = data.goals_count || 0;
   const projectsCount = data.projects_count || 0;
@@ -682,6 +908,7 @@ async function renderDashboard() {
 /* ─── Tasks View ─────────────────────────────────────────────────────── */
 async function renderTasks() {
   let tasks = [], projects = [], allTasksFull = [];
+  let apiError = null;
   try {
     [tasks, projects, allTasksFull] = await Promise.all([
       api('GET', '/api/tasks'),
@@ -689,18 +916,18 @@ async function renderTasks() {
       api('GET', '/api/tasks?all=1'),
     ]);
     allTasksCache = allTasksFull;
-  } catch(e) {}
+  } catch(e) { apiError = e.message || String(e); }
+
+  if (apiError) {
+    document.getElementById('main-content').innerHTML = `<div class="view">
+      <div class="api-error-banner">⚠ Cannot reach raibis server. Restart: <code>cd raibis-go && go run ./cmd/server/main.go</code><br><small style="color:var(--text-muted)">${apiError}</small></div>
+    </div>`;
+    return;
+  }
 
   const topLevel = tasks; // already top-level-only from server default
-  let activeTagFilter = new Set();
 
-  const statusOpts = [{ value: '', label: 'All Statuses' }, ...TASK_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') }))];
-  const projOpts = [{ value: '', label: 'All Projects' }, ...projects.map(p => ({ value: p.id, label: p.title }))];
-
-  const tagFilterChips = allTags.map(t => {
-    const hex = COLOR_HEX[t.color] || t.color || '#378ADD';
-    return `<span class="tag-chip tag-filter-chip" data-tag-id="${t.id}" style="color:${hex}">${t.name}</span>`;
-  }).join('');
+  const taskFilterState = { filters: {}, sort: {}, searchText: '' };
 
   const viewToggle = `<div class="view-toggle">
     <button class="view-toggle-btn ${tasksViewMode==='list'?'active':''}" data-mode="list" title="List">≡</button>
@@ -724,12 +951,6 @@ async function renderTasks() {
         <button class="btn btn-primary" id="new-task-btn">+ New Task</button>
       </div>
     </div>
-    <div class="filter-row">
-      ${customSelectHtml('task-filter-status', statusOpts, '', 'All Statuses')}
-      ${customSelectHtml('task-filter-proj', projOpts, '', 'All Projects')}
-      <input type="text" id="task-filter-search" placeholder="Search or query: status:todo priority:high…" style="flex:1;min-width:200px" />
-    </div>
-    ${tagFilterChips ? `<div class="tag-filter-row">${tagFilterChips}</div>` : ''}
     <div id="tasks-content"></div>
   </div>`;
 
@@ -764,49 +985,15 @@ async function renderTasks() {
     };
   });
 
-  // Custom selects
-  bindCustomSelects(null, () => render());
-
-  // Tag filter
-  document.querySelectorAll('.tag-filter-chip').forEach(chip => {
-    chip.onclick = () => {
-      const id = chip.dataset.tagId;
-      chip.classList.toggle('selected');
-      if (activeTagFilter.has(id)) activeTagFilter.delete(id);
-      else activeTagFilter.add(id);
-      render();
-    };
-  });
-
   function getFiltered() {
-    const status = document.getElementById('task-filter-status')?.dataset?.value || '';
-    const proj = document.getElementById('task-filter-proj')?.dataset?.value || '';
-    const rawQ = (document.getElementById('task-filter-search')?.value || '');
-    // Check if query style or plain text
-    const isQuery = /\w+:/.test(rawQ);
-    let list = topLevel;
-    if (status) list = list.filter(t => t.status === status);
-    if (proj) list = list.filter(t => String(t.project_id) === proj);
-    if (activeTagFilter.size > 0) {
-      list = list.filter(t => {
-        const taskTagIds = (t.tags || []).map(tg => String(tg.id));
-        return [...activeTagFilter].some(id => taskTagIds.includes(id));
-      });
-    }
-    if (isQuery) {
-      list = applyQueryFilter(list, rawQ, {
-        text: t => t.title + ' ' + (t.description || ''),
-        status: t => t.status,
-        priority: t => t.priority,
-        project: t => t.project_title,
-        due: t => t.due_date,
-        tag: t => (t.tags || []).map(tg => tg.name).join(' '),
-      });
-    } else if (rawQ.trim()) {
-      const q = rawQ.toLowerCase();
-      list = list.filter(t => t.title.toLowerCase().includes(q));
-    }
-    return list;
+    return applySortFilter(topLevel, taskFilterState, {
+      status: t => t.status,
+      priority: t => t.priority,
+      project: t => String(t.project_id || ''),
+      _text: t => t.title + ' ' + (t.description || '') + ' ' + (t.project_title || ''),
+      title: t => t.title,
+      due: t => t.due_date || '',
+    });
   }
 
   function buildTaskTreeRows(tasks, allTasks, depth, showProject) {
@@ -851,8 +1038,8 @@ async function renderTasks() {
         const hasChildren = children.length > 0;
         const isExpanded = expandedTasks.has(String(t.id));
         const toggleBtn = hasChildren
-          ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${t.id}" style="cursor:pointer;display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;font-size:8px;border-radius:3px;transition:transform 160ms cubic-bezier(0.4,0,0.2,1),color 120ms,background 120ms;color:var(--text-dim);opacity:0.5" title="Toggle subtasks">▶</span>`
-          : `<span class="task-add-sub-btn" data-add-sub-id="${t.id}" style="cursor:pointer;display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;font-size:8px;border-radius:3px;transition:opacity 120ms,color 120ms,background 120ms,transform 160ms cubic-bezier(0.4,0,0.2,1);color:var(--text-dim);opacity:0" title="Add subtask">▶</span>`;
+          ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${t.id}" title="Toggle subtasks">▶</span>`
+          : `<span class="task-add-sub-btn" data-add-sub-id="${t.id}" title="Add subtask">▶</span>`;
         html += `<tr class="task-table-row" data-task-id="${t.id}" style="position:relative">
           ${cols.map(c => colDef[c] ? (c === 'title' ? colDef.title.cell(t, depth, toggleBtn) : colDef[c].cell(t)) : '').join('')}
           <td><button class="btn btn-sm btn-danger task-del-btn" data-task-id="${t.id}">×</button></td>
@@ -913,6 +1100,7 @@ async function renderTasks() {
   }
 
 
+  let filterBarInitialized = false;
   function render() {
     const filtered = getFiltered();
     let content = '';
@@ -920,10 +1108,32 @@ async function renderTasks() {
     else if (tasksViewMode === 'table') content = buildTableView(filtered);
     else if (tasksViewMode === 'dashboard') content = buildDashboardView(filtered);
     document.getElementById('tasks-content').innerHTML = content;
+    // Initialize filter bar once after content container is in DOM
+    if (!filterBarInitialized) {
+      filterBarInitialized = true;
+      const taskFilterDefs = [
+        { key: 'status', label: 'Status', multi: true, options: TASK_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })) },
+        { key: 'priority', label: 'Priority', multi: true, options: TASK_PRIORITIES.map(p => ({ value: p, label: p })) },
+        { key: 'project', label: 'Project', multi: false, options: [{ value: '', label: 'All' }, ...projects.map(p => ({ value: String(p.id), label: p.title }))] },
+      ];
+      const taskSortDefs = [
+        { key: 'title', label: 'Title' },
+        { key: 'due', label: 'Due Date' },
+        { key: 'priority', label: 'Priority' },
+        { key: 'status', label: 'Status' },
+      ];
+      const viewEl = document.querySelector('#main-content .view');
+      if (viewEl) {
+        const headerEl = viewEl.querySelector('.view-header');
+        const barDiv = document.createElement('div');
+        barDiv.id = 'tasks-filter-bar-container';
+        if (headerEl) headerEl.after(barDiv);
+        notionFilterBar('tasks-filter-bar-container', taskFilterDefs, taskSortDefs, taskFilterState, render);
+      }
+    }
     bindTasksContentEvents();
   }
 
-  document.getElementById('task-filter-search').oninput = render;
   render();
 
   function bindTasksContentEvents() {
@@ -938,19 +1148,84 @@ async function renderTasks() {
       };
     });
 
-    // Add-subtask hover button (tasks without subtasks)
+    // Add-subtask hover button (tasks without subtasks) → inline input row
     document.querySelectorAll('.task-add-sub-btn').forEach(btn => {
-      btn.onclick = async (e) => {
+      btn.onclick = (e) => {
         e.stopPropagation();
         const parentId = parseInt(btn.dataset.addSubId);
-        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
-          allTasksFull = await api('GET', '/api/tasks?all=1');
-          allTasksCache = allTasksFull;
-          const parent = topLevel.find(t => t.id === parentId);
-          if (parent) { parent.sub_task_count = (parent.sub_task_count || 0) + 1; }
-          expandedTasks.add(String(parentId));
-          render();
-        });
+        const row = btn.closest('.task-row, .task-table-row');
+        if (!row) return;
+        // Toggle .open class (rotates arrow)
+        const alreadyOpen = btn.classList.contains('open');
+        // Remove any existing inline input rows for this parent
+        document.querySelectorAll(`.inline-task-input-row[data-parent-id="${parentId}"]`).forEach(r => r.remove());
+        if (alreadyOpen) {
+          btn.classList.remove('open');
+          return;
+        }
+        btn.classList.add('open');
+        // Build inline input row
+        const isTableRow = row.tagName === 'TR';
+        if (isTableRow) {
+          const colCount = row.querySelectorAll('td').length || 5;
+          const inputRow = document.createElement('tr');
+          inputRow.className = 'inline-task-input-row';
+          inputRow.dataset.parentId = parentId;
+          inputRow.innerHTML = `<td colspan="${colCount}" style="padding:6px 12px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="text" class="inline-task-title-input" placeholder="New subtask title…" style="flex:1;padding:4px 8px;font-size:13px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text)" autofocus />
+              <button class="btn btn-sm btn-primary inline-task-save-btn">Add</button>
+              <button class="btn btn-sm btn-ghost inline-cancel-btn">Cancel</button>
+            </div>
+          </td>`;
+          row.after(inputRow);
+          inputRow.querySelector('.inline-task-title-input').focus();
+          inputRow.querySelector('.inline-cancel-btn').onclick = (e) => { e.stopPropagation(); inputRow.remove(); btn.classList.remove('open'); };
+          const saveInline = async () => {
+            const title = inputRow.querySelector('.inline-task-title-input').value.trim();
+            if (!title) return;
+            try {
+              await api('POST', '/api/tasks', { title, parent_task_id: parentId, status: 'todo', priority: 'medium' });
+              allTasksFull = await api('GET', '/api/tasks?all=1');
+              allTasksCache = allTasksFull;
+              const parent = topLevel.find(t => t.id === parentId);
+              if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
+              expandedTasks.add(String(parentId));
+              render();
+            } catch(err) { alert('Error creating subtask: ' + err.message); }
+          };
+          inputRow.querySelector('.inline-task-save-btn').onclick = (e) => { e.stopPropagation(); saveInline(); };
+          inputRow.querySelector('.inline-task-title-input').onkeydown = (e) => { if (e.key === 'Enter') saveInline(); if (e.key === 'Escape') { inputRow.remove(); btn.classList.remove('open'); } };
+        } else {
+          // List row
+          const indentStyle = row.style.paddingLeft || '12px';
+          const inputRow = document.createElement('li');
+          inputRow.className = 'inline-task-input-row';
+          inputRow.dataset.parentId = parentId;
+          inputRow.style.paddingLeft = indentStyle;
+          inputRow.innerHTML = `
+            <input type="text" class="inline-task-title-input" placeholder="New subtask title…" autofocus />
+            <button class="btn btn-sm btn-primary inline-task-save-btn">Add</button>
+            <button class="btn btn-sm btn-ghost inline-cancel-btn">Cancel</button>`;
+          row.after(inputRow);
+          inputRow.querySelector('.inline-task-title-input').focus();
+          inputRow.querySelector('.inline-cancel-btn').onclick = (e) => { e.stopPropagation(); inputRow.remove(); btn.classList.remove('open'); };
+          const saveInline = async () => {
+            const title = inputRow.querySelector('.inline-task-title-input').value.trim();
+            if (!title) return;
+            try {
+              await api('POST', '/api/tasks', { title, parent_task_id: parentId, status: 'todo', priority: 'medium' });
+              allTasksFull = await api('GET', '/api/tasks?all=1');
+              allTasksCache = allTasksFull;
+              const parent = topLevel.find(t => t.id === parentId);
+              if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
+              expandedTasks.add(String(parentId));
+              render();
+            } catch(err) { alert('Error creating subtask: ' + err.message); }
+          };
+          inputRow.querySelector('.inline-task-save-btn').onclick = (e) => { e.stopPropagation(); saveInline(); };
+          inputRow.querySelector('.inline-task-title-input').onkeydown = (e) => { if (e.key === 'Enter') saveInline(); if (e.key === 'Escape') { inputRow.remove(); btn.classList.remove('open'); } };
+        }
       };
     });
 
@@ -1069,9 +1344,17 @@ async function renderTasks() {
 /* ─── Projects View ──────────────────────────────────────────────────── */
 async function renderProjects() {
   let projects = [], goals = [];
-  try { [projects, goals] = await Promise.all([api('GET', '/api/projects'), api('GET', '/api/goals')]); } catch(e) {}
+  let apiError = null;
+  try { [projects, goals] = await Promise.all([api('GET', '/api/projects'), api('GET', '/api/goals')]); } catch(e) { apiError = e.message || String(e); }
 
-  let activeTagFilter = new Set();
+  if (apiError) {
+    document.getElementById('main-content').innerHTML = `<div class="view">
+      <div class="api-error-banner">⚠ Cannot reach raibis server. Restart: <code>cd raibis-go && go run ./cmd/server/main.go</code><br><small style="color:var(--text-muted)">${apiError}</small></div>
+    </div>`;
+    return;
+  }
+
+  const projFilterState = { filters: {}, sort: {}, searchText: '' };
 
   function buildProjectCard(p) {
     const prog = p.progress || {};
@@ -1146,22 +1429,34 @@ async function renderProjects() {
         <button class="btn btn-primary" id="new-proj-btn">+ New Project</button>
       </div>
     </div>
-    <div class="filter-row">
-      <input type="text" id="proj-search" placeholder="Search projects…" />
-    </div>
-    ${tagFilterRowHtml()}
     <div id="proj-list"></div>
   </div>`;
 
+  const projFilterDefs = [
+    { key: 'status', label: 'Status', multi: true, options: ['todo','in_progress','blocked','done'].map(s => ({ value: s, label: s.replace('_',' ') })) },
+    { key: 'goal', label: 'Goal', multi: false, options: [{ value: '', label: 'All' }, ...goals.map(g => ({ value: String(g.id), label: g.title }))] },
+  ];
+  const projSortDefs = [
+    { key: 'title', label: 'Title' },
+    { key: 'status', label: 'Status' },
+    { key: 'progress', label: 'Progress' },
+  ];
+  const viewEl = document.querySelector('#main-content .view');
+  const headerEl = viewEl?.querySelector('.view-header');
+  if (headerEl) {
+    const barDiv = document.createElement('div');
+    barDiv.id = 'proj-filter-bar-container';
+    headerEl.after(barDiv);
+    notionFilterBar('proj-filter-bar-container', projFilterDefs, projSortDefs, projFilterState, () => render());
+  }
+
   function getFiltered() {
-    const q = (document.getElementById('proj-search')?.value || '').toLowerCase();
-    return projects.filter(p => {
-      if (q && !p.title.toLowerCase().includes(q)) return false;
-      if (activeTagFilter.size > 0) {
-        const tagIds = (p.tags || []).map(t => String(t.id));
-        if (![...activeTagFilter].some(id => tagIds.includes(id))) return false;
-      }
-      return true;
+    return applySortFilter(projects, projFilterState, {
+      status: p => p.status,
+      goal: p => String(p.goal_id || ''),
+      title: p => p.title,
+      progress: p => String((p.progress && p.progress.pct) || 0),
+      _text: p => p.title + ' ' + (p.description || '') + ' ' + (p.goal_title || ''),
     });
   }
 
@@ -1173,16 +1468,6 @@ async function renderProjects() {
   }
 
   document.getElementById('new-proj-btn').onclick = () => showProjectModal(null, goals);
-  document.getElementById('proj-search').oninput = render;
-  document.querySelectorAll('.tag-filter-chip').forEach(chip => {
-    chip.onclick = () => {
-      const id = chip.dataset.tagId;
-      chip.classList.toggle('selected');
-      if (activeTagFilter.has(id)) activeTagFilter.delete(id);
-      else activeTagFilter.add(id);
-      render();
-    };
-  });
   bindViewToggle([], null, (mode) => {
     projectsViewMode = mode;
     localStorage.setItem('projectsViewMode', mode);
@@ -1229,9 +1514,17 @@ async function renderProjects() {
 /* ─── Goals View ─────────────────────────────────────────────────────── */
 async function renderGoals() {
   let goals = [];
-  try { goals = await api('GET', '/api/goals'); } catch(e) {}
+  let apiError = null;
+  try { goals = await api('GET', '/api/goals'); } catch(e) { apiError = e.message || String(e); }
 
-  let activeTagFilter = new Set();
+  if (apiError) {
+    document.getElementById('main-content').innerHTML = `<div class="view">
+      <div class="api-error-banner">⚠ Cannot reach raibis server. Restart: <code>cd raibis-go && go run ./cmd/server/main.go</code><br><small style="color:var(--text-muted)">${apiError}</small></div>
+    </div>`;
+    return;
+  }
+
+  const goalFilterState = { filters: {}, sort: {}, searchText: '' };
 
   function buildGoalCard(g) {
     const prog = g.progress || {};
@@ -1301,22 +1594,36 @@ async function renderGoals() {
         <button class="btn btn-primary" id="new-goal-btn">+ New Goal</button>
       </div>
     </div>
-    <div class="filter-row">
-      <input type="text" id="goal-search" placeholder="Search goals…" />
-    </div>
-    ${tagFilterRowHtml()}
     <div id="goal-list"></div>
   </div>`;
 
+  const goalFilterDefs = [
+    { key: 'status', label: 'Status', multi: true, options: ['todo','in_progress','blocked','done'].map(s => ({ value: s, label: s.replace('_',' ') })) },
+    { key: 'type', label: 'Type', multi: true, options: GOAL_TYPES.map(t => ({ value: t, label: t })) },
+    { key: 'year', label: 'Year', multi: true, options: GOAL_YEARS.map(y => ({ value: y, label: y })) },
+  ];
+  const goalSortDefs = [
+    { key: 'title', label: 'Title' },
+    { key: 'status', label: 'Status' },
+    { key: 'type', label: 'Type' },
+    { key: 'year', label: 'Year' },
+  ];
+  const goalViewEl = document.querySelector('#main-content .view');
+  const goalHeaderEl = goalViewEl?.querySelector('.view-header');
+  if (goalHeaderEl) {
+    const barDiv = document.createElement('div');
+    barDiv.id = 'goal-filter-bar-container';
+    goalHeaderEl.after(barDiv);
+    notionFilterBar('goal-filter-bar-container', goalFilterDefs, goalSortDefs, goalFilterState, () => render());
+  }
+
   function getFiltered() {
-    const q = (document.getElementById('goal-search')?.value || '').toLowerCase();
-    return goals.filter(g => {
-      if (q && !g.title.toLowerCase().includes(q)) return false;
-      if (activeTagFilter.size > 0) {
-        const tagIds = (g.tags || []).map(t => String(t.id));
-        if (![...activeTagFilter].some(id => tagIds.includes(id))) return false;
-      }
-      return true;
+    return applySortFilter(goals, goalFilterState, {
+      status: g => g.status,
+      type: g => g.type || '',
+      year: g => g.year || '',
+      title: g => g.title,
+      _text: g => g.title + ' ' + (g.description || ''),
     });
   }
 
@@ -1328,16 +1635,6 @@ async function renderGoals() {
   }
 
   document.getElementById('new-goal-btn').onclick = () => showGoalModal(null);
-  document.getElementById('goal-search').oninput = render;
-  document.querySelectorAll('.tag-filter-chip').forEach(chip => {
-    chip.onclick = () => {
-      const id = chip.dataset.tagId;
-      chip.classList.toggle('selected');
-      if (activeTagFilter.has(id)) activeTagFilter.delete(id);
-      else activeTagFilter.add(id);
-      render();
-    };
-  });
   bindViewToggle([], null, (mode) => {
     goalsViewMode = mode;
     localStorage.setItem('goalsViewMode', mode);
@@ -1384,11 +1681,17 @@ async function renderGoals() {
 /* ─── Notes View ─────────────────────────────────────────────────────── */
 async function renderNotes() {
   let notes = [];
-  try { notes = await api('GET', '/api/notes'); } catch(e) {}
+  let apiError = null;
+  try { notes = await api('GET', '/api/notes'); } catch(e) { apiError = e.message || String(e); }
 
-  const catSelectOpts = [{ value: '', label: 'All Categories' }, ...allCategories.map(c => ({ value: c.id, label: c.name }))];
+  if (apiError) {
+    document.getElementById('main-content').innerHTML = `<div class="view">
+      <div class="api-error-banner">⚠ Cannot reach raibis server. Restart: <code>cd raibis-go && go run ./cmd/server/main.go</code><br><small style="color:var(--text-muted)">${apiError}</small></div>
+    </div>`;
+    return;
+  }
 
-  let activeTagFilter = new Set();
+  const noteFilterState = { filters: {}, sort: {}, searchText: '' };
 
   function buildNoteCard(n) {
     const tagChips = (n.tags || []).map(t => tagHtml(t)).join('');
@@ -1435,25 +1738,33 @@ async function renderNotes() {
         <button class="btn btn-primary" id="new-note-btn">+ New Note</button>
       </div>
     </div>
-    <div class="filter-row">
-      ${customSelectHtml('note-filter-cat', catSelectOpts, '', 'All Categories')}
-      <input type="text" id="note-search" placeholder="Search notes…" />
-    </div>
-    ${tagFilterRowHtml()}
     <div id="notes-list"></div>
   </div>`;
 
+  const noteFilterDefs = [
+    { key: 'category', label: 'Category', multi: false, options: [{ value: '', label: 'All' }, ...allCategories.map(c => ({ value: String(c.id), label: c.name }))] },
+  ];
+  const noteSortDefs = [
+    { key: 'title', label: 'Title' },
+    { key: 'note_date', label: 'Date' },
+    { key: 'category_name', label: 'Category' },
+  ];
+  const noteViewEl = document.querySelector('#main-content .view');
+  const noteHeaderEl = noteViewEl?.querySelector('.view-header');
+  if (noteHeaderEl) {
+    const barDiv = document.createElement('div');
+    barDiv.id = 'note-filter-bar-container';
+    noteHeaderEl.after(barDiv);
+    notionFilterBar('note-filter-bar-container', noteFilterDefs, noteSortDefs, noteFilterState, () => render());
+  }
+
   function getFiltered() {
-    const cat = document.getElementById('note-filter-cat')?.dataset?.value || '';
-    const q = (document.getElementById('note-search')?.value || '').toLowerCase();
-    return notes.filter(n => {
-      if (cat && String(n.category_id) !== cat) return false;
-      if (q && !(n.title||'').toLowerCase().includes(q) && !(n.body||'').toLowerCase().includes(q)) return false;
-      if (activeTagFilter.size > 0) {
-        const tagIds = (n.tags || []).map(t => String(t.id));
-        if (![...activeTagFilter].some(id => tagIds.includes(id))) return false;
-      }
-      return true;
+    return applySortFilter(notes, noteFilterState, {
+      category: n => String(n.category_id || ''),
+      title: n => n.title || '',
+      note_date: n => n.note_date || '',
+      category_name: n => n.category_name || '',
+      _text: n => (n.title || '') + ' ' + (n.body || ''),
     });
   }
 
@@ -1471,17 +1782,6 @@ async function renderNotes() {
   }
 
   document.getElementById('new-note-btn').onclick = () => showNoteModal(null, () => renderNotes());
-  bindCustomSelects(null, () => render());
-  document.getElementById('note-search').oninput = render;
-  document.querySelectorAll('.tag-filter-chip').forEach(chip => {
-    chip.onclick = () => {
-      const id = chip.dataset.tagId;
-      chip.classList.toggle('selected');
-      if (activeTagFilter.has(id)) activeTagFilter.delete(id);
-      else activeTagFilter.add(id);
-      render();
-    };
-  });
   bindViewToggle([], null, (mode) => {
     notesViewMode = mode;
     localStorage.setItem('notesViewMode', mode);
@@ -1513,8 +1813,6 @@ async function renderSprints() {
   let sprints = [], projects = [];
   try { [sprints, projects] = await Promise.all([api('GET', '/api/sprints'), api('GET', '/api/projects')]); } catch(e) {}
 
-  const projSelectOpts = [{ value: '', label: 'All Projects' }, ...projects.map(p => ({ value: p.id, label: p.title }))];
-
   function buildSprintCard(s) {
     const prog = s.progress || {};
     const pct = prog.pct || 0;
@@ -1522,7 +1820,7 @@ async function renderSprints() {
     const nextLabel = s.status === 'planned' ? 'Start' : s.status === 'active' ? 'Complete' : null;
     return `<div class="card">
       <div class="flex-between gap-8" style="margin-bottom:6px">
-        <span class="card-title">${s.title}</span>
+        <span class="card-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)">${s.title}</span>
         <div class="flex gap-8">
           ${nextStatus ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="${nextStatus}">${nextLabel}</button>` : ''}
           <button class="btn btn-sm btn-danger sprint-del-btn" data-sprint-id="${s.id}">Delete</button>
@@ -1545,8 +1843,8 @@ async function renderSprints() {
     const rows = list.map(s => {
       const prog = s.progress || {};
       const pct = prog.pct || 0;
-      return `<tr>
-        <td>${s.title}</td>
+      return `<tr class="sprint-row" data-sprint-id="${s.id}" style="cursor:pointer">
+        <td><span class="sprint-detail-link" data-sprint-id="${s.id}" style="color:var(--accent);cursor:pointer">${s.title}</span></td>
         <td>${statusBadge(s.status)}</td>
         <td>${s.project_title || '—'}</td>
         <td>${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</td>
@@ -1576,20 +1874,35 @@ async function renderSprints() {
         <button class="btn btn-primary" id="new-sprint-btn">+ New Sprint</button>
       </div>
     </div>
-    <div class="filter-row">
-      ${customSelectHtml('sprint-filter-proj', projSelectOpts, '', 'All Projects')}
-      <input type="text" id="sprint-search" placeholder="Search sprints…" />
-    </div>
     <div id="sprints-list"></div>
   </div>`;
 
+  const sprintFilterState = { filters: {}, sort: {}, searchText: '' };
+  const sprintFilterDefs = [
+    { key: 'status', label: 'Status', multi: true, options: ['planned','active','completed'].map(s => ({ value: s, label: s })) },
+    { key: 'project', label: 'Project', multi: false, options: [{ value: '', label: 'All' }, ...projects.map(p => ({ value: String(p.id), label: p.title }))] },
+  ];
+  const sprintSortDefs = [
+    { key: 'title', label: 'Title' },
+    { key: 'start_date', label: 'Start Date' },
+    { key: 'status', label: 'Status' },
+  ];
+  const sprintViewEl = document.querySelector('#main-content .view');
+  const sprintHeaderEl = sprintViewEl?.querySelector('.view-header');
+  if (sprintHeaderEl) {
+    const barDiv = document.createElement('div');
+    barDiv.id = 'sprint-filter-bar-container';
+    sprintHeaderEl.after(barDiv);
+    notionFilterBar('sprint-filter-bar-container', sprintFilterDefs, sprintSortDefs, sprintFilterState, () => render());
+  }
+
   function getFiltered() {
-    const proj = document.getElementById('sprint-filter-proj')?.dataset?.value || '';
-    const q = (document.getElementById('sprint-search')?.value || '').toLowerCase();
-    return sprints.filter(s => {
-      if (proj && String(s.project_id) !== proj) return false;
-      if (q && !s.title.toLowerCase().includes(q)) return false;
-      return true;
+    return applySortFilter(sprints, sprintFilterState, {
+      status: s => s.status,
+      project: s => String(s.project_id || ''),
+      title: s => s.title,
+      start_date: s => s.start_date || '',
+      _text: s => s.title + ' ' + (s.project_title || ''),
     });
   }
 
@@ -1602,8 +1915,6 @@ async function renderSprints() {
   }
 
   document.getElementById('new-sprint-btn').onclick = () => showSprintModal(projects);
-  bindCustomSelects(null, () => render());
-  document.getElementById('sprint-search').oninput = render;
   bindViewToggle([], null, (mode) => {
     sprintsViewMode = mode;
     localStorage.setItem('sprintsViewMode', mode);
@@ -1612,6 +1923,9 @@ async function renderSprints() {
   render();
 
   function bindSprintEvents() {
+    document.querySelectorAll('.sprint-detail-link').forEach(el => {
+      el.onclick = (e) => { e.stopPropagation(); renderView('sprint-detail', el.dataset.sprintId); };
+    });
     document.querySelectorAll('.sprint-status-btn').forEach(el => {
       el.onclick = async () => {
         const nextStatus = el.dataset.next;
@@ -1631,13 +1945,113 @@ async function renderSprints() {
   }
 }
 
+
+/* ─── Sprint Detail View ─────────────────────────────────────────────── */
+async function renderSprintDetail(sprintId) {
+  let sprint;
+  try { sprint = await api('GET', `/api/sprints/${sprintId}`); } catch(e) {
+    document.getElementById('main-content').innerHTML = `<div class="view"><div class="empty-state"><div class="empty-state-text">Sprint not found</div></div></div>`;
+    return;
+  }
+  updateBreadcrumb('sprint-detail', sprintId, sprint.title);
+
+  const tasks = sprint.tasks || [];
+  const prog = sprint.progress || {};
+  const pct = prog.pct || 0;
+
+  // Compute sub_task_count for each task from the tasks array
+  tasks.forEach(t => {
+    t.sub_task_count = tasks.filter(s => s.parent_task_id === t.id).length;
+  });
+
+  // Merge tasks into cache for subtask lookups
+  tasks.forEach(t => { if (!allTasksCache.find(x => x.id === t.id)) allTasksCache.push(t); });
+
+  function buildSprintTaskTree(taskList, allTasks, depth) {
+    let html = '';
+    for (const t of taskList) {
+      html += taskRowHtml(t, true, depth);
+      const isExp = expandedTasks.has(String(t.id));
+      const children = allTasks.filter(s => s.parent_task_id === t.id);
+      if (isExp && children.length > 0) {
+        html += buildSprintTaskTree(children, allTasks, depth + 1);
+        html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
+          <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px">+ Add Subtask</button>
+        </li>`;
+      }
+    }
+    return html;
+  }
+
+  const taskIds = new Set(tasks.map(t => t.id));
+  const topLevel = tasks.filter(t => !t.parent_task_id || !taskIds.has(t.parent_task_id));
+  const taskListHtml = tasks.length
+    ? `<ul class="task-list">${buildSprintTaskTree(topLevel, tasks, 0)}</ul>`
+    : `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No tasks in this sprint</div></div>`;
+
+  const nextStatus = sprint.status === 'planned' ? 'active' : sprint.status === 'active' ? 'completed' : null;
+  const nextLabel = sprint.status === 'planned' ? 'Start Sprint' : sprint.status === 'active' ? 'Complete Sprint' : null;
+
+  document.getElementById('main-content').innerHTML = `<div class="view">
+    <div class="view-header">
+      <div>
+        ${sprint.project_title ? `<div class="breadcrumb" style="margin-bottom:6px"><span class="bc-crumb bc-proj" style="cursor:pointer" data-proj-id="${sprint.project_id}">◆ ${sprint.project_title}</span></div>` : ''}
+        <h1 class="view-title">⚡ ${sprint.title}</h1>
+        <div class="flex gap-8" style="margin-top:6px">
+          ${statusBadge(sprint.status)}
+          ${sprint.start_date ? `<span class="badge badge-todo">${fmtDate(sprint.start_date)} → ${fmtDate(sprint.end_date)}</span>` : ''}
+        </div>
+      </div>
+      <div class="flex gap-8">
+        <button class="btn btn-ghost" id="sd-back-btn">← Back</button>
+        ${nextStatus ? `<button class="btn btn-ghost" id="sd-status-btn" data-next="${nextStatus}">${nextLabel}</button>` : ''}
+        <button class="btn btn-primary" id="sd-add-task-btn">+ Task</button>
+      </div>
+    </div>
+    <div class="widget" style="margin-bottom:16px">
+      <div class="progress-wrap">
+        <div class="progress-label"><span>${pct}% complete</span><span>${prog.done || 0}/${prog.total || 0} tasks</span></div>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+      </div>
+    </div>
+    <div class="widget">
+      <div class="widget-header"><span class="widget-title">Tasks (${tasks.length})</span></div>
+      <div id="sd-task-list">${taskListHtml}</div>
+    </div>
+  </div>`;
+
+  document.getElementById('sd-back-btn').onclick = () => renderView('sprints');
+  document.getElementById('sd-add-task-btn').onclick = () =>
+    showNewTaskModal({ sprint_id: parseInt(sprintId) }, () => renderSprintDetail(sprintId));
+  document.getElementById('sd-status-btn')?.addEventListener('click', async (e) => {
+    const next = e.currentTarget.dataset.next;
+    await api('PATCH', `/api/sprints/${sprintId}`, { status: next });
+    if (next === 'active') renderView('dashboard');
+    else renderSprintDetail(sprintId);
+  });
+  if (sprint.project_id) {
+    document.querySelectorAll('.bc-proj').forEach(el => {
+      el.onclick = () => renderView('project-detail', el.dataset.projId);
+    });
+  }
+  bindDetailTaskEvents(() => renderSprintDetail(sprintId));
+}
+
 /* ─── Resources View ─────────────────────────────────────────────────── */
 async function renderResources() {
   let resources = [];
-  try { resources = await api('GET', '/api/resources'); } catch(e) {}
+  let apiError = null;
+  try { resources = await api('GET', '/api/resources'); } catch(e) { apiError = e.message || String(e); }
 
+  if (apiError) {
+    document.getElementById('main-content').innerHTML = `<div class="view">
+      <div class="api-error-banner">⚠ Cannot reach raibis server. Restart: <code>cd raibis-go && go run ./cmd/server/main.go</code><br><small style="color:var(--text-muted)">${apiError}</small></div>
+    </div>`;
+    return;
+  }
+
+  const resFilterState = { filters: {}, sort: {}, searchText: '' };
   const types = [...new Set(resources.map(r => r.resource_type).filter(Boolean))];
-  const typeSelectOpts = [{value:'',label:'All Types'}, ...types.map(t => ({value:t,label:t}))];
 
   function buildTable(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">⬡</div><div class="empty-state-text">No resources yet</div></div>`;
@@ -1695,20 +2109,30 @@ async function renderResources() {
         <button class="btn btn-primary" id="new-res-btn">+ New Resource</button>
       </div>
     </div>
-    <div class="filter-row">
-      ${customSelectHtml('res-filter-type', typeSelectOpts, '', 'All Types')}
-      <input type="text" id="res-search" placeholder="Search resources…" />
-    </div>
     <div id="res-table"></div>
   </div>`;
 
+  const resFilterDefs = [
+    { key: 'resource_type', label: 'Type', multi: false, options: [{ value: '', label: 'All' }, ...types.map(t => ({ value: t, label: t }))] },
+  ];
+  const resSortDefs = [
+    { key: 'title', label: 'Title' },
+    { key: 'resource_type', label: 'Type' },
+  ];
+  const resViewEl = document.querySelector('#main-content .view');
+  const resHeaderEl = resViewEl?.querySelector('.view-header');
+  if (resHeaderEl) {
+    const barDiv = document.createElement('div');
+    barDiv.id = 'res-filter-bar-container';
+    resHeaderEl.after(barDiv);
+    notionFilterBar('res-filter-bar-container', resFilterDefs, resSortDefs, resFilterState, () => render());
+  }
+
   function getFiltered() {
-    const t = document.getElementById('res-filter-type')?.dataset?.value || '';
-    const q = (document.getElementById('res-search')?.value || '').toLowerCase();
-    return resources.filter(r => {
-      if (t && r.resource_type !== t) return false;
-      if (q && !r.title.toLowerCase().includes(q)) return false;
-      return true;
+    return applySortFilter(resources, resFilterState, {
+      resource_type: r => r.resource_type || '',
+      title: r => r.title,
+      _text: r => r.title + ' ' + (r.url || '') + ' ' + (r.body || ''),
     });
   }
 
@@ -1720,8 +2144,6 @@ async function renderResources() {
   }
 
   document.getElementById('new-res-btn').onclick = () => showResourceModal(null, () => renderResources());
-  document.getElementById('res-search').oninput = render;
-  bindCustomSelects(null, () => render());
   bindViewToggle([], null, (mode) => {
     resourcesViewMode = mode;
     localStorage.setItem('resourcesViewMode', mode);
@@ -1857,6 +2279,11 @@ async function renderProjectDetail(projectId) {
   const notes = p.notes || [];
   const resources = p.resources || [];
 
+  // Compute sub_task_count for each task from the tasks array itself
+  tasks.forEach(t => {
+    t.sub_task_count = tasks.filter(s => s.parent_task_id === t.id).length;
+  });
+
   // Merge project tasks into allTasksCache for subtask lookups
   tasks.forEach(t => {
     if (!allTasksCache.find(x => x.id === t.id)) allTasksCache.push(t);
@@ -1942,6 +2369,13 @@ async function renderProjectDetail(projectId) {
         <div>${resRows}</div>
       </div>
     </div>
+    <div class="widget" style="margin-top:16px">
+      <div class="widget-header">
+        <span class="widget-title">Properties</span>
+        <button class="btn btn-sm btn-ghost" id="pd-add-prop-btn">+ Add</button>
+      </div>
+      <div id="pd-props-list"></div>
+    </div>
   </div>`;
 
   document.getElementById('pd-back-btn').onclick = () => renderView('projects');
@@ -1964,9 +2398,8 @@ async function renderProjectDetail(projectId) {
     };
   });
   bindDetailTaskEvents(() => renderProjectDetail(projectId));
+  bindPropertiesWidget('project', projectId, 'pd-props-list', 'pd-add-prop-btn');
 }
-
-/* ─── Goal Detail View ────────────────────────────────────────────────── */
 async function renderGoalDetail(goalId) {
   let g;
   try { g = await api('GET', `/api/goals/${goalId}`); } catch(e) {
@@ -1979,6 +2412,11 @@ async function renderGoalDetail(goalId) {
   const tasks = g.tasks || [];
   const notes = g.notes || [];
   const resources = g.resources || [];
+
+  // Compute sub_task_count for each task from the tasks array
+  tasks.forEach(t => {
+    t.sub_task_count = tasks.filter(s => s.parent_task_id === t.id).length;
+  });
 
   const projCards = projects.map(p => {
     const prog = p.progress || {};
@@ -2078,6 +2516,13 @@ async function renderGoalDetail(goalId) {
         </div>`).join('') || '<div class="empty-state" style="padding:20px"><div class="empty-state-text">No resources</div></div>'}</div>
       </div>
     </div>
+    <div class="widget" style="margin-top:16px">
+      <div class="widget-header">
+        <span class="widget-title">Properties</span>
+        <button class="btn btn-sm btn-ghost" id="gd-add-prop-btn">+ Add</button>
+      </div>
+      <div id="gd-props-list"></div>
+    </div>
   </div>`;
 
   document.getElementById('gd-back-btn').onclick = () => renderView('goals');
@@ -2098,6 +2543,73 @@ async function renderGoalDetail(goalId) {
     };
   });
   bindDetailTaskEvents(() => renderGoalDetail(goalId));
+  bindPropertiesWidget('goal', goalId, 'gd-props-list', 'gd-add-prop-btn');
+}
+
+/* ─── Properties Widget ──────────────────────────────────────────────── */
+async function bindPropertiesWidget(entityType, entityId, listContainerId, addBtnId) {
+  const listEl = document.getElementById(listContainerId);
+  const addBtn = document.getElementById(addBtnId);
+  if (!listEl) return;
+
+  async function loadAndRender() {
+    let props = {};
+    try { props = await api('GET', `/api/properties?entity_type=${entityType}&entity_id=${entityId}`); } catch(e) {}
+    const entries = Object.entries(props);
+    if (!entries.length) {
+      listEl.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:6px 0">No custom properties</div>`;
+    } else {
+      listEl.innerHTML = entries.map(([k,v]) => `
+        <div class="prop-row" data-key="${k.replace(/"/g,'&quot;')}">
+          <span class="prop-key">${k}</span>
+          <span class="prop-sep">:</span>
+          <input class="prop-val-input" data-key="${k.replace(/"/g,'&quot;')}" value="${(v||'').replace(/"/g,'&quot;')}" />
+          <button class="prop-del-btn btn btn-sm btn-ghost" data-key="${k.replace(/"/g,'&quot;')}" title="Delete">×</button>
+        </div>`).join('');
+      listEl.querySelectorAll('.prop-val-input').forEach(inp => {
+        inp.onblur = async () => {
+          await api('POST', `/api/properties?entity_type=${entityType}&entity_id=${entityId}`, { key: inp.dataset.key, value: inp.value });
+        };
+        inp.onkeydown = (e) => { if (e.key === 'Enter') inp.blur(); };
+      });
+      listEl.querySelectorAll('.prop-del-btn').forEach(btn => {
+        btn.onclick = async () => {
+          await api('DELETE', `/api/properties?entity_type=${entityType}&entity_id=${entityId}&key=${encodeURIComponent(btn.dataset.key)}`);
+          loadAndRender();
+        };
+      });
+    }
+  }
+
+  loadAndRender();
+
+  if (addBtn) {
+    addBtn.onclick = () => {
+      const existing = document.getElementById('prop-add-row');
+      if (existing) { existing.remove(); return; }
+      const row = document.createElement('div');
+      row.id = 'prop-add-row';
+      row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-top:6px';
+      row.innerHTML = `
+        <input id="prop-new-key" placeholder="Property name" style="flex:1;padding:4px 8px;font-size:12px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text)" />
+        <input id="prop-new-val" placeholder="Value" style="flex:1;padding:4px 8px;font-size:12px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text)" />
+        <button class="btn btn-sm btn-primary" id="prop-save-new">Add</button>
+        <button class="btn btn-sm btn-ghost" id="prop-cancel-new">×</button>`;
+      listEl.after(row);
+      document.getElementById('prop-new-key').focus();
+      document.getElementById('prop-cancel-new').onclick = () => row.remove();
+      const saveNew = async () => {
+        const key = document.getElementById('prop-new-key').value.trim();
+        const val = document.getElementById('prop-new-val').value;
+        if (!key) return;
+        await api('POST', `/api/properties?entity_type=${entityType}&entity_id=${entityId}`, { key, value: val });
+        row.remove();
+        loadAndRender();
+      };
+      document.getElementById('prop-save-new').onclick = saveNew;
+      document.getElementById('prop-new-val').onkeydown = (e) => { if (e.key === 'Enter') saveNew(); };
+    };
+  }
 }
 
 /* ─── Task Slideover ─────────────────────────────────────────────────── */
@@ -2259,6 +2771,13 @@ async function showTaskSlideover(taskId) {
       <div class="subtask-section-title"><span>Resources (${(task.resources||[]).length})</span></div>
       <div>${resourcesHtml}</div>
     </div>
+    <div class="subtask-section" style="margin-top:20px" id="props-section">
+      <div class="subtask-section-title">
+        <span>Properties</span>
+        <button class="btn btn-sm btn-ghost" id="add-prop-btn">+ Add</button>
+      </div>
+      <div id="props-list"></div>
+    </div>
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border)">
       <button class="btn btn-ghost btn-sm" id="task-export-btn">Export JSON</button>
     </div>
@@ -2362,6 +2881,9 @@ async function showTaskSlideover(taskId) {
     downloadJSON(data, `task-${task.title.replace(/\s+/g,'-')}.json`);
   };
 
+  // Properties widget
+  bindPropertiesWidget('task', taskId, 'props-list', 'add-prop-btn');
+
   document.querySelectorAll('.bc-goal').forEach(el => {
     el.onclick = () => { closeSlideover(); renderView('goal-detail', el.dataset.goalId); };
   });
@@ -2436,72 +2958,367 @@ async function renderCalendarView() {
     .filter(s => s.status === 'active' && s.start_date && s.end_date)
     .map(s => ({ title: s.title, start: stripDate(s.start_date), end: stripDate(s.end_date) }));
 
-  // Build unified event list with dates
+  // Build unified event list. Tasks with start_date become ranged events.
   const events = [];
   tasks.forEach(t => {
-    if (t.due_date) events.push({ id: t.id, type: 'task', title: t.title, date: stripDate(t.due_date), priority: t.priority, status: t.status });
+    const sd = t.start_date ? stripDate(t.start_date) : null;
+    const dd = t.due_date ? stripDate(t.due_date) : null;
+    if (sd && dd && sd !== dd) {
+      events.push({ id: t.id, type: 'task', title: t.title, start: sd, end: dd, ranged: true, priority: t.priority, status: t.status });
+    } else if (dd) {
+      events.push({ id: t.id, type: 'task', title: t.title, date: dd, ranged: false, priority: t.priority, status: t.status });
+    } else if (sd) {
+      events.push({ id: t.id, type: 'task', title: t.title, date: sd, ranged: false, priority: t.priority, status: t.status });
+    }
   });
   goals.forEach(g => {
-    if (g.due_date) events.push({ id: g.id, type: 'goal', title: g.title, date: stripDate(g.due_date) });
-    if (g.start_date) events.push({ id: g.id, type: 'goal-start', title: g.title + ' (start)', date: stripDate(g.start_date) });
+    const sd = g.start_date ? stripDate(g.start_date) : null;
+    const dd = g.due_date   ? stripDate(g.due_date)   : null;
+    if (sd && dd && sd !== dd) {
+      events.push({ id: g.id, type: 'goal', title: g.title, start: sd, end: dd, ranged: true });
+    } else {
+      if (dd) events.push({ id: g.id, type: 'goal', title: g.title, date: dd, ranged: false });
+      else if (sd) events.push({ id: g.id, type: 'goal', title: g.title, date: sd, ranged: false });
+    }
   });
   projects.forEach(p => {
-    if (p.due_date) events.push({ id: p.id, type: 'project', title: p.title, date: stripDate(p.due_date) });
+    const sd = p.start_date ? stripDate(p.start_date) : null;
+    const dd = p.due_date   ? stripDate(p.due_date)   : null;
+    if (sd && dd && sd !== dd) {
+      events.push({ id: p.id, type: 'project', title: p.title, start: sd, end: dd, ranged: true });
+    } else {
+      if (dd) events.push({ id: p.id, type: 'project', title: p.title, date: dd, ranged: false });
+      else if (sd) events.push({ id: p.id, type: 'project', title: p.title, date: sd, ranged: false });
+    }
   });
   sprints.forEach(s => {
-    if (s.start_date) events.push({ id: s.id, type: 'sprint-start', title: s.title + ' (start)', date: stripDate(s.start_date) });
-    if (s.end_date) events.push({ id: s.id, type: 'sprint-end', title: s.title + ' (end)', date: stripDate(s.end_date) });
+    const sd = s.start_date ? stripDate(s.start_date) : null;
+    const ed = s.end_date   ? stripDate(s.end_date)   : null;
+    if (sd && ed && sd !== ed) {
+      events.push({ id: s.id, type: 'sprint', title: s.title, start: sd, end: ed, ranged: true });
+    } else {
+      if (sd) events.push({ id: s.id, type: 'sprint', title: s.title + ' (start)', date: sd, ranged: false });
+      if (ed) events.push({ id: s.id, type: 'sprint', title: s.title + ' (end)',   date: ed, ranged: false });
+    }
   });
 
   const typeColors = {
-    task: 'var(--accent)', 'goal': 'var(--success)', 'goal-start': 'var(--success)',
-    project: 'var(--warning)', 'sprint-start': 'var(--text-muted)', 'sprint-end': 'var(--danger)',
+    task:    'var(--accent)',
+    goal:    'var(--success)',
+    project: 'var(--warning)',
+    sprint:  '#9b7fe8',
   };
 
-  function buildCal() {
-    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  // Returns events that appear on a given dateStr (ranged or single-day)
+  function eventsOnDate(dateStr) {
+    return events.filter(ev => {
+      if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
+      if (ev.ranged) return dateStr >= ev.start && dateStr <= ev.end;
+      return ev.date === dateStr;
+    });
+  }
+
+  function chipColor(ev) {
+    if (ev.type === 'task' && ev.priority) {
+      return { urgent:'var(--danger)', high:'var(--danger)', medium:'var(--warning)', low:'var(--text-muted)' }[ev.priority] || 'var(--accent)';
+    }
+    return typeColors[ev.type] || 'var(--accent)';
+  }
+
+  function dateAdd(d, days) {
+    const r = new Date(d); r.setDate(r.getDate() + days); return r;
+  }
+  function dateStr(d) {
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
+
+  function buildMonthCal() {
     const firstDay = new Date(calYear, calMonth, 1);
     const lastDay = new Date(calYear, calMonth+1, 0);
     let startDow = firstDay.getDay();
     startDow = startDow === 0 ? 6 : startDow - 1;
+    const todayD = new Date(); todayD.setHours(0,0,0,0);
+
+    // Build week rows, each has 7 dates
+    const weeks = [];
+    let dayNum = 1 - startDow;
+    for (let row = 0; row < 6; row++) {
+      const week = [];
+      for (let col = 0; col < 7; col++, dayNum++) {
+        week.push(new Date(calYear, calMonth, dayNum));
+      }
+      weeks.push(week);
+      if (dayNum > lastDay.getDate() + 1) break;
+    }
+
+    // For multi-day events, figure out which "lanes" (vertical slots) they occupy per week row
+    // so bars don't overlap. Returns [{ev, startCol, endCol, lane}] per week row.
+    function rangedBarsForWeek(weekDates) {
+      const wStart = dateStr(weekDates[0]);
+      const wEnd   = dateStr(weekDates[6]);
+      // Only truly ranged events (start_date != due_date)
+      const rangedEvs = events.filter(ev => {
+        if (!ev.ranged) return false;
+        if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
+        return ev.end >= wStart && ev.start <= wEnd;
+      });
+      // Assign lanes greedily
+      const lanes = []; // lanes[i] = end date of last bar in lane i
+      return rangedEvs.map(ev => {
+        const clampedStart = ev.start < wStart ? wStart : ev.start;
+        const clampedEnd   = ev.end   > wEnd   ? wEnd   : ev.end;
+        const startCol = weekDates.findIndex(d => dateStr(d) === clampedStart);
+        const endCol   = weekDates.findIndex(d => dateStr(d) === clampedEnd);
+        let lane = lanes.findIndex(laneEnd => laneEnd < clampedStart);
+        if (lane === -1) { lane = lanes.length; lanes.push(clampedEnd); }
+        else { lanes[lane] = clampedEnd; }
+        return { ev, startCol, endCol, lane };
+      });
+    }
+
     const dayHeaders = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d =>
       `<div class="cal-day-header">${d}</div>`).join('');
-    let cells = '';
-    let dayNum = 1 - startDow;
-    const todayD = new Date(); todayD.setHours(0,0,0,0);
-    for (let row = 0; row < 6; row++) {
-      for (let col = 0; col < 7; col++, dayNum++) {
-        const cellDate = new Date(calYear, calMonth, dayNum);
+
+    const weekRows = weeks.map(weekDates => {
+      const bars = rangedBarsForWeek(weekDates);
+      const maxLane = bars.reduce((m, b) => Math.max(m, b.lane), -1);
+      // How many lanes are used — reserve vertical space for bars above point-in-time events
+      const barAreaHeight = maxLane >= 0 ? (maxLane + 1) * 20 + 4 : 0;
+
+      // Day cells
+      const cells = weekDates.map((cellDate, col) => {
+        const ds = dateStr(cellDate);
         const isCurrentMonth = cellDate.getMonth() === calMonth;
         const isTodayCell = cellDate.getTime() === todayD.getTime();
-        const dateStr = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(cellDate.getDate()).padStart(2,'0')}`;
-        const dayEvents = events.filter(e => e.date === dateStr && calEventTypes.includes(e.type.split('-')[0]));
-        const isInSprint = sprintRanges.some(r => dateStr >= r.start && dateStr <= r.end);
-        const sprintStyle = isInSprint ? 'background:var(--accent-glow);border-left:2px solid var(--accent);' : '';
-        const CHIP_LIMIT = 3;
+        const isInSprint = sprintRanges.some(r => ds >= r.start && ds <= r.end);
+        const sprintStyle = isInSprint ? 'background:var(--accent-glow);' : '';
+        // Single-day (point-in-time) events only
+        const dayEvents = events.filter(ev => {
+          if (ev.ranged) return false;
+          if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
+          return ev.date === ds;
+        });
+        const CHIP_LIMIT = 2;
         const visibleEvents = dayEvents.slice(0, CHIP_LIMIT);
         const overflow = dayEvents.length - CHIP_LIMIT;
         const chips = visibleEvents.map(ev => {
-          const color = ev.priority ? ({ urgent:'var(--danger)', high:'var(--danger)', medium:'var(--warning)', low:'var(--text-muted)' }[ev.priority] || 'var(--accent)') : (typeColors[ev.type] || 'var(--accent)');
+          const color = chipColor(ev);
           const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
-          return `<div class="cal-task-chip ${ev.type === 'task' ? 'cal-event-task' : 'cal-event-other'}" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
+          return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
         }).join('');
-        const overflowChip = overflow > 0
-          ? `<div class="cal-overflow-btn" data-date="${dateStr}">+${overflow} more</div>`
-          : '';
-        cells += `<div class="calendar-day ${isCurrentMonth?'':'other-month'} ${isTodayCell?'today':''}" style="${sprintStyle}">
+        const overflowChip = overflow > 0 ? `<div class="cal-overflow-btn" data-date="${ds}">+${overflow}</div>` : '';
+        return `<div class="calendar-day ${isCurrentMonth?'':'other-month'} ${isTodayCell?'today':''}" style="${sprintStyle}grid-column:${col+1}" data-date="${ds}">
           <div class="cal-day-num">${cellDate.getDate()}</div>
-          <div class="cal-tasks">${chips}${overflowChip}</div>
+          <div class="cal-tasks" style="margin-top:${barAreaHeight}px">${chips}${overflowChip}</div>
         </div>`;
-      }
-      if (dayNum > lastDay.getDate() + 1) break;
-    }
-    const nav = `<div class="cal-nav">
-      <button class="btn btn-sm btn-ghost" id="cal-prev">‹ Prev</button>
-      <span style="font-family:'DM Mono',monospace;font-size:14px">${monthNames[calMonth]} ${calYear}</span>
-      <button class="btn btn-sm btn-ghost" id="cal-next">Next ›</button>
+      }).join('');
+
+      // Spanning bar elements — placed in the same grid using grid-column
+      const barEls = bars.map(({ ev, startCol, endCol, lane }) => {
+        const color = chipColor(ev);
+        const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
+        const isStart = ev.start >= dateStr(weekDates[0]);
+        const isEnd   = ev.end   <= dateStr(weekDates[6]);
+        const borderRadiusLeft  = isStart ? '3px' : '0';
+        const borderRadiusRight = isEnd   ? '3px' : '0';
+        const topOffset = 22 + lane * 20; // below day number
+        return `<div class="cal-span-bar" ${taskId} title="${ev.title}"
+          style="grid-column:${startCol+1}/${endCol+2};grid-row:1;
+                 top:${topOffset}px;background:${color};
+                 border-radius:${borderRadiusLeft} ${borderRadiusRight} ${borderRadiusRight} ${borderRadiusLeft};">
+          <span class="cal-span-bar-label">${ev.title}</span>
+        </div>`;
+      }).join('');
+
+      return `<div class="cal-week-row">${cells}${barEls}</div>`;
+    }).join('');
+
+    return `<div class="calendar-month-wrap">
+      <div class="cal-day-headers-row">${dayHeaders}</div>
+      ${weekRows}
     </div>`;
-    return `${nav}<div class="calendar-grid">${dayHeaders}${cells}</div>`;
+  }
+
+  function buildScopedCal(numDays) {
+    // Week/3-day/day views: show numDays columns starting from calAnchorDate
+    const start = new Date(calAnchorDate); start.setHours(0,0,0,0);
+    const todayD = new Date(); todayD.setHours(0,0,0,0);
+    const days = [];
+    for (let i = 0; i < numDays; i++) days.push(dateAdd(start, i));
+    const wStart = dateStr(days[0]);
+    const wEnd   = dateStr(days[days.length - 1]);
+
+    const headers = days.map(d => {
+      const isT = d.getTime() === todayD.getTime();
+      const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      return `<div class="cal-day-header ${isT?'today':''}" style="${isT?'color:var(--accent);font-weight:600':''}">
+        ${dayNames[d.getDay()]} ${d.getDate()}
+      </div>`;
+    }).join('');
+
+    // Compute spanning bars for this window
+    const rangedEvs = events.filter(ev => {
+      if (!ev.ranged) return false;
+      if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
+      return ev.end >= wStart && ev.start <= wEnd;
+    });
+    const lanes = [];
+    const bars = rangedEvs.map(ev => {
+      const clampedStart = ev.start < wStart ? wStart : ev.start;
+      const clampedEnd   = ev.end   > wEnd   ? wEnd   : ev.end;
+      const startCol = days.findIndex(d => dateStr(d) === clampedStart);
+      const endCol   = days.findIndex(d => dateStr(d) === clampedEnd);
+      let lane = lanes.findIndex(laneEnd => laneEnd < clampedStart);
+      if (lane === -1) { lane = lanes.length; lanes.push(clampedEnd); }
+      else { lanes[lane] = clampedEnd; }
+      return { ev, startCol, endCol, lane };
+    });
+    const maxLane = bars.reduce((m, b) => Math.max(m, b.lane), -1);
+    const barAreaHeight = maxLane >= 0 ? (maxLane + 1) * 20 + 4 : 0;
+
+    const cells = days.map((d, col) => {
+      const ds = dateStr(d);
+      const isT = d.getTime() === todayD.getTime();
+      const isInSprint = sprintRanges.some(r => ds >= r.start && ds <= r.end);
+      const sprintStyle = isInSprint ? 'background:var(--accent-glow);' : '';
+      // Only point-in-time events
+      const dayEvents = events.filter(ev => {
+        if (ev.ranged) return false;
+        if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
+        return ev.date === ds;
+      });
+      const chips = dayEvents.map(ev => {
+        const color = chipColor(ev);
+        const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
+        return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
+      }).join('');
+      return `<div class="calendar-day ${isT?'today':''}" style="${sprintStyle}grid-column:${col+1};min-height:120px" data-date="${ds}">
+        <div class="cal-tasks" style="margin-top:${barAreaHeight}px">${chips||'<div style="color:var(--text-muted);font-size:11px">—</div>'}</div>
+      </div>`;
+    }).join('');
+
+    const barEls = bars.map(({ ev, startCol, endCol, lane }) => {
+      const color = chipColor(ev);
+      const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
+      const isStart = ev.start >= wStart;
+      const isEnd   = ev.end   <= wEnd;
+      const blr = isStart ? '3px' : '0';
+      const brr = isEnd   ? '3px' : '0';
+      const topOffset = 20 + lane * 20;
+      return `<div class="cal-span-bar" ${taskId} title="${ev.title}"
+        style="grid-column:${startCol+1}/${endCol+2};grid-row:1;top:${topOffset}px;background:${color};border-radius:${blr} ${brr} ${brr} ${blr};">
+        <span class="cal-span-bar-label">${ev.title}</span>
+      </div>`;
+    }).join('');
+
+    const gridCols = `grid-template-columns:repeat(${numDays},1fr)`;
+    return `<div class="cal-day-headers-row" style="${gridCols.replace('grid-template-columns','grid-template-columns')}">${headers}</div><div class="cal-week-row" style="${gridCols}">${cells}${barEls}</div>`;
+  }
+
+  // Gantt / timeline view for ranged tasks
+  function buildGantt() {
+    // Show current month as the timeline window
+    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const firstDay = new Date(calYear, calMonth, 1);
+    const lastDay = new Date(calYear, calMonth+1, 0);
+    const totalDays = lastDay.getDate();
+
+    // Collect only ranged tasks + single-day tasks with due dates in this month
+    const rangedEvs = events.filter(ev => {
+      if (ev.type !== 'task') return false;
+      if (ev.ranged) {
+        return ev.end >= dateStr(firstDay) && ev.start <= dateStr(lastDay);
+      }
+      return ev.date >= dateStr(firstDay) && ev.date <= dateStr(lastDay);
+    });
+
+    if (!rangedEvs.length) {
+      return `<div style="color:var(--text-muted);font-size:13px;padding:24px 0">No tasks with dates in ${monthNames[calMonth]} ${calYear}. Add start/due dates to tasks to see them here.</div>`;
+    }
+
+    // Day header row
+    const dayNums = [];
+    for (let i = 1; i <= totalDays; i++) dayNums.push(i);
+    const dayHeaderRow = dayNums.map(d => {
+      const ds = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      const todayStr = dateStr(new Date());
+      const isT = ds === todayStr;
+      return `<div class="gantt-day-hdr ${isT?'gantt-today-col':''}">${d}</div>`;
+    }).join('');
+
+    const rows = rangedEvs.map(ev => {
+      const color = chipColor(ev);
+      const startDs = ev.ranged ? ev.start : ev.date;
+      const endDs = ev.ranged ? ev.end : ev.date;
+      const clampedStart = startDs < dateStr(firstDay) ? dateStr(firstDay) : startDs;
+      const clampedEnd = endDs > dateStr(lastDay) ? dateStr(lastDay) : endDs;
+
+      const startDay = parseInt(clampedStart.split('-')[2], 10);
+      const endDay = parseInt(clampedEnd.split('-')[2], 10);
+      const spanDays = endDay - startDay + 1;
+      const leftPct = ((startDay - 1) / totalDays) * 100;
+      const widthPct = (spanDays / totalDays) * 100;
+
+      const taskAttr = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
+      return `<div class="gantt-row">
+        <div class="gantt-label" title="${ev.title}">${ev.title}</div>
+        <div class="gantt-track">
+          ${dayNums.map(d => {
+            const ds = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+            const todayStr = dateStr(new Date());
+            return `<div class="gantt-cell ${ds === todayStr ? 'gantt-today-col' : ''}"></div>`;
+          }).join('')}
+          <div class="gantt-bar cal-event-${ev.type === 'task' ? 'task' : 'other'}" ${taskAttr}
+            style="left:${leftPct}%;width:${widthPct}%;background:${color};border-radius:3px;opacity:0.85"
+            title="${ev.title}: ${startDs} → ${endDs}">
+            <span class="gantt-bar-label">${ev.title}</span>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+
+    return `<div class="gantt-wrap">
+      <div class="gantt-header-row">
+        <div class="gantt-label"></div>
+        <div class="gantt-track gantt-day-headers">${dayHeaderRow}</div>
+      </div>
+      ${rows}
+    </div>`;
+  }
+
+  function buildNav() {
+    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    let label = '';
+    const scopes = [
+      { id:'month', label:'Month' }, { id:'week', label:'Week' },
+      { id:'3day', label:'3 Days' }, { id:'day', label:'Day' }, { id:'gantt', label:'Timeline' }
+    ];
+    const scopeBtns = scopes.map(s =>
+      `<button class="btn btn-sm ${calScope===s.id?'btn-primary':'btn-ghost'} cal-scope-btn" data-scope="${s.id}">${s.label}</button>`
+    ).join('');
+
+    if (calScope === 'month' || calScope === 'gantt') {
+      label = `${monthNames[calMonth]} ${calYear}`;
+    } else {
+      const numDays = calScope === 'week' ? 7 : calScope === '3day' ? 3 : 1;
+      const endD = dateAdd(calAnchorDate, numDays - 1);
+      label = `${calAnchorDate.getDate()} ${monthNames[calAnchorDate.getMonth()]} – ${endD.getDate()} ${monthNames[endD.getMonth()]} ${endD.getFullYear()}`;
+    }
+    return `<div class="cal-nav">
+      <button class="btn btn-sm btn-ghost" id="cal-prev">‹ Prev</button>
+      <span style="font-family:'DM Mono',monospace;font-size:14px;min-width:200px;text-align:center">${label}</span>
+      <button class="btn btn-sm btn-ghost" id="cal-next">Next ›</button>
+      <div style="display:flex;gap:4px;margin-left:16px">${scopeBtns}</div>
+    </div>`;
+  }
+
+  function buildContent() {
+    if (calScope === 'month') return buildMonthCal();
+    if (calScope === 'week') return buildScopedCal(7);
+    if (calScope === '3day') return buildScopedCal(3);
+    if (calScope === 'day') return buildScopedCal(1);
+    if (calScope === 'gantt') return buildGantt();
+    return buildMonthCal();
   }
 
   document.getElementById('main-content').innerHTML = `<div class="view">
@@ -2518,9 +3335,9 @@ async function renderCalendarView() {
       <span><span style="display:inline-block;width:8px;height:8px;background:var(--accent);border-radius:50%;margin-right:4px"></span>Tasks</span>
       <span><span style="display:inline-block;width:8px;height:8px;background:var(--success);border-radius:50%;margin-right:4px"></span>Goals</span>
       <span><span style="display:inline-block;width:8px;height:8px;background:var(--warning);border-radius:50%;margin-right:4px"></span>Projects</span>
-      <span><span style="display:inline-block;width:8px;height:8px;background:var(--text-muted);border-radius:50%;margin-right:4px"></span>Sprints</span>
+      <span><span style="display:inline-block;width:8px;height:8px;background:#9b7fe8;border-radius:50%;margin-right:4px"></span>Sprints</span>
     </div>
-    <div id="cal-content">${buildCal()}</div>
+    <div id="cal-content">${buildNav()}${buildContent()}</div>
   </div>`;
 
   // Calendar filter picker
@@ -2532,36 +3349,81 @@ async function renderCalendarView() {
       calEventTypes = [...document.querySelectorAll('.cal-type-check:checked')].map(c => c.dataset.type);
       if (!calEventTypes.length) calEventTypes = ['task'];
       localStorage.setItem('calEventTypes', JSON.stringify(calEventTypes));
-      document.getElementById('cal-content').innerHTML = buildCal();
+      document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
       rebind();
     };
   });
 
   function rebind() {
-    document.getElementById('cal-prev')?.addEventListener('click', () => { calMonth--; if (calMonth<0){calMonth=11;calYear--;} document.getElementById('cal-content').innerHTML = buildCal(); rebind(); });
-    document.getElementById('cal-next')?.addEventListener('click', () => { calMonth++; if (calMonth>11){calMonth=0;calYear++;} document.getElementById('cal-content').innerHTML = buildCal(); rebind(); });
-    document.querySelectorAll('.cal-event-task').forEach(chip => {
+    document.getElementById('cal-prev')?.addEventListener('click', () => {
+      if (calScope === 'month' || calScope === 'gantt') {
+        calMonth--; if (calMonth<0){calMonth=11;calYear--;}
+      } else {
+        const step = calScope==='week'?-7:calScope==='3day'?-3:-1;
+        calAnchorDate = dateAdd(calAnchorDate, step);
+      }
+      document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
+      rebind();
+    });
+    document.getElementById('cal-next')?.addEventListener('click', () => {
+      if (calScope === 'month' || calScope === 'gantt') {
+        calMonth++; if (calMonth>11){calMonth=0;calYear++;}
+      } else {
+        const step = calScope==='week'?7:calScope==='3day'?3:1;
+        calAnchorDate = dateAdd(calAnchorDate, step);
+      }
+      document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
+      rebind();
+    });
+    document.querySelectorAll('.cal-scope-btn').forEach(btn => {
+      btn.onclick = () => {
+        calScope = btn.dataset.scope;
+        localStorage.setItem('calScope', calScope);
+        // Sync anchor date for scoped views
+        if (calScope === 'week') {
+          // align to Monday of current week
+          const d = new Date(); const dow = d.getDay(); const diff = dow === 0 ? -6 : 1 - dow;
+          calAnchorDate = dateAdd(d, diff);
+        } else if (calScope !== 'month' && calScope !== 'gantt') {
+          calAnchorDate = new Date();
+        }
+        document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
+        rebind();
+      };
+    });
+    document.querySelectorAll('.cal-task-chip[data-task-id]').forEach(chip => {
       chip.onclick = (e) => { e.stopPropagation(); showTaskSlideover(chip.dataset.taskId); };
+    });
+    document.querySelectorAll('.cal-span-bar[data-task-id]').forEach(bar => {
+      bar.onclick = (e) => { e.stopPropagation(); showTaskSlideover(bar.dataset.taskId); };
+    });
+    document.querySelectorAll('.gantt-bar.cal-event-task').forEach(bar => {
+      bar.onclick = (e) => { e.stopPropagation(); showTaskSlideover(bar.dataset.taskId); };
     });
     // Overflow "show more" — expand cell inline
     document.querySelectorAll('.cal-overflow-btn').forEach(btn => {
+      if (btn.classList.contains('cal-collapse-btn')) return;
       btn.onclick = (e) => {
         e.stopPropagation();
-        const date = btn.dataset.date;
-        const dayEvents = events.filter(ev => ev.date === date);
+        const ds = btn.dataset.date;
+        const dayEvents = events.filter(ev => {
+          if (ev.ranged) return false;
+          if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
+          return ev.date === ds;
+        });
         const cell = btn.closest('.calendar-day');
         const tasksContainer = cell.querySelector('.cal-tasks');
         tasksContainer.innerHTML = dayEvents.map(ev => {
-          const color = ev.priority ? ({ urgent:'var(--danger)', high:'var(--danger)', medium:'var(--warning)', low:'var(--text-muted)' }[ev.priority] || 'var(--accent)') : (typeColors[ev.type] || 'var(--accent)');
+          const color = chipColor(ev);
           const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
-          return `<div class="cal-task-chip ${ev.type === 'task' ? 'cal-event-task' : 'cal-event-other'}" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
+          return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
         }).join('') + `<div class="cal-overflow-btn cal-collapse-btn">▲ less</div>`;
         cell.querySelector('.cal-collapse-btn').onclick = (e2) => {
           e2.stopPropagation();
-          document.getElementById('cal-content').innerHTML = buildCal();
+          document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
           rebind();
         };
-        cell.querySelectorAll('.cal-event-task').forEach(chip => {
+        cell.querySelectorAll('.cal-task-chip[data-task-id]').forEach(chip => {
           chip.onclick = (e2) => { e2.stopPropagation(); showTaskSlideover(chip.dataset.taskId); };
         });
       };
@@ -2727,10 +3589,35 @@ function bindTaskListEvents() {
     };
   });
   document.querySelectorAll('.task-add-sub-btn').forEach(btn => {
-    btn.onclick = async (e) => {
+    btn.onclick = (e) => {
       e.stopPropagation();
       const parentId = parseInt(btn.dataset.addSubId);
-      showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, () => renderDashboard());
+      const row = btn.closest('.task-row');
+      if (!row) return;
+      const alreadyOpen = btn.classList.contains('open');
+      document.querySelectorAll(`.inline-task-input-row[data-parent-id="${parentId}"]`).forEach(r => r.remove());
+      if (alreadyOpen) { btn.classList.remove('open'); return; }
+      btn.classList.add('open');
+      const inputRow = document.createElement('li');
+      inputRow.className = 'inline-task-input-row';
+      inputRow.dataset.parentId = parentId;
+      inputRow.innerHTML = `
+        <input type="text" class="inline-task-title-input" placeholder="New subtask title…" autofocus />
+        <button class="btn btn-sm btn-primary inline-task-save-btn">Add</button>
+        <button class="btn btn-sm btn-ghost inline-cancel-btn">Cancel</button>`;
+      row.after(inputRow);
+      inputRow.querySelector('.inline-task-title-input').focus();
+      inputRow.querySelector('.inline-cancel-btn').onclick = (e) => { e.stopPropagation(); inputRow.remove(); btn.classList.remove('open'); };
+      const saveInline = async () => {
+        const title = inputRow.querySelector('.inline-task-title-input').value.trim();
+        if (!title) return;
+        try {
+          await api('POST', '/api/tasks', { title, parent_task_id: parentId, status: 'todo', priority: 'medium' });
+          renderDashboard();
+        } catch(err) { alert('Error creating subtask: ' + err.message); }
+      };
+      inputRow.querySelector('.inline-task-save-btn').onclick = (e) => { e.stopPropagation(); saveInline(); };
+      inputRow.querySelector('.inline-task-title-input').onkeydown = (e) => { if (e.key === 'Enter') saveInline(); if (e.key === 'Escape') { inputRow.remove(); btn.classList.remove('open'); } };
     };
   });
   document.querySelectorAll('.task-check').forEach(el => {
@@ -2773,13 +3660,38 @@ function bindDetailTaskEvents(onRefresh) {
     };
   });
   document.querySelectorAll('.task-add-sub-btn').forEach(btn => {
-    btn.onclick = async (e) => {
+    btn.onclick = (e) => {
       e.stopPropagation();
       const parentId = parseInt(btn.dataset.addSubId);
-      showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
-        allTasksCache = await api('GET', '/api/tasks?all=1');
-        if (onRefresh) onRefresh();
-      });
+      const row = btn.closest('.task-row, .task-table-row');
+      if (!row) return;
+      const alreadyOpen = btn.classList.contains('open');
+      document.querySelectorAll(`.inline-task-input-row[data-parent-id="${parentId}"]`).forEach(r => r.remove());
+      if (alreadyOpen) { btn.classList.remove('open'); return; }
+      btn.classList.add('open');
+      const inputRow = document.createElement('li');
+      inputRow.className = 'inline-task-input-row';
+      inputRow.dataset.parentId = parentId;
+      inputRow.style.paddingLeft = row.style.paddingLeft || '12px';
+      inputRow.innerHTML = `
+        <input type="text" class="inline-task-title-input" placeholder="New subtask title…" autofocus />
+        <button class="btn btn-sm btn-primary inline-task-save-btn">Add</button>
+        <button class="btn btn-sm btn-ghost inline-cancel-btn">Cancel</button>`;
+      row.after(inputRow);
+      inputRow.querySelector('.inline-task-title-input').focus();
+      inputRow.querySelector('.inline-cancel-btn').onclick = (e) => { e.stopPropagation(); inputRow.remove(); btn.classList.remove('open'); };
+      const saveInline = async () => {
+        const title = inputRow.querySelector('.inline-task-title-input').value.trim();
+        if (!title) return;
+        try {
+          await api('POST', '/api/tasks', { title, parent_task_id: parentId, status: 'todo', priority: 'medium' });
+          allTasksCache = await api('GET', '/api/tasks?all=1');
+          expandedTasks.add(String(parentId));
+          if (onRefresh) onRefresh();
+        } catch(err) { alert('Error creating subtask: ' + err.message); }
+      };
+      inputRow.querySelector('.inline-task-save-btn').onclick = (e) => { e.stopPropagation(); saveInline(); };
+      inputRow.querySelector('.inline-task-title-input').onkeydown = (e) => { if (e.key === 'Enter') saveInline(); if (e.key === 'Escape') { inputRow.remove(); btn.classList.remove('open'); } };
     };
   });
   document.querySelectorAll('.add-subtask-inline-btn').forEach(btn => {
@@ -2830,8 +3742,12 @@ function taskModalBody(task, resources) {
       <div class="form-group"><label class="form-label">Priority</label><select id="t-priority">${prioOpts}</select></div>
     </div>
     <div class="grid-2">
+      <div class="form-group"><label class="form-label">Start Date</label><input type="date" id="t-start" value="${stripDate(v.start_date)}" /></div>
       <div class="form-group"><label class="form-label">Due Date</label><input type="date" id="t-due" value="${stripDate(v.due_date)}" /></div>
+    </div>
+    <div class="grid-2">
       <div class="form-group"><label class="form-label">Focus Block</label><input type="date" id="t-focus" value="${stripDate(v.focus_block)}" /></div>
+      <div></div>
     </div>
     <div class="grid-2">
       <div class="form-group"><label class="form-label">Goal</label><select id="t-goal">${goalOpts}</select></div>
@@ -2875,6 +3791,7 @@ function collectTaskForm() {
     description: document.getElementById('t-desc').value,
     status: document.getElementById('t-status').value,
     priority: document.getElementById('t-priority').value,
+    start_date: document.getElementById('t-start').value || null,
     due_date: document.getElementById('t-due').value || null,
     focus_block: document.getElementById('t-focus').value || null,
     goal_id: document.getElementById('t-goal').value ? parseInt(document.getElementById('t-goal').value) : null,
@@ -3151,11 +4068,18 @@ async function showNoteModal(note, afterSave) {
       project_id: document.getElementById('n-project').value ? parseInt(document.getElementById('n-project').value) : null,
       task_id: document.getElementById('n-task').value ? parseInt(document.getElementById('n-task').value) : null,
     };
+    if (!data.title) { alert('Title is required'); return; }
     let savedId = v.id;
-    if (v.id) await api('PATCH', `/api/notes/${v.id}`, data);
-    else {
-      const created = await api('POST', '/api/notes', data);
-      if (created) savedId = created.id;
+    try {
+      if (v.id) {
+        await api('PATCH', `/api/notes/${v.id}`, data);
+      } else {
+        const created = await api('POST', '/api/notes', data);
+        if (created) savedId = created.id;
+      }
+    } catch(err) {
+      alert('Error saving note: ' + (err.message || String(err)));
+      return;
     }
     // Save tags
     if (savedId) {

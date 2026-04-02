@@ -13,6 +13,7 @@ type Task struct {
 	Description        string     `json:"description"`
 	Status             Status     `json:"status"`
 	Priority           Priority   `json:"priority"`
+	StartDate          *time.Time `json:"start_date,omitempty"`
 	DueDate            *time.Time `json:"due_date,omitempty"`
 	EstimatedMin       *int       `json:"estimated_mins,omitempty"`
 	LoggedMins         int        `json:"logged_mins"`

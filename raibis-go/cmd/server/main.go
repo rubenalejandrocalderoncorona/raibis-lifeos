@@ -69,7 +69,7 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 
 	// Sprints
 	mux.HandleFunc("/api/sprints", withCORS(sprintsHandler(svc, store, dbPath)))
-	mux.HandleFunc("/api/sprints/", withCORS(sprintHandler(store)))
+	mux.HandleFunc("/api/sprints/", withCORS(sprintHandler(store, svc)))
 
 	// Notes — vault-backed file-only
 	mux.HandleFunc("/api/notes", withCORS(notesHandler(store, v)))
@@ -82,6 +82,9 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Tags
 	mux.HandleFunc("/api/tags", withCORS(tagsHandler(store)))
 	mux.HandleFunc("/api/tags/", withCORS(tagHandler(store)))
+
+	// Properties
+	mux.HandleFunc("/api/properties", withCORS(propertiesHandler(store)))
 
 	// Kanban, Resources, Pomodoro, misc
 	mux.HandleFunc("/api/kanban", withCORS(kanbanHandler(svc, store)))
@@ -274,6 +277,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 				Description        string  `json:"description"`
 				Status             string  `json:"status"`
 				Priority           string  `json:"priority"`
+				StartDate          string  `json:"start_date"`
 				DueDate            string  `json:"due_date"`
 				FocusBlock         string  `json:"focus_block"`
 				GoalID             *int64  `json:"goal_id"`
@@ -318,6 +322,11 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 			}
 			if body.Priority != "" {
 				t.Priority = domain.ParsePriority(body.Priority)
+			}
+			if body.StartDate != "" {
+				if start, err := time.Parse("2006-01-02", body.StartDate); err == nil {
+					t.StartDate = &start
+				}
 			}
 			if body.DueDate != "" {
 				if due, err := time.Parse("2006-01-02", body.DueDate); err == nil {
@@ -482,6 +491,11 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 			}
 			if v, ok := body["description"].(string); ok {
 				t.Description = v
+			}
+			if v, ok := body["start_date"].(string); ok && v != "" {
+				if start, err := time.Parse("2006-01-02", v); err == nil {
+					t.StartDate = &start
+				}
 			}
 			if v, ok := body["due_date"].(string); ok && v != "" {
 				if due, err := time.Parse("2006-01-02", v); err == nil {
@@ -1047,29 +1061,79 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 	}
 }
 
-func sprintHandler(store storage.Storage) http.HandlerFunc {
+func sprintHandler(store storage.Storage, svc service.TaskService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseID(r.URL.Path)
 		if !ok {
 			errJSON(w, 400, "invalid sprint id")
 			return
 		}
-		if r.Method != http.MethodPatch {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		var body map[string]any
-		if err := readJSON(r, &body); err != nil {
-			errJSON(w, 400, "invalid JSON")
-			return
-		}
-		if status, ok := body["status"].(string); ok {
-			if err := store.UpdateSprintStatus(id, status); err != nil {
-				errJSON(w, 500, "update sprint: "+err.Error())
+		switch r.Method {
+		case http.MethodGet:
+			// Sprint detail: sprint metadata + tasks in this sprint
+			type sprintDetail struct {
+				ID           int64            `json:"id"`
+				Title        string           `json:"title"`
+				Status       string           `json:"status"`
+				ProjectID    int64            `json:"project_id"`
+				ProjectTitle string           `json:"project_title,omitempty"`
+				StartDate    string           `json:"start_date,omitempty"`
+				EndDate      string           `json:"end_date,omitempty"`
+				Tasks        []*domain.Task   `json:"tasks"`
+				Progress     struct {
+					Done  int `json:"done"`
+					Total int `json:"total"`
+					Pct   int `json:"pct"`
+				} `json:"progress"`
+			}
+			// Find sprint from the sprints list (no direct GetSprint method)
+			tasks, err := svc.List(domain.TaskFilter{SprintID: &id})
+			if err != nil {
+				errJSON(w, 500, err.Error())
 				return
 			}
+			for _, t := range tasks {
+				t.Tags, _ = store.GetEntityTags("task", t.ID)
+			}
+			// Get sprint metadata via raw sprint listing
+			spList := listSprints(store, svc, defaultDBPath(), nil)
+			det := sprintDetail{ID: id, Tasks: tasks}
+			if det.Tasks == nil {
+				det.Tasks = []*domain.Task{}
+			}
+			for _, sp := range spList {
+				if sp.ID == id {
+					det.Title = sp.Title
+					det.Status = sp.Status
+					det.ProjectID = sp.ProjectID
+					det.ProjectTitle = sp.ProjectTitle
+					det.StartDate = sp.StartDate
+					det.EndDate = sp.EndDate
+					det.Progress.Done = sp.Progress.Done
+					det.Progress.Total = sp.Progress.Total
+					det.Progress.Pct = sp.Progress.Pct
+					break
+				}
+			}
+			writeJSON(w, 200, det)
+
+		case http.MethodPatch:
+			var body map[string]any
+			if err := readJSON(r, &body); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			if status, ok := body["status"].(string); ok {
+				if err := store.UpdateSprintStatus(id, status); err != nil {
+					errJSON(w, 500, "update sprint: "+err.Error())
+					return
+				}
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
-		writeJSON(w, 200, map[string]bool{"ok": true})
 	}
 }
 
@@ -2148,6 +2212,58 @@ func exportHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 
 		default:
 			errJSON(w, 400, "unknown entity: "+entity)
+		}
+	}
+}
+
+// ── Properties ────────────────────────────────────────────────────────────────
+
+// propertiesHandler handles GET/POST/DELETE /api/properties?entity_type=X&entity_id=Y
+func propertiesHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		entityType := q.Get("entity_type")
+		entityIDStr := q.Get("entity_id")
+		entityID, err := strconv.ParseInt(entityIDStr, 10, 64)
+		if err != nil || entityType == "" {
+			errJSON(w, 400, "entity_type and entity_id are required")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			props, err := store.ListProperties(entityType, entityID)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, props)
+		case http.MethodPost:
+			var body struct {
+				Key   string `json:"key"`
+				Value string `json:"value"`
+			}
+			if err := readJSON(r, &body); err != nil || body.Key == "" {
+				errJSON(w, 400, "key is required")
+				return
+			}
+			if err := store.SetProperty(entityType, entityID, body.Key, body.Value); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+		case http.MethodDelete:
+			key := q.Get("key")
+			if key == "" {
+				errJSON(w, 400, "key is required")
+				return
+			}
+			if err := store.DeleteProperty(entityType, entityID, key); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	}
 }
