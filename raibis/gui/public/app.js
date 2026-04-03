@@ -13,6 +13,200 @@ const KANBAN_COLS = ['Backlog','Maintenance','Sprint'];
 const COLOR_OPTIONS = ['blue','green','red','yellow','purple','cyan','orange','pink'];
 const COLOR_HEX = {blue:'#378ADD',green:'#6dcc8a',red:'#e07070',yellow:'#d4a84b',purple:'#a78bfa',cyan:'#22d3ee',orange:'#fb923c',pink:'#f472b6'};
 
+/* ─── Icon / Emoji Picker ─────────────────────────────────────────────── */
+const EMOJI_DATA = {
+  'Objects':  ['📋','✅','⭐','🎯','🔥','💡','📌','📎','🔖','📅','⏰','🔔','💼','📁','📂','🗂️','📊','📈','📉','🗒️','📝','✍️','🖊️','📖','🔍','🔎','💬','📣','🔊'],
+  'Activity': ['🏃','🎓','🎨','🎵','🎮','🏆','💪','🧠','🌱','🌟','⚡','🔧','🛠️','🔬','🔭','🏗️','🚀','✈️','🌍','🏠','💻','📱','🎙️','📡','🏋️','🧘','🚴'],
+  'Symbols':  ['✔️','❌','⚠️','❓','❗','🔴','🟡','🟢','🔵','⚫','⚪','🔑','🔒','🔓','💰','💎','🎁','🏷️','♻️','🔄','⚙️','🎲','🧩','🔮','💫','✨'],
+};
+
+const ICON_DATA = [
+  { name:'task',      svg:'<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>' },
+  { name:'goal',      svg:'<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>' },
+  { name:'project',   svg:'<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>' },
+  { name:'note',      svg:'<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>' },
+  { name:'sprint',    svg:'<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>' },
+  { name:'star',      svg:'<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>' },
+  { name:'heart',     svg:'<path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>' },
+  { name:'flag',      svg:'<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>' },
+  { name:'bookmark',  svg:'<path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>' },
+  { name:'link',      svg:'<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>' },
+  { name:'calendar',  svg:'<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>' },
+  { name:'clock',     svg:'<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>' },
+  { name:'folder',    svg:'<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>' },
+  { name:'brain',     svg:'<path d="M9.5 2a2.5 2.5 0 01.5 5M9.5 2a2.5 2.5 0 00-.5 5"/><path d="M6 5a6 6 0 00-3 10.5M18 5a6 6 0 013 10.5"/><path d="M9 10v4M15 10v4"/><path d="M9 14a3 3 0 006 0"/>' },
+  { name:'chart',     svg:'<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>' },
+  { name:'code',      svg:'<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>' },
+  { name:'settings',  svg:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>' },
+  { name:'layers',    svg:'<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>' },
+  { name:'users',     svg:'<path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>' },
+  { name:'map',       svg:'<polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/>' },
+  { name:'home',      svg:'<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>' },
+];
+
+let _iconPickerEl = null; // singleton picker DOM element
+
+function _svgIcon(pathData, size = 18) {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${pathData}</svg>`;
+}
+
+function _buildIconPicker(entityType, entityId, currentIcon, onSelect) {
+  // Remove any existing picker
+  if (_iconPickerEl) { _iconPickerEl.remove(); _iconPickerEl = null; }
+
+  let activeTab = 'emoji';
+  let filterText = '';
+
+  const el = document.createElement('div');
+  el.className = 'icon-picker-popover';
+  el.id = 'icon-picker-popover';
+
+  function renderContent() {
+    const tabBar = `
+      <div class="icon-picker-tabs">
+        <button class="icon-picker-tab ${activeTab==='emoji'?'active':''}" data-tab="emoji">Emoji</button>
+        <button class="icon-picker-tab ${activeTab==='icons'?'active':''}" data-tab="icons">Icons</button>
+        <button class="icon-picker-tab icon-picker-remove" data-tab="remove">Remove</button>
+      </div>`;
+    const filterBar = `
+      <div class="icon-picker-filter">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input class="icon-picker-search" placeholder="Filter…" value="${filterText.replace(/"/g,'&quot;')}" />
+      </div>`;
+
+    let gridContent = '';
+    if (activeTab === 'emoji') {
+      for (const [group, emojis] of Object.entries(EMOJI_DATA)) {
+        const filtered = filterText
+          ? emojis.filter(e => e.includes(filterText))
+          : emojis;
+        if (!filtered.length) continue;
+        gridContent += `<div class="icon-picker-group-label">${group}</div>
+          <div class="icon-picker-grid">
+            ${filtered.map(e => `<button class="icon-picker-item" data-icon="${e}" title="${e}">${e}</button>`).join('')}
+          </div>`;
+      }
+    } else if (activeTab === 'icons') {
+      const filtered = filterText
+        ? ICON_DATA.filter(i => i.name.includes(filterText.toLowerCase()))
+        : ICON_DATA;
+      gridContent += `<div class="icon-picker-grid">
+        ${filtered.map(i => `<button class="icon-picker-item icon-picker-item-svg" data-icon="__svg:${i.name}" title="${i.name}">${_svgIcon(i.svg, 16)}</button>`).join('')}
+      </div>`;
+    }
+
+    el.innerHTML = tabBar + filterBar + `<div class="icon-picker-body">${gridContent || '<div class="icon-picker-empty">No results</div>'}</div>`;
+
+    el.querySelectorAll('.icon-picker-tab').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        if (btn.dataset.tab === 'remove') {
+          onSelect('');
+          el.remove();
+          _iconPickerEl = null;
+          return;
+        }
+        activeTab = btn.dataset.tab;
+        filterText = '';
+        renderContent();
+      };
+    });
+    const searchEl = el.querySelector('.icon-picker-search');
+    if (searchEl) {
+      searchEl.oninput = (e) => { filterText = e.target.value; renderContent(); };
+      searchEl.onclick = (e) => e.stopPropagation();
+      requestAnimationFrame(() => searchEl.focus());
+    }
+    el.querySelectorAll('.icon-picker-item').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        onSelect(btn.dataset.icon);
+        el.remove();
+        _iconPickerEl = null;
+      };
+    });
+  }
+
+  renderContent();
+  return el;
+}
+
+function showIconPicker(anchorEl, entityType, entityId, currentIcon, onSelect) {
+  if (_iconPickerEl) { _iconPickerEl.remove(); _iconPickerEl = null; return; }
+
+  const picker = _buildIconPicker(entityType, entityId, currentIcon, onSelect);
+  document.body.appendChild(picker);
+  _iconPickerEl = picker;
+
+  // Position below/near anchor
+  const rect = anchorEl.getBoundingClientRect();
+  const pickerW = 280;
+  const left = Math.min(rect.left, window.innerWidth - pickerW - 8);
+  const top = rect.bottom + 6;
+  picker.style.left = Math.max(8, left) + 'px';
+  picker.style.top = top + 'px';
+
+  // Dismiss on click outside
+  const dismiss = (e) => {
+    if (!picker.contains(e.target) && e.target !== anchorEl) {
+      picker.remove();
+      _iconPickerEl = null;
+      document.removeEventListener('click', dismiss, true);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', dismiss, true), 10);
+}
+
+async function loadEntityIcon(entityType, entityId) {
+  try {
+    const props = await api('GET', `/api/properties?entity_type=${entityType}&entity_id=${entityId}`);
+    return props._icon || '';
+  } catch(e) { return ''; }
+}
+
+async function saveEntityIcon(entityType, entityId, icon) {
+  if (!entityId) return;
+  try {
+    if (icon) {
+      await api('POST', `/api/properties?entity_type=${entityType}&entity_id=${entityId}`, { key: '_icon', value: icon });
+    } else {
+      await api('DELETE', `/api/properties?entity_type=${entityType}&entity_id=${entityId}&key=_icon`);
+    }
+  } catch(e) {
+    // Only re-throw server errors (5xx) so callers can revert the optimistic UI update
+    if (e.message && e.message.includes('5')) throw e;
+  }
+}
+
+function renderEntityIcon(icon, size = 22) {
+  if (!icon) return '';
+  if (icon.startsWith('__svg:')) {
+    const name = icon.slice(6);
+    const found = ICON_DATA.find(i => i.name === name);
+    if (found) return `<span class="entity-icon-display" style="width:${size}px;height:${size}px;display:inline-flex;align-items:center;justify-content:center">${_svgIcon(found.svg, size * 0.8)}</span>`;
+  }
+  return `<span class="entity-icon-display" style="font-size:${size}px;line-height:1">${icon}</span>`;
+}
+
+// ── Lazy icon injection for list views ────────────────────────────────
+// Renders placeholders with data-icon-entity and data-icon-id, then
+// fetches icons in parallel and injects them without a full re-render.
+async function injectListIcons(entityType, ids) {
+  if (!ids || !ids.length) return;
+  const unique = [...new Set(ids.map(String))];
+  await Promise.all(unique.map(async (id) => {
+    try {
+      const props = await api('GET', `/api/properties?entity_type=${entityType}&entity_id=${id}`);
+      const icon = props._icon;
+      if (!icon) return;
+      document.querySelectorAll(`[data-icon-entity="${entityType}"][data-icon-id="${id}"]`).forEach(el => {
+        el.innerHTML = renderEntityIcon(icon, parseInt(el.dataset.iconSize) || 16);
+        el.style.display = 'inline-flex';
+      });
+    } catch(e) {}
+  }));
+}
+
 /* ─── State ──────────────────────────────────────────────────────────── */
 let currentView = 'dashboard';
 let currentParams = null;
@@ -61,6 +255,13 @@ function fmtDate(dateStr) {
   const s = stripDate(dateStr);
   const d = new Date(s + 'T00:00:00');
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function fmtDateShort(dateStr) {
+  if (!dateStr) return '';
+  const s = stripDate(dateStr);
+  const [y, m, day] = s.split('-');
+  return `${day}/${m}/${y}`;
 }
 
 function isOverdue(dateStr) {
@@ -212,10 +413,11 @@ function viewToggleHtml(modes, current, storageKey) {
 }
 
 function bindViewToggle(modes, getCurrent, onSwitch) {
-  document.querySelectorAll('.view-toggle-btn').forEach(btn => {
+  const container = document.getElementById('main-content') || document;
+  container.querySelectorAll('.view-toggle-btn[data-mode]').forEach(btn => {
     btn.onclick = () => {
       onSwitch(btn.dataset.mode);
-      document.querySelectorAll('.view-toggle-btn').forEach(b => b.classList.remove('active'));
+      container.querySelectorAll('.view-toggle-btn[data-mode]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
     };
   });
@@ -490,11 +692,28 @@ function taskRowHtml(task, showProject, indent) {
     <div class="task-check ${done ? 'done' : ''}" data-check-id="${task.id}">${done ? '✓' : ''}</div>
     ${catDot}
     <div class="task-content">
-      <div class="${titleCls}">${task.title} ${recurBadge}</div>
+      <div class="${titleCls}"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${task.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle"></span>${task.title} ${recurBadge}</div>
       <div class="task-meta-row">${projBadge}${dueBadge}${tagChips}</div>
     </div>
     <span class="task-row-due-right">${task.due_date ? fmtDate(task.due_date) : ''}</span>
   </li>`;
+}
+
+// Module-level tree row builder — used by dashboard and renderTasks list view
+function buildTaskTreeRows(tasks, allTasks, depth, showProject) {
+  let html = '';
+  for (const t of tasks) {
+    html += taskRowHtml(t, showProject && depth === 0, depth);
+    const isExpanded = expandedTasks.has(String(t.id));
+    const children = allTasks.filter(s => s.parent_task_id === t.id);
+    if (isExpanded && children.length > 0) {
+      html += buildTaskTreeRows(children, allTasks, depth + 1, false);
+      html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
+        <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px;opacity:0.6">+ Add Subtask</button>
+      </li>`;
+    }
+  }
+  return html;
 }
 
 function colorSelect(name, selected) {
@@ -515,16 +734,16 @@ function categoryOptions(selected, includeBlank) {
 function openModal(title, bodyHTML, onSave) {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = bodyHTML;
-  document.getElementById('modal').classList.add('open');
+  const modal = document.getElementById('modal');
+  modal.classList.add('open');
   document.getElementById('modal-backdrop').classList.add('open');
   const saveBtn = document.getElementById('modal-save-btn');
-  if (saveBtn && onSave) {
-    saveBtn.onclick = onSave;
-  }
+  if (saveBtn && onSave) saveBtn.onclick = onSave;
 }
 
 function closeModal() {
-  document.getElementById('modal').classList.remove('open');
+  const modal = document.getElementById('modal');
+  modal.classList.remove('open');
   if (!document.getElementById('slideover').classList.contains('open') &&
       !document.getElementById('form-slideover').classList.contains('open')) {
     document.getElementById('modal-backdrop').classList.remove('open');
@@ -535,13 +754,21 @@ function closeModal() {
 function openSlideover(title, bodyHTML) {
   document.getElementById('slideover-title').textContent = title;
   document.getElementById('slideover-body').innerHTML = bodyHTML;
-  document.getElementById('slideover').classList.add('open');
+  const panel = document.getElementById('slideover');
+  panel.classList.add('open');
   document.getElementById('modal-backdrop').classList.add('open');
+  // Clicking the main slideover body closes the secondary (props) panel
+  panel.onclick = (e) => {
+    const formPanel = document.getElementById('form-slideover');
+    if (formPanel.classList.contains('open') && !formPanel.contains(e.target)) {
+      closeFormSlideover();
+    }
+  };
 }
 
 function closeSlideover() {
-  document.getElementById('slideover').classList.remove('open');
-  // Only remove backdrop if form-slideover is also closed
+  const panel = document.getElementById('slideover');
+  panel.classList.remove('open');
   if (!document.getElementById('form-slideover').classList.contains('open')) {
     document.getElementById('modal-backdrop').classList.remove('open');
   }
@@ -551,13 +778,14 @@ function closeSlideover() {
 function openFormSlideover(title, bodyHTML) {
   document.getElementById('form-slideover-title').textContent = title;
   document.getElementById('form-slideover-body').innerHTML = bodyHTML;
-  document.getElementById('form-slideover').classList.add('open');
+  const panel = document.getElementById('form-slideover');
+  panel.classList.add('open');
   document.getElementById('modal-backdrop').classList.add('open');
 }
 
 function closeFormSlideover() {
-  document.getElementById('form-slideover').classList.remove('open');
-  // Only remove backdrop if task slideover is also closed
+  const panel = document.getElementById('form-slideover');
+  panel.classList.remove('open');
   if (!document.getElementById('slideover').classList.contains('open') &&
       !document.getElementById('modal').classList.contains('open')) {
     document.getElementById('modal-backdrop').classList.remove('open');
@@ -613,7 +841,10 @@ function renderView(view, params) {
   // Sync sidebar active state: detail views highlight their parent nav item
   const sidebarView = { 'project-detail': 'projects', 'goal-detail': 'goals' }[view] || view;
   document.querySelectorAll('[data-view]').forEach(l => l.classList.remove('active'));
-  document.querySelectorAll(`[data-view="${sidebarView}"]`).forEach(l => l.classList.add('active'));
+  const activeNavItems = document.querySelectorAll(`[data-view="${sidebarView}"]`);
+  activeNavItems.forEach(l => l.classList.add('active'));
+  // Animate newly-active nav item
+  if (window.LifeAnimations) activeNavItems.forEach(el => LifeAnimations.navItemEnter(el));
 
   const main = document.getElementById('main-content');
   main.innerHTML = `<div class="view"><div class="loading">Loading…</div></div>`;
@@ -650,7 +881,7 @@ async function renderDashboard() {
       api('GET', '/api/goals'),
       api('GET', '/api/notes'),
       api('GET', '/api/resources'),
-      api('GET', '/api/tasks'),
+      api('GET', '/api/tasks?all=1'),
     ]);
   } catch(e) { data = {}; apiError = e.message || String(e); }
   if (apiError) {
@@ -671,8 +902,12 @@ async function renderDashboard() {
   const projects = data.active_projects || [];
   const todayTasks = data.today_tasks || [];
   const urgentTasks = data.urgent_tasks || [];
-  // Active tasks = all non-done tasks for the "All Tasks" section
+  // Active tasks = all non-done top-level tasks for the "All Tasks" section
+  allTasksCache = allTasks;
   const activeTasks = (allTasks || []).filter(t => t.status !== 'done' && !t.parent_task_id);
+  activeTasks.forEach(t => {
+    t.sub_task_count = allTasks.filter(c => c.parent_task_id === t.id).length;
+  });
 
   const sprintPct = sprint && sprint.total > 0 ? Math.round((sprint.done / sprint.total) * 100) : 0;
 
@@ -795,7 +1030,7 @@ async function renderDashboard() {
             <button class="btn btn-sm btn-ghost widget-action" id="dash-add-task">+ Add Task</button>
           </div>
         </div>
-        <ul class="task-list" id="dash-all-tasks-list">${activeTasks.map(t => taskRowHtml(t, true)).join('') || '<li style="padding:12px;color:var(--text-muted);font-size:13px">No open tasks</li>'}</ul>
+        <ul class="task-list" id="dash-all-tasks-list">${activeTasks.length ? buildTaskTreeRows(activeTasks, allTasks, 0, true) : '<li style="padding:12px;color:var(--text-muted);font-size:13px">No open tasks</li>'}</ul>
       </div>
     </div>
     <div class="cc-grid wide">
@@ -903,6 +1138,18 @@ async function renderDashboard() {
       localStorage.removeItem('daily_note_draft');
     };
   }
+
+  // ── GSAP page enter + stagger animations ──────────────────────────
+  if (window.LifeAnimations) {
+    LifeAnimations.pageEnter('#main-content .view');
+    // Stagger stat cards
+    requestAnimationFrame(() => {
+      LifeAnimations.staggerList('#main-content .stat-card', { stagger: 0.05 });
+      LifeAnimations.staggerList('#main-content .task-row', { stagger: 0.03, delay: 0.1 });
+      LifeAnimations.hoverLiftAll('#main-content .stat-card');
+      LifeAnimations.hoverLiftAll('#main-content .widget');
+    });
+  }
 }
 
 /* ─── Tasks View ─────────────────────────────────────────────────────── */
@@ -926,6 +1173,15 @@ async function renderTasks() {
   }
 
   const topLevel = tasks; // already top-level-only from server default
+  // Compute sub_task_count for all tasks (used by list view + table view)
+  allTasksFull.forEach(t => {
+    t.sub_task_count = allTasksFull.filter(c => c.parent_task_id === t.id).length;
+  });
+  // Copy into topLevel (same objects, but ensure topLevel also has it)
+  topLevel.forEach(t => {
+    if (t.sub_task_count === undefined)
+      t.sub_task_count = allTasksFull.filter(c => c.parent_task_id === t.id).length;
+  });
 
   const taskFilterState = { filters: {}, sort: {}, searchText: '' };
 
@@ -975,11 +1231,11 @@ async function renderTasks() {
   }
 
   // View toggle
-  document.querySelectorAll('.view-toggle-btn').forEach(btn => {
+  document.querySelectorAll('#main-content .view-toggle-btn[data-mode]').forEach(btn => {
     btn.onclick = () => {
       tasksViewMode = btn.dataset.mode;
       localStorage.setItem('tasksViewMode', tasksViewMode);
-      document.querySelectorAll('.view-toggle-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('#main-content .view-toggle-btn[data-mode]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       render();
     };
@@ -996,23 +1252,6 @@ async function renderTasks() {
     });
   }
 
-  function buildTaskTreeRows(tasks, allTasks, depth, showProject) {
-    let html = '';
-    for (const t of tasks) {
-      html += taskRowHtml(t, showProject && depth === 0, depth);
-      const isExpanded = expandedTasks.has(String(t.id));
-      const children = allTasks.filter(s => s.parent_task_id === t.id);
-      if (isExpanded && children.length > 0) {
-        html += buildTaskTreeRows(children, allTasks, depth + 1, false);
-        // Show add subtask button only when expanded, at end of subtask list
-        html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
-          <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px;opacity:0.6">+ Add Subtask</button>
-        </li>`;
-      }
-    }
-    return html;
-  }
-
   function buildListView(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">✓</div><div class="empty-state-text">No tasks found</div></div>`;
     return '<ul class="task-list">' + buildTaskTreeRows(list, allTasksFull, 0, true) + '</ul>';
@@ -1023,7 +1262,7 @@ async function renderTasks() {
 
     const cols = taskTableCols.length ? taskTableCols : TASK_TABLE_COLS;
     const colDef = {
-      title:    { header: 'Title',    cell: (t, depth, toggleBtn) => `<td style="${depth>0?`padding-left:${depth*20}px`:''}>${toggleBtn}<span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span></td>` },
+      title:    { header: 'Title',    cell: (t, depth, toggleBtn) => `<td><div class="task-title-cell" style="${depth>0?`padding-left:${depth*20}px`:''}0px">${toggleBtn}<span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span></div></td>` },
       project:  { header: 'Project',  cell: (t) => `<td>${t.project_title ? `<span class="badge badge-todo">${t.project_title}</span>` : '—'}</td>` },
       status:   { header: 'Status',   cell: (t) => { const sopts = TASK_STATUSES.map(s => `<option value="${s}" ${t.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join(''); return `<td><select class="inline-status-select" data-task-id="${t.id}" style="font-size:11px;padding:2px 6px;border-radius:3px">${sopts}</select></td>`; } },
       priority: { header: 'Priority', cell: (t) => `<td>${priorityBadge(t.priority)}</td>` },
@@ -1035,7 +1274,7 @@ async function renderTasks() {
       let html = '';
       tasks.forEach(t => {
         const children = allTasksFull.filter(c => c.parent_task_id && String(c.parent_task_id) === String(t.id));
-        const hasChildren = children.length > 0;
+        const hasChildren = children.length > 0 || (t.sub_task_count || 0) > 0;
         const isExpanded = expandedTasks.has(String(t.id));
         const toggleBtn = hasChildren
           ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${t.id}" title="Toggle subtasks">▶</span>`
@@ -1044,7 +1283,7 @@ async function renderTasks() {
           ${cols.map(c => colDef[c] ? (c === 'title' ? colDef.title.cell(t, depth, toggleBtn) : colDef[c].cell(t)) : '').join('')}
           <td><button class="btn btn-sm btn-danger task-del-btn" data-task-id="${t.id}">×</button></td>
         </tr>`;
-        if (isExpanded && hasChildren) {
+        if (isExpanded && children.length > 0) {
           html += tableRows(children, depth + 1);
         }
       });
@@ -1132,12 +1371,14 @@ async function renderTasks() {
       }
     }
     bindTasksContentEvents();
+    // Inject entity icons into task title slots (non-blocking)
+    const visibleTaskIds = list.map(t => t.id);
+    injectListIcons('task', visibleTaskIds);
   }
 
   render();
 
   function bindTasksContentEvents() {
-    // Toggle arrows (tasks with subtasks)
     document.querySelectorAll('.task-toggle-arrow').forEach(arrow => {
       arrow.onclick = async (e) => {
         e.stopPropagation();
@@ -1148,84 +1389,19 @@ async function renderTasks() {
       };
     });
 
-    // Add-subtask hover button (tasks without subtasks) → inline input row
+    // Add-subtask hover button (tasks without subtasks) → open new task modal
     document.querySelectorAll('.task-add-sub-btn').forEach(btn => {
       btn.onclick = (e) => {
         e.stopPropagation();
         const parentId = parseInt(btn.dataset.addSubId);
-        const row = btn.closest('.task-row, .task-table-row');
-        if (!row) return;
-        // Toggle .open class (rotates arrow)
-        const alreadyOpen = btn.classList.contains('open');
-        // Remove any existing inline input rows for this parent
-        document.querySelectorAll(`.inline-task-input-row[data-parent-id="${parentId}"]`).forEach(r => r.remove());
-        if (alreadyOpen) {
-          btn.classList.remove('open');
-          return;
-        }
-        btn.classList.add('open');
-        // Build inline input row
-        const isTableRow = row.tagName === 'TR';
-        if (isTableRow) {
-          const colCount = row.querySelectorAll('td').length || 5;
-          const inputRow = document.createElement('tr');
-          inputRow.className = 'inline-task-input-row';
-          inputRow.dataset.parentId = parentId;
-          inputRow.innerHTML = `<td colspan="${colCount}" style="padding:6px 12px">
-            <div style="display:flex;align-items:center;gap:8px">
-              <input type="text" class="inline-task-title-input" placeholder="New subtask title…" style="flex:1;padding:4px 8px;font-size:13px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text)" autofocus />
-              <button class="btn btn-sm btn-primary inline-task-save-btn">Add</button>
-              <button class="btn btn-sm btn-ghost inline-cancel-btn">Cancel</button>
-            </div>
-          </td>`;
-          row.after(inputRow);
-          inputRow.querySelector('.inline-task-title-input').focus();
-          inputRow.querySelector('.inline-cancel-btn').onclick = (e) => { e.stopPropagation(); inputRow.remove(); btn.classList.remove('open'); };
-          const saveInline = async () => {
-            const title = inputRow.querySelector('.inline-task-title-input').value.trim();
-            if (!title) return;
-            try {
-              await api('POST', '/api/tasks', { title, parent_task_id: parentId, status: 'todo', priority: 'medium' });
-              allTasksFull = await api('GET', '/api/tasks?all=1');
-              allTasksCache = allTasksFull;
-              const parent = topLevel.find(t => t.id === parentId);
-              if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
-              expandedTasks.add(String(parentId));
-              render();
-            } catch(err) { alert('Error creating subtask: ' + err.message); }
-          };
-          inputRow.querySelector('.inline-task-save-btn').onclick = (e) => { e.stopPropagation(); saveInline(); };
-          inputRow.querySelector('.inline-task-title-input').onkeydown = (e) => { if (e.key === 'Enter') saveInline(); if (e.key === 'Escape') { inputRow.remove(); btn.classList.remove('open'); } };
-        } else {
-          // List row
-          const indentStyle = row.style.paddingLeft || '12px';
-          const inputRow = document.createElement('li');
-          inputRow.className = 'inline-task-input-row';
-          inputRow.dataset.parentId = parentId;
-          inputRow.style.paddingLeft = indentStyle;
-          inputRow.innerHTML = `
-            <input type="text" class="inline-task-title-input" placeholder="New subtask title…" autofocus />
-            <button class="btn btn-sm btn-primary inline-task-save-btn">Add</button>
-            <button class="btn btn-sm btn-ghost inline-cancel-btn">Cancel</button>`;
-          row.after(inputRow);
-          inputRow.querySelector('.inline-task-title-input').focus();
-          inputRow.querySelector('.inline-cancel-btn').onclick = (e) => { e.stopPropagation(); inputRow.remove(); btn.classList.remove('open'); };
-          const saveInline = async () => {
-            const title = inputRow.querySelector('.inline-task-title-input').value.trim();
-            if (!title) return;
-            try {
-              await api('POST', '/api/tasks', { title, parent_task_id: parentId, status: 'todo', priority: 'medium' });
-              allTasksFull = await api('GET', '/api/tasks?all=1');
-              allTasksCache = allTasksFull;
-              const parent = topLevel.find(t => t.id === parentId);
-              if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
-              expandedTasks.add(String(parentId));
-              render();
-            } catch(err) { alert('Error creating subtask: ' + err.message); }
-          };
-          inputRow.querySelector('.inline-task-save-btn').onclick = (e) => { e.stopPropagation(); saveInline(); };
-          inputRow.querySelector('.inline-task-title-input').onkeydown = (e) => { if (e.key === 'Enter') saveInline(); if (e.key === 'Escape') { inputRow.remove(); btn.classList.remove('open'); } };
-        }
+        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+          allTasksFull = await api('GET', '/api/tasks?all=1');
+          allTasksCache = allTasksFull;
+          const parent = topLevel.find(t => t.id === parentId);
+          if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
+          expandedTasks.add(String(parentId));
+          render();
+        });
       };
     });
 
@@ -1252,6 +1428,17 @@ async function renderTasks() {
             e.target.classList.contains('task-check') ||
             e.target.dataset.checkId ||
             e.target.closest('.task-toggle-arrow, .task-add-sub-btn, .inline-subtask-input')) return;
+        showTaskSlideover(row.dataset.taskId);
+      };
+    });
+    // Table row click → slideover (guards against toggle/add-sub/select)
+    document.querySelectorAll('.task-table-row').forEach(row => {
+      row.onclick = (e) => {
+        if (e.target.closest('.task-toggle-arrow') ||
+            e.target.closest('.task-add-sub-btn') ||
+            e.target.tagName === 'SELECT' ||
+            e.target.tagName === 'BUTTON' ||
+            e.target.closest('button')) return;
         showTaskSlideover(row.dataset.taskId);
       };
     });
@@ -1697,7 +1884,7 @@ async function renderNotes() {
     const tagChips = (n.tags || []).map(t => tagHtml(t)).join('');
     return `<div class="note-card" data-note-id="${n.id}">
       <div class="flex-between gap-8">
-        <div class="note-title">${n.title || 'Untitled'}</div>
+        <div class="note-title"><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle"></span>${n.title || 'Untitled'}</div>
         <div onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-danger note-del-btn" data-note-id="${n.id}">Delete</button>
         </div>
@@ -1779,6 +1966,7 @@ async function renderNotes() {
         `<div style="display:grid;gap:12px">${list.map(buildNoteCard).join('')}</div>`;
     }
     bindNoteEvents();
+    injectListIcons('note', list.map(n => n.id));
   }
 
   document.getElementById('new-note-btn').onclick = () => showNoteModal(null, () => renderNotes());
@@ -1818,11 +2006,15 @@ async function renderSprints() {
     const pct = prog.pct || 0;
     const nextStatus = s.status === 'planned' ? 'active' : s.status === 'active' ? 'completed' : null;
     const nextLabel = s.status === 'planned' ? 'Start' : s.status === 'active' ? 'Complete' : null;
+    const prevStatus = s.status === 'active' ? 'planned' : s.status === 'completed' ? 'active' : null;
+    const prevLabel = s.status === 'active' ? '↩ Planned' : s.status === 'completed' ? '↩ Active' : null;
     return `<div class="card">
       <div class="flex-between gap-8" style="margin-bottom:6px">
         <span class="card-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)">${s.title}</span>
         <div class="flex gap-8">
+          ${prevStatus ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
           ${nextStatus ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="${nextStatus}">${nextLabel}</button>` : ''}
+          <button class="btn btn-sm btn-ghost sprint-edit-btn" data-sprint-id="${s.id}">Edit</button>
           <button class="btn btn-sm btn-danger sprint-del-btn" data-sprint-id="${s.id}">Delete</button>
         </div>
       </div>
@@ -1850,8 +2042,11 @@ async function renderSprints() {
         <td>${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</td>
         <td>${pct}%</td>
         <td>
+          ${s.status === 'active' ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="planned">↩ Planned</button>` : ''}
+          ${s.status === 'completed' ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="active">↩ Active</button>` : ''}
           ${s.status === 'planned' ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="active">Start</button>` : ''}
           ${s.status === 'active' ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="completed">Complete</button>` : ''}
+          <button class="btn btn-sm btn-ghost sprint-edit-btn" data-sprint-id="${s.id}">Edit</button>
           <button class="btn btn-sm btn-danger sprint-del-btn" data-sprint-id="${s.id}">Del</button>
         </td>
       </tr>`;
@@ -1935,11 +2130,27 @@ async function renderSprints() {
         else renderSprints();
       };
     });
+    document.querySelectorAll('.sprint-prev-status-btn').forEach(el => {
+      el.onclick = async (e) => {
+        e.stopPropagation();
+        const prevStatus = el.dataset.prev;
+        if (!confirm(`Revert sprint to "${prevStatus}"?`)) return;
+        await api('PATCH', `/api/sprints/${el.dataset.sprintId}`, { status: prevStatus });
+        renderSprints();
+      };
+    });
     document.querySelectorAll('.sprint-del-btn').forEach(el => {
       el.onclick = async () => {
         if (!confirm('Delete this sprint?')) return;
         await api('DELETE', `/api/sprints/${el.dataset.sprintId}`);
         renderSprints();
+      };
+    });
+    document.querySelectorAll('.sprint-edit-btn').forEach(el => {
+      el.onclick = (e) => {
+        e.stopPropagation();
+        const s = sprints.find(x => String(x.id) === el.dataset.sprintId);
+        if (s) showSprintModal(projects, s);
       };
     });
   }
@@ -1991,6 +2202,8 @@ async function renderSprintDetail(sprintId) {
 
   const nextStatus = sprint.status === 'planned' ? 'active' : sprint.status === 'active' ? 'completed' : null;
   const nextLabel = sprint.status === 'planned' ? 'Start Sprint' : sprint.status === 'active' ? 'Complete Sprint' : null;
+  const prevStatus = sprint.status === 'active' ? 'planned' : sprint.status === 'completed' ? 'active' : null;
+  const prevLabel = sprint.status === 'active' ? '↩ Revert to Planned' : sprint.status === 'completed' ? '↩ Revert to Active' : null;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
@@ -2004,6 +2217,7 @@ async function renderSprintDetail(sprintId) {
       </div>
       <div class="flex gap-8">
         <button class="btn btn-ghost" id="sd-back-btn">← Back</button>
+        ${prevStatus ? `<button class="btn btn-ghost" id="sd-prev-status-btn" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
         ${nextStatus ? `<button class="btn btn-ghost" id="sd-status-btn" data-next="${nextStatus}">${nextLabel}</button>` : ''}
         <button class="btn btn-primary" id="sd-add-task-btn">+ Task</button>
       </div>
@@ -2023,6 +2237,12 @@ async function renderSprintDetail(sprintId) {
   document.getElementById('sd-back-btn').onclick = () => renderView('sprints');
   document.getElementById('sd-add-task-btn').onclick = () =>
     showNewTaskModal({ sprint_id: parseInt(sprintId) }, () => renderSprintDetail(sprintId));
+  document.getElementById('sd-prev-status-btn')?.addEventListener('click', async (e) => {
+    const prev = e.currentTarget.dataset.prev;
+    if (!confirm(`Revert sprint to "${prev}"?`)) return;
+    await api('PATCH', `/api/sprints/${sprintId}`, { status: prev });
+    renderSprintDetail(sprintId);
+  });
   document.getElementById('sd-status-btn')?.addEventListener('click', async (e) => {
     const next = e.currentTarget.dataset.next;
     await api('PATCH', `/api/sprints/${sprintId}`, { status: next });
@@ -2337,6 +2557,10 @@ async function renderProjectDetail(projectId) {
     <div class="view-header">
       <div>
         ${goalLink ? `<div class="breadcrumb" style="margin-bottom:6px">${goalLink}</div>` : ''}
+        <button class="entity-icon-add-btn" id="proj-icon-btn">
+          <span id="proj-icon-display"></span>
+          <span id="proj-icon-add-label">Add icon</span>
+        </button>
         <h1 class="view-title">${p.title}</h1>
         <div class="flex gap-8" style="margin-top:6px">
           ${statusBadge(p.status)}
@@ -2386,6 +2610,31 @@ async function renderProjectDetail(projectId) {
     const data = await api('GET', `/api/export/project/${projectId}`);
     downloadJSON(data, `project-${p.title}.json`);
   };
+  // ── Project icon picker ──────────────────────────────────────────────
+  const projIconBtn = document.getElementById('proj-icon-btn');
+  const projIconDisplay = document.getElementById('proj-icon-display');
+  const projIconAddLabel = document.getElementById('proj-icon-add-label');
+  loadEntityIcon('project', projectId).then(icon => {
+    if (projIconDisplay) {
+      projIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 32) : '';
+      projIconDisplay.dataset.icon = icon || '';
+      if (projIconAddLabel) projIconAddLabel.textContent = icon ? '' : 'Add icon';
+    }
+  });
+  if (projIconBtn) {
+    projIconBtn.onclick = (e) => {
+      e.stopPropagation();
+      const cur = projIconDisplay ? projIconDisplay.dataset.icon || '' : '';
+      showIconPicker(projIconBtn, 'project', projectId, cur, (newIcon) => {
+        if (projIconDisplay) { projIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : ''; projIconDisplay.dataset.icon = newIcon; }
+        if (projIconAddLabel) projIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+        saveEntityIcon('project', projectId, newIcon).catch(() => {
+          if (projIconDisplay) { projIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; projIconDisplay.dataset.icon = cur; }
+          if (projIconAddLabel) projIconAddLabel.textContent = cur ? '' : 'Add icon';
+        });
+      });
+    };
+  }
   if (goalLink) {
     document.querySelectorAll('.bc-goal').forEach(el => {
       el.onclick = () => renderView('goal-detail', el.dataset.goalId);
@@ -2475,6 +2724,10 @@ async function renderGoalDetail(goalId) {
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
       <div>
+        <button class="entity-icon-add-btn" id="goal-icon-btn">
+          <span id="goal-icon-display"></span>
+          <span id="goal-icon-add-label">Add icon</span>
+        </button>
         <h1 class="view-title">${g.title}</h1>
         <div class="flex gap-8" style="margin-top:6px">
           ${statusBadge(g.status)}
@@ -2533,6 +2786,31 @@ async function renderGoalDetail(goalId) {
   document.getElementById('gd-add-task-btn').onclick = () => showNewTaskModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
   document.getElementById('gd-add-note-btn').onclick = () => showNoteModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
   document.getElementById('gd-add-res-btn').onclick = () => showResourceModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
+  // ── Goal icon picker ──────────────────────────────────────────────────
+  const goalIconBtn = document.getElementById('goal-icon-btn');
+  const goalIconDisplay = document.getElementById('goal-icon-display');
+  const goalIconAddLabel = document.getElementById('goal-icon-add-label');
+  loadEntityIcon('goal', goalId).then(icon => {
+    if (goalIconDisplay) {
+      goalIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 32) : '';
+      goalIconDisplay.dataset.icon = icon || '';
+      if (goalIconAddLabel) goalIconAddLabel.textContent = icon ? '' : 'Add icon';
+    }
+  });
+  if (goalIconBtn) {
+    goalIconBtn.onclick = (e) => {
+      e.stopPropagation();
+      const cur = goalIconDisplay ? goalIconDisplay.dataset.icon || '' : '';
+      showIconPicker(goalIconBtn, 'goal', goalId, cur, (newIcon) => {
+        if (goalIconDisplay) { goalIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : ''; goalIconDisplay.dataset.icon = newIcon; }
+        if (goalIconAddLabel) goalIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+        saveEntityIcon('goal', goalId, newIcon).catch(() => {
+          if (goalIconDisplay) { goalIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; goalIconDisplay.dataset.icon = cur; }
+          if (goalIconAddLabel) goalIconAddLabel.textContent = cur ? '' : 'Add icon';
+        });
+      });
+    };
+  }
   document.querySelectorAll('#gd-proj-list .detail-nav').forEach(el => {
     el.onclick = () => renderView('project-detail', el.dataset.projId);
   });
@@ -2621,28 +2899,10 @@ async function showTaskSlideover(taskId) {
 
   const subtasks = task.sub_tasks || [];
   const tags = task.tags || [];
-  const selectedTagIds = tags.map(t => t.id);
 
-  // Breadcrumb
-  const bcParts = [];
-  if (task.goal_title) bcParts.push(`<span class="bc-crumb bc-goal" style="cursor:pointer" data-goal-id="${task.goal_id}">${task.goal_title}</span>`);
-  if (task.project_title) bcParts.push(`<span class="bc-crumb bc-proj" style="cursor:pointer" data-proj-id="${task.project_id}">${task.project_title}</span>`);
-  if (task.parent_task_title) bcParts.push(`<span class="bc-crumb" style="cursor:pointer" data-parent-id="${task.parent_task_id}">${task.parent_task_title}</span>`);
-  const breadcrumb = bcParts.length ? `<div class="breadcrumb">${bcParts.join('<span class="bc-sep">›</span>')}</div>` : '';
-
-  const catOpts = categoryOptions(task.category_id, true);
-  const statusOpts = TASK_STATUSES.map(s =>
-    `<option value="${s}" ${task.status === s ? 'selected' : ''}>${s.replace('_',' ')}</option>`).join('');
-  const prioOpts = TASK_PRIORITIES.map(p =>
-    `<option value="${p}" ${task.priority === p ? 'selected' : ''}>${p}</option>`).join('');
-
-  // Fetch projects and goals for selects
+  // Fetch projects and goals for comboboxes
   let allProjects = [], allGoals = [];
   try { [allProjects, allGoals] = await Promise.all([api('GET', '/api/projects'), api('GET', '/api/goals')]); } catch(e) {}
-  const projOpts = '<option value="">— none —</option>' + allProjects.map(p =>
-    `<option value="${p.id}" ${String(p.id)===String(task.project_id)?'selected':''}>${p.title}</option>`).join('');
-  const goalOpts = '<option value="">— none —</option>' + allGoals.map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(task.goal_id)?'selected':''}>${g.title}</option>`).join('');
 
   const pomPlanned = task.pomodoros_planned || 0;
   const pomDone = task.pomodoros_finished || 0;
@@ -2683,11 +2943,7 @@ async function showTaskSlideover(taskId) {
       </table>
     </div>` : '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No subtasks</div>';
 
-  const tagPicker = allTags.map(t => {
-    const hex = COLOR_HEX[t.color] || t.color || '#378ADD';
-    const sel = selectedTagIds.includes(t.id) ? 'selected' : '';
-    return `<span class="tag-chip ${sel}" data-tag-id="${t.id}" style="color:${hex}">${t.name}</span>`;
-  }).join('');
+  const tagPicker = null; // legacy — tags now handled via combobox chip
 
   const notesHtml = (task.notes || []).map(n =>
     `<div class="note-card" style="margin-bottom:8px">
@@ -2702,43 +2958,66 @@ async function showTaskSlideover(taskId) {
       ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" style="font-size:12px;color:var(--text-muted)">↗</a>` : ''}
     </div>`).join('') || '<div style="color:var(--text-muted);font-size:13px">No linked resources</div>';
 
+  // ── Breadcrumb parts inline ──────────────────────────────────────────
+  let bcHtml = '';
+  if (task.goal_title) {
+    bcHtml += `<span class="bc-part bc-goal" data-goal-id="${task.goal_id}">${task.goal_title}</span><span class="bc-sep">›</span>`;
+  }
+  if (task.project_title) {
+    bcHtml += `<span class="bc-part bc-proj" data-proj-id="${task.project_id}">${task.project_title}</span><span class="bc-sep">›</span>`;
+  }
+  if (task.parent_task_title) {
+    bcHtml += `<span class="bc-part" data-parent-id="${task.parent_task_id}">${task.parent_task_title}</span><span class="bc-sep">›</span>`;
+  }
+  const bcPrefix = bcHtml ? `<div class="detail-bc-prefix">${bcHtml}</div>` : '';
+
+  // ── Date range display helper ─────────────────────────────────────────
+  function fmtDateRange(start, end) {
+    const fmt = (d) => {
+      if (!d) return null;
+      const dt = new Date(stripDate(d) + 'T00:00:00');
+      return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    };
+    const s = fmt(start), e = fmt(end);
+    if (s && e && s !== e) return `${s} → ${e}`;
+    return s || e || '—';
+  }
+
+  // ── Property chip display values ──────────────────────────────────────
+  const catName = allCategories ? (allCategories.find(c => String(c.id) === String(task.category_id)) || {}).name : task.category_id;
+  const projName = allProjects.find(p => String(p.id) === String(task.project_id)) ? allProjects.find(p => String(p.id) === String(task.project_id)).title : null;
+  const goalName = allGoals.find(g => String(g.id) === String(task.goal_id)) ? allGoals.find(g => String(g.id) === String(task.goal_id)).title : null;
+
   const body = `
-    ${breadcrumb}
-    <input class="detail-title-input" id="detail-title" value="${(task.title || '').replace(/"/g, '&quot;')}" />
-    <div class="detail-grid">
-      <div class="detail-field">
-        <label>Status</label>
-        <select id="detail-status">${statusOpts}</select>
-      </div>
-      <div class="detail-field">
-        <label>Priority</label>
-        <select id="detail-priority">${prioOpts}</select>
-      </div>
-      <div class="detail-field">
-        <label>Due Date</label>
-        <input type="date" id="detail-due" value="${stripDate(task.due_date)}" />
-      </div>
-      <div class="detail-field">
-        <label>Focus Block</label>
-        <input type="date" id="detail-focus" value="${stripDate(task.focus_block)}" />
-      </div>
-      <div class="detail-field">
-        <label>Category</label>
-        <select id="detail-category">${catOpts}</select>
-      </div>
-      <div class="detail-field">
-        <label>Story Points</label>
-        <input type="number" id="detail-points" value="${task.story_points || ''}" min="0" />
-      </div>
-      <div class="detail-field">
-        <label>Goal</label>
-        <select id="detail-goal">${goalOpts}</select>
-      </div>
-      <div class="detail-field">
-        <label>Project</label>
-        <select id="detail-project">${projOpts}</select>
-      </div>
+    <button class="entity-icon-add-btn" id="task-icon-add-btn">
+      <span id="task-icon-display"></span>
+      <span id="task-icon-add-label">Add icon</span>
+    </button>
+    <div class="detail-title-area">
+      ${bcPrefix}
+      <textarea class="detail-title-input" id="detail-title" rows="1">${(task.title || '').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
     </div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip chip-status-${task.status}" id="chip-status" data-key="status">
+        <span class="chip-label">Status</span>
+        <span class="chip-value">${task.status.replace('_',' ')}</span>
+      </button>
+      <button class="prop-chip chip-priority-${task.priority}" id="chip-priority" data-key="priority">
+        <span class="chip-label">Priority</span>
+        <span class="chip-value">${task.priority}</span>
+      </button>
+      <button class="prop-chip" id="chip-due" data-key="due">
+        <span class="chip-label">Due</span>
+        <span class="chip-value" id="chip-due-val">${fmtDateRange(task.start_date, task.due_date)}</span>
+      </button>
+      <button class="prop-chip" id="chip-tags" data-key="tags">
+        <span class="chip-label">Tags</span>
+        <span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span>
+      </button>
+      <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
+    </div>
+
     <div class="form-group">
       <label class="form-label">Description</label>
       <textarea id="detail-desc" style="width:100%;min-height:80px">${task.description || ''}</textarea>
@@ -2749,10 +3028,6 @@ async function showTaskSlideover(taskId) {
         <button class="btn btn-sm btn-ghost" id="add-subtask-btn">+ Add</button>
       </div>
       <div id="subtask-list">${subtasksHtml}</div>
-    </div>
-    <div class="form-group" style="margin-top:20px">
-      <label class="form-label">Tags</label>
-      <div class="tag-picker" id="tag-picker">${tagPicker || '<span style="font-size:12px;color:var(--text-muted)">No tags available</span>'}</div>
     </div>
     <div class="subtask-section">
       <div class="subtask-section-title">
@@ -2785,21 +3060,19 @@ async function showTaskSlideover(taskId) {
 
   openSlideover(task.title, body);
 
+  // ── patchTask + handleStatusChange ───────────────────────────────────
   async function patchTask(data) {
     try { await api('PATCH', `/api/tasks/${taskId}`, data); } catch(e) { return; }
-    // Refresh background view without closing the slideover (call render functions directly)
     const v = currentView;
     if (v === 'tasks') renderTasks();
     else if (v === 'dashboard') renderDashboard();
     else if (v === 'project-detail' && currentParams) renderProjectDetail(currentParams);
     else if (v === 'goal-detail' && currentParams) renderGoalDetail(currentParams);
-    // Re-fetch and re-render the slideover body with updated data
     showTaskSlideover(taskId);
   }
 
   async function handleStatusChange(newStatus) {
     await patchTask({ status: newStatus });
-    // Recurring: when marked done, recreate with next due date
     if (newStatus === 'done' && task.recur_interval && task.recur_interval > 0) {
       const interval = task.recur_interval;
       const unit = (task.recur_unit || 'days').toLowerCase();
@@ -2826,15 +3099,420 @@ async function showTaskSlideover(taskId) {
     }
   }
 
-  document.getElementById('detail-title').onblur = (e) => patchTask({ title: e.target.value });
-  document.getElementById('detail-status').onchange = (e) => handleStatusChange(e.target.value);
-  document.getElementById('detail-priority').onchange = (e) => patchTask({ priority: e.target.value });
-  document.getElementById('detail-due').onchange = (e) => patchTask({ due_date: e.target.value || null });
-  document.getElementById('detail-focus').onchange = (e) => patchTask({ focus_block: e.target.value || null });
-  document.getElementById('detail-category').onchange = (e) => patchTask({ category_id: e.target.value ? parseInt(e.target.value) : null });
-  document.getElementById('detail-points').onchange = (e) => patchTask({ story_points: parseInt(e.target.value) || 0 });
-  document.getElementById('detail-goal').onchange = (e) => patchTask({ goal_id: e.target.value ? parseInt(e.target.value) : null });
-  document.getElementById('detail-project').onchange = (e) => patchTask({ project_id: e.target.value ? parseInt(e.target.value) : null });
+  // ── Auto-resize title textarea ────────────────────────────────────────
+  const titleTA = document.getElementById('detail-title');
+  titleTA.style.height = 'auto';
+  titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => {
+    titleTA.style.height = 'auto';
+    titleTA.style.height = titleTA.scrollHeight + 'px';
+  });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  titleTA.onblur = (e) => patchTask({ title: e.target.value });
+
+  // ── Task icon add button (above title) ────────────────────────────────
+  const taskIconAddBtn = document.getElementById('task-icon-add-btn');
+  const taskIconDisplay = document.getElementById('task-icon-display');
+  const taskIconAddLabel = document.getElementById('task-icon-add-label');
+  loadEntityIcon('task', taskId).then(icon => {
+    if (icon) {
+      taskIconDisplay.innerHTML = renderEntityIcon(icon, 32);
+      taskIconDisplay.dataset.icon = icon;
+      taskIconAddLabel.textContent = '';
+    }
+  });
+  taskIconAddBtn.onclick = (e) => {
+    e.stopPropagation();
+    const cur = taskIconDisplay.dataset.icon || '';
+    showIconPicker(taskIconAddBtn, 'task', taskId, cur, (newIcon) => {
+      taskIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
+      taskIconDisplay.dataset.icon = newIcon;
+      taskIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      saveEntityIcon('task', taskId, newIcon).catch(() => {
+        taskIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 32) : '';
+        taskIconDisplay.dataset.icon = cur;
+        taskIconAddLabel.textContent = cur ? '' : 'Add icon';
+      });
+    });
+  };
+
+
+  // openCombo(anchorEl, items, currentVal, onSelect, opts)
+  // items: [{ value, label, color? }]
+  // opts: { allowCreate, multiSelect, selectedIds }
+  let _comboEl = null;
+  function closeCombo() {
+    if (_comboEl) { _comboEl.remove(); _comboEl = null; }
+    document.removeEventListener('mousedown', _comboOutside);
+  }
+  function _comboOutside(e) {
+    if (_comboEl && !_comboEl.contains(e.target)) closeCombo();
+  }
+
+  function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
+    closeCombo();
+    const { allowCreate = false, multiSelect = false, selectedIds = [] } = opts;
+    let filter = '';
+    let focusIdx = -1;
+    let localSelected = new Set(selectedIds.map(String));
+
+    _comboEl = document.createElement('div');
+    _comboEl.className = 'combo-popover';
+
+    function render() {
+      const filtered = filter
+        ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase()))
+        : items;
+      const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+
+      _comboEl.innerHTML = `
+        <div class="combo-search-wrap">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" />
+        </div>
+        <div class="combo-list">
+          ${filtered.length ? filtered.map((it, i) => {
+            const isSel = multiSelect ? localSelected.has(String(it.value)) : String(it.value) === String(currentVal);
+            const colorDot = it.color ? `<span style="width:8px;height:8px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0"></span>` : '';
+            return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${colorDot}${it.label}</div>`;
+          }).join('') : '<div class="combo-empty">No results</div>'}
+          ${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Create "${filter.trim()}"</div>` : ''}
+        </div>`;
+
+      const inp = _comboEl.querySelector('.combo-search');
+      inp.focus();
+      // Set cursor at end
+      inp.setSelectionRange(inp.value.length, inp.value.length);
+
+      inp.oninput = (e) => { filter = e.target.value; focusIdx = -1; render(); };
+      inp.onkeydown = (e) => {
+        const comboItems = _comboEl.querySelectorAll('.combo-item');
+        if (e.key === 'ArrowDown') { e.preventDefault(); focusIdx = Math.min(focusIdx + 1, comboItems.length - 1); render(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); focusIdx = Math.max(focusIdx - 1, 0); render(); }
+        else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (focusIdx >= 0 && comboItems[focusIdx]) comboItems[focusIdx].click();
+        }
+        else if (e.key === 'Escape') closeCombo();
+      };
+
+      _comboEl.querySelectorAll('.combo-item').forEach(el => {
+        el.onclick = async (e) => {
+          e.stopPropagation();
+          if (el.dataset.create) {
+            // Create new tag/category
+            await onSelect({ create: el.dataset.create });
+            closeCombo();
+          } else {
+            if (multiSelect) {
+              const v = el.dataset.val;
+              if (localSelected.has(v)) localSelected.delete(v);
+              else localSelected.add(v);
+              onSelect({ multiIds: [...localSelected] });
+              render();
+            } else {
+              onSelect({ value: el.dataset.val, label: el.dataset.label });
+              closeCombo();
+            }
+          }
+        };
+      });
+    }
+
+    render();
+
+    // Position below anchor
+    const rect = anchorEl.getBoundingClientRect();
+    _comboEl.style.top = (rect.bottom + 4) + 'px';
+    _comboEl.style.left = rect.left + 'px';
+    document.body.appendChild(_comboEl);
+
+    // Adjust if off-screen right
+    requestAnimationFrame(() => {
+      if (!_comboEl) return;
+      const cr = _comboEl.getBoundingClientRect();
+      if (cr.right > window.innerWidth - 8) {
+        _comboEl.style.left = (window.innerWidth - cr.width - 8) + 'px';
+      }
+    });
+
+    setTimeout(() => document.addEventListener('mousedown', _comboOutside), 0);
+  }
+
+  // ── Date range picker ─────────────────────────────────────────────────
+  let _dpEl = null;
+  function closeDatePicker() {
+    if (_dpEl) { _dpEl.remove(); _dpEl = null; }
+    document.removeEventListener('mousedown', _dpOutside);
+  }
+  function _dpOutside(e) {
+    if (_dpEl && !_dpEl.contains(e.target)) closeDatePicker();
+  }
+
+  function openDateRangePicker(anchorEl, startVal, endVal, onChange) {
+    closeDatePicker();
+    const today = new Date(); today.setHours(0,0,0,0);
+    let viewYear = today.getFullYear();
+    let viewMonth = today.getMonth();
+    let rangeStart = startVal ? new Date(startVal + 'T00:00:00') : null;
+    let rangeEnd = endVal ? new Date(endVal + 'T00:00:00') : null;
+    let pickingEnd = !!rangeStart; // if start exists, next click sets end
+
+    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+
+    function toISO(d) { return d ? d.toISOString().split('T')[0] : null; }
+
+    _dpEl = document.createElement('div');
+    _dpEl.className = 'datepicker-popover';
+
+    function renderPicker() {
+      const firstDay = new Date(viewYear, viewMonth, 1);
+      let startDow = firstDay.getDay(); // 0=Sun
+      startDow = startDow === 0 ? 6 : startDow - 1; // Mon=0
+
+      const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+      let dayGrid = '';
+      let dayNum = 1 - startDow;
+      for (let r = 0; r < 6; r++) {
+        for (let c = 0; c < 7; c++, dayNum++) {
+          if (dayNum < 1 || dayNum > daysInMonth) {
+            dayGrid += `<div class="dp-day other-month"></div>`;
+          } else {
+            const d = new Date(viewYear, viewMonth, dayNum); d.setHours(0,0,0,0);
+            const iso = toISO(d);
+            let cls = 'dp-day';
+            if (d.getTime() === today.getTime()) cls += ' today';
+            if (rangeStart && rangeEnd) {
+              if (d.getTime() === rangeStart.getTime()) cls += ' range-start';
+              else if (d.getTime() === rangeEnd.getTime()) cls += ' range-end';
+              else if (d > rangeStart && d < rangeEnd) cls += ' in-range';
+            } else if (rangeStart && d.getTime() === rangeStart.getTime()) {
+              cls += ' selected';
+            }
+            dayGrid += `<div class="${cls}" data-iso="${iso}">${dayNum}</div>`;
+          }
+        }
+      }
+
+      const rangeLabel = rangeStart && rangeEnd
+        ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → ${rangeEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'})}`
+        : rangeStart
+        ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → pick end`
+        : 'Pick start date';
+
+      _dpEl.innerHTML = `
+        <div class="dp-header">
+          <button class="dp-nav-btn" id="dp-prev">‹</button>
+          <span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span>
+          <button class="dp-nav-btn" id="dp-next">›</button>
+        </div>
+        <div class="dp-grid">
+          ${DAYS.map(d => `<div class="dp-day-head">${d}</div>`).join('')}
+          ${dayGrid}
+        </div>
+        <div class="dp-footer">
+          <span class="dp-footer-hint">${rangeLabel}</span>
+          <button class="dp-clear-btn" id="dp-clear">Clear</button>
+        </div>`;
+
+      _dpEl.querySelector('#dp-prev').onclick = () => {
+        viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; }
+        renderPicker();
+      };
+      _dpEl.querySelector('#dp-next').onclick = () => {
+        viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; }
+        renderPicker();
+      };
+      _dpEl.querySelector('#dp-clear').onclick = () => {
+        rangeStart = null; rangeEnd = null; pickingEnd = false;
+        onChange(null, null);
+        renderPicker();
+      };
+
+      _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => {
+        el.onclick = () => {
+          const clicked = new Date(el.dataset.iso + 'T00:00:00');
+          if (!rangeStart || (!pickingEnd && rangeEnd)) {
+            // Start fresh
+            rangeStart = clicked; rangeEnd = null; pickingEnd = true;
+          } else if (pickingEnd) {
+            if (clicked < rangeStart) { rangeEnd = rangeStart; rangeStart = clicked; }
+            else { rangeEnd = clicked; }
+            pickingEnd = false;
+            onChange(toISO(rangeStart), toISO(rangeEnd));
+          }
+          renderPicker();
+        };
+      });
+    }
+
+    renderPicker();
+
+    // Position
+    const rect = anchorEl.getBoundingClientRect();
+    _dpEl.style.top = (rect.bottom + 4) + 'px';
+    _dpEl.style.left = rect.left + 'px';
+    document.body.appendChild(_dpEl);
+
+    requestAnimationFrame(() => {
+      if (!_dpEl) return;
+      const cr = _dpEl.getBoundingClientRect();
+      if (cr.right > window.innerWidth - 8) _dpEl.style.left = (window.innerWidth - cr.width - 8) + 'px';
+      if (cr.bottom > window.innerHeight - 8) _dpEl.style.top = (rect.top - cr.height - 4) + 'px';
+    });
+
+    setTimeout(() => document.addEventListener('mousedown', _dpOutside), 0);
+  }
+
+  // ── Chip click handlers ───────────────────────────────────────────────
+  document.getElementById('chip-status').onclick = (e) => {
+    e.stopPropagation();
+    const items = TASK_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') }));
+    openCombo(e.currentTarget, items, task.status, async ({ value }) => {
+      await handleStatusChange(value);
+    });
+  };
+
+  document.getElementById('chip-priority').onclick = (e) => {
+    e.stopPropagation();
+    const items = TASK_PRIORITIES.map(p => ({ value: p, label: p }));
+    openCombo(e.currentTarget, items, task.priority, async ({ value }) => {
+      await patchTask({ priority: value });
+    });
+  };
+
+  document.getElementById('chip-due').onclick = (e) => {
+    e.stopPropagation();
+    openDateRangePicker(
+      e.currentTarget,
+      stripDate(task.start_date),
+      stripDate(task.due_date),
+      async (start, end) => {
+        // Optimistic UI
+        const chipVal = document.getElementById('chip-due-val');
+        if (chipVal) chipVal.textContent = fmtDateRange(start, end) || '—';
+        await patchTask({ start_date: start || null, due_date: end || start || null });
+      }
+    );
+  };
+
+  document.getElementById('chip-tags').onclick = (e) => {
+    e.stopPropagation();
+    const items = allTags.map(t => ({ value: t.id, label: t.name, color: t.color }));
+    const curIds = tags.map(t => t.id);
+    openCombo(e.currentTarget, items, null, async ({ multiIds, create }) => {
+      if (create) {
+        // Create tag then re-open
+        try {
+          const newTag = await api('POST', '/api/tags', { name: create, color: 'blue' });
+          allTags.push(newTag);
+          const updIds = [...new Set([...curIds, newTag.id])];
+          await api('PUT', `/api/tasks/${taskId}/tags`, { tag_ids: updIds });
+        } catch(err) {}
+        closeCombo();
+        showTaskSlideover(taskId);
+        return;
+      }
+      const ids = (multiIds || []).map(Number);
+      const chipVal = document.getElementById('chip-tags-val');
+      if (chipVal) {
+        const sel = allTags.filter(t => ids.includes(t.id));
+        chipVal.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      }
+      await api('PUT', `/api/tasks/${taskId}/tags`, { tag_ids: ids });
+    }, { multiSelect: true, allowCreate: true, selectedIds: curIds });
+  };
+
+  // ── ··· More properties panel ─────────────────────────────────────────
+  document.getElementById('prop-chips-more').onclick = (e) => {
+    e.stopPropagation();
+
+    const pIco = (path) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+
+    const panelBody = `<div class="prop-panel" id="all-props-panel">
+      <div class="prop-panel-row">
+        <div class="prop-panel-label">${pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>')} Category</div>
+        <div class="prop-panel-value" id="pp-category">${catName || '—'}</div>
+      </div>
+      <div class="prop-panel-row">
+        <div class="prop-panel-label">${pIco('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>')} Focus Block</div>
+        <div class="prop-panel-value" id="pp-focus">${fmtDateRange(null, task.focus_block) !== '—' ? fmtDateRange(null, task.focus_block) : '—'}</div>
+      </div>
+      <div class="prop-panel-row">
+        <div class="prop-panel-label">${pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>')} Story Points</div>
+        <div class="prop-panel-value" id="pp-points">${task.story_points != null ? task.story_points : '—'}</div>
+      </div>
+      <div class="prop-panel-row">
+        <div class="prop-panel-label">${pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>')} Goal</div>
+        <div class="prop-panel-value" id="pp-goal">${goalName || '—'}</div>
+      </div>
+      <div class="prop-panel-row">
+        <div class="prop-panel-label">${pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>')} Project</div>
+        <div class="prop-panel-value" id="pp-project">${projName || '—'}</div>
+      </div>
+    </div>`;
+
+    openFormSlideover('All Properties', panelBody);
+
+    // Bind click-to-edit on each prop-panel-value
+    document.getElementById('pp-category').onclick = (ev) => {
+      const cats = (allCategories||TASK_CATEGORIES.map((n,i)=>({id:i+1,name:n}))).map(c => ({ value: c.id, label: c.name }));
+      openCombo(ev.currentTarget, cats, task.category_id, async ({ value, label, create }) => {
+        if (create) {
+          try {
+            const nc = await api('POST', '/api/categories', { name: create });
+            await patchTask({ category_id: nc.id });
+          } catch(err) {}
+        } else {
+          document.getElementById('pp-category').textContent = label;
+          await patchTask({ category_id: value ? parseInt(value) : null });
+        }
+      }, { allowCreate: true });
+    };
+
+    document.getElementById('pp-focus').onclick = (ev) => {
+      openDateRangePicker(ev.currentTarget, null, stripDate(task.focus_block), async (start, end) => {
+        const val = end || start;
+        document.getElementById('pp-focus').textContent = val ? new Date(val+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '—';
+        await patchTask({ focus_block: val || null });
+      });
+    };
+
+    document.getElementById('pp-points').onclick = (ev) => {
+      const el = ev.currentTarget;
+      const inp = document.createElement('input');
+      inp.type = 'number'; inp.min = '0'; inp.style.cssText = 'width:80px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
+      inp.value = task.story_points || '';
+      el.innerHTML = '';
+      el.appendChild(inp);
+      inp.focus();
+      inp.onblur = async () => {
+        const v = parseInt(inp.value) || 0;
+        el.textContent = v || '—';
+        await patchTask({ story_points: v });
+      };
+      inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); };
+    };
+
+    document.getElementById('pp-goal').onclick = (ev) => {
+      const items = [{ value: '', label: '— none —' }, ...allGoals.map(g => ({ value: g.id, label: g.title }))];
+      openCombo(ev.currentTarget, items, task.goal_id, async ({ value, label }) => {
+        document.getElementById('pp-goal').textContent = value ? label : '—';
+        await patchTask({ goal_id: value ? parseInt(value) : null });
+      });
+    };
+
+    document.getElementById('pp-project').onclick = (ev) => {
+      const items = [{ value: '', label: '— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))];
+      openCombo(ev.currentTarget, items, task.project_id, async ({ value, label }) => {
+        document.getElementById('pp-project').textContent = value ? label : '—';
+        await patchTask({ project_id: value ? parseInt(value) : null });
+      });
+    };
+  };
+
+  // ── Other existing bindings ──────────────────────────────────────────
   document.getElementById('detail-desc').onblur = (e) => patchTask({ description: e.target.value });
 
   document.getElementById('add-subtask-btn').onclick = () => {
@@ -2858,14 +3536,6 @@ async function showTaskSlideover(taskId) {
     };
   });
 
-  document.querySelectorAll('.tag-chip').forEach(chip => {
-    chip.onclick = async () => {
-      chip.classList.toggle('selected');
-      const pickedIds = [...document.querySelectorAll('.tag-chip.selected')].map(c => parseInt(c.dataset.tagId));
-      try { await api('PUT', `/api/tasks/${taskId}/tags`, { tag_ids: pickedIds }); } catch(err) {}
-    };
-  });
-
   document.getElementById('log-pom-btn').onclick = async () => {
     await patchTask({ pomodoros_finished: pomDone + 1 });
     showTaskSlideover(taskId);
@@ -2884,6 +3554,7 @@ async function showTaskSlideover(taskId) {
   // Properties widget
   bindPropertiesWidget('task', taskId, 'props-list', 'add-prop-btn');
 
+  // Breadcrumb navigation
   document.querySelectorAll('.bc-goal').forEach(el => {
     el.onclick = () => { closeSlideover(); renderView('goal-detail', el.dataset.goalId); };
   });
@@ -2964,11 +3635,11 @@ async function renderCalendarView() {
     const sd = t.start_date ? stripDate(t.start_date) : null;
     const dd = t.due_date ? stripDate(t.due_date) : null;
     if (sd && dd && sd !== dd) {
-      events.push({ id: t.id, type: 'task', title: t.title, start: sd, end: dd, ranged: true, priority: t.priority, status: t.status });
+      events.push({ id: t.id, type: 'task', title: t.title, start: sd, end: dd, ranged: true, priority: t.priority, status: t.status, category_id: t.category_id });
     } else if (dd) {
-      events.push({ id: t.id, type: 'task', title: t.title, date: dd, ranged: false, priority: t.priority, status: t.status });
+      events.push({ id: t.id, type: 'task', title: t.title, date: dd, ranged: false, priority: t.priority, status: t.status, category_id: t.category_id });
     } else if (sd) {
-      events.push({ id: t.id, type: 'task', title: t.title, date: sd, ranged: false, priority: t.priority, status: t.status });
+      events.push({ id: t.id, type: 'task', title: t.title, date: sd, ranged: false, priority: t.priority, status: t.status, category_id: t.category_id });
     }
   });
   goals.forEach(g => {
@@ -3003,9 +3674,9 @@ async function renderCalendarView() {
   });
 
   const typeColors = {
-    task:    'var(--accent)',
-    goal:    'var(--success)',
-    project: 'var(--warning)',
+    task:    'var(--color-accent)',
+    goal:    'var(--color-success)',
+    project: 'var(--color-warning)',
     sprint:  '#9b7fe8',
   };
 
@@ -3019,10 +3690,13 @@ async function renderCalendarView() {
   }
 
   function chipColor(ev) {
-    if (ev.type === 'task' && ev.priority) {
-      return { urgent:'var(--danger)', high:'var(--danger)', medium:'var(--warning)', low:'var(--text-muted)' }[ev.priority] || 'var(--accent)';
+    // 1. Category color (tasks with a category)
+    if (ev.category_id) {
+      const cat = allCategories.find(c => c.id === ev.category_id);
+      if (cat) return COLOR_HEX[cat.color] || cat.color || typeColors[ev.type] || 'var(--color-accent)';
     }
-    return typeColors[ev.type] || 'var(--accent)';
+    // 2. Type color (goal, project, sprint, uncategorised task)
+    return typeColors[ev.type] || 'var(--color-accent)';
   }
 
   function dateAdd(d, days) {
@@ -3082,17 +3756,38 @@ async function renderCalendarView() {
     const weekRows = weeks.map(weekDates => {
       const bars = rangedBarsForWeek(weekDates);
       const maxLane = bars.reduce((m, b) => Math.max(m, b.lane), -1);
-      // How many lanes are used — reserve vertical space for bars above point-in-time events
-      const barAreaHeight = maxLane >= 0 ? (maxLane + 1) * 20 + 4 : 0;
+      const numLanes = maxLane + 1;
 
-      // Day cells
-      const cells = weekDates.map((cellDate, col) => {
+      // Bar sub-grid (in-flow, no position:absolute)
+      const barEls = bars.map(({ ev, startCol, endCol, lane }) => {
+        const color = chipColor(ev);
+        const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
+        const isStart = ev.start >= dateStr(weekDates[0]);
+        const isEnd   = ev.end   <= dateStr(weekDates[6]);
+        const blr = isStart ? '3px' : '0';
+        const brr = isEnd   ? '3px' : '0';
+        return `<div class="cal-span-bar" ${taskId} title="${ev.title}"
+          style="grid-column:${startCol+1}/${endCol+2};grid-row:${lane+1};background:${color};border-radius:${blr} ${brr} ${brr} ${blr};">
+          <span class="cal-span-bar-label">${ev.title}</span>
+        </div>`;
+      }).join('');
+      const barsSection = numLanes > 0
+        ? `<div class="cal-week-bars" style="grid-template-rows:repeat(${numLanes},20px)">${barEls}</div>`
+        : '';
+
+      // Day number strip + chips cells
+      const dayNums = weekDates.map((cellDate) => {
+        const isTodayCell = cellDate.getTime() === todayD.getTime();
+        const isCurrentMonth = cellDate.getMonth() === calMonth;
+        return `<div class="cal-day-num-cell ${isTodayCell?'today':''} ${isCurrentMonth?'':'other-month'}">${cellDate.getDate()}</div>`;
+      }).join('');
+
+      const chipsCells = weekDates.map((cellDate) => {
         const ds = dateStr(cellDate);
         const isCurrentMonth = cellDate.getMonth() === calMonth;
         const isTodayCell = cellDate.getTime() === todayD.getTime();
         const isInSprint = sprintRanges.some(r => ds >= r.start && ds <= r.end);
         const sprintStyle = isInSprint ? 'background:var(--accent-glow);' : '';
-        // Single-day (point-in-time) events only
         const dayEvents = events.filter(ev => {
           if (ev.ranged) return false;
           if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
@@ -3107,30 +3802,16 @@ async function renderCalendarView() {
           return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
         }).join('');
         const overflowChip = overflow > 0 ? `<div class="cal-overflow-btn" data-date="${ds}">+${overflow}</div>` : '';
-        return `<div class="calendar-day ${isCurrentMonth?'':'other-month'} ${isTodayCell?'today':''}" style="${sprintStyle}grid-column:${col+1}" data-date="${ds}">
-          <div class="cal-day-num">${cellDate.getDate()}</div>
-          <div class="cal-tasks" style="margin-top:${barAreaHeight}px">${chips}${overflowChip}</div>
+        return `<div class="calendar-day ${isCurrentMonth?'':'other-month'} ${isTodayCell?'today':''}" style="${sprintStyle}" data-date="${ds}">
+          <div class="cal-tasks">${chips}${overflowChip}</div>
         </div>`;
       }).join('');
 
-      // Spanning bar elements — placed in the same grid using grid-column
-      const barEls = bars.map(({ ev, startCol, endCol, lane }) => {
-        const color = chipColor(ev);
-        const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
-        const isStart = ev.start >= dateStr(weekDates[0]);
-        const isEnd   = ev.end   <= dateStr(weekDates[6]);
-        const borderRadiusLeft  = isStart ? '3px' : '0';
-        const borderRadiusRight = isEnd   ? '3px' : '0';
-        const topOffset = 22 + lane * 20; // below day number
-        return `<div class="cal-span-bar" ${taskId} title="${ev.title}"
-          style="grid-column:${startCol+1}/${endCol+2};grid-row:1;
-                 top:${topOffset}px;background:${color};
-                 border-radius:${borderRadiusLeft} ${borderRadiusRight} ${borderRadiusRight} ${borderRadiusLeft};">
-          <span class="cal-span-bar-label">${ev.title}</span>
-        </div>`;
-      }).join('');
-
-      return `<div class="cal-week-row">${cells}${barEls}</div>`;
+      return `<div class="cal-week-row">
+        <div class="cal-week-num-strip">${dayNums}</div>
+        ${barsSection}
+        <div class="cal-week-cells">${chipsCells}</div>
+      </div>`;
     }).join('');
 
     return `<div class="calendar-month-wrap">
@@ -3174,14 +3855,13 @@ async function renderCalendarView() {
       return { ev, startCol, endCol, lane };
     });
     const maxLane = bars.reduce((m, b) => Math.max(m, b.lane), -1);
-    const barAreaHeight = maxLane >= 0 ? (maxLane + 1) * 20 + 4 : 0;
+    const numLanes = maxLane + 1;
 
     const cells = days.map((d, col) => {
       const ds = dateStr(d);
       const isT = d.getTime() === todayD.getTime();
       const isInSprint = sprintRanges.some(r => ds >= r.start && ds <= r.end);
       const sprintStyle = isInSprint ? 'background:var(--accent-glow);' : '';
-      // Only point-in-time events
       const dayEvents = events.filter(ev => {
         if (ev.ranged) return false;
         if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
@@ -3192,8 +3872,8 @@ async function renderCalendarView() {
         const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
         return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
       }).join('');
-      return `<div class="calendar-day ${isT?'today':''}" style="${sprintStyle}grid-column:${col+1};min-height:120px" data-date="${ds}">
-        <div class="cal-tasks" style="margin-top:${barAreaHeight}px">${chips||'<div style="color:var(--text-muted);font-size:11px">—</div>'}</div>
+      return `<div class="calendar-day ${isT?'today':''}" style="${sprintStyle}min-height:100px" data-date="${ds}">
+        <div class="cal-tasks">${chips||'<div style="color:var(--text-muted);font-size:11px">—</div>'}</div>
       </div>`;
     }).join('');
 
@@ -3204,15 +3884,17 @@ async function renderCalendarView() {
       const isEnd   = ev.end   <= wEnd;
       const blr = isStart ? '3px' : '0';
       const brr = isEnd   ? '3px' : '0';
-      const topOffset = 20 + lane * 20;
       return `<div class="cal-span-bar" ${taskId} title="${ev.title}"
-        style="grid-column:${startCol+1}/${endCol+2};grid-row:1;top:${topOffset}px;background:${color};border-radius:${blr} ${brr} ${brr} ${blr};">
+        style="grid-column:${startCol+1}/${endCol+2};grid-row:${lane+1};background:${color};border-radius:${blr} ${brr} ${brr} ${blr};">
         <span class="cal-span-bar-label">${ev.title}</span>
       </div>`;
     }).join('');
 
     const gridCols = `grid-template-columns:repeat(${numDays},1fr)`;
-    return `<div class="cal-day-headers-row" style="${gridCols.replace('grid-template-columns','grid-template-columns')}">${headers}</div><div class="cal-week-row" style="${gridCols}">${cells}${barEls}</div>`;
+    const barsSection = numLanes > 0
+      ? `<div class="cal-week-bars" style="${gridCols};grid-template-rows:repeat(${numLanes},20px)">${barEls}</div>`
+      : '';
+    return `<div class="cal-day-headers-row" style="${gridCols}">${headers}</div>${barsSection}<div class="cal-week-row"><div class="cal-week-cells" style="${gridCols}">${cells}</div></div>`;
   }
 
   // Gantt / timeline view for ranged tasks
@@ -3286,12 +3968,82 @@ async function renderCalendarView() {
     </div>`;
   }
 
+  function buildTimeline() {
+    const DAYS_BEFORE = 30, DAYS_AFTER = 60, PX = 38, LABEL_W = 180;
+    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const today = new Date(); today.setHours(0,0,0,0);
+    const winStart = dateAdd(today, -DAYS_BEFORE);
+    const total = DAYS_BEFORE + DAYS_AFTER + 1;
+    const totalWidth = total * PX;
+    const todayX = DAYS_BEFORE * PX;
+
+    const dayList = Array.from({length: total}, (_, i) => dateAdd(winStart, i));
+
+    // Month header groups
+    const monthGroups = []; let curKey = null;
+    dayList.forEach((d, i) => {
+      const key = `${d.getFullYear()}-${d.getMonth()}`;
+      if (key !== curKey) {
+        monthGroups.push({ label: `${monthNames[d.getMonth()]} ${d.getFullYear()}`, startI: i, count: 1 });
+        curKey = key;
+      } else {
+        monthGroups[monthGroups.length - 1].count++;
+      }
+    });
+    const monthHdr = monthGroups.map(g =>
+      `<div style="position:absolute;left:${g.startI*PX}px;width:${g.count*PX}px;font-size:11px;font-weight:600;color:var(--text-muted);border-right:1px solid var(--border-light);padding:2px 4px;white-space:nowrap;overflow:hidden">${g.label}</div>`
+    ).join('');
+    const dayHdr = dayList.map((d, i) => {
+      const isT = d.getTime() === today.getTime();
+      const dayNames = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+      return `<div style="position:absolute;left:${i*PX}px;width:${PX}px;text-align:center;font-size:10px;color:${isT?'var(--danger)':'var(--text-muted)'};font-weight:${isT?700:400};line-height:1.3">${d.getDate()}<br><span style="font-size:9px">${dayNames[d.getDay()]}</span></div>`;
+    }).join('');
+
+    const allEvs = events.filter(ev => calEventTypes.includes(ev.type.split('-')[0]));
+    if (!allEvs.length) {
+      return `<div style="color:var(--text-muted);padding:32px;font-size:13px">No events with dates. Add start/due dates to tasks, goals, projects, or sprints.</div>`;
+    }
+
+    return `<div class="tl-wrap">
+      <div class="tl-header-row">
+        <div style="min-width:${LABEL_W}px;flex-shrink:0;border-right:1px solid var(--border-light)"></div>
+        <div class="tl-hdr-scroll">
+          <div style="width:${totalWidth}px;height:22px;position:relative;border-bottom:1px solid var(--border-light)">${monthHdr}</div>
+          <div style="width:${totalWidth}px;height:32px;position:relative;border-bottom:2px solid var(--border)">
+            ${dayHdr}
+            <div class="tl-today-dot" style="left:${todayX + PX/2}px"></div>
+          </div>
+        </div>
+      </div>
+      <div class="tl-body-wrap">
+        <div class="tl-labels-col">${allEvs.map(ev => `<div class="tl-label" title="${ev.title}">${ev.title}</div>`).join('')}</div>
+        <div class="tl-tracks-scroll">
+          ${allEvs.map(ev => {
+            const sd = ev.ranged ? ev.start : ev.date;
+            const ed = ev.ranged ? ev.end : ev.date;
+            const startDayOff = Math.round((new Date(sd + 'T00:00:00').getTime() - winStart.getTime()) / 86400000);
+            const endDayOff   = Math.round((new Date(ed + 'T00:00:00').getTime() - winStart.getTime()) / 86400000);
+            const x = Math.max(0, startDayOff * PX);
+            const rawW = (endDayOff - startDayOff + 1) * PX;
+            const w = Math.min(rawW, totalWidth - x);
+            const color = chipColor(ev);
+            const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
+            return `<div class="tl-track-row" style="width:${totalWidth}px">
+              <div class="tl-today-line" style="left:${todayX + PX/2}px"></div>
+              ${w > 0 ? `<div class="tl-bar" ${taskId} style="left:${x}px;width:${w}px;background:${color}" title="${ev.title}: ${sd}${ev.ranged?' → '+ed:''}">${ev.title}</div>` : ''}
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+    </div>`;
+  }
+
   function buildNav() {
     const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
     let label = '';
     const scopes = [
       { id:'month', label:'Month' }, { id:'week', label:'Week' },
-      { id:'3day', label:'3 Days' }, { id:'day', label:'Day' }, { id:'gantt', label:'Timeline' }
+      { id:'3day', label:'3 Days' }, { id:'day', label:'Day' }, { id:'gantt', label:'Gantt' }, { id:'timeline', label:'Timeline' }
     ];
     const scopeBtns = scopes.map(s =>
       `<button class="btn btn-sm ${calScope===s.id?'btn-primary':'btn-ghost'} cal-scope-btn" data-scope="${s.id}">${s.label}</button>`
@@ -3299,15 +4051,18 @@ async function renderCalendarView() {
 
     if (calScope === 'month' || calScope === 'gantt') {
       label = `${monthNames[calMonth]} ${calYear}`;
+    } else if (calScope === 'timeline') {
+      label = 'Today ±90 days';
     } else {
       const numDays = calScope === 'week' ? 7 : calScope === '3day' ? 3 : 1;
       const endD = dateAdd(calAnchorDate, numDays - 1);
       label = `${calAnchorDate.getDate()} ${monthNames[calAnchorDate.getMonth()]} – ${endD.getDate()} ${monthNames[endD.getMonth()]} ${endD.getFullYear()}`;
     }
+    const hidePrevNext = calScope === 'timeline';
     return `<div class="cal-nav">
-      <button class="btn btn-sm btn-ghost" id="cal-prev">‹ Prev</button>
+      <button class="btn btn-sm btn-ghost" id="cal-prev" ${hidePrevNext ? 'style="visibility:hidden"' : ''}>‹ Prev</button>
       <span style="font-family:'DM Mono',monospace;font-size:14px;min-width:200px;text-align:center">${label}</span>
-      <button class="btn btn-sm btn-ghost" id="cal-next">Next ›</button>
+      <button class="btn btn-sm btn-ghost" id="cal-next" ${hidePrevNext ? 'style="visibility:hidden"' : ''}>Next ›</button>
       <div style="display:flex;gap:4px;margin-left:16px">${scopeBtns}</div>
     </div>`;
   }
@@ -3318,6 +4073,7 @@ async function renderCalendarView() {
     if (calScope === '3day') return buildScopedCal(3);
     if (calScope === 'day') return buildScopedCal(1);
     if (calScope === 'gantt') return buildGantt();
+    if (calScope === 'timeline') return buildTimeline();
     return buildMonthCal();
   }
 
@@ -3356,6 +4112,7 @@ async function renderCalendarView() {
 
   function rebind() {
     document.getElementById('cal-prev')?.addEventListener('click', () => {
+      if (calScope === 'timeline') return;
       if (calScope === 'month' || calScope === 'gantt') {
         calMonth--; if (calMonth<0){calMonth=11;calYear--;}
       } else {
@@ -3366,6 +4123,7 @@ async function renderCalendarView() {
       rebind();
     });
     document.getElementById('cal-next')?.addEventListener('click', () => {
+      if (calScope === 'timeline') return;
       if (calScope === 'month' || calScope === 'gantt') {
         calMonth++; if (calMonth>11){calMonth=0;calYear++;}
       } else {
@@ -3384,7 +4142,7 @@ async function renderCalendarView() {
           // align to Monday of current week
           const d = new Date(); const dow = d.getDay(); const diff = dow === 0 ? -6 : 1 - dow;
           calAnchorDate = dateAdd(d, diff);
-        } else if (calScope !== 'month' && calScope !== 'gantt') {
+        } else if (calScope !== 'month' && calScope !== 'gantt' && calScope !== 'timeline') {
           calAnchorDate = new Date();
         }
         document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
@@ -3400,6 +4158,27 @@ async function renderCalendarView() {
     document.querySelectorAll('.gantt-bar.cal-event-task').forEach(bar => {
       bar.onclick = (e) => { e.stopPropagation(); showTaskSlideover(bar.dataset.taskId); };
     });
+    document.querySelectorAll('.tl-bar[data-task-id]').forEach(bar => {
+      bar.onclick = (e) => { e.stopPropagation(); showTaskSlideover(bar.dataset.taskId); };
+    });
+    // Timeline scroll sync: keep header and tracks in horizontal lock-step
+    const hdrScroll = document.querySelector('.tl-hdr-scroll');
+    const trkScroll = document.querySelector('.tl-tracks-scroll');
+    if (hdrScroll && trkScroll) {
+      let syncLock = false;
+      hdrScroll.addEventListener('scroll', () => {
+        if (syncLock) return;
+        syncLock = true;
+        trkScroll.scrollLeft = hdrScroll.scrollLeft;
+        syncLock = false;
+      });
+      trkScroll.addEventListener('scroll', () => {
+        if (syncLock) return;
+        syncLock = true;
+        hdrScroll.scrollLeft = trkScroll.scrollLeft;
+        syncLock = false;
+      });
+    }
     // Overflow "show more" — expand cell inline
     document.querySelectorAll('.cal-overflow-btn').forEach(btn => {
       if (btn.classList.contains('cal-collapse-btn')) return;
@@ -3433,34 +4212,125 @@ async function renderCalendarView() {
 }
 
 
+/* ─── Pomodoro Stats Table Helper ────────────────────────────────────── */
+function renderPomStatsTable(tasks) {
+  if (!tasks.length) {
+    return `<div class="pom-stats-empty">No tasks with pomodoro data yet. Set "Pomodoros Planned" on a task to start tracking.</div>`;
+  }
+
+  function effectiveness(planned, finished) {
+    if (!planned || !finished) return { label: '—', cls: 'todo' };
+    const ratio = finished / planned;
+    if (ratio === 1) return { label: 'Effective', cls: 'done' };
+    if (ratio < 1) return { label: 'Super Effective', cls: 'progress' };
+    return { label: 'Not Very Effective', cls: 'blocked' };
+  }
+
+  function progressBar(done, planned) {
+    if (!planned) return `<span style="color:var(--color-text-tertiary)">—</span>`;
+    const pct = Math.min(100, Math.round((done / planned) * 100));
+    const color = pct >= 100 ? 'var(--color-success)' : pct >= 50 ? 'var(--color-accent)' : 'var(--color-warning)';
+    return `<div class="pom-progress-bar"><div class="pom-progress-fill" style="width:${pct}%;background:${color}"></div></div><span class="pom-progress-pct">${pct}%</span>`;
+  }
+
+  const rows = tasks.map(t => {
+    const planned = t.pomodoros_planned || 0;
+    const finished = t.pomodoros_finished || 0;
+    const remaining = Math.max(0, planned - finished);
+    const eff = effectiveness(planned, finished);
+    return `<tr>
+      <td class="pom-st-task">
+        <span class="pom-st-task-title">${t.title || 'Untitled'}</span>
+        ${statusBadge(t.status)}
+      </td>
+      <td class="pom-td-num">${planned || '—'}</td>
+      <td class="pom-td-num">${finished || '—'}</td>
+      <td class="pom-td-num">${planned ? remaining : '—'}</td>
+      <td class="pom-td-progress">${progressBar(finished, planned)}</td>
+      <td class="pom-td-num">${finished || '—'}</td>
+      <td><span class="badge badge-${eff.cls}" title="${planned ? `Planned ${planned}, completed ${finished}` : ''}">${eff.label}</span></td>
+    </tr>`;
+  }).join('');
+
+  return `<table class="pom-stats-table">
+    <thead>
+      <tr>
+        <th>Task</th>
+        <th class="pom-td-num">Planned</th>
+        <th class="pom-td-num">Completed</th>
+        <th class="pom-td-num">Remaining</th>
+        <th class="pom-td-progress">Progress</th>
+        <th class="pom-td-num">Total Poms</th>
+        <th>Velocity</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
 async function renderPomodoro() {
   if (allTasksCache.length === 0) {
     try { allTasksCache = await api('GET', '/api/tasks') || []; } catch(e) {}
   }
-  document.getElementById('main-content').innerHTML = `<div class="view">
+
+  // Tasks that have pomodoro sessions planned
+  const pomTasks = allTasksCache.filter(t => (t.pomodoros_planned || 0) > 0 || (t.pomodoros_finished || 0) > 0);
+
+  document.getElementById('main-content').innerHTML = `<div class="view pom-view">
     <div class="view-header">
       <h1 class="view-title">Pomodoro</h1>
     </div>
-    <div class="pomodoro-wrap">
-      <div class="pom-search-wrap">
-        <input type="text" id="pom-task-search" placeholder="Search task to focus on…" autocomplete="off" style="width:360px" />
-        <div class="pom-suggestions" id="pom-suggestions"></div>
+
+    <div class="pom-layout">
+      <!-- Left: task picker panel -->
+      <div class="pom-picker">
+        <div class="pom-picker-header">
+          <span class="pom-picker-title">Tasks</span>
+          <div class="pom-view-toggle">
+            <button class="pom-toggle-btn active" id="pom-view-list" title="List view">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+            </button>
+            <button class="pom-toggle-btn" id="pom-view-table" title="Table view">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="9" x2="9" y2="21"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="pom-picker-search">
+          <input type="text" id="pom-picker-search-input" placeholder="Filter tasks…" autocomplete="off" />
+        </div>
+        <div class="pom-picker-body" id="pom-picker-body"></div>
       </div>
-      <div id="pom-selected-task" class="pomodoro-task-name" style="min-height:20px"></div>
-      <div class="pomodoro-ring" id="pom-ring">
-        <div class="pomodoro-time" id="pom-time">25:00</div>
-        <div class="pomodoro-label" id="pom-label">Work</div>
+
+      <!-- Right: timer -->
+      <div class="pom-timer-col">
+        <div id="pom-selected-task" class="pomodoro-task-name" style="min-height:20px"></div>
+        <div class="pomodoro-ring" id="pom-ring">
+          <div class="pomodoro-time" id="pom-time">25:00</div>
+          <div class="pomodoro-label" id="pom-label">Work</div>
+        </div>
+        <div class="pomodoro-controls">
+          <button class="btn btn-primary" id="pom-start">Start</button>
+          <button class="btn btn-ghost" id="pom-pause">Pause</button>
+          <button class="btn btn-ghost" id="pom-reset">Reset</button>
+          <button class="btn btn-ghost" id="pom-break">Break (5m)</button>
+        </div>
+        <div id="pom-log" style="width:100%;max-width:400px;margin-top:8px"></div>
       </div>
-      <div class="pomodoro-controls">
-        <button class="btn btn-primary" id="pom-start">Start</button>
-        <button class="btn btn-ghost" id="pom-pause">Pause</button>
-        <button class="btn btn-ghost" id="pom-reset">Reset</button>
-        <button class="btn btn-ghost" id="pom-break">Break (5m)</button>
+    </div>
+
+    <!-- Bottom: pomodoro stats table -->
+    <div class="pom-stats-section">
+      <div class="pom-stats-header">
+        <span class="pom-stats-title">Session Tracker</span>
+        <span class="pom-stats-subtitle">${pomTasks.length} task${pomTasks.length !== 1 ? 's' : ''} with pomodoro data</span>
       </div>
-      <div id="pom-log" style="width:100%;max-width:400px;margin-top:8px"></div>
+      <div id="pom-stats-table-wrap">
+        ${renderPomStatsTable(pomTasks)}
+      </div>
     </div>
   </div>`;
 
+  // ── Helpers ─────────────────────────────────────────────────────────
   function fmt(s) {
     const m = Math.floor(s/60), sec = s%60;
     return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
@@ -3477,63 +4347,133 @@ async function renderPomodoro() {
     const log = document.getElementById('pom-log');
     if (!log) return;
     if (!pomState.finished.length) { log.innerHTML = ''; return; }
-    log.innerHTML = `<div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">Completed today</div>` +
-      pomState.finished.map(e => `<div style="font-size:12px;color:var(--text-muted);padding:3px 0;border-bottom:1px solid var(--border-light)">✓ ${e.task} · ${e.time}</div>`).join('');
+    log.innerHTML = `<div style="font-size:var(--text-xs);color:var(--color-text-secondary);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em;font-weight:var(--weight-medium)">Completed today</div>` +
+      pomState.finished.map(e => `<div style="font-size:var(--text-sm);color:var(--color-text-secondary);padding:4px 0;border-bottom:1px solid var(--color-border)">✓ ${e.task} · ${e.time}</div>`).join('');
   }
 
-  // Task search
-  const searchInput = document.getElementById('pom-task-search');
-  const suggestions = document.getElementById('pom-suggestions');
+  // ── Task picker ──────────────────────────────────────────────────────
+  let pickerView = 'list'; // 'list' | 'table'
+  let pickerFilter = '';
 
-  searchInput.oninput = () => {
-    const q = searchInput.value.toLowerCase().trim();
-    if (!q) { suggestions.innerHTML = ''; return; }
-    const matches = allTasksCache.filter(t => t.title.toLowerCase().includes(q) && t.status !== 'done').slice(0, 8);
-    suggestions.innerHTML = matches.map(t =>
-      `<div class="pom-suggestion" data-id="${t.id}" data-title="${t.title.replace(/"/g,'&quot;')}">${t.title}</div>`
-    ).join('') || '<div class="pom-suggestion" style="color:var(--text-muted);cursor:default">No results</div>';
+  function getPickerTasks() {
+    return allTasksCache.filter(t =>
+      t.status !== 'done' &&
+      (!pickerFilter || t.title.toLowerCase().includes(pickerFilter.toLowerCase()))
+    );
+  }
+
+  function renderPickerList() {
+    const tasks = getPickerTasks();
+    if (!tasks.length) {
+      return `<div class="pom-picker-empty">No open tasks</div>`;
+    }
+    if (pickerView === 'list') {
+      return tasks.map(t => {
+        const active = pomState.taskId === t.id;
+        return `<div class="pom-picker-item${active ? ' selected' : ''}" data-id="${t.id}" data-title="${(t.title||'').replace(/"/g,'&quot;')}">
+          <div class="pom-picker-item-check">
+            ${active ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>` : ''}
+          </div>
+          <div class="pom-picker-item-text">
+            <span class="pom-picker-item-title">${t.title || 'Untitled'}</span>
+            ${t.priority ? `<span class="pom-picker-item-meta">${t.priority}</span>` : ''}
+          </div>
+          ${(t.pomodoros_planned||0) > 0 ? `<span class="pom-picker-item-badge">${t.pomodoros_finished||0}/${t.pomodoros_planned}</span>` : ''}
+        </div>`;
+      }).join('');
+    } else {
+      // Table view
+      return `<table class="pom-picker-table">
+        <thead><tr>
+          <th>Task</th>
+          <th>Planned</th>
+          <th>Done</th>
+          <th>Status</th>
+        </tr></thead>
+        <tbody>
+          ${tasks.map(t => {
+            const active = pomState.taskId === t.id;
+            const planned = t.pomodoros_planned || 0;
+            const done = t.pomodoros_finished || 0;
+            return `<tr class="pom-picker-row${active ? ' selected' : ''}" data-id="${t.id}" data-title="${(t.title||'').replace(/"/g,'&quot;')}">
+              <td>${t.title || 'Untitled'}</td>
+              <td class="pom-td-num">${planned || '—'}</td>
+              <td class="pom-td-num">${done || '—'}</td>
+              <td>${statusBadge(t.status)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+    }
+  }
+
+  function refreshPicker() {
+    document.getElementById('pom-picker-body').innerHTML = renderPickerList();
+    // Bind click on items
+    document.querySelectorAll('.pom-picker-item, .pom-picker-row').forEach(el => {
+      el.onclick = () => {
+        pomState.taskId = parseInt(el.dataset.id);
+        pomState.taskTitle = el.dataset.title;
+        document.getElementById('pom-selected-task').innerHTML =
+          `<span>Focus: </span><span>${pomState.taskTitle}</span>`;
+        refreshPicker(); // re-render to update selected highlight
+        // Refresh stats table
+        const freshTasks = allTasksCache.filter(t => (t.pomodoros_planned||0)>0 || (t.pomodoros_finished||0)>0);
+        document.getElementById('pom-stats-table-wrap').innerHTML = renderPomStatsTable(freshTasks);
+      };
+    });
+  }
+
+  // Picker filter input
+  document.getElementById('pom-picker-search-input').oninput = (e) => {
+    pickerFilter = e.target.value;
+    refreshPicker();
   };
 
-  suggestions.addEventListener('click', (e) => {
-    const item = e.target.closest('[data-id]');
-    if (!item) return;
-    pomState.taskId = parseInt(item.dataset.id);
-    pomState.taskTitle = item.dataset.title;
-    searchInput.value = item.dataset.title;
-    suggestions.innerHTML = '';
-    document.getElementById('pom-selected-task').innerHTML = `<span>Focus: </span><span>${pomState.taskTitle}</span>`;
-  });
+  // View toggle buttons
+  document.getElementById('pom-view-list').onclick = () => {
+    pickerView = 'list';
+    document.getElementById('pom-view-list').classList.add('active');
+    document.getElementById('pom-view-table').classList.remove('active');
+    refreshPicker();
+  };
+  document.getElementById('pom-view-table').onclick = () => {
+    pickerView = 'table';
+    document.getElementById('pom-view-table').classList.add('active');
+    document.getElementById('pom-view-list').classList.remove('active');
+    refreshPicker();
+  };
 
-  document.addEventListener('click', (e) => {
-    if (!e.target.closest('.pom-search-wrap')) suggestions.innerHTML = '';
-  }, { once: false });
+  // Initial render
+  refreshPicker();
 
-  // Timer
+  // ── Timer ────────────────────────────────────────────────────────────
   function tick() {
     if (!pomState.running) return;
     pomState.seconds--;
     updateDisplay();
     if (pomState.seconds <= 0) {
       clearInterval(pomTimer); pomTimer = null; pomState.running = false;
-      // Beep
       try {
         const ac = new AudioContext();
         const osc = ac.createOscillator(); osc.type = 'sine'; osc.frequency.value = 800;
         osc.connect(ac.destination); osc.start(); osc.stop(ac.currentTime + 0.3);
       } catch(e) {}
       if (pomState.mode === 'work') {
-        // Log it
         const now = new Date();
         pomState.finished.push({ task: pomState.taskTitle || '(no task)', time: now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) });
         renderLog();
-        // PATCH task
         if (pomState.taskId) {
           const t = allTasksCache.find(x => x.id === pomState.taskId);
           const cur = t ? (t.pomodoros_finished || 0) : 0;
           api('PATCH', `/api/tasks/${pomState.taskId}`, { pomodoros_finished: cur + 1 }).catch(()=>{});
           if (t) t.pomodoros_finished = cur + 1;
+          // Refresh stats table & picker
+          const freshTasks = allTasksCache.filter(tt => (tt.pomodoros_planned||0)>0 || (tt.pomodoros_finished||0)>0);
+          const wrap = document.getElementById('pom-stats-table-wrap');
+          if (wrap) wrap.innerHTML = renderPomStatsTable(freshTasks);
+          refreshPicker();
         }
-        // Switch to break
         pomState.mode = 'break'; pomState.seconds = 5*60;
         updateDisplay();
       } else {
@@ -3569,10 +4509,8 @@ async function renderPomodoro() {
     updateDisplay();
   };
 
-  // Restore selected task
   if (pomState.taskId) {
     document.getElementById('pom-selected-task').innerHTML = `<span>Focus: </span><span>${pomState.taskTitle}</span>`;
-    searchInput.value = pomState.taskTitle;
   }
   updateDisplay();
   renderLog();
@@ -3588,36 +4526,23 @@ function bindTaskListEvents() {
       showTaskSlideover(row.dataset.taskId);
     };
   });
+  document.querySelectorAll('.task-toggle-arrow').forEach(arrow => {
+    arrow.onclick = (e) => {
+      e.stopPropagation();
+      const id = String(arrow.dataset.toggleId);
+      if (expandedTasks.has(id)) expandedTasks.delete(id);
+      else expandedTasks.add(id);
+      renderDashboard();
+    };
+  });
   document.querySelectorAll('.task-add-sub-btn').forEach(btn => {
     btn.onclick = (e) => {
       e.stopPropagation();
       const parentId = parseInt(btn.dataset.addSubId);
-      const row = btn.closest('.task-row');
-      if (!row) return;
-      const alreadyOpen = btn.classList.contains('open');
-      document.querySelectorAll(`.inline-task-input-row[data-parent-id="${parentId}"]`).forEach(r => r.remove());
-      if (alreadyOpen) { btn.classList.remove('open'); return; }
-      btn.classList.add('open');
-      const inputRow = document.createElement('li');
-      inputRow.className = 'inline-task-input-row';
-      inputRow.dataset.parentId = parentId;
-      inputRow.innerHTML = `
-        <input type="text" class="inline-task-title-input" placeholder="New subtask title…" autofocus />
-        <button class="btn btn-sm btn-primary inline-task-save-btn">Add</button>
-        <button class="btn btn-sm btn-ghost inline-cancel-btn">Cancel</button>`;
-      row.after(inputRow);
-      inputRow.querySelector('.inline-task-title-input').focus();
-      inputRow.querySelector('.inline-cancel-btn').onclick = (e) => { e.stopPropagation(); inputRow.remove(); btn.classList.remove('open'); };
-      const saveInline = async () => {
-        const title = inputRow.querySelector('.inline-task-title-input').value.trim();
-        if (!title) return;
-        try {
-          await api('POST', '/api/tasks', { title, parent_task_id: parentId, status: 'todo', priority: 'medium' });
-          renderDashboard();
-        } catch(err) { alert('Error creating subtask: ' + err.message); }
-      };
-      inputRow.querySelector('.inline-task-save-btn').onclick = (e) => { e.stopPropagation(); saveInline(); };
-      inputRow.querySelector('.inline-task-title-input').onkeydown = (e) => { if (e.key === 'Enter') saveInline(); if (e.key === 'Escape') { inputRow.remove(); btn.classList.remove('open'); } };
+      showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+        expandedTasks.add(String(parentId));
+        renderDashboard();
+      });
     };
   });
   document.querySelectorAll('.task-check').forEach(el => {
@@ -3663,35 +4588,11 @@ function bindDetailTaskEvents(onRefresh) {
     btn.onclick = (e) => {
       e.stopPropagation();
       const parentId = parseInt(btn.dataset.addSubId);
-      const row = btn.closest('.task-row, .task-table-row');
-      if (!row) return;
-      const alreadyOpen = btn.classList.contains('open');
-      document.querySelectorAll(`.inline-task-input-row[data-parent-id="${parentId}"]`).forEach(r => r.remove());
-      if (alreadyOpen) { btn.classList.remove('open'); return; }
-      btn.classList.add('open');
-      const inputRow = document.createElement('li');
-      inputRow.className = 'inline-task-input-row';
-      inputRow.dataset.parentId = parentId;
-      inputRow.style.paddingLeft = row.style.paddingLeft || '12px';
-      inputRow.innerHTML = `
-        <input type="text" class="inline-task-title-input" placeholder="New subtask title…" autofocus />
-        <button class="btn btn-sm btn-primary inline-task-save-btn">Add</button>
-        <button class="btn btn-sm btn-ghost inline-cancel-btn">Cancel</button>`;
-      row.after(inputRow);
-      inputRow.querySelector('.inline-task-title-input').focus();
-      inputRow.querySelector('.inline-cancel-btn').onclick = (e) => { e.stopPropagation(); inputRow.remove(); btn.classList.remove('open'); };
-      const saveInline = async () => {
-        const title = inputRow.querySelector('.inline-task-title-input').value.trim();
-        if (!title) return;
-        try {
-          await api('POST', '/api/tasks', { title, parent_task_id: parentId, status: 'todo', priority: 'medium' });
-          allTasksCache = await api('GET', '/api/tasks?all=1');
-          expandedTasks.add(String(parentId));
-          if (onRefresh) onRefresh();
-        } catch(err) { alert('Error creating subtask: ' + err.message); }
-      };
-      inputRow.querySelector('.inline-task-save-btn').onclick = (e) => { e.stopPropagation(); saveInline(); };
-      inputRow.querySelector('.inline-task-title-input').onkeydown = (e) => { if (e.key === 'Enter') saveInline(); if (e.key === 'Escape') { inputRow.remove(); btn.classList.remove('open'); } };
+      showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+        allTasksCache = await api('GET', '/api/tasks?all=1');
+        expandedTasks.add(String(parentId));
+        if (onRefresh) onRefresh();
+      });
     };
   });
   document.querySelectorAll('.add-subtask-inline-btn').forEach(btn => {
@@ -3741,9 +4642,20 @@ function taskModalBody(task, resources) {
       <div class="form-group"><label class="form-label">Status</label><select id="t-status">${statusOpts}</select></div>
       <div class="form-group"><label class="form-label">Priority</label><select id="t-priority">${prioOpts}</select></div>
     </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Start Date</label><input type="date" id="t-start" value="${stripDate(v.start_date)}" /></div>
-      <div class="form-group"><label class="form-label">Due Date</label><input type="date" id="t-due" value="${stripDate(v.due_date)}" /></div>
+    <div class="form-group">
+      <label class="form-label">Date</label>
+      <div class="date-mode-toggle">
+        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
+        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
+      </div>
+      <div id="t-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
+        <input type="date" id="t-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
+      </div>
+      <div id="t-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
+        <input type="date" id="t-start" value="${stripDate(v.start_date)}" />
+        <span class="date-range-arrow">→</span>
+        <input type="date" id="t-due-range" value="${stripDate(v.due_date)}" />
+      </div>
     </div>
     <div class="grid-2">
       <div class="form-group"><label class="form-label">Focus Block</label><input type="date" id="t-focus" value="${stripDate(v.focus_block)}" /></div>
@@ -3786,13 +4698,14 @@ function taskModalBody(task, resources) {
 
 function collectTaskForm() {
   const isRecurring = document.getElementById('t-is-recurring')?.checked;
+  const isRange = document.getElementById('t-date-range-wrap')?.style.display !== 'none';
   return {
     title: document.getElementById('t-title').value.trim(),
     description: document.getElementById('t-desc').value,
     status: document.getElementById('t-status').value,
     priority: document.getElementById('t-priority').value,
-    start_date: document.getElementById('t-start').value || null,
-    due_date: document.getElementById('t-due').value || null,
+    start_date: isRange ? (document.getElementById('t-start')?.value || null) : null,
+    due_date: isRange ? (document.getElementById('t-due-range')?.value || null) : (document.getElementById('t-due')?.value || null),
     focus_block: document.getElementById('t-focus').value || null,
     goal_id: document.getElementById('t-goal').value ? parseInt(document.getElementById('t-goal').value) : null,
     project_id: document.getElementById('t-project').value ? parseInt(document.getElementById('t-project').value) : null,
@@ -3806,11 +4719,24 @@ function collectTaskForm() {
   };
 }
 
+function bindDateModeToggle(dueWrapId, rangeWrapId) {
+  document.querySelectorAll('.date-mode-btn').forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll('.date-mode-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const mode = btn.dataset.dateMode;
+      if (dueWrapId) document.getElementById(dueWrapId).style.display = mode === 'due' ? '' : 'none';
+      if (rangeWrapId) document.getElementById(rangeWrapId).style.display = mode === 'range' ? '' : 'none';
+    };
+  });
+}
+
 async function showNewTaskModal(presets, afterSave) {
   const resources = await getTaskModalResources();
   const fake = { status: 'todo', priority: 'medium', ...presets };
   openFormSlideover('New Task', taskModalBody(fake, resources));
   document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
+  bindDateModeToggle('t-date-due-wrap', 't-date-range-wrap');
   document.getElementById('t-is-recurring')?.addEventListener('change', (e) => {
     document.getElementById('recur-fields').style.display = e.target.checked ? 'flex' : 'none';
   });
@@ -3827,6 +4753,7 @@ async function showEditTaskModal(task) {
   const resources = await getTaskModalResources();
   openFormSlideover('Edit Task', taskModalBody(task, resources));
   document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
+  bindDateModeToggle('t-date-due-wrap', 't-date-range-wrap');
   document.getElementById('t-is-recurring')?.addEventListener('change', (e) => {
     document.getElementById('recur-fields').style.display = e.target.checked ? 'flex' : 'none';
   });
@@ -3872,9 +4799,20 @@ async function showGoalModal(goal, afterSave) {
       <div class="form-group"><label class="form-label">Status</label><select id="g-status">${statusOpts}</select></div>
       <div class="form-group"><label class="form-label">Category</label><select id="g-category">${catOpts}</select></div>
     </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Start Date</label><input type="date" id="g-start" value="${stripDate(v.start_date)}" /></div>
-      <div class="form-group"><label class="form-label">Due Date</label><input type="date" id="g-due" value="${stripDate(v.due_date)}" /></div>
+    <div class="form-group">
+      <label class="form-label">Date</label>
+      <div class="date-mode-toggle">
+        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
+        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
+      </div>
+      <div id="g-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
+        <input type="date" id="g-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
+      </div>
+      <div id="g-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
+        <input type="date" id="g-start" value="${stripDate(v.start_date)}" />
+        <span class="date-range-arrow">→</span>
+        <input type="date" id="g-due-range" value="${stripDate(v.due_date)}" />
+      </div>
     </div>
     <div class="grid-2">
       <div class="form-group"><label class="form-label">Start Value</label><input type="number" id="g-sv" value="${v.start_value||''}" /></div>
@@ -3892,8 +4830,10 @@ async function showGoalModal(goal, afterSave) {
 
   openFormSlideover(v.id ? 'Edit Goal' : 'New Goal', body);
   bindTagPicker();
+  bindDateModeToggle('g-date-due-wrap', 'g-date-range-wrap');
   document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
   document.getElementById('modal-save-btn').onclick = async () => {
+    const isRange = document.getElementById('g-date-range-wrap')?.style.display !== 'none';
     const data = {
       title: document.getElementById('g-title').value.trim(),
       description: document.getElementById('g-desc').value,
@@ -3901,8 +4841,8 @@ async function showGoalModal(goal, afterSave) {
       year: document.getElementById('g-year').value,
       status: document.getElementById('g-status').value,
       category_id: document.getElementById('g-category').value ? parseInt(document.getElementById('g-category').value) : null,
-      start_date: document.getElementById('g-start').value || null,
-      due_date: document.getElementById('g-due').value || null,
+      start_date: isRange ? (document.getElementById('g-start')?.value || null) : null,
+      due_date: isRange ? (document.getElementById('g-due-range')?.value || null) : (document.getElementById('g-due')?.value || null),
       start_value: parseFloat(document.getElementById('g-sv').value) || 0,
       current_value: parseFloat(document.getElementById('g-cv').value) || 0,
       target: parseFloat(document.getElementById('g-target').value) || 0,
@@ -3966,6 +4906,21 @@ async function showProjectModal(project, goals, afterSave) {
         <input type="checkbox" id="p-archived" ${v.archived?'checked':''} style="width:auto" /> Archived
       </label></div>
     </div>
+    <div class="form-group">
+      <label class="form-label">Date</label>
+      <div class="date-mode-toggle">
+        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
+        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
+      </div>
+      <div id="p-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
+        <input type="date" id="p-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
+      </div>
+      <div id="p-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
+        <input type="date" id="p-start" value="${stripDate(v.start_date)}" />
+        <span class="date-range-arrow">→</span>
+        <input type="date" id="p-due-range" value="${stripDate(v.due_date)}" />
+      </div>
+    </div>
     <div class="form-group"><label class="form-label">Tags</label>
       ${tagPickerHtml(existingTagIds)}</div>
     <div class="form-actions">
@@ -3976,8 +4931,10 @@ async function showProjectModal(project, goals, afterSave) {
 
   openFormSlideover(v.id ? 'Edit Project' : 'New Project', body);
   bindTagPicker();
+  bindDateModeToggle('p-date-due-wrap', 'p-date-range-wrap');
   document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
   document.getElementById('modal-save-btn').onclick = async () => {
+    const isRange = document.getElementById('p-date-range-wrap')?.style.display !== 'none';
     const data = {
       title: document.getElementById('p-title').value.trim(),
       description: document.getElementById('p-desc').value,
@@ -3987,6 +4944,8 @@ async function showProjectModal(project, goals, afterSave) {
       kanban_col: document.getElementById('p-kanban').value || null,
       category_id: document.getElementById('p-category').value ? parseInt(document.getElementById('p-category').value) : null,
       archived: document.getElementById('p-archived').checked,
+      start_date: isRange ? (document.getElementById('p-start')?.value || null) : null,
+      due_date: isRange ? (document.getElementById('p-due-range')?.value || null) : (document.getElementById('p-due')?.value || null),
     };
     if (!data.title) { alert('Title is required'); return; }
     let savedId = v.id;
@@ -4029,7 +4988,11 @@ async function showNoteModal(note, afterSave) {
 
   const body = `
     <div class="form-group"><label class="form-label">Title</label>
-      <input type="text" id="n-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button type="button" class="entity-icon-btn" id="note-icon-btn" title="Set icon"><span id="note-icon-display">☐</span></button>
+        <input type="text" id="n-title" value="${(v.title||'').replace(/"/g,'&quot;')}" style="flex:1" />
+      </div>
+    </div>
     <div class="form-group"><label class="form-label">Body</label>
       <textarea id="n-body" style="min-height:160px">${v.body||''}</textarea></div>
     <div class="grid-2">
@@ -4052,6 +5015,29 @@ async function showNoteModal(note, afterSave) {
 
   openFormSlideover(v.id ? 'Edit Note' : 'New Note', body);
   document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
+
+  // ── Note icon picker ──────────────────────────────────────────────────
+  const noteIconBtn = document.getElementById('note-icon-btn');
+  const noteIconDisplay = document.getElementById('note-icon-display');
+  if (v.id) {
+    loadEntityIcon('note', v.id).then(icon => {
+      if (noteIconDisplay) { noteIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 20) : '☐'; noteIconDisplay.dataset.icon = icon || ''; }
+    });
+  }
+  if (noteIconBtn) {
+    noteIconBtn.onclick = (e) => {
+      e.stopPropagation();
+      const cur = noteIconDisplay ? noteIconDisplay.dataset.icon || '' : '';
+      showIconPicker(noteIconBtn, 'note', v.id || null, cur, (newIcon) => {
+        if (noteIconDisplay) { noteIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 20) : '☐'; noteIconDisplay.dataset.icon = newIcon; }
+        if (v.id) {
+          saveEntityIcon('note', v.id, newIcon).catch(() => {
+            if (noteIconDisplay) { noteIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 20) : '☐'; noteIconDisplay.dataset.icon = cur; }
+          });
+        }
+      });
+    };
+  }
 
   // Tag picker toggle
   document.querySelectorAll('#note-tag-picker .tag-chip').forEach(chip => {
@@ -4100,36 +5086,67 @@ async function showNoteModal(note, afterSave) {
 }
 
 /* ─── Sprint Modal ───────────────────────────────────────────────────── */
-function showSprintModal(projects) {
+function showSprintModal(projects, sprint) {
+  const s = sprint || {};
   const projOpts = '<option value="">— none —</option>' + (projects||[]).map(p =>
-    `<option value="${p.id}">${p.title}</option>`).join('');
+    `<option value="${p.id}" ${String(p.id)===String(s.project_id)?'selected':''}>${p.title}</option>`).join('');
 
   const body = `
     <div class="form-group"><label class="form-label">Title *</label>
-      <input type="text" id="sp-title" placeholder="Sprint name" /></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button type="button" class="entity-icon-btn" id="sprint-icon-btn" title="Set icon"><span id="sprint-icon-display">☐</span></button>
+        <input type="text" id="sp-title" placeholder="Sprint name" value="${(s.title||'').replace(/"/g,'&quot;')}" style="flex:1" />
+      </div>
+    </div>
     <div class="form-group"><label class="form-label">Project</label>
       <select id="sp-project">${projOpts}</select></div>
     <div class="grid-2">
-      <div class="form-group"><label class="form-label">Start Date</label><input type="date" id="sp-start" /></div>
-      <div class="form-group"><label class="form-label">End Date</label><input type="date" id="sp-end" /></div>
+      <div class="form-group"><label class="form-label">Start Date</label><input type="date" id="sp-start" value="${s.start_date||''}" /></div>
+      <div class="form-group"><label class="form-label">End Date</label><input type="date" id="sp-end" value="${s.end_date||''}" /></div>
     </div>
     <div class="form-actions">
       <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">Create</button>
+      <button class="btn btn-primary" id="modal-save-btn">${s.id ? 'Save' : 'Create'}</button>
     </div>`;
 
-  openFormSlideover('New Sprint', body);
+  openFormSlideover(s.id ? 'Edit Sprint' : 'New Sprint', body);
   document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
+  // ── Sprint icon picker ────────────────────────────────────────────────
+  const sprintIconBtn = document.getElementById('sprint-icon-btn');
+  const sprintIconDisplay = document.getElementById('sprint-icon-display');
+  if (s.id) {
+    loadEntityIcon('sprint', s.id).then(icon => {
+      if (sprintIconDisplay) { sprintIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 20) : '☐'; sprintIconDisplay.dataset.icon = icon || ''; }
+    });
+  }
+  if (sprintIconBtn) {
+    sprintIconBtn.onclick = (e) => {
+      e.stopPropagation();
+      const cur = sprintIconDisplay ? sprintIconDisplay.dataset.icon || '' : '';
+      showIconPicker(sprintIconBtn, 'sprint', s.id || null, cur, (newIcon) => {
+        if (sprintIconDisplay) { sprintIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 20) : '☐'; sprintIconDisplay.dataset.icon = newIcon; }
+        if (s.id) {
+          saveEntityIcon('sprint', s.id, newIcon).catch(() => {
+            if (sprintIconDisplay) { sprintIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 20) : '☐'; sprintIconDisplay.dataset.icon = cur; }
+          });
+        }
+      });
+    };
+  }
   document.getElementById('modal-save-btn').onclick = async () => {
     const data = {
       title: document.getElementById('sp-title').value.trim(),
       project_id: document.getElementById('sp-project').value ? parseInt(document.getElementById('sp-project').value) : null,
       start_date: document.getElementById('sp-start').value || null,
       end_date: document.getElementById('sp-end').value || null,
-      status: 'planned',
     };
     if (!data.title) { alert('Title is required'); return; }
-    await api('POST', '/api/sprints', data);
+    if (s.id) {
+      await api('PATCH', `/api/sprints/${s.id}`, data);
+    } else {
+      data.status = 'planned';
+      await api('POST', '/api/sprints', data);
+    }
     closeFormSlideover();
     renderSprints();
   };
@@ -4297,7 +5314,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Modal close
   document.getElementById('modal-close').onclick = closeModal;
-  document.getElementById('modal-backdrop').onclick = () => { closeModal(); closeFormSlideover(); closeSlideover(); };
+  document.getElementById('modal-backdrop').onclick = () => {
+    if (document.getElementById('modal').classList.contains('open')) closeModal();
+    if (document.getElementById('form-slideover').classList.contains('open')) closeFormSlideover();
+    if (document.getElementById('slideover').classList.contains('open')) closeSlideover();
+  };
 
   // Slideover close
   document.getElementById('slideover-close').onclick = closeSlideover;
@@ -4350,7 +5371,54 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   renderView('dashboard');
   initAiPanel();
+
+  // Quick note FAB
+  const quickNoteFab = document.getElementById('quick-note-fab');
+  if (quickNoteFab) quickNoteFab.onclick = () => showQuickNoteModal();
 });
+
+/* ─── Quick Note Modal ───────────────────────────────────────────────── */
+function showQuickNoteModal() {
+  const today = new Date().toISOString().split('T')[0];
+  const catOpts = '<option value="">— none —</option>' + allCategories.map(c =>
+    `<option value="${c.id}">${c.name}</option>`).join('');
+
+  const body = `
+    <div class="form-group">
+      <label class="form-label">Title</label>
+      <input type="text" id="qn-title" placeholder="Note title…" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Note</label>
+      <textarea id="qn-body" rows="8" placeholder="Write your note…" style="width:100%;min-height:160px"></textarea>
+    </div>
+    <div class="grid-2">
+      <div class="form-group"><label class="form-label">Date</label><input type="date" id="qn-date" value="${today}" /></div>
+      <div class="form-group"><label class="form-label">Category</label><select id="qn-category">${catOpts}</select></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
+      <button class="btn btn-primary" id="modal-save-btn">Save Note</button>
+    </div>`;
+
+  openModal('Quick Note', body);
+  document.getElementById('modal-cancel-btn').onclick = closeModal;
+  requestAnimationFrame(() => document.getElementById('qn-title')?.focus());
+  document.getElementById('modal-save-btn').onclick = async () => {
+    const title = document.getElementById('qn-title').value.trim();
+    const body = document.getElementById('qn-body').value;
+    const note_date = document.getElementById('qn-date').value || null;
+    const category_id = document.getElementById('qn-category').value
+      ? parseInt(document.getElementById('qn-category').value) : null;
+    if (!title && !body) { alert('Please enter a title or note content'); return; }
+    try {
+      await api('POST', '/api/notes', { title: title || 'Quick Note', body, note_date, category_id });
+      closeModal();
+      if (window.__showToast) window.__showToast('Note saved');
+      if (currentView === 'notes') renderNotes();
+    } catch(e) { alert('Error saving note: ' + (e.message || e)); }
+  };
+}
 
 /* ─── AI Assistant Panel ─────────────────────────────────────────────── */
 const aiState = {
@@ -4374,8 +5442,25 @@ function initAiPanel() {
 
   if (!fab || !panel) return;
 
-  fab.onclick = () => panel.classList.toggle('open');
-  closeBtn.onclick = () => panel.classList.remove('open');
+  function openAiPanel() {
+    panel.classList.add('open');
+    fab.style.display = 'none';
+  }
+
+  function closeAiPanel() {
+    panel.classList.remove('open');
+    fab.style.display = '';
+  }
+
+  fab.onclick = openAiPanel;
+  closeBtn.onclick = closeAiPanel;
+
+  // Click outside AI panel closes it
+  document.addEventListener('click', (e) => {
+    if (panel.classList.contains('open') && !panel.contains(e.target) && e.target !== fab) {
+      closeAiPanel();
+    }
+  }, true);
 
   tabText.onclick = () => aiSwitchMode('text');
   tabVoice.onclick = () => aiSwitchMode('voice');
@@ -4508,3 +5593,41 @@ function aiAddThinking() {
 function escHtml(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+/* ─── GSAP MutationObserver — auto-animate any view render ──────────── */
+// Watches #main-content for new DOM subtrees and applies entrance animations.
+// This fires for every renderXxx() call without modifying each function.
+(function initViewAnimationObserver() {
+  const main = document.getElementById('main-content');
+  if (!main || !window.LifeAnimations) return;
+
+  // Debounce to avoid firing on every intermediate innerHTML update
+  let animTimer = null;
+  const observer = new MutationObserver(() => {
+    clearTimeout(animTimer);
+    animTimer = setTimeout(() => {
+      // Don't animate loading spinner
+      if (main.querySelector('.loading')) return;
+
+      // Page enter — the whole .view fades + slides up
+      LifeAnimations.pageEnter(main.querySelector('.view'), { duration: 0.28 });
+
+      // Stagger lists of items that appear in all views
+      requestAnimationFrame(() => {
+        LifeAnimations.staggerList(main.querySelectorAll('.task-row'),    { stagger: 0.03 });
+        LifeAnimations.staggerList(main.querySelectorAll('.card'),        { stagger: 0.05 });
+        LifeAnimations.staggerList(main.querySelectorAll('.note-card'),   { stagger: 0.05 });
+        LifeAnimations.staggerList(main.querySelectorAll('.stat-card'),   { stagger: 0.06 });
+        LifeAnimations.staggerList(main.querySelectorAll('.kanban-card'), { stagger: 0.04 });
+        LifeAnimations.staggerList(main.querySelectorAll('.taxonomy-chip'),{ stagger: 0.04 });
+
+        // Hover lift on cards
+        LifeAnimations.hoverLiftAll('#main-content .stat-card');
+        LifeAnimations.hoverLiftAll('#main-content .widget');
+        LifeAnimations.hoverLiftAll('#main-content .note-card');
+      });
+    }, 60); // short debounce — lets innerHTML finish before animating
+  });
+
+  observer.observe(main, { childList: true, subtree: false });
+})();
