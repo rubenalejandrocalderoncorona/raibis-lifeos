@@ -925,6 +925,90 @@ tr:hover td {
   font-variant-numeric: tabular-nums;
 }
 
+/* ─── Pomodoro focus block timeline ───────────────────────────────── */
+.pom-timeline-section {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-6);
+  margin-top: var(--space-6);
+}
+.pom-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.pom-timeline-empty {
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+  padding: var(--space-4) 0;
+}
+.pom-tl-group {
+  display: flex;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+.pom-tl-date-label {
+  min-width: 120px;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-secondary);
+  padding-top: 6px;
+  flex-shrink: 0;
+}
+.pom-tl-group.today .pom-tl-date-label {
+  color: var(--color-accent);
+}
+.pom-tl-group.past .pom-tl-date-label {
+  color: var(--color-text-tertiary);
+  text-decoration: line-through;
+}
+.pom-tl-tasks {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pom-timeline-task {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast);
+}
+.pom-timeline-task:hover { background: var(--color-surface-hover); border-color: var(--color-accent); }
+.pom-tl-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.pom-tl-title {
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pom-tl-meta {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+}
+.pom-tl-badge {
+  font-size: var(--text-xs);
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  text-transform: capitalize;
+}
+.pom-tl-badge.urgent { background: var(--color-danger-bg); color: var(--color-danger); }
+.pom-tl-badge.high { background: var(--color-warning-bg); color: var(--color-warning); }
+.pom-tl-badge.medium { background: var(--color-accent-subtle); color: var(--color-accent); }
 /* ─── Filter row ──────────────────────────────────────────────────── */
 .filter-row {
   display: flex;
@@ -1456,6 +1540,8 @@ tr:hover td {
   flex-shrink: 0;
 }
 .prop-chips-more:hover { background: var(--accent-glow); border-color: var(--accent); color: var(--accent); }
+.prop-chip.chip-empty .chip-value { color: var(--text-dim); opacity: 0.55; }
+.prop-chip.chip-empty:hover .chip-value { opacity: 1; }
 
 /* ─── Custom combobox popover ──────────────────────────────────────── */
 .combo-popover {
@@ -1506,11 +1592,30 @@ tr:hover td {
 }
 .combo-item:hover, .combo-item.focused { background: var(--accent-glow); }
 .combo-item.selected { color: var(--accent); }
-.combo-item.selected::after {
-  content: '✓';
-  margin-left: auto;
-  font-size: 12px;
+.combo-item.selected::after { content: none; }
+.combo-item-check { margin-left: auto; font-size: 11px; color: var(--accent); flex-shrink: 0; }
+.combo-selected-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
 }
+.combo-sel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  background: var(--accent-glow);
+  color: var(--accent);
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+.combo-sel-chip:hover { background: var(--accent-dim); }
+.combo-sel-chip-x { margin-left: 2px; font-size: 12px; opacity: 0.7; }
+.combo-sel-chip:hover .combo-sel-chip-x { opacity: 1; }
 .combo-item.create-new {
   color: var(--accent);
   border-top: 1px solid var(--border);

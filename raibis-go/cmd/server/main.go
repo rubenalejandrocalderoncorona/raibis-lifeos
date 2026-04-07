@@ -280,6 +280,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 				StartDate          string  `json:"start_date"`
 				DueDate            string  `json:"due_date"`
 				FocusBlock         string  `json:"focus_block"`
+				FocusBlockStart    string  `json:"focus_block_start"`
 				GoalID             *int64  `json:"goal_id"`
 				ProjectID          *int64  `json:"project_id"`
 				SprintID           *int64  `json:"sprint_id"`
@@ -335,6 +336,9 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 			}
 			if body.FocusBlock != "" {
 				t.FocusBlock = &body.FocusBlock
+			}
+			if body.FocusBlockStart != "" {
+				t.FocusBlockStart = &body.FocusBlockStart
 			}
 			created, err := svc.Create(t)
 			if err != nil {
@@ -504,6 +508,9 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 			}
 			if v, ok := body["focus_block"].(string); ok {
 				t.FocusBlock = &v
+			}
+			if v, ok := body["focus_block_start"].(string); ok {
+				t.FocusBlockStart = &v
 			}
 			if v, ok := body["goal_id"]; ok {
 				if v == nil {
@@ -986,6 +993,20 @@ func projectHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http
 					cid := int64(fv)
 					p.CategoryID = &cid
 				}
+			}
+			if v, ok := body["start_date"].(string); ok && v != "" {
+				if t, err := time.Parse("2006-01-02", v); err == nil {
+					p.StartDate = &t
+				}
+			} else if _, ok := body["start_date"]; ok {
+				p.StartDate = nil
+			}
+			if v, ok := body["due_date"].(string); ok && v != "" {
+				if t, err := time.Parse("2006-01-02", v); err == nil {
+					p.DueDate = &t
+				}
+			} else if _, ok := body["due_date"]; ok {
+				p.DueDate = nil
 			}
 			if err := store.UpdateProject(p); err != nil {
 				errJSON(w, 500, err.Error())

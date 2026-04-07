@@ -27,3 +27,8 @@ raibis-go/lifeos
 .idea/
 .vscode/
 *.swp
+
+# Tauri
+raibis-tauri/src-tauri/target/
+raibis-tauri/node_modules/
+raibis-tauri/src-tauri/binaries/

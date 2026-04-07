@@ -15,9 +15,16 @@ const COLOR_HEX = {blue:'#378ADD',green:'#6dcc8a',red:'#e07070',yellow:'#d4a84b'
 
 /* ─── Icon / Emoji Picker ─────────────────────────────────────────────── */
 const EMOJI_DATA = {
-  'Objects':  ['📋','✅','⭐','🎯','🔥','💡','📌','📎','🔖','📅','⏰','🔔','💼','📁','📂','🗂️','📊','📈','📉','🗒️','📝','✍️','🖊️','📖','🔍','🔎','💬','📣','🔊'],
-  'Activity': ['🏃','🎓','🎨','🎵','🎮','🏆','💪','🧠','🌱','🌟','⚡','🔧','🛠️','🔬','🔭','🏗️','🚀','✈️','🌍','🏠','💻','📱','🎙️','📡','🏋️','🧘','🚴'],
-  'Symbols':  ['✔️','❌','⚠️','❓','❗','🔴','🟡','🟢','🔵','⚫','⚪','🔑','🔒','🔓','💰','💎','🎁','🏷️','♻️','🔄','⚙️','🎲','🧩','🔮','💫','✨'],
+  'People':   ['😀','😃','😄','😁','😆','😅','😂','🤣','😊','😇','🙂','🙃','😉','😌','😍','🥰','😘','😗','😙','😚','😋','😛','😝','😜','🤪','🤨','🧐','🤓','😎','🥸','🤩','🥳','😏','😒','😞','😔','😟','😕','🙁','☹️','😣','😖','😫','😩','🥺','😢','😭','😤','😠','😡','🤬','🤯','😳','🥵','🥶','😱','😨','😰','😥','😓','🤗','🤔','🤭','🤫','🤥','😶','😐','😑','😬','🙄','😯','😦','😧','😮','😲','🥱','😴','🤤','😪','😵','🤐','🥴','🤢','🤮','🤧','😷','🤒','🤕'],
+  'Gestures': ['👋','🤚','🖐️','✋','🖖','👌','🤌','🤏','✌️','🤞','🤟','🤘','🤙','👈','👉','👆','🖕','👇','☝️','👍','👎','✊','👊','🤛','🤜','👏','🙌','👐','🤲','🙏','✍️','💅','🤳','💪','🦾','🦿','🦵','🦶','👂','🦻','👃','🧠','🦷','🦴','👀','👁️','👅','👄'],
+  'Animals':  ['🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐨','🐯','🦁','🐮','🐷','🐸','🐵','🙈','🙉','🙊','🐔','🐧','🐦','🐤','🦆','🦅','🦉','🦇','🐺','🐗','🐴','🦄','🐝','🪱','🐛','🦋','🐌','🐞','🐜','🦗','🕷️','🦂','🐢','🐍','🦎','🦖','🦕','🐙','🦑','🦐','🦞','🦀','🐡','🐠','🐟','🐬','🐳','🐋','🦈','🐊','🐅','🐆','🦓','🦍','🦧','🦣','🐘','🦛','🦏','🐪','🐫','🦒','🦘','🦬','🐃','🐂','🐄','🐎','🐖','🐏','🐑','🦙','🐐','🦌','🐕','🐩','🦮','🐈','🐈‍⬛','🪶','🐓','🦃','🦤','🦚','🦜','🦩','🦢','🐇','🦝','🦨','🦡','🦫','🦦','🦥','🐁','🐀','🐿️','🦔'],
+  'Nature':   ['🌸','💮','🏵️','🌹','🥀','🌺','🌻','🌼','🌷','🌱','🌲','🌳','🌴','🌵','🌾','🌿','☘️','🍀','🍁','🍂','🍃','🍄','🌰','🦠','🌍','🌎','🌏','🌐','🌑','🌒','🌓','🌔','🌕','🌖','🌗','🌘','🌙','🌚','🌛','🌜','☀️','🌝','🌞','🪐','⭐','🌟','💫','✨','⚡','☄️','💥','🔥','🌪','🌈','☁️','⛅','🌤️','❄️','🌊','💧','🌫️','🌬️','🌀','🌈','⛈️','🌩️','🌨️','🌧️','🌦️','🌥️','🌤️'],
+  'Food':     ['🍎','🍐','🍊','🍋','🍌','🍉','🍇','🍓','🫐','🍈','🍑','🥭','🍍','🥥','🥝','🍅','🫒','🥑','🍆','🥔','🥕','🌽','🌶️','🫑','🥒','🥬','🥦','🧄','🧅','🍄','🥜','🫘','🌰','🍞','🥐','🥖','🫓','🥨','🧀','🥚','🍳','🧈','🥞','🧇','🥓','🥩','🍗','🍖','🌭','🍔','🍟','🍕','🫔','🌮','🌯','🥙','🧆','🥚','🍣','🍱','🍛','🍜','🍝','🍠','🍢','🍡','🍧','🍨','🍦','🥧','🧁','🍰','🎂','🍮','🍭','🍬','🍫','🍿','🍩','🍪','🌰','🥐','☕','🫖','🍵','🧃','🥤','🧋','🍺','🍻','🥂','🍷','🥃','🍸','🍹'],
+  'Travel':   ['🚗','🚕','🚙','🚌','🚎','🏎️','🚓','🚑','🚒','🚐','🛻','🚚','🚛','🚜','🦯','🦽','🦼','🛴','🚲','🛵','🏍️','🛺','🚁','🛸','✈️','🛩️','🛫','🛬','🪂','💺','🚀','🛶','⛵','🚤','🛥️','🛳️','⛴️','🚢','⚓','🗺️','🧭','🏔️','⛰️','🌋','🗻','🏕️','🏖️','🏜️','🏝️','🏞️','🏟️','🏛️','🏗️','🧱','🏘️','🏚️','🏠','🏡','🏢','🏣','🏤','🏥','🏦','🏨','🏩','🏪','🏫','🏬','🏭','🏯','🏰','💒','🗼','🗽','🗾','🗿','🌁','🌃','🏙️','🌄','🌅','🌆','🌇','🌉','🌌','🌠','🎇','🎆'],
+  'Objects':  ['⌚','📱','💻','⌨️','🖥️','🖨️','🖱️','🖲️','💽','💾','💿','📀','📷','📸','📹','🎥','📽️','🎞️','📞','☎️','📟','📠','📺','📻','🧭','⏱️','⏲️','⏰','🕰️','⌛','⏳','📡','🔋','🪫','🔌','💡','🔦','🕯️','🪔','🧯','🛢️','💰','💴','💵','💶','💷','💸','💳','🪙','💹','📈','📉','📊','📋','📌','📍','✂️','🗃️','🗄️','🗑️','🔒','🔓','🔏','🔐','🔑','🗝️','🔨','🪓','⛏️','⚒️','🛠️','🗡️','⚔️','🛡️','🔧','🔩','⚙️','🗜️','🔗','⛓️','🧲','🪜','⚗️','🧪','🧫','🧬','🔬','🔭','📡','💊','💉','🩺','🩹','🧰','🪤','🪣','🧲','📦','📬','📮','🗒️','📝','✏️','🖊️','🖋️','📖','📚','📓','📒','📃','📄','📑','📜','📰','🗞️','🔖','🏷️','💰','🔑','🗝️','🔍','🔎','🗂️','📁','📂','🗃️','🗄️'],
+  'Activity': ['⚽','🏀','🏈','⚾','🎾','🏐','🏉','🥏','🎱','🪃','🏓','🏸','🏒','🥍','🏏','🪃','🎿','🛷','🛹','🛼','🥊','🥋','🎽','🤿','🥅','⛳','🎣','🤿','🎽','🎿','🛷','🏹','🎯','🎱','🎮','🎰','🎲','🧩','🪀','🪁','🎭','🎨','🖼️','🎪','🎤','🎧','🎼','🎵','🎶','🎷','🎸','🎹','🎺','🎻','🥁','🪘','🎙️','📯','🎬','🎥','📽️','🎞️','📺','📷','📸','🔭','🎠','🎡','🎢','🎪'],
+  'Symbols':  ['❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','💟','☮️','✝️','☪️','🕉️','☯️','🔯','✡️','☦️','⛎','♈','♉','♊','♋','♌','♍','♎','♏','♐','♑','♒','♓','🆔','⚛️','🉑','☢️','☣️','📴','📳','🈶','🈚','🈸','🈺','🈷️','✴️','🆚','💮','🉐','㊙️','㊗️','🈴','🈵','🈹','🈲','🅰️','🅱️','🆎','🆑','🅾️','🆘','❌','⭕','🛑','⛔','📛','🚫','💯','💢','♨️','🚷','🚯','🚳','🚱','🔞','📵','🚭','❗','❕','❓','❔','‼️','⁉️','🔅','🔆','📶','🛜','📳','📴','📵','✅','☑️','✔️','❎','🔀','🔁','🔂','▶️','⏩','⏭️','⏯️','◀️','⏪','⏮️','🔼','⏫','🔽','⏬','⏸️','⏹️','⏺️','🎦','🔇','🔈','🔉','🔊','📢','📣','📡','🔔','🔕','🎵','🎶','⚡','🔋','💡','🔦','🕯️','🪔','💸','💳','🪙','♻️','🔄','⚙️','🔧','🔩','🗜️','🔗','⛓️','🪝','🧲','⚗️','🔬','🔭','🔮','🪄','🧿','💈','🪞','🪟','🪜','🛋️','🪑','🚪','🛏️','🛁','🪒','🧴','🧷','🧹','🧺','🧻','🪣','🧼','🫧','🪥','🧽','🪤','🪣','🧯','🛒','🚬','⚰️','🪦','⚱️','🏺','🗿','🗽'],
+  'Flags':    ['🏁','🚩','🎌','🏴','🏳️','🏳️‍🌈','🏳️‍⚧️','🏴‍☠️','🇺🇸','🇬🇧','🇨🇦','🇦🇺','🇩🇪','🇫🇷','🇪🇸','🇮🇹','🇯🇵','🇰🇷','🇨🇳','🇮🇳','🇧🇷','🇲🇽','🇷🇺','🇸🇦','🇦🇪','🇳🇱','🇧🇪','🇸🇪','🇳🇴','🇩🇰','🇫🇮','🇵🇹','🇵🇱','🇨🇿','🇦🇹','🇨🇭','🇬🇷','🇹🇷','🇮🇱','🇪🇬','🇿🇦','🇳🇬','🇰🇪','🇦🇷','🇨🇴','🇨🇱','🇵🇪','🇻🇪','🇵🇭','🇹🇭','🇻🇳','🇮🇩','🇲🇾','🇸🇬','🇳🇿','🇮🇪','🇺🇦','🇷🇴','🇭🇺'],
 };
 
 const ICON_DATA = [
@@ -692,7 +699,7 @@ function taskRowHtml(task, showProject, indent) {
     <div class="task-check ${done ? 'done' : ''}" data-check-id="${task.id}">${done ? '✓' : ''}</div>
     ${catDot}
     <div class="task-content">
-      <div class="${titleCls}"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${task.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle"></span>${task.title} ${recurBadge}</div>
+      <div class="${titleCls}"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${task.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${task.title} ${recurBadge}</div>
       <div class="task-meta-row">${projBadge}${dueBadge}${tagChips}</div>
     </div>
     <span class="task-row-due-right">${task.due_date ? fmtDate(task.due_date) : ''}</span>
@@ -1389,19 +1396,78 @@ async function renderTasks() {
       };
     });
 
-    // Add-subtask hover button (tasks without subtasks) → open new task modal
+    // Add-subtask hover button (tasks without subtasks) → show inline "+ Add Subtask" button row
     document.querySelectorAll('.task-add-sub-btn').forEach(btn => {
       btn.onclick = (e) => {
         e.stopPropagation();
         const parentId = parseInt(btn.dataset.addSubId);
-        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
-          allTasksFull = await api('GET', '/api/tasks?all=1');
-          allTasksCache = allTasksFull;
-          const parent = topLevel.find(t => t.id === parentId);
-          if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
-          expandedTasks.add(String(parentId));
-          render();
-        });
+        const row = btn.closest('.task-row') || btn.closest('.task-table-row');
+        if (!row) return;
+        document.querySelectorAll('.task-quick-add-row').forEach(el => el.remove());
+        // Animate the arrow like toggle-arrow
+        btn.classList.add('expanded');
+        const indentPx = parseInt(row.style.paddingLeft) || 12;
+        if (row.tagName === 'LI') {
+          const li = document.createElement('li');
+          li.className = 'task-quick-add-row inline-subtask-input-row';
+          li.style.cssText = `padding-left:${indentPx + 20}px;padding-top:6px;padding-bottom:6px`;
+          li.innerHTML = `<button class="btn btn-sm btn-ghost add-subtask-inline-btn task-quick-add-trigger" data-parent-id="${parentId}" style="font-size:12px;color:var(--color-text-secondary)">+ Add Subtask</button>`;
+          row.after(li);
+          li.querySelector('.task-quick-add-trigger').onclick = (ce) => {
+            ce.stopPropagation();
+            li.remove();
+            btn.classList.remove('expanded');
+            showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+              allTasksFull = await api('GET', '/api/tasks?all=1');
+              allTasksCache = allTasksFull;
+              const parent = topLevel.find(t => t.id === parentId);
+              if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
+              expandedTasks.add(String(parentId));
+              render();
+            });
+          };
+          // Click elsewhere removes the row
+          setTimeout(() => {
+            function outsideClick(ev) {
+              if (!li.contains(ev.target) && ev.target !== btn) {
+                li.remove();
+                btn.classList.remove('expanded');
+                document.removeEventListener('click', outsideClick);
+              }
+            }
+            document.addEventListener('click', outsideClick);
+          }, 0);
+        } else {
+          // Table view
+          const tr = document.createElement('tr');
+          tr.className = 'task-quick-add-row';
+          const colspan = row.querySelectorAll('td').length || 6;
+          tr.innerHTML = `<td colspan="${colspan}" style="padding:4px 16px"><button class="btn btn-sm btn-ghost task-quick-add-trigger" data-parent-id="${parentId}" style="font-size:12px;color:var(--color-text-secondary)">+ Add Subtask</button></td>`;
+          row.after(tr);
+          tr.querySelector('.task-quick-add-trigger').onclick = (ce) => {
+            ce.stopPropagation();
+            tr.remove();
+            btn.classList.remove('expanded');
+            showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+              allTasksFull = await api('GET', '/api/tasks?all=1');
+              allTasksCache = allTasksFull;
+              const parent = topLevel.find(t => t.id === parentId);
+              if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
+              expandedTasks.add(String(parentId));
+              render();
+            });
+          };
+          setTimeout(() => {
+            function outsideClick(ev) {
+              if (!tr.contains(ev.target) && ev.target !== btn) {
+                tr.remove();
+                btn.classList.remove('expanded');
+                document.removeEventListener('click', outsideClick);
+              }
+            }
+            document.addEventListener('click', outsideClick);
+          }, 0);
+        }
       };
     });
 
@@ -1552,7 +1618,7 @@ async function renderProjects() {
     const tagChips = (p.tags || []).map(t => tagHtml(t)).join('');
     return `<div class="card detail-nav" data-proj-id="${p.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
-        <span class="card-title">${p.title}</span>
+        <span class="card-title"><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${p.title}</span>
         <div class="flex gap-8" onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button>
           <button class="btn btn-sm btn-ghost proj-edit-btn" data-proj-id="${p.id}">Edit</button>
@@ -1652,6 +1718,7 @@ async function renderProjects() {
     document.getElementById('proj-list').innerHTML =
       projectsViewMode === 'table' ? buildTableView(list) : buildCardsView(list);
     bindProjEvents();
+    injectListIcons('project', list.map(p => p.id));
   }
 
   document.getElementById('new-proj-btn').onclick = () => showProjectModal(null, goals);
@@ -1719,7 +1786,7 @@ async function renderGoals() {
     const tagChips = (g.tags || []).map(t => tagHtml(t)).join('');
     return `<div class="card detail-nav-goal" data-goal-id="${g.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
-        <span class="card-title">${g.title}</span>
+        <span class="card-title"><span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${g.title}</span>
         <div class="flex gap-8" onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button>
           <button class="btn btn-sm btn-ghost goal-edit-btn" data-goal-id="${g.id}">Edit</button>
@@ -1819,6 +1886,7 @@ async function renderGoals() {
     document.getElementById('goal-list').innerHTML =
       goalsViewMode === 'table' ? buildTableView(list) : buildCardsView(list);
     bindGoalEvents();
+    injectListIcons('goal', list.map(g => g.id));
   }
 
   document.getElementById('new-goal-btn').onclick = () => showGoalModal(null);
@@ -1884,7 +1952,7 @@ async function renderNotes() {
     const tagChips = (n.tags || []).map(t => tagHtml(t)).join('');
     return `<div class="note-card" data-note-id="${n.id}">
       <div class="flex-between gap-8">
-        <div class="note-title"><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle"></span>${n.title || 'Untitled'}</div>
+        <div class="note-title"><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="18" style="display:none;margin-right:5px;vertical-align:middle;font-size:18px"></span>${n.title || 'Untitled'}</div>
         <div onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-danger note-del-btn" data-note-id="${n.id}">Delete</button>
         </div>
@@ -2010,7 +2078,7 @@ async function renderSprints() {
     const prevLabel = s.status === 'active' ? '↩ Planned' : s.status === 'completed' ? '↩ Active' : null;
     return `<div class="card">
       <div class="flex-between gap-8" style="margin-bottom:6px">
-        <span class="card-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)">${s.title}</span>
+        <span class="card-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)"><span class="list-icon-slot" data-icon-entity="sprint" data-icon-id="${s.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${s.title}</span>
         <div class="flex gap-8">
           ${prevStatus ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
           ${nextStatus ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="${nextStatus}">${nextLabel}</button>` : ''}
@@ -2107,6 +2175,7 @@ async function renderSprints() {
       sprintsViewMode === 'table' ? buildSprintTable(list) :
       (list.map(buildSprintCard).join('') || `<div class="empty-state"><div class="empty-state-icon">⚡</div><div class="empty-state-text">No sprints found</div></div>`);
     bindSprintEvents();
+    injectListIcons('sprint', list.map(s => s.id));
   }
 
   document.getElementById('new-sprint-btn').onclick = () => showSprintModal(projects);
@@ -3011,6 +3080,10 @@ async function showTaskSlideover(taskId) {
         <span class="chip-label">Due</span>
         <span class="chip-value" id="chip-due-val">${fmtDateRange(task.start_date, task.due_date)}</span>
       </button>
+      <button class="prop-chip${task.focus_block ? '' : ' chip-empty'}" id="chip-focus" data-key="focus" title="Focus block">
+        <span class="chip-label">Focus</span>
+        <span class="chip-value" id="chip-focus-val">${fmtDateRange(task.focus_block_start, task.focus_block)}</span>
+      </button>
       <button class="prop-chip" id="chip-tags" data-key="tags">
         <span class="chip-label">Tags</span>
         <span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span>
@@ -3165,7 +3238,18 @@ async function showTaskSlideover(taskId) {
         : items;
       const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
 
+      // Selected chips row (multi-select only)
+      const selectedChips = multiSelect && localSelected.size > 0
+        ? `<div class="combo-selected-row">${[...localSelected].map(v => {
+            const it = items.find(x => String(x.value) === v);
+            if (!it) return '';
+            const colorDot = it.color ? `<span style="width:6px;height:6px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0;margin-right:3px"></span>` : '';
+            return `<span class="combo-sel-chip" data-remove="${v.replace(/"/g,'&quot;')}">${colorDot}${it.label}<span class="combo-sel-chip-x">×</span></span>`;
+          }).join('')}</div>`
+        : '';
+
       _comboEl.innerHTML = `
+        ${selectedChips}
         <div class="combo-search-wrap">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" />
@@ -3174,7 +3258,7 @@ async function showTaskSlideover(taskId) {
           ${filtered.length ? filtered.map((it, i) => {
             const isSel = multiSelect ? localSelected.has(String(it.value)) : String(it.value) === String(currentVal);
             const colorDot = it.color ? `<span style="width:8px;height:8px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0"></span>` : '';
-            return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${colorDot}${it.label}</div>`;
+            return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${colorDot}${it.label}${isSel && multiSelect ? '<span class="combo-item-check">✓</span>' : ''}</div>`;
           }).join('') : '<div class="combo-empty">No results</div>'}
           ${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Create "${filter.trim()}"</div>` : ''}
         </div>`;
@@ -3191,10 +3275,32 @@ async function showTaskSlideover(taskId) {
         else if (e.key === 'ArrowUp') { e.preventDefault(); focusIdx = Math.max(focusIdx - 1, 0); render(); }
         else if (e.key === 'Enter') {
           e.preventDefault();
-          if (focusIdx >= 0 && comboItems[focusIdx]) comboItems[focusIdx].click();
+          if (focusIdx >= 0 && comboItems[focusIdx]) {
+            comboItems[focusIdx].click();
+          } else if (allowCreate && filter.trim()) {
+            // Enter with no focused item → create if no exact match
+            const exact = items.find(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+            if (!exact) {
+              onSelect({ create: filter.trim() });
+              closeCombo();
+            } else {
+              onSelect({ value: String(exact.value), label: exact.label });
+              closeCombo();
+            }
+          }
         }
         else if (e.key === 'Escape') closeCombo();
       };
+
+      _comboEl.querySelectorAll('.combo-sel-chip').forEach(chip => {
+        chip.onclick = (e) => {
+          e.stopPropagation();
+          const v = chip.dataset.remove;
+          localSelected.delete(v);
+          onSelect({ multiIds: [...localSelected] });
+          render();
+        };
+      });
 
       _comboEl.querySelectorAll('.combo-item').forEach(el => {
         el.onclick = async (e) => {
@@ -3397,6 +3503,22 @@ async function showTaskSlideover(taskId) {
     );
   };
 
+  document.getElementById('chip-focus').onclick = (e) => {
+    e.stopPropagation();
+    openDateRangePicker(
+      e.currentTarget,
+      stripDate(task.focus_block_start),
+      stripDate(task.focus_block),
+      async (start, end) => {
+        const chipVal = document.getElementById('chip-focus-val');
+        if (chipVal) chipVal.textContent = fmtDateRange(start, end) || '—';
+        const chipEl = document.getElementById('chip-focus');
+        if (chipEl) chipEl.classList.toggle('chip-empty', !end && !start);
+        await patchTask({ focus_block_start: start || null, focus_block: end || start || null });
+      }
+    );
+  };
+
   document.getElementById('chip-tags').onclick = (e) => {
     e.stopPropagation();
     const items = allTags.map(t => ({ value: t.id, label: t.name, color: t.color }));
@@ -3437,7 +3559,7 @@ async function showTaskSlideover(taskId) {
       </div>
       <div class="prop-panel-row">
         <div class="prop-panel-label">${pIco('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>')} Focus Block</div>
-        <div class="prop-panel-value" id="pp-focus">${fmtDateRange(null, task.focus_block) !== '—' ? fmtDateRange(null, task.focus_block) : '—'}</div>
+        <div class="prop-panel-value" id="pp-focus">${fmtDateRange(task.focus_block_start, task.focus_block) || '—'}</div>
       </div>
       <div class="prop-panel-row">
         <div class="prop-panel-label">${pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>')} Story Points</div>
@@ -4274,6 +4396,79 @@ async function renderPomodoro() {
   }
 
   // Tasks that have pomodoro sessions planned
+
+  // Focus block timeline helper — horizontal timeline like calendar Timeline view
+  function renderFocusTimeline() {
+    const DAYS_BEFORE = 7, DAYS_AFTER = 30, PX = 38, LABEL_W = 180;
+    const today = new Date(); today.setHours(0,0,0,0);
+    function dateAdd(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
+    function dateStr(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+
+    const focusTasks = allTasksCache.filter(t => t.focus_block && t.status !== 'done');
+    if (!focusTasks.length) {
+      return `<div class="pom-timeline-empty">No focus blocks scheduled. Open a task and set a Focus Block date in the properties panel to see it here.</div>`;
+    }
+
+    const winStart = dateAdd(today, -DAYS_BEFORE);
+    const total = DAYS_BEFORE + DAYS_AFTER + 1;
+    const totalWidth = total * PX;
+    const todayX = DAYS_BEFORE * PX;
+    const dayList = Array.from({length: total}, (_, i) => dateAdd(winStart, i));
+
+    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const monthGroups = []; let curKey = null;
+    dayList.forEach((d, i) => {
+      const key = `${d.getFullYear()}-${d.getMonth()}`;
+      if (key !== curKey) {
+        monthGroups.push({ label: `${monthNames[d.getMonth()]} ${d.getFullYear()}`, startI: i, count: 1 });
+        curKey = key;
+      } else {
+        monthGroups[monthGroups.length - 1].count++;
+      }
+    });
+    const monthHdr = monthGroups.map(g =>
+      `<div style="position:absolute;left:${g.startI*PX}px;width:${g.count*PX}px;font-size:11px;font-weight:600;color:var(--color-text-secondary);border-right:1px solid var(--color-border);padding:2px 4px;white-space:nowrap;overflow:hidden">${g.label}</div>`
+    ).join('');
+    const dayNames = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+    const dayHdr = dayList.map((d, i) => {
+      const isT = d.getTime() === today.getTime();
+      return `<div style="position:absolute;left:${i*PX}px;width:${PX}px;text-align:center;font-size:10px;color:${isT?'var(--color-danger)':'var(--color-text-tertiary)'};font-weight:${isT?700:400};line-height:1.3">${d.getDate()}<br><span style="font-size:9px">${dayNames[d.getDay()]}</span></div>`;
+    }).join('');
+
+    const rows = focusTasks.map(t => {
+      const endDs = stripDate(t.focus_block);
+      const startDs = t.focus_block_start ? stripDate(t.focus_block_start) : endDs;
+      const startDayOff = Math.round((new Date(startDs + 'T00:00:00').getTime() - winStart.getTime()) / 86400000);
+      const endDayOff = Math.round((new Date(endDs + 'T00:00:00').getTime() - winStart.getTime()) / 86400000);
+      const spanDays = Math.max(1, endDayOff - startDayOff + 1);
+      const x = Math.max(0, startDayOff * PX);
+      const w = Math.min(spanDays * PX, totalWidth - x);
+      const statusColor = { todo:'var(--color-accent)', in_progress:'var(--color-success)', blocked:'var(--color-danger)' }[t.status] || 'var(--color-accent)';
+      const barLabel = t.title.length > 14 ? t.title.slice(0, 12) + '…' : t.title;
+      const rangeLabel = startDs !== endDs ? `${startDs} → ${endDs}` : endDs;
+      return `<div class="tl-track-row pom-tl-track-row" style="width:${totalWidth}px" data-task-id="${t.id}" title="${t.title}">
+        <div class="tl-today-line" style="left:${todayX + PX/2}px"></div>
+        ${w > 0 ? `<div class="tl-bar" data-task-id="${t.id}" style="left:${x}px;width:${w}px;background:${statusColor};border-radius:3px" title="${t.title}: ${rangeLabel}">${barLabel}</div>` : ''}
+      </div>`;
+    }).join('');
+
+    return `<div class="tl-wrap pom-tl-wrap">
+      <div class="tl-header-row">
+        <div style="min-width:${LABEL_W}px;flex-shrink:0;border-right:1px solid var(--color-border)"></div>
+        <div class="tl-hdr-scroll">
+          <div style="width:${totalWidth}px;height:22px;position:relative;border-bottom:1px solid var(--color-border)">${monthHdr}</div>
+          <div style="width:${totalWidth}px;height:32px;position:relative;border-bottom:2px solid var(--color-border-strong)">
+            ${dayHdr}
+            <div class="tl-today-dot" style="left:${todayX + PX/2}px"></div>
+          </div>
+        </div>
+      </div>
+      <div class="tl-body-wrap">
+        <div class="tl-labels-col" style="min-width:${LABEL_W}px">${focusTasks.map(t => `<div class="tl-label" title="${t.title}" data-task-id="${t.id}" style="cursor:pointer">${t.title}</div>`).join('')}</div>
+        <div class="tl-tracks-scroll">${rows}</div>
+      </div>
+    </div>`;
+  }
   const pomTasks = allTasksCache.filter(t => (t.pomodoros_planned || 0) > 0 || (t.pomodoros_finished || 0) > 0);
 
   document.getElementById('main-content').innerHTML = `<div class="view pom-view">
@@ -4326,6 +4521,17 @@ async function renderPomodoro() {
       </div>
       <div id="pom-stats-table-wrap">
         ${renderPomStatsTable(pomTasks)}
+      </div>
+    </div>
+
+    <!-- Focus block timeline -->
+    <div class="pom-timeline-section">
+      <div class="pom-stats-header">
+        <span class="pom-stats-title">Focus Block Timeline</span>
+        <span class="pom-stats-subtitle">Tasks scheduled for focus work</span>
+      </div>
+      <div id="pom-timeline" style="overflow:hidden">
+        ${renderFocusTimeline()}
       </div>
     </div>
   </div>`;
@@ -4514,6 +4720,11 @@ async function renderPomodoro() {
   }
   updateDisplay();
   renderLog();
+
+  // Focus block timeline — click label or bar to open task
+  document.querySelectorAll('.pom-tl-wrap .tl-label[data-task-id], .pom-tl-wrap .tl-bar[data-task-id], .pom-tl-track-row').forEach(el => {
+    el.onclick = () => { const id = el.dataset.taskId; if (id) showTaskSlideover(id); };
+  });
 }
 
 /* ─── Dashboard task list bindings ──────────────────────────────────── */
@@ -4539,10 +4750,33 @@ function bindTaskListEvents() {
     btn.onclick = (e) => {
       e.stopPropagation();
       const parentId = parseInt(btn.dataset.addSubId);
-      showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
-        expandedTasks.add(String(parentId));
-        renderDashboard();
-      });
+      const row = btn.closest('.task-row');
+      if (!row) return;
+      document.querySelectorAll('.task-quick-add-row').forEach(el => el.remove());
+      btn.classList.add('expanded');
+      const indentPx = parseInt(row.style.paddingLeft) || 12;
+      const li = document.createElement('li');
+      li.className = 'task-quick-add-row inline-subtask-input-row';
+      li.style.cssText = `padding-left:${indentPx + 20}px;padding-top:6px;padding-bottom:6px`;
+      li.innerHTML = `<button class="btn btn-sm btn-ghost add-subtask-inline-btn task-quick-add-trigger" data-parent-id="${parentId}" style="font-size:12px;color:var(--color-text-secondary)">+ Add Subtask</button>`;
+      row.after(li);
+      li.querySelector('.task-quick-add-trigger').onclick = async (ce) => {
+        ce.stopPropagation();
+        li.remove();
+        btn.classList.remove('expanded');
+        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+          expandedTasks.add(String(parentId));
+          renderDashboard();
+        });
+      };
+      const outsideClick = (ev) => {
+        if (!li.contains(ev.target) && ev.target !== btn) {
+          li.remove();
+          btn.classList.remove('expanded');
+          document.removeEventListener('click', outsideClick, true);
+        }
+      };
+      setTimeout(() => document.addEventListener('click', outsideClick, true), 0);
     };
   });
   document.querySelectorAll('.task-check').forEach(el => {
@@ -4588,11 +4822,34 @@ function bindDetailTaskEvents(onRefresh) {
     btn.onclick = (e) => {
       e.stopPropagation();
       const parentId = parseInt(btn.dataset.addSubId);
-      showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
-        allTasksCache = await api('GET', '/api/tasks?all=1');
-        expandedTasks.add(String(parentId));
-        if (onRefresh) onRefresh();
-      });
+      const row = btn.closest('.task-row');
+      if (!row) return;
+      document.querySelectorAll('.task-quick-add-row').forEach(el => el.remove());
+      btn.classList.add('expanded');
+      const indentPx = parseInt(row.style.paddingLeft) || 12;
+      const li = document.createElement('li');
+      li.className = 'task-quick-add-row inline-subtask-input-row';
+      li.style.cssText = `padding-left:${indentPx + 20}px;padding-top:6px;padding-bottom:6px`;
+      li.innerHTML = `<button class="btn btn-sm btn-ghost add-subtask-inline-btn task-quick-add-trigger" data-parent-id="${parentId}" style="font-size:12px;color:var(--color-text-secondary)">+ Add Subtask</button>`;
+      row.after(li);
+      li.querySelector('.task-quick-add-trigger').onclick = async (ce) => {
+        ce.stopPropagation();
+        li.remove();
+        btn.classList.remove('expanded');
+        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+          allTasksCache = await api('GET', '/api/tasks?all=1');
+          expandedTasks.add(String(parentId));
+          if (onRefresh) onRefresh();
+        });
+      };
+      const outsideClick = (ev) => {
+        if (!li.contains(ev.target) && ev.target !== btn) {
+          li.remove();
+          btn.classList.remove('expanded');
+          document.removeEventListener('click', outsideClick, true);
+        }
+      };
+      setTimeout(() => document.addEventListener('click', outsideClick, true), 0);
     };
   });
   document.querySelectorAll('.add-subtask-inline-btn').forEach(btn => {

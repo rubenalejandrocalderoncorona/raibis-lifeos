@@ -21,6 +21,7 @@ type Task struct {
 	Category           string     `json:"category,omitempty"`
 	CategoryID         *int64     `json:"category_id,omitempty"`
 	FocusBlock         *string    `json:"focus_block,omitempty"`
+	FocusBlockStart    *string    `json:"focus_block_start,omitempty"`
 	RecurInterval      *int       `json:"recur_interval,omitempty"`
 	RecurUnit          string     `json:"recur_unit,omitempty"`
 	StoryPoints        *int       `json:"story_points,omitempty"`
