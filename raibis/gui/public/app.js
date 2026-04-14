@@ -2,8 +2,10 @@
 
 /* ─── Constants ─────────────────────────────────────────────────────── */
 const API = 'http://localhost:3344';
-const TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done'];
-const TASK_PRIORITIES = ['low', 'medium', 'high', 'urgent'];
+const DEFAULT_TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done'];
+const DEFAULT_TASK_PRIORITIES = ['low', 'medium', 'high', 'urgent'];
+let TASK_STATUSES = JSON.parse(localStorage.getItem('taskStatuses') || 'null') || [...DEFAULT_TASK_STATUSES];
+let TASK_PRIORITIES = JSON.parse(localStorage.getItem('taskPriorities') || 'null') || [...DEFAULT_TASK_PRIORITIES];
 const TASK_CATEGORIES = ['Work-Process','Work-Tickets','Birthdays','Finance','Organization','Hobbies','Study','Travel','Personal','Health','Work-Task'];
 const RECUR_UNITS = ['Day(s)','Week(s)','Month(s)','Year(s)'];
 const GOAL_TYPES = ['12 Weeks','12 Months','3 Years','5 Years'];
@@ -223,6 +225,9 @@ let allCategories = [];
 let allTasksCache = [];
 let expandedTasks = new Set();
 let tasksViewMode = localStorage.getItem('tasksViewMode') || 'list';
+let tasksKanbanGroupBy = localStorage.getItem('tasksKanbanGroupBy') || 'status';
+// Hidden kanban columns per groupBy key — stored as { status: ['cancelled'], priority: [] }
+let kanbanHiddenCols = JSON.parse(localStorage.getItem('kanbanHiddenCols') || '{}');
 let projectsViewMode = localStorage.getItem('projectsViewMode') || 'cards';
 let goalsViewMode = localStorage.getItem('goalsViewMode') || 'cards';
 let notesViewMode = localStorage.getItem('notesViewMode') || 'cards';
@@ -288,12 +293,54 @@ function isToday(dateStr) {
 function statusBadge(status) {
   const map = { todo: 'badge-todo', in_progress: 'badge-progress', blocked: 'badge-blocked', done: 'badge-done' };
   const label = (status || 'todo').replace('_', ' ');
-  return `<span class="badge ${map[status] || 'badge-todo'}">${label}</span>`;
+  const customColor = getValueColor('taskStatuses', status);
+  const styleAttr = customColor ? ` style="background:${customColor}22;color:${customColor};border-color:${customColor}55"` : '';
+  return `<span class="badge ${map[status] || 'badge-todo'}"${styleAttr}>${label}</span>`;
 }
 
 function priorityBadge(priority) {
   const map = { low: 'badge-low', medium: 'badge-medium', high: 'badge-high', urgent: 'badge-urgent' };
-  return `<span class="badge ${map[priority] || 'badge-low'}">${priority || 'low'}</span>`;
+  const customColor = getValueColor('taskPriorities', priority);
+  const styleAttr = customColor ? ` style="background:${customColor}22;color:${customColor};border-color:${customColor}55"` : '';
+  return `<span class="badge ${map[priority] || 'badge-low'}"${styleAttr}>${priority || 'low'}</span>`;
+}
+
+function getValueColor(storageKey, value) {
+  if (!value) return null;
+  try {
+    const map = JSON.parse(localStorage.getItem(storageKey + 'Colors') || '{}');
+    return map[value] || null;
+  } catch(e) { return null; }
+}
+
+function setValueColor(storageKey, value, color) {
+  try {
+    const map = JSON.parse(localStorage.getItem(storageKey + 'Colors') || '{}');
+    if (color) map[value] = color;
+    else delete map[value];
+    localStorage.setItem(storageKey + 'Colors', JSON.stringify(map));
+  } catch(e) {}
+}
+
+// Sprint story-points gradient: gray→green (0→100%) green (100%) green→yellow (100-120%) yellow→red (120%+)
+function spGradientColor(assigned, capacity) {
+  if (!capacity) return 'var(--text-muted)';
+  const ratio = assigned / capacity;
+  if (ratio <= 0) return 'hsl(0,0%,55%)';
+  if (ratio <= 0.5) {
+    const t = ratio / 0.5;
+    return `hsl(${Math.round(t*120)},${Math.round(t*60)}%,45%)`;
+  }
+  if (ratio <= 1.0) return 'hsl(120,55%,38%)';
+  if (ratio <= 1.2) {
+    const t = (ratio - 1.0) / 0.2;
+    return `hsl(${Math.round(120 - t*60)},70%,42%)`;
+  }
+  if (ratio <= 1.5) {
+    const t = (ratio - 1.2) / 0.3;
+    return `hsl(${Math.round(60 - t*60)},75%,42%)`;
+  }
+  return 'hsl(0,75%,42%)';
 }
 
 function tagHtml(tag) {
@@ -679,9 +726,8 @@ function taskRowHtml(task, showProject, indent) {
   const dueBadge = dueBadgeHtml(task.due_date);
   const hasChildren = (task.sub_task_count || task.subtask_count || 0) > 0;
   const isExpanded = expandedTasks.has(String(task.id));
-  const toggleArrow = hasChildren
-    ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${task.id}" title="Toggle subtasks">▶</span>`
-    : `<span class="task-add-sub-btn" data-add-sub-id="${task.id}" title="Add subtask">▶</span>`;
+  const chevronSvg = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,3 5,7 8,3"/></svg>`;
+  const toggleArrow = `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${task.id}" title="Toggle subtasks">${chevronSvg}</span>`;
   const tagChips = (task.tags || []).slice(0, 2).map(t => tagHtml(t)).join('');
   const recurBadge = task.recur_interval > 0 ? `<span class="task-recur-badge" title="Repeats every ${task.recur_interval} ${task.recur_unit||'days'}">↺</span>` : '';
   const indentStyle = indent ? `padding-left:${indent * 24 + 12}px` : '';
@@ -713,8 +759,10 @@ function buildTaskTreeRows(tasks, allTasks, depth, showProject) {
     html += taskRowHtml(t, showProject && depth === 0, depth);
     const isExpanded = expandedTasks.has(String(t.id));
     const children = allTasks.filter(s => s.parent_task_id === t.id);
-    if (isExpanded && children.length > 0) {
-      html += buildTaskTreeRows(children, allTasks, depth + 1, false);
+    if (isExpanded) {
+      if (children.length > 0) {
+        html += buildTaskTreeRows(children, allTasks, depth + 1, false);
+      }
       html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
         <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px;opacity:0.6">+ Add Subtask</button>
       </li>`;
@@ -764,6 +812,7 @@ function openSlideover(title, bodyHTML) {
   const panel = document.getElementById('slideover');
   panel.classList.add('open');
   document.getElementById('modal-backdrop').classList.add('open');
+  document.getElementById('fab-group')?.classList.add('panel-open-main');
   // Clicking the main slideover body closes the secondary (props) panel
   panel.onclick = (e) => {
     const formPanel = document.getElementById('form-slideover');
@@ -778,6 +827,8 @@ function closeSlideover() {
   panel.classList.remove('open');
   if (!document.getElementById('form-slideover').classList.contains('open')) {
     document.getElementById('modal-backdrop').classList.remove('open');
+    document.getElementById('fab-group')?.classList.remove('panel-open-main');
+    document.getElementById('fab-group')?.classList.remove('panel-open-form');
   }
 }
 
@@ -788,6 +839,7 @@ function openFormSlideover(title, bodyHTML) {
   const panel = document.getElementById('form-slideover');
   panel.classList.add('open');
   document.getElementById('modal-backdrop').classList.add('open');
+  document.getElementById('fab-group')?.classList.add('panel-open-form');
 }
 
 function closeFormSlideover() {
@@ -796,6 +848,10 @@ function closeFormSlideover() {
   if (!document.getElementById('slideover').classList.contains('open') &&
       !document.getElementById('modal').classList.contains('open')) {
     document.getElementById('modal-backdrop').classList.remove('open');
+  }
+  if (!document.getElementById('slideover').classList.contains('open')) {
+    document.getElementById('fab-group')?.classList.remove('panel-open-main');
+    document.getElementById('fab-group')?.classList.remove('panel-open-form');
   }
 }
 
@@ -912,18 +968,30 @@ async function renderDashboard() {
   // Active tasks = all non-done top-level tasks for the "All Tasks" section
   allTasksCache = allTasks;
   const activeTasks = (allTasks || []).filter(t => t.status !== 'done' && !t.parent_task_id);
-  activeTasks.forEach(t => {
+  // Compute sub_task_count for ALL tasks so subtask toggles work at every depth
+  allTasks.forEach(t => {
     t.sub_task_count = allTasks.filter(c => c.parent_task_id === t.id).length;
   });
 
-  const sprintPct = sprint && sprint.total > 0 ? Math.round((sprint.done / sprint.total) * 100) : 0;
-
-  const sprintWidget = sprint ? `
-    <div class="sprint-name">${sprint.title}</div>
-    <div class="sprint-dates">${fmtDate(sprint.start_date)} → ${fmtDate(sprint.end_date)}</div>
-    <div class="sprint-progress-bar"><div class="sprint-progress-fill" style="width:${sprintPct}%"></div></div>
-    <div class="sprint-stats">${sprint.done || 0}/${sprint.total || 0} tasks · ${sprintPct}%</div>
-  ` : `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No active sprint</div></div>`;
+  const sprintWidget = sprint ? (() => {
+    const sprintPctVal = sprint.total > 0 ? Math.round((sprint.done / sprint.total) * 100) : 0;
+    const spCap = sprint.story_points || 0;
+    const spDone = sprint.story_points_done || 0;
+    const spColor = spGradientColor(spDone, spCap);
+    const spBar = spCap > 0 ? `
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:6px;margin-bottom:2px">
+        <span>Story Points</span><span style="font-weight:600;color:${spColor}">${spDone} / ${spCap}</span>
+      </div>
+      <div class="sprint-progress-bar" style="height:4px">
+        <div class="sprint-progress-fill" style="width:${Math.min(100,Math.round(spDone/spCap*100))}%;background:${spColor}"></div>
+      </div>` : '';
+    return `
+      <div class="sprint-name" style="cursor:pointer" data-sprint-id="${sprint.id}">${sprint.title}</div>
+      <div class="sprint-dates">${fmtDate(sprint.start_date)} → ${fmtDate(sprint.end_date)}</div>
+      <div class="sprint-progress-bar"><div class="sprint-progress-fill" style="width:${sprintPctVal}%"></div></div>
+      <div class="sprint-stats">${sprint.done || 0}/${sprint.total || 0} tasks · ${sprintPctVal}%</div>
+      ${spBar}`;
+  })() : `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No active sprint</div></div>`;
 
   const projRows = projects.slice(0, 5).map(p => {
     const prog = p.progress || {};
@@ -1107,6 +1175,9 @@ async function renderDashboard() {
   document.querySelectorAll('.proj-row').forEach(el => {
     el.onclick = () => renderView('project-detail', el.dataset.projId);
   });
+  document.querySelectorAll('.sprint-name[data-sprint-id]').forEach(el => {
+    el.onclick = () => renderView('sprint-detail', el.dataset.sprintId);
+  });
 
   // All Tasks status filter
   const taskStatusFilter = document.getElementById('dash-task-status-filter');
@@ -1157,6 +1228,8 @@ async function renderDashboard() {
       LifeAnimations.hoverLiftAll('#main-content .widget');
     });
   }
+  // Inject task icons (dashboard task list)
+  injectListIcons('task', allTasks.map(t => t.id));
 }
 
 /* ─── Tasks View ─────────────────────────────────────────────────────── */
@@ -1195,13 +1268,29 @@ async function renderTasks() {
   const viewToggle = `<div class="view-toggle">
     <button class="view-toggle-btn ${tasksViewMode==='list'?'active':''}" data-mode="list" title="List">≡</button>
     <button class="view-toggle-btn ${tasksViewMode==='table'?'active':''}" data-mode="table" title="Table">⊞</button>
+    <button class="view-toggle-btn ${tasksViewMode==='kanban'?'active':''}" data-mode="kanban" title="Kanban">⊟</button>
     <button class="view-toggle-btn ${tasksViewMode==='dashboard'?'active':''}" data-mode="dashboard" title="Dashboard">▦</button>
   </div>`;
 
-  const colPickerHtml = `<div class="col-picker-wrap" style="position:relative">
+  const kanbanGroupByHtml = `<div class="col-picker-wrap" id="kanban-groupby-wrap" style="${tasksViewMode==='kanban'?'':'display:none'}">
+    <button class="btn btn-sm btn-ghost" id="kanban-groupby-btn" title="Group by">⊟ Group: ${tasksKanbanGroupBy}</button>
+    <div class="col-picker-dropdown hidden" id="kanban-groupby-dropdown">
+      <label class="col-picker-item"><input type="radio" name="kanban-groupby" value="status" ${tasksKanbanGroupBy==='status'?'checked':''}> Status</label>
+      <label class="col-picker-item"><input type="radio" name="kanban-groupby" value="priority" ${tasksKanbanGroupBy==='priority'?'checked':''}> Priority</label>
+    </div>
+  </div>`;
+
+  // Columns picker: table cols for list/table view; kanban column visibility for kanban view
+  const isKanban = tasksViewMode === 'kanban';
+  const kanbanCols = isKanban ? (tasksKanbanGroupBy === 'status' ? TASK_STATUSES : TASK_PRIORITIES) : [];
+  const hiddenForGroup = isKanban ? (kanbanHiddenCols[tasksKanbanGroupBy] || []) : [];
+  const colPickerHtml = `<div class="col-picker-wrap" style="position:relative" id="col-picker-wrap">
     <button class="btn btn-sm btn-ghost" id="col-picker-btn" title="Show/hide columns">⊟ Columns</button>
     <div class="col-picker-dropdown hidden" id="col-picker-dropdown">
-      ${TASK_TABLE_COLS.map(col => `<label class="col-picker-item"><input type="checkbox" class="col-picker-check" data-col="${col}" ${taskTableCols.includes(col)?'checked':''}> ${col}</label>`).join('')}
+      ${isKanban
+        ? kanbanCols.map(col => `<label class="col-picker-item"><input type="checkbox" class="kanban-col-check" data-col="${col}" ${hiddenForGroup.includes(col)?'':'checked'}> ${col.replace(/_/g,' ')}</label>`).join('')
+        : TASK_TABLE_COLS.map(col => `<label class="col-picker-item"><input type="checkbox" class="col-picker-check" data-col="${col}" ${taskTableCols.includes(col)?'checked':''}> ${col}</label>`).join('')
+      }
     </div>
   </div>`;
 
@@ -1210,6 +1299,7 @@ async function renderTasks() {
       <h1 class="view-title">Tasks</h1>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         ${viewToggle}
+        ${kanbanGroupByHtml}
         ${colPickerHtml}
         <button class="btn btn-primary" id="new-task-btn">+ New Task</button>
       </div>
@@ -1227,11 +1317,21 @@ async function renderTasks() {
     document.addEventListener('click', (e) => {
       if (!colPickerBtn.contains(e.target)) colPickerDrop.classList.add('hidden');
     }, { once: false, capture: false });
+    // Table cols handler
     document.querySelectorAll('.col-picker-check').forEach(chk => {
       chk.onchange = () => {
         taskTableCols = [...document.querySelectorAll('.col-picker-check:checked')].map(c => c.dataset.col);
         if (!taskTableCols.length) taskTableCols = ['title']; // always keep title
         localStorage.setItem('taskTableCols', JSON.stringify(taskTableCols));
+        render();
+      };
+    });
+    // Kanban col visibility handler
+    document.querySelectorAll('.kanban-col-check').forEach(chk => {
+      chk.onchange = () => {
+        const checked = [...document.querySelectorAll('.kanban-col-check')].map(c => ({ col: c.dataset.col, on: c.checked }));
+        kanbanHiddenCols[tasksKanbanGroupBy] = checked.filter(c => !c.on).map(c => c.col);
+        localStorage.setItem('kanbanHiddenCols', JSON.stringify(kanbanHiddenCols));
         render();
       };
     });
@@ -1244,9 +1344,30 @@ async function renderTasks() {
       localStorage.setItem('tasksViewMode', tasksViewMode);
       document.querySelectorAll('#main-content .view-toggle-btn[data-mode]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      const gbWrap = document.getElementById('kanban-groupby-wrap');
+      if (gbWrap) gbWrap.style.display = tasksViewMode === 'kanban' ? '' : 'none';
       render();
     };
   });
+
+  // Kanban group-by dropdown
+  const kanbanGbBtn = document.getElementById('kanban-groupby-btn');
+  const kanbanGbDrop = document.getElementById('kanban-groupby-dropdown');
+  if (kanbanGbBtn && kanbanGbDrop) {
+    kanbanGbBtn.onclick = (e) => { e.stopPropagation(); kanbanGbDrop.classList.toggle('hidden'); };
+    document.addEventListener('click', (e) => {
+      if (kanbanGbBtn && !kanbanGbBtn.contains(e.target)) kanbanGbDrop.classList.add('hidden');
+    });
+    kanbanGbDrop.querySelectorAll('input[name="kanban-groupby"]').forEach(radio => {
+      radio.onchange = () => {
+        tasksKanbanGroupBy = radio.value;
+        localStorage.setItem('tasksKanbanGroupBy', tasksKanbanGroupBy);
+        if (kanbanGbBtn) kanbanGbBtn.textContent = `⊟ Group: ${tasksKanbanGroupBy}`;
+        kanbanGbDrop.classList.add('hidden');
+        render();
+      };
+    });
+  }
 
   function getFiltered() {
     return applySortFilter(topLevel, taskFilterState, {
@@ -1269,7 +1390,7 @@ async function renderTasks() {
 
     const cols = taskTableCols.length ? taskTableCols : TASK_TABLE_COLS;
     const colDef = {
-      title:    { header: 'Title',    cell: (t, depth, toggleBtn) => `<td><div class="task-title-cell" style="${depth>0?`padding-left:${depth*20}px`:''}0px">${toggleBtn}<span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span></div></td>` },
+      title:    { header: 'Title',    cell: (t, depth, toggleBtn) => `<td><div class="task-title-cell" style="padding-left:${depth*20}px">${toggleBtn}<span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span></div></td>` },
       project:  { header: 'Project',  cell: (t) => `<td>${t.project_title ? `<span class="badge badge-todo">${t.project_title}</span>` : '—'}</td>` },
       status:   { header: 'Status',   cell: (t) => { const sopts = TASK_STATUSES.map(s => `<option value="${s}" ${t.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join(''); return `<td><select class="inline-status-select" data-task-id="${t.id}" style="font-size:11px;padding:2px 6px;border-radius:3px">${sopts}</select></td>`; } },
       priority: { header: 'Priority', cell: (t) => `<td>${priorityBadge(t.priority)}</td>` },
@@ -1283,15 +1404,22 @@ async function renderTasks() {
         const children = allTasksFull.filter(c => c.parent_task_id && String(c.parent_task_id) === String(t.id));
         const hasChildren = children.length > 0 || (t.sub_task_count || 0) > 0;
         const isExpanded = expandedTasks.has(String(t.id));
+        const chevronSvg = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,3 5,7 8,3"/></svg>`;
         const toggleBtn = hasChildren
-          ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${t.id}" title="Toggle subtasks">▶</span>`
-          : `<span class="task-add-sub-btn" data-add-sub-id="${t.id}" title="Add subtask">▶</span>`;
+          ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${t.id}" title="Toggle subtasks">${chevronSvg}</span>`
+          : `<span class="task-add-sub-btn" data-add-sub-id="${t.id}" title="Add subtask">${chevronSvg}</span>`;
         html += `<tr class="task-table-row" data-task-id="${t.id}" style="position:relative">
           ${cols.map(c => colDef[c] ? (c === 'title' ? colDef.title.cell(t, depth, toggleBtn) : colDef[c].cell(t)) : '').join('')}
           <td><button class="btn btn-sm btn-danger task-del-btn" data-task-id="${t.id}">×</button></td>
         </tr>`;
         if (isExpanded && children.length > 0) {
           html += tableRows(children, depth + 1);
+          const colspan = cols.length + 1;
+          html += `<tr class="task-quick-add-row task-table-add-row" data-add-parent="${t.id}">
+            <td colspan="${colspan}" style="padding:4px 8px 4px ${(depth+1)*20+8}px">
+              <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:12px;color:var(--color-text-secondary)">+ Add Subtask</button>
+            </td>
+          </tr>`;
         }
       });
       return html;
@@ -1345,6 +1473,55 @@ async function renderTasks() {
     </div>`;
   }
 
+  function buildKanbanView(list) {
+    const groupBy = tasksKanbanGroupBy;
+    const allCols = groupBy === 'status' ? TASK_STATUSES : TASK_PRIORITIES;
+    const hidden = kanbanHiddenCols[groupBy] || [];
+    const cols = allCols.filter(c => !hidden.includes(c));
+    const grouped = {};
+    allCols.forEach(c => { grouped[c] = []; });
+    // Also collect tasks with values not in current cols array (custom values)
+    list.forEach(t => {
+      const key = t[groupBy] || '';
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(t);
+    });
+    // Include extra keys that exist in data but not in known cols, and aren't hidden
+    const extraKeys = Object.keys(grouped).filter(k => !allCols.includes(k) && grouped[k].length > 0 && !hidden.includes(k));
+    const allKeys = [...cols, ...extraKeys];
+
+    const colsHtml = allKeys.map(colKey => {
+      const tasks = grouped[colKey] || [];
+      const cards = tasks.map(t => {
+        const dueCls = isOverdue(t.due_date) ? 'overdue' : isToday(t.due_date) ? 'today' : '';
+        return `<div class="kanban-card" data-task-id="${t.id}" style="cursor:pointer">
+          <div class="kanban-card-title">${t.title}${t.recur_interval>0?' <span class="task-recur-badge">↺</span>':''}</div>
+          ${t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t.project_title}</div>` : ''}
+          <div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">
+            ${groupBy === 'status' ? priorityBadge(t.priority) : statusBadge(t.status)}
+            ${t.due_date ? `<span class="task-due ${dueCls}" style="font-size:10px">${fmtDate(t.due_date)}</span>` : ''}
+          </div>
+        </div>`;
+      }).join('');
+      const label = colKey.replace(/_/g,' ');
+      const colColor = getValueColor(groupBy === 'status' ? 'taskStatuses' : 'taskPriorities', colKey);
+      return `<div class="kanban-col">
+        <div class="kanban-col-header" style="${colColor ? `color:${colColor}` : ''}">
+          <span>${label}</span>
+          <span class="kanban-count">${tasks.length}</span>
+        </div>
+        <div class="kanban-col-body">${cards || '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No tasks</div>'}</div>
+        <button class="btn btn-sm btn-ghost kanban-add-btn" data-status="${colKey}" style="width:100%;margin-top:8px;font-size:12px">+ Add task</button>
+      </div>`;
+    }).join('');
+
+    // Set explicit column count so all columns stay on one row; horizontal scroll if needed
+    const colCount = allKeys.length;
+    const colWidth = 260; // px per column
+    const boardStyle = `display:grid;grid-template-columns:repeat(${colCount},minmax(${colWidth}px,1fr));gap:var(--space-4);align-items:start;padding-bottom:16px`;
+    return `<div style="overflow-x:auto;width:100%"><div class="kanban-board" style="${boardStyle}">${colsHtml}</div></div>`;
+  }
+
 
   let filterBarInitialized = false;
   function render() {
@@ -1352,6 +1529,7 @@ async function renderTasks() {
     let content = '';
     if (tasksViewMode === 'list') content = buildListView(filtered);
     else if (tasksViewMode === 'table') content = buildTableView(filtered);
+    else if (tasksViewMode === 'kanban') content = buildKanbanView(filtered);
     else if (tasksViewMode === 'dashboard') content = buildDashboardView(filtered);
     document.getElementById('tasks-content').innerHTML = content;
     // Initialize filter bar once after content container is in DOM
@@ -1378,9 +1556,8 @@ async function renderTasks() {
       }
     }
     bindTasksContentEvents();
-    // Inject entity icons into task title slots (non-blocking)
-    const visibleTaskIds = list.map(t => t.id);
-    injectListIcons('task', visibleTaskIds);
+    // Inject entity icons into task title slots — include subtask ids too
+    injectListIcons('task', allTasksFull.map(t => t.id));
   }
 
   render();
@@ -1396,81 +1573,6 @@ async function renderTasks() {
       };
     });
 
-    // Add-subtask hover button (tasks without subtasks) → show inline "+ Add Subtask" button row
-    document.querySelectorAll('.task-add-sub-btn').forEach(btn => {
-      btn.onclick = (e) => {
-        e.stopPropagation();
-        const parentId = parseInt(btn.dataset.addSubId);
-        const row = btn.closest('.task-row') || btn.closest('.task-table-row');
-        if (!row) return;
-        document.querySelectorAll('.task-quick-add-row').forEach(el => el.remove());
-        // Animate the arrow like toggle-arrow
-        btn.classList.add('expanded');
-        const indentPx = parseInt(row.style.paddingLeft) || 12;
-        if (row.tagName === 'LI') {
-          const li = document.createElement('li');
-          li.className = 'task-quick-add-row inline-subtask-input-row';
-          li.style.cssText = `padding-left:${indentPx + 20}px;padding-top:6px;padding-bottom:6px`;
-          li.innerHTML = `<button class="btn btn-sm btn-ghost add-subtask-inline-btn task-quick-add-trigger" data-parent-id="${parentId}" style="font-size:12px;color:var(--color-text-secondary)">+ Add Subtask</button>`;
-          row.after(li);
-          li.querySelector('.task-quick-add-trigger').onclick = (ce) => {
-            ce.stopPropagation();
-            li.remove();
-            btn.classList.remove('expanded');
-            showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
-              allTasksFull = await api('GET', '/api/tasks?all=1');
-              allTasksCache = allTasksFull;
-              const parent = topLevel.find(t => t.id === parentId);
-              if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
-              expandedTasks.add(String(parentId));
-              render();
-            });
-          };
-          // Click elsewhere removes the row
-          setTimeout(() => {
-            function outsideClick(ev) {
-              if (!li.contains(ev.target) && ev.target !== btn) {
-                li.remove();
-                btn.classList.remove('expanded');
-                document.removeEventListener('click', outsideClick);
-              }
-            }
-            document.addEventListener('click', outsideClick);
-          }, 0);
-        } else {
-          // Table view
-          const tr = document.createElement('tr');
-          tr.className = 'task-quick-add-row';
-          const colspan = row.querySelectorAll('td').length || 6;
-          tr.innerHTML = `<td colspan="${colspan}" style="padding:4px 16px"><button class="btn btn-sm btn-ghost task-quick-add-trigger" data-parent-id="${parentId}" style="font-size:12px;color:var(--color-text-secondary)">+ Add Subtask</button></td>`;
-          row.after(tr);
-          tr.querySelector('.task-quick-add-trigger').onclick = (ce) => {
-            ce.stopPropagation();
-            tr.remove();
-            btn.classList.remove('expanded');
-            showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
-              allTasksFull = await api('GET', '/api/tasks?all=1');
-              allTasksCache = allTasksFull;
-              const parent = topLevel.find(t => t.id === parentId);
-              if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
-              expandedTasks.add(String(parentId));
-              render();
-            });
-          };
-          setTimeout(() => {
-            function outsideClick(ev) {
-              if (!tr.contains(ev.target) && ev.target !== btn) {
-                tr.remove();
-                btn.classList.remove('expanded');
-                document.removeEventListener('click', outsideClick);
-              }
-            }
-            document.addEventListener('click', outsideClick);
-          }, 0);
-        }
-      };
-    });
-
     // Inline subtask add button
     document.querySelectorAll('.add-subtask-inline-btn').forEach(btn => {
       btn.onclick = async (e) => {
@@ -1479,21 +1581,21 @@ async function renderTasks() {
         showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
           allTasksFull = await api('GET', '/api/tasks?all=1');
           allTasksCache = allTasksFull;
-          const parent = topLevel.find(t => t.id === parentId);
+          const parent = allTasksFull.find(t => t.id === parentId);
           if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
           render();
         });
       };
     });
 
-    // Task row click → slideover
+    // Task row click → slideover (only arrow and check are excluded)
     document.querySelectorAll('.task-row').forEach(row => {
       row.onclick = (e) => {
-        if (e.target.classList.contains('task-toggle-arrow') ||
-            e.target.classList.contains('task-add-sub-btn') ||
-            e.target.classList.contains('task-check') ||
-            e.target.dataset.checkId ||
-            e.target.closest('.task-toggle-arrow, .task-add-sub-btn, .inline-subtask-input')) return;
+        if (e.target.closest('.task-toggle-arrow') ||
+            e.target.closest('.task-check') ||
+            e.target.closest('.add-subtask-inline-btn') ||
+            e.target.closest('.inline-subtask-input-row') ||
+            e.target.dataset.checkId) return;
         showTaskSlideover(row.dataset.taskId);
       };
     });
@@ -1582,6 +1684,21 @@ async function renderTasks() {
         if (!confirm('Delete this task?')) return;
         await api('DELETE', `/api/tasks/${el.dataset.taskId}`);
         renderTasks();
+      };
+    });
+
+    // Kanban card click → slideover
+    document.querySelectorAll('.kanban-card[data-task-id]').forEach(card => {
+      card.onclick = () => showTaskSlideover(card.dataset.taskId);
+    });
+
+    // Kanban "+ Add task" button
+    document.querySelectorAll('.kanban-add-btn').forEach(btn => {
+      btn.onclick = () => {
+        const presets = {};
+        if (tasksKanbanGroupBy === 'status') presets.status = btn.dataset.status;
+        else if (tasksKanbanGroupBy === 'priority') presets.priority = btn.dataset.status; // dataset.status holds the col key
+        showNewTaskModal(presets, () => renderTasks());
       };
     });
 
@@ -1969,7 +2086,7 @@ async function renderNotes() {
   function buildNoteTable(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
     const rows = list.map(n => `<tr class="note-card" data-note-id="${n.id}" style="cursor:pointer">
-      <td>${n.title || 'Untitled'}</td>
+      <td><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${n.title || 'Untitled'}</td>
       <td>${fmtDate(n.note_date) || '—'}</td>
       <td>${n.category_name || '—'}</td>
       <td>${(n.tags||[]).map(t=>tagHtml(t)).join('')}</td>
@@ -2076,7 +2193,7 @@ async function renderSprints() {
     const nextLabel = s.status === 'planned' ? 'Start' : s.status === 'active' ? 'Complete' : null;
     const prevStatus = s.status === 'active' ? 'planned' : s.status === 'completed' ? 'active' : null;
     const prevLabel = s.status === 'active' ? '↩ Planned' : s.status === 'completed' ? '↩ Active' : null;
-    return `<div class="card">
+    return `<div class="card" data-sprint-id="${s.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
         <span class="card-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)"><span class="list-icon-slot" data-icon-entity="sprint" data-icon-id="${s.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${s.title}</span>
         <div class="flex gap-8">
@@ -2095,6 +2212,17 @@ async function renderSprints() {
         <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0}</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>
+      ${s.story_points ? (() => {
+        const cap = s.story_points;
+        const used = (prog.story_points || 0);
+        const ratio = used / cap;
+        const color = ratio <= 0 ? 'var(--text-muted)' : ratio <= 1.0 ? `hsl(${Math.round(ratio*120)},55%,38%)` : ratio <= 1.2 ? `hsl(${Math.round(120-(ratio-1)/0.2*60)},70%,42%)` : 'hsl(0,75%,42%)';
+        const pctSP = Math.min(100, Math.round(ratio * 100));
+        return `<div style="margin-top:6px">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-bottom:3px"><span>Story Pts</span><span style="color:${color}">${used}/${cap}</span></div>
+          <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pctSP}%;background:${color}"></div></div>
+        </div>`;
+      })() : ''}
     </div>`;
   }
 
@@ -2190,6 +2318,20 @@ async function renderSprints() {
     document.querySelectorAll('.sprint-detail-link').forEach(el => {
       el.onclick = (e) => { e.stopPropagation(); renderView('sprint-detail', el.dataset.sprintId); };
     });
+    // Whole card click → sprint detail (ignore clicks on buttons)
+    document.querySelectorAll('.card[data-sprint-id]').forEach(card => {
+      card.onclick = (e) => {
+        if (e.target.closest('button')) return;
+        renderView('sprint-detail', card.dataset.sprintId);
+      };
+    });
+    // Table row click → sprint detail (ignore clicks on buttons)
+    document.querySelectorAll('tr.sprint-row[data-sprint-id]').forEach(row => {
+      row.onclick = (e) => {
+        if (e.target.closest('button')) return;
+        renderView('sprint-detail', row.dataset.sprintId);
+      };
+    });
     document.querySelectorAll('.sprint-status-btn').forEach(el => {
       el.onclick = async () => {
         const nextStatus = el.dataset.next;
@@ -2267,7 +2409,12 @@ async function renderSprintDetail(sprintId) {
   const topLevel = tasks.filter(t => !t.parent_task_id || !taskIds.has(t.parent_task_id));
   const taskListHtml = tasks.length
     ? `<ul class="task-list">${buildSprintTaskTree(topLevel, tasks, 0)}</ul>`
-    : `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No tasks in this sprint</div></div>`;
+    : `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No tasks in this sprint yet</div></div>`;
+
+  // Fetch all tasks for the assign/unassign panels
+  let allTasks = [];
+  try { allTasks = await api('GET', '/api/tasks?all=1'); allTasksCache = allTasks; allTasksFull = allTasks; } catch(e) {}
+  const unassigned = allTasks.filter(t => !t.sprint_id && !t.parent_task_id); // top-level unassigned tasks only
 
   const nextStatus = sprint.status === 'planned' ? 'active' : sprint.status === 'active' ? 'completed' : null;
   const nextLabel = sprint.status === 'planned' ? 'Start Sprint' : sprint.status === 'active' ? 'Complete Sprint' : null;
@@ -2296,10 +2443,22 @@ async function renderSprintDetail(sprintId) {
         <div class="progress-label"><span>${pct}% complete</span><span>${prog.done || 0}/${prog.total || 0} tasks</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>
+      <div id="sd-sp-widget" style="margin-top:12px"></div>
     </div>
     <div class="widget">
       <div class="widget-header"><span class="widget-title">Tasks (${tasks.length})</span></div>
       <div id="sd-task-list">${taskListHtml}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
+      <div class="widget">
+        <div class="widget-header"><span class="widget-title">Unassigned Tasks</span></div>
+        <input type="text" id="sd-unassigned-search" placeholder="Search…" style="width:100%;box-sizing:border-box;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-surface);color:var(--text-primary);font-size:12px;margin-bottom:8px">
+        <div id="sd-unassigned-list" style="max-height:320px;overflow-y:auto"></div>
+      </div>
+      <div class="widget">
+        <div class="widget-header"><span class="widget-title">Assigned to Sprint</span></div>
+        <div id="sd-assigned-list" style="max-height:320px;overflow-y:auto"></div>
+      </div>
     </div>
   </div>`;
 
@@ -2323,6 +2482,113 @@ async function renderSprintDetail(sprintId) {
       el.onclick = () => renderView('project-detail', el.dataset.projId);
     });
   }
+
+  // ── Story Points capacity widget ─────────────────────────────────────
+  const spWidget = document.getElementById('sd-sp-widget');
+  if (spWidget) {
+    const capacity = sprint.story_points || 0;
+    const assigned = (prog.story_points || 0);
+
+    // spGradientColor is defined at module scope below renderView
+    const color = spGradientColor(assigned, capacity);
+    const pctBar = capacity > 0 ? Math.min(100, Math.round((assigned / capacity) * 100)) : 0;
+
+    spWidget.innerHTML = `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:140px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:4px">
+          <span>Story Points</span>
+          <span style="font-weight:600;color:${color}">${assigned}${capacity ? ' / ' + capacity : ''}</span>
+        </div>
+        ${capacity ? `<div class="progress-track" style="height:6px">
+          <div class="progress-fill" style="width:${pctBar}%;background:${color};transition:width 0.3s,background 0.3s"></div>
+        </div>` : '<span style="font-size:11px;color:var(--text-muted)">No capacity set</span>'}
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+        <span style="font-size:11px;color:var(--text-muted)">Capacity:</span>
+        <input id="sd-sp-capacity" type="number" min="0" value="${capacity || ''}" placeholder="—"
+          style="width:60px;font-size:12px;padding:3px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-surface);color:var(--text-primary);text-align:center" />
+        <button class="btn btn-sm btn-ghost" id="sd-sp-save" style="font-size:11px">Set</button>
+      </div>
+    </div>`;
+
+    document.getElementById('sd-sp-save').onclick = async () => {
+      const val = document.getElementById('sd-sp-capacity').value.trim();
+      const pts = val === '' ? null : parseInt(val, 10);
+      await api('PATCH', `/api/sprints/${sprintId}`, { story_points: pts });
+      renderSprintDetail(sprintId);
+    };
+    document.getElementById('sd-sp-capacity').onkeydown = (e) => {
+      if (e.key === 'Enter') document.getElementById('sd-sp-save').click();
+    };
+  }
+
+  // ── Assign / Unassign task panels ─────────────────────────────────────
+  let sdSearchText = '';
+  function renderAssignPanels(allTasks) {
+    const sid = parseInt(sprintId);
+    const assignedTasks = allTasks.filter(t => t.sprint_id && String(t.sprint_id) === String(sprintId));
+    const unassignedTasks = allTasks.filter(t => !t.sprint_id && !t.parent_task_id);
+    const filtered = sdSearchText
+      ? unassignedTasks.filter(t => (t.title||'').toLowerCase().includes(sdSearchText))
+      : unassignedTasks;
+
+    function taskRow(t, isAssigned) {
+      const hasStoryPoints = t.story_points && t.story_points > 0;
+      const assignBtn = isAssigned
+        ? `<button class="btn btn-sm btn-ghost sd-unassign-btn" data-task-id="${t.id}" style="font-size:11px;flex-shrink:0">Remove</button>`
+        : hasStoryPoints
+          ? `<button class="btn btn-sm btn-ghost sd-assign-btn" data-task-id="${t.id}" style="font-size:11px;flex-shrink:0">+ Assign</button>`
+          : `<button class="btn btn-sm btn-ghost sd-assign-disabled" data-task-id="${t.id}" title="Add story points to this task first" style="font-size:11px;flex-shrink:0;opacity:0.4;cursor:not-allowed" disabled>No SP</button>`;
+      const sp = t.story_points ? `<span style="font-size:10px;color:var(--text-muted);margin-right:4px">${t.story_points}sp</span>` : '';
+      return `<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border)">
+        ${statusBadge(t.status)}
+        <span class="sd-task-open-link" data-task-id="${t.id}" style="flex:1;font-size:13px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;color:var(--accent)" title="${t.title}">${t.title}</span>
+        ${sp}${assignBtn}
+      </div>`;
+    }
+
+    const unassignedEl = document.getElementById('sd-unassigned-list');
+    const assignedEl = document.getElementById('sd-assigned-list');
+    if (unassignedEl) {
+      unassignedEl.innerHTML = filtered.length
+        ? filtered.map(t => taskRow(t, false)).join('')
+        : `<div style="color:var(--text-muted);font-size:12px;padding:8px 0">${sdSearchText ? 'No matching tasks' : 'All tasks assigned'}</div>`;
+    }
+    if (assignedEl) {
+      assignedEl.innerHTML = assignedTasks.length
+        ? assignedTasks.map(t => taskRow(t, true)).join('')
+        : `<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No tasks assigned to this sprint</div>`;
+    }
+
+    // Task title click → open slideover
+    document.querySelectorAll('.sd-task-open-link[data-task-id]').forEach(el => {
+      el.onclick = (e) => { e.stopPropagation(); showTaskSlideover(parseInt(el.dataset.taskId)); };
+    });
+
+    document.querySelectorAll('.sd-assign-btn').forEach(btn => {
+      btn.onclick = async () => {
+        const taskId = parseInt(btn.dataset.taskId);
+        btn.disabled = true; btn.textContent = '…';
+        await api('PATCH', `/api/tasks/${taskId}`, { sprint_id: parseInt(sprintId) });
+        renderSprintDetail(sprintId);
+      };
+    });
+    document.querySelectorAll('.sd-unassign-btn').forEach(btn => {
+      btn.onclick = async () => {
+        const taskId = parseInt(btn.dataset.taskId);
+        btn.disabled = true; btn.textContent = '…';
+        await api('PATCH', `/api/tasks/${taskId}`, { sprint_id: null });
+        renderSprintDetail(sprintId);
+      };
+    });
+  }
+
+  renderAssignPanels(allTasks);
+  document.getElementById('sd-unassigned-search').oninput = (e) => {
+    sdSearchText = e.target.value.toLowerCase();
+    renderAssignPanels(allTasks);
+  };
+
   bindDetailTaskEvents(() => renderSprintDetail(sprintId));
 }
 
@@ -2351,7 +2617,7 @@ async function renderResources() {
         : (r.body ? r.body.slice(0,60) + '…' : '—');
       const linked = r.goal_title || r.project_title || r.task_title || '—';
       return `<tr>
-        <td>${r.title}</td>
+        <td><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${r.title}</td>
         <td>${r.resource_type || '—'}</td>
         <td>${linked}</td>
         <td>${link}</td>
@@ -2374,7 +2640,7 @@ async function renderResources() {
       const linked = r.goal_title || r.project_title || r.task_title;
       return `<div class="card">
         <div class="flex-between gap-8" style="margin-bottom:6px">
-          <span class="card-title">${r.title}</span>
+          <span class="card-title"><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="18" style="display:none;margin-right:6px;vertical-align:middle;font-size:18px"></span>${r.title}</span>
           <div class="flex gap-8">
             <button class="btn btn-sm btn-ghost res-edit-btn" data-res-id="${r.id}">Edit</button>
             <button class="btn btn-sm btn-danger res-del-btn" data-res-id="${r.id}">×</button>
@@ -2430,6 +2696,7 @@ async function renderResources() {
     document.getElementById('res-table').innerHTML =
       resourcesViewMode === 'cards' ? buildCards(list) : buildTable(list);
     bindResEvents();
+    injectListIcons('resource', list.map(r => r.id));
   }
 
   document.getElementById('new-res-btn').onclick = () => showResourceModal(null, () => renderResources());
@@ -2969,9 +3236,18 @@ async function showTaskSlideover(taskId) {
   const subtasks = task.sub_tasks || [];
   const tags = task.tags || [];
 
-  // Fetch projects and goals for comboboxes
+  // Fetch projects and goals for comboboxes; always refresh allTasksCache for correct child lookups
   let allProjects = [], allGoals = [];
-  try { [allProjects, allGoals] = await Promise.all([api('GET', '/api/projects'), api('GET', '/api/goals')]); } catch(e) {}
+  try {
+    const results = await Promise.all([
+      api('GET', '/api/projects'),
+      api('GET', '/api/goals'),
+      api('GET', '/api/tasks?all=1'),
+    ]);
+    [allProjects, allGoals] = results;
+    allTasksCache = results[2];
+    allTasksFull = allTasksCache;
+  } catch(e) {}
 
   const pomPlanned = task.pomodoros_planned || 0;
   const pomDone = task.pomodoros_finished || 0;
@@ -2980,37 +3256,115 @@ async function showTaskSlideover(taskId) {
     `<div class="pom-dot ${i < pomDone ? 'done' : ''}"></div>`
   ).join('');
 
-  // Build nested subtask table
+  // Build interactive nested subtask table (chevron toggle + add subtask)
+  const chevSvgSub = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,3 5,7 8,3"/></svg>`;
   function buildSubtaskTable(items, depth) {
     if (!items.length) return '';
-    return items.map(st => {
-      const allSubs = allTasksCache.filter(x => x.parent_task_id === st.id);
-      const indent = depth * 16;
-      return `<tr class="subtask-table-row" data-st-id="${st.id}" style="cursor:pointer">
-        <td style="padding-left:${12+indent}px">
-          <div style="display:flex;align-items:center;gap:8px">
+    let rows = '';
+    items.forEach(st => {
+      const children = allTasksCache.filter(x => String(x.parent_task_id) === String(st.id));
+      const hasChildren = children.length > 0;
+      const isExpanded = expandedTasks.has(String(st.id));
+      // All rows (parent or leaf) use the same toggle arrow — clicking always expands inline
+      const toggleBtn = `<span class="task-toggle-arrow sub-toggle ${isExpanded ? 'expanded' : ''}" data-toggle-id="${st.id}" style="cursor:pointer;margin-right:4px" title="Toggle">${chevSvgSub}</span>`;
+      const indent = depth * 18;
+      // Title is always plain text — use the toggle arrow to expand, or the inline add button to open slideover
+      const titleEl = `<span class="task-title-text${st.status==='done'?' done':''}">${st.title}</span>`;
+      rows += `<tr class="subtask-table-row" data-st-id="${st.id}">
+        <td style="padding-left:${8+indent}px">
+          <div style="display:flex;align-items:center;gap:6px">
+            ${toggleBtn}
             <div class="task-check ${st.status==='done'?'done':''}" data-subtask-id="${st.id}" style="flex-shrink:0">${st.status==='done'?'✓':''}</div>
-            <span class="${st.status==='done'?'task-title-text done':'task-title-text'}">${st.title}</span>
+            ${titleEl}
           </div>
-          ${allSubs.length > 0 ? `<div style="margin-top:4px">${buildSubtaskTable(allSubs, depth+1)}</div>` : ''}
         </td>
         <td>${statusBadge(st.status)}</td>
         <td>${priorityBadge(st.priority)}</td>
         <td style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text-muted)">${fmtDate(st.due_date)||'—'}</td>
       </tr>`;
-    }).join('');
+      if (isExpanded) {
+        if (hasChildren) rows += buildSubtaskTable(children, depth + 1);
+        rows += `<tr class="subtask-quick-add-row" data-add-parent="${st.id}">
+          <td colspan="4" style="padding:4px 8px 4px ${8+indent+18}px">
+            <button class="btn btn-sm btn-ghost sub-add-inline-btn" data-parent-id="${st.id}" style="font-size:12px;color:var(--color-text-secondary)">+ Add Subtask</button>
+          </td>
+        </tr>`;
+      }
+    });
+    return rows;
   }
 
-  const subtaskTableBody = buildSubtaskTable(subtasks, 0);
-  const subtasksHtml = subtasks.length > 0 ? `
-    <div class="notion-table-wrap" style="margin-top:8px">
+  function renderSubtaskTable() {
+    const wrap = document.getElementById('subtask-list');
+    if (!wrap) return;
+    const currentSubtasks = allTasksCache.filter(x => String(x.parent_task_id) === String(taskId));
+    if (!currentSubtasks.length) {
+      wrap.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No subtasks</div>';
+      return;
+    }
+    wrap.innerHTML = `<div class="notion-table-wrap" style="margin-top:8px">
       <table class="notion-table">
-        <thead><tr>
-          <th>Subtask</th><th>Status</th><th>Priority</th><th>Due</th>
-        </tr></thead>
-        <tbody>${subtaskTableBody}</tbody>
+        <thead><tr><th>Subtask</th><th>Status</th><th>Priority</th><th>Due</th></tr></thead>
+        <tbody>${buildSubtaskTable(currentSubtasks, 0)}</tbody>
       </table>
-    </div>` : '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No subtasks</div>';
+    </div>`;
+    bindSubtaskTableEvents();
+  }
+
+  function bindSubtaskTableEvents() {
+    const wrap = document.getElementById('subtask-list');
+    if (!wrap) return;
+    // Toggle arrows — clicking the arrow expands/collapses
+    wrap.querySelectorAll('.sub-toggle').forEach(arrow => {
+      arrow.onclick = (e) => {
+        e.stopPropagation();
+        const id = String(arrow.dataset.toggleId);
+        if (expandedTasks.has(id)) expandedTasks.delete(id);
+        else expandedTasks.add(id);
+        renderSubtaskTable();
+      };
+    });
+    // Row click for parent rows — clicking anywhere in the row toggles (same as arrow)
+    wrap.querySelectorAll('tr.subtask-table-row[data-st-id]').forEach(row => {
+      row.onclick = (e) => {
+        // Only handle clicks that hit the row or its cells, not interactive children
+        if (e.target.closest('.task-check') || e.target.closest('.sub-add-inline-btn')) return;
+        const arrow = row.querySelector('.sub-toggle[data-toggle-id]');
+        if (!arrow) return;
+        e.stopPropagation();
+        const id = String(arrow.dataset.toggleId);
+        if (expandedTasks.has(id)) expandedTasks.delete(id);
+        else expandedTasks.add(id);
+        renderSubtaskTable();
+      };
+    });
+    // Inline add subtask buttons (inside expanded rows)
+    wrap.querySelectorAll('.sub-add-inline-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const parentId = parseInt(btn.dataset.parentId);
+        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+          allTasksCache = await api('GET', '/api/tasks?all=1');
+          allTasksFull = allTasksCache;
+          renderSubtaskTable();
+        });
+      };
+    });
+    // Subtask check click
+    wrap.querySelectorAll('.task-check[data-subtask-id]').forEach(chk => {
+      chk.onclick = async (e) => {
+        e.stopPropagation();
+        const stId = parseInt(chk.dataset.subtaskId);
+        const st = allTasksCache.find(x => x.id === stId);
+        if (!st) return;
+        const newStatus = st.status === 'done' ? 'todo' : 'done';
+        try { await api('PATCH', `/api/tasks/${stId}`, { status: newStatus }); } catch(err) {}
+        allTasksCache = await api('GET', '/api/tasks?all=1');
+        allTasksFull = allTasksCache;
+        renderSubtaskTable();
+      };
+    });
+  }
 
   const tagPicker = null; // legacy — tags now handled via combobox chip
 
@@ -3027,17 +3381,59 @@ async function showTaskSlideover(taskId) {
       ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" style="font-size:12px;color:var(--text-muted)">↗</a>` : ''}
     </div>`).join('') || '<div style="color:var(--text-muted);font-size:13px">No linked resources</div>';
 
-  // ── Breadcrumb parts inline ──────────────────────────────────────────
+  // ── Breadcrumb — walk the full ancestor chain ──────────────────────────
+  // Levels: Goal → Project → ancestor tasks → (current task title shown as heading)
+  // We walk up allTasksCache from parent_task_id to collect all ancestor tasks,
+  // then take the topmost ancestor's goal/project fields for context.
   let bcHtml = '';
-  if (task.goal_title) {
-    bcHtml += `<span class="bc-part bc-goal" data-goal-id="${task.goal_id}">${task.goal_title}</span><span class="bc-sep">›</span>`;
-  }
-  if (task.project_title) {
-    bcHtml += `<span class="bc-part bc-proj" data-proj-id="${task.project_id}">${task.project_title}</span><span class="bc-sep">›</span>`;
-  }
-  if (task.parent_task_title) {
-    bcHtml += `<span class="bc-part" data-parent-id="${task.parent_task_id}">${task.parent_task_title}</span><span class="bc-sep">›</span>`;
-  }
+  (function buildBreadcrumb() {
+    // Collect ancestor task chain (closest parent first, then grandparent, etc.)
+    const ancestors = [];
+    let cursor = task.parent_task_id ? String(task.parent_task_id) : null;
+    const visited = new Set();
+    while (cursor && !visited.has(cursor)) {
+      visited.add(cursor);
+      const anc = allTasksCache.find(t => String(t.id) === cursor);
+      if (!anc) break;
+      ancestors.unshift(anc); // unshift = prepend so order is root→leaf
+      cursor = anc.parent_task_id ? String(anc.parent_task_id) : null;
+    }
+
+    // Find goal and project from the task itself or walk up ancestors
+    let goalId = task.goal_id, goalTitle = task.goal_title;
+    let projectId = task.project_id, projectTitle = task.project_title;
+    if (!goalId || !goalTitle) {
+      // Try to find goal_id from ancestors if current task doesn't have one
+      if (!goalId) {
+        const ancWithGoal = ancestors.find(a => a.goal_id);
+        if (ancWithGoal) { goalId = ancWithGoal.goal_id; goalTitle = ancWithGoal.goal_title; }
+      }
+      // Even if we have goalId, goal_title may not be in list response — look up in allGoals
+      if (goalId && !goalTitle) {
+        const g = allGoals.find(g => String(g.id) === String(goalId));
+        if (g) goalTitle = g.title;
+      }
+    }
+    if ((!projectId || !projectTitle) && !projectTitle) {
+      const ancWithProj = ancestors.find(a => a.project_id);
+      if (ancWithProj) { projectId = ancWithProj.project_id; projectTitle = ancWithProj.project_title; }
+      else {
+        const p = projectId ? allProjects.find(p => String(p.id) === String(projectId)) : null;
+        if (p) projectTitle = p.title;
+      }
+    }
+
+    // Build the crumb: Goal (if any) › Project (if any) › ancestor tasks (if any)
+    if (goalId && goalTitle) {
+      bcHtml += `<span class="bc-part bc-goal" data-goal-id="${goalId}">${goalTitle}</span><span class="bc-sep">›</span>`;
+    }
+    if (projectId && projectTitle) {
+      bcHtml += `<span class="bc-part bc-proj" data-proj-id="${projectId}">${projectTitle}</span><span class="bc-sep">›</span>`;
+    }
+    for (const anc of ancestors) {
+      bcHtml += `<span class="bc-part" data-task-id="${anc.id}" style="cursor:pointer">${anc.title}</span><span class="bc-sep">›</span>`;
+    }
+  })();
   const bcPrefix = bcHtml ? `<div class="detail-bc-prefix">${bcHtml}</div>` : '';
 
   // ── Date range display helper ─────────────────────────────────────────
@@ -3070,11 +3466,11 @@ async function showTaskSlideover(taskId) {
     <div class="prop-chips" id="prop-chips">
       <button class="prop-chip chip-status-${task.status}" id="chip-status" data-key="status">
         <span class="chip-label">Status</span>
-        <span class="chip-value">${task.status.replace('_',' ')}</span>
+        <span class="chip-value"${(() => { const c = getValueColor('taskStatuses', task.status); return c ? ` style="background:${c}22;color:${c};border-radius:3px;padding:1px 5px;font-weight:600"` : ''; })()}>${task.status.replace('_',' ')}</span>
       </button>
       <button class="prop-chip chip-priority-${task.priority}" id="chip-priority" data-key="priority">
         <span class="chip-label">Priority</span>
-        <span class="chip-value">${task.priority}</span>
+        <span class="chip-value"${(() => { const c = getValueColor('taskPriorities', task.priority); return c ? ` style="background:${c}22;color:${c};border-radius:3px;padding:1px 5px;font-weight:600"` : ''; })()}>${task.priority}</span>
       </button>
       <button class="prop-chip" id="chip-due" data-key="due">
         <span class="chip-label">Due</span>
@@ -3100,7 +3496,7 @@ async function showTaskSlideover(taskId) {
         <span>Subtasks (${subtasks.length})</span>
         <button class="btn btn-sm btn-ghost" id="add-subtask-btn">+ Add</button>
       </div>
-      <div id="subtask-list">${subtasksHtml}</div>
+      <div id="subtask-list"></div>
     </div>
     <div class="subtask-section">
       <div class="subtask-section-title">
@@ -3133,6 +3529,9 @@ async function showTaskSlideover(taskId) {
 
   openSlideover(task.title, body);
 
+  // Render interactive subtask table now that DOM is present
+  renderSubtaskTable();
+
   // ── patchTask + handleStatusChange ───────────────────────────────────
   async function patchTask(data) {
     try { await api('PATCH', `/api/tasks/${taskId}`, data); } catch(e) { return; }
@@ -3141,6 +3540,7 @@ async function showTaskSlideover(taskId) {
     else if (v === 'dashboard') renderDashboard();
     else if (v === 'project-detail' && currentParams) renderProjectDetail(currentParams);
     else if (v === 'goal-detail' && currentParams) renderGoalDetail(currentParams);
+    else if (v === 'sprint-detail' && currentParams) renderSprintDetail(currentParams);
     showTaskSlideover(taskId);
   }
 
@@ -3345,6 +3745,195 @@ async function showTaskSlideover(taskId) {
     setTimeout(() => document.addEventListener('mousedown', _comboOutside), 0);
   }
 
+  // ── Editable value combo (status / priority chips) ─────────────────────
+  // Allows searching, renaming existing values, and creating new ones.
+  // Persists to localStorage under `storageKey`.
+  function openEditableValueCombo(anchorEl, valuesArray, storageKey, currentVal, onSelect) {
+    closeCombo();
+    let filter = '';
+    let editingVal = null; // value currently being renamed
+    let editInputVal = '';
+    let colorPickerVal = null; // value whose color picker is open
+
+    // Preset colors for the inline color picker
+    const COLOR_PRESETS = ['#e07070','#fb923c','#d4a84b','#6dcc8a','#378ADD','#a78bfa','#f472b6','#22d3ee','#94a3b8'];
+
+    _comboEl = document.createElement('div');
+    _comboEl.className = 'combo-popover';
+    _comboEl.style.minWidth = '220px';
+
+    function saveValues() {
+      localStorage.setItem(storageKey, JSON.stringify(valuesArray));
+      // valuesArray IS the live TASK_STATUSES / TASK_PRIORITIES array (same reference),
+      // so mutations to it (push, splice) are already reflected — no need to sync.
+    }
+
+    function renderEditable() {
+      const filtered = filter
+        ? valuesArray.filter(v => v.toLowerCase().includes(filter.toLowerCase()))
+        : valuesArray;
+      const showCreate = filter.trim() && !valuesArray.some(v => v.toLowerCase() === filter.trim().toLowerCase());
+
+      const items = filtered.map((v, i) => {
+        const isSel = v === currentVal;
+        const color = getValueColor(storageKey, v);
+        const dot = `<span class="combo-color-dot" data-colorpicker="${v}" title="Set color" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color||'var(--border)'};border:1px solid ${color||'var(--border)'};cursor:pointer;flex-shrink:0;margin-right:2px"></span>`;
+        if (editingVal === v) {
+          return `<div class="combo-item combo-item-editing" data-val="${v}">
+            ${dot}
+            <input class="combo-edit-input" value="${editInputVal || v}" data-editing="${v}" style="flex:1;font-size:12px;padding:2px 4px;border:1px solid var(--accent);border-radius:3px;background:var(--bg-surface);color:var(--text-primary)" />
+            <button class="combo-edit-save" data-editing="${v}" style="font-size:11px;padding:2px 6px;margin-left:4px;background:var(--accent);color:#fff;border:none;border-radius:3px;cursor:pointer">✓</button>
+            <button class="combo-edit-cancel" style="font-size:11px;padding:2px 6px;margin-left:2px;background:transparent;border:none;cursor:pointer;color:var(--text-muted)">✕</button>
+          </div>`;
+        }
+        const colorPickerHtml = colorPickerVal === v ? `<div class="combo-color-picker" data-for="${v}" style="display:flex;flex-wrap:wrap;gap:4px;padding:6px;border-top:1px solid var(--border)">
+          ${COLOR_PRESETS.map(c => `<span class="combo-color-swatch${color===c?' active':''}" data-color="${c}" data-for-val="${v}" style="display:inline-block;width:16px;height:16px;border-radius:3px;background:${c};cursor:pointer;border:2px solid ${color===c?'var(--text-primary)':'transparent'}"></span>`).join('')}
+          <span class="combo-color-swatch combo-color-clear" data-color="" data-for-val="${v}" title="Clear color" style="display:inline-block;width:16px;height:16px;border-radius:3px;background:var(--border);cursor:pointer;border:2px solid transparent;font-size:9px;line-height:16px;text-align:center;color:var(--text-muted)">✕</span>
+        </div>` : '';
+        return `<div class="combo-item editable-val-item${isSel?' selected':''}" data-val="${v}" style="display:flex;align-items:center;gap:4px;justify-content:space-between;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:6px;flex:1">
+            ${dot}
+            <span style="color:${color||'inherit'}">${v.replace(/_/g,' ')}</span>
+          </div>
+          <button class="combo-rename-btn" data-rename="${v}" title="Rename" style="opacity:0.4;background:none;border:none;cursor:pointer;font-size:11px;padding:0 4px;color:var(--text-muted)">✎</button>
+          ${colorPickerHtml}
+        </div>`;
+      }).join('');
+
+      _comboEl.innerHTML = `
+        <div class="combo-search-wrap">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input class="combo-search" placeholder="Search or add…" value="${filter.replace(/"/g,'&quot;')}" />
+        </div>
+        <div class="combo-list">
+          ${items || '<div class="combo-empty">No results</div>'}
+          ${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Add "${filter.trim()}"</div>` : ''}
+        </div>`;
+
+      const inp = _comboEl.querySelector('.combo-search');
+      inp.focus();
+      inp.setSelectionRange(inp.value.length, inp.value.length);
+
+      inp.oninput = (e) => { filter = e.target.value; editingVal = null; renderEditable(); };
+      inp.onkeydown = (e) => {
+        if (e.key === 'Enter' && filter.trim()) {
+          const exact = valuesArray.find(v => v.toLowerCase() === filter.trim().toLowerCase());
+          if (exact) {
+            onSelect(exact);
+            closeCombo();
+          } else {
+            const newVal = filter.trim().replace(/\s+/g,'_');
+            valuesArray.push(newVal);
+            saveValues();
+            onSelect(newVal);
+            closeCombo();
+          }
+        } else if (e.key === 'Escape') closeCombo();
+      };
+
+      // Select value
+      _comboEl.querySelectorAll('.editable-val-item[data-val]').forEach(el => {
+        el.onclick = (e) => {
+          if (e.target.closest('.combo-rename-btn')) return;
+          if (e.target.closest('.combo-color-dot') || e.target.closest('.combo-color-picker')) return;
+          onSelect(el.dataset.val);
+          closeCombo();
+        };
+      });
+
+      // Rename button
+      _comboEl.querySelectorAll('.combo-rename-btn').forEach(btn => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          editingVal = btn.dataset.rename;
+          editInputVal = editingVal;
+          renderEditable();
+        };
+      });
+
+      // Save rename
+      _comboEl.querySelectorAll('.combo-edit-save').forEach(btn => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          const oldVal = btn.dataset.editing;
+          const inputEl = _comboEl.querySelector(`.combo-edit-input[data-editing="${oldVal}"]`);
+          const newVal = (inputEl ? inputEl.value.trim() : oldVal).replace(/\s+/g,'_');
+          if (newVal && newVal !== oldVal) {
+            const idx = valuesArray.indexOf(oldVal);
+            if (idx >= 0) valuesArray[idx] = newVal;
+            saveValues();
+            // If current task had old value, update
+            if (currentVal === oldVal) { onSelect(newVal); closeCombo(); return; }
+          }
+          editingVal = null;
+          renderEditable();
+        };
+      });
+
+      // Cancel rename
+      _comboEl.querySelectorAll('.combo-edit-cancel').forEach(btn => {
+        btn.onclick = (e) => { e.stopPropagation(); editingVal = null; renderEditable(); };
+      });
+
+      // Edit input keydown
+      _comboEl.querySelectorAll('.combo-edit-input').forEach(inp2 => {
+        inp2.oninput = (e) => { editInputVal = e.target.value; };
+        inp2.onkeydown = (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); _comboEl.querySelector('.combo-edit-save').click(); }
+          else if (e.key === 'Escape') { e.stopPropagation(); editingVal = null; renderEditable(); }
+        };
+      });
+
+      // Create new
+      const createEl = _comboEl.querySelector('.create-new[data-create]');
+      if (createEl) {
+        createEl.onclick = () => {
+          const newVal = createEl.dataset.create.replace(/\s+/g,'_');
+          if (!valuesArray.includes(newVal)) { valuesArray.push(newVal); saveValues(); }
+          onSelect(newVal);
+          closeCombo();
+        };
+      }
+
+      // Color dot toggle — open/close inline color picker
+      _comboEl.querySelectorAll('.combo-color-dot[data-colorpicker]').forEach(dot => {
+        dot.onclick = (e) => {
+          e.stopPropagation();
+          const val = dot.dataset.colorpicker;
+          colorPickerVal = colorPickerVal === val ? null : val;
+          renderEditable();
+        };
+      });
+
+      // Color swatch select
+      _comboEl.querySelectorAll('.combo-color-swatch[data-for-val]').forEach(swatch => {
+        swatch.onclick = (e) => {
+          e.stopPropagation();
+          const val = swatch.dataset.forVal;
+          const color = swatch.dataset.color;
+          setValueColor(storageKey, val, color || null);
+          colorPickerVal = null;
+          renderEditable();
+        };
+      });
+    }
+
+    renderEditable();
+
+    const rect = anchorEl.getBoundingClientRect();
+    _comboEl.style.top = (rect.bottom + 4) + 'px';
+    _comboEl.style.left = rect.left + 'px';
+    document.body.appendChild(_comboEl);
+
+    requestAnimationFrame(() => {
+      if (!_comboEl) return;
+      const cr = _comboEl.getBoundingClientRect();
+      if (cr.right > window.innerWidth - 8) _comboEl.style.left = (window.innerWidth - cr.width - 8) + 'px';
+    });
+
+    setTimeout(() => document.addEventListener('mousedown', _comboOutside), 0);
+  }
+
   // ── Date range picker ─────────────────────────────────────────────────
   let _dpEl = null;
   function closeDatePicker() {
@@ -3472,18 +4061,40 @@ async function showTaskSlideover(taskId) {
   }
 
   // ── Chip click handlers ───────────────────────────────────────────────
+  function applyChipValueColor(chipEl, storageKey, value) {
+    if (!chipEl) return;
+    const valSpan = chipEl.querySelector('.chip-value');
+    if (!valSpan) return;
+    const c = getValueColor(storageKey, value);
+    if (c) {
+      valSpan.style.cssText = `background:${c}22;color:${c};border-radius:3px;padding:1px 5px;font-weight:600`;
+    } else {
+      valSpan.style.cssText = '';
+    }
+  }
+
   document.getElementById('chip-status').onclick = (e) => {
     e.stopPropagation();
-    const items = TASK_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') }));
-    openCombo(e.currentTarget, items, task.status, async ({ value }) => {
+    openEditableValueCombo(e.currentTarget, TASK_STATUSES, 'taskStatuses', task.status, async (value) => {
+      const chipEl = document.getElementById('chip-status');
+      if (chipEl) {
+        chipEl.className = `prop-chip chip-status-${value}`;
+        chipEl.querySelector('.chip-value').textContent = value.replace(/_/g,' ');
+        applyChipValueColor(chipEl, 'taskStatuses', value);
+      }
       await handleStatusChange(value);
     });
   };
 
   document.getElementById('chip-priority').onclick = (e) => {
     e.stopPropagation();
-    const items = TASK_PRIORITIES.map(p => ({ value: p, label: p }));
-    openCombo(e.currentTarget, items, task.priority, async ({ value }) => {
+    openEditableValueCombo(e.currentTarget, TASK_PRIORITIES, 'taskPriorities', task.priority, async (value) => {
+      const chipEl = document.getElementById('chip-priority');
+      if (chipEl) {
+        chipEl.className = `prop-chip chip-priority-${value}`;
+        chipEl.querySelector('.chip-value').textContent = value.replace(/_/g,' ');
+        applyChipValueColor(chipEl, 'taskPriorities', value);
+      }
       await patchTask({ priority: value });
     });
   };
@@ -3638,25 +4249,12 @@ async function showTaskSlideover(taskId) {
   document.getElementById('detail-desc').onblur = (e) => patchTask({ description: e.target.value });
 
   document.getElementById('add-subtask-btn').onclick = () => {
-    showNewTaskModal({ parent_task_id: parseInt(taskId), status: 'todo', priority: 'medium' }, () => showTaskSlideover(taskId));
+    showNewTaskModal({ parent_task_id: parseInt(taskId), status: 'todo', priority: 'medium' }, async () => {
+      allTasksCache = await api('GET', '/api/tasks?all=1');
+      allTasksFull = allTasksCache;
+      renderSubtaskTable();
+    });
   };
-
-  document.querySelectorAll('.subtask-table-row').forEach(row => {
-    row.onclick = (e) => {
-      if (e.target.closest('[data-subtask-id]')) return;
-      showTaskSlideover(row.dataset.stId);
-    };
-  });
-
-  document.querySelectorAll('[data-subtask-id]').forEach(el => {
-    el.onclick = async (e) => {
-      e.stopPropagation();
-      const stId = el.dataset.subtaskId;
-      const isDone = el.classList.contains('done');
-      await api('PATCH', `/api/tasks/${stId}`, { status: isDone ? 'todo' : 'done' });
-      showTaskSlideover(taskId);
-    };
-  });
 
   document.getElementById('log-pom-btn').onclick = async () => {
     await patchTask({ pomodoros_finished: pomDone + 1 });
@@ -3685,6 +4283,10 @@ async function showTaskSlideover(taskId) {
   });
   document.querySelectorAll('[data-parent-id]').forEach(el => {
     el.onclick = () => showTaskSlideover(el.dataset.parentId);
+  });
+  // Ancestor task crumbs (built by walk-up breadcrumb)
+  document.querySelectorAll('.detail-bc-prefix .bc-part[data-task-id]').forEach(el => {
+    el.onclick = (e) => { e.stopPropagation(); showTaskSlideover(el.dataset.taskId); };
   });
 }
 
@@ -4508,6 +5110,7 @@ async function renderPomodoro() {
           <button class="btn btn-ghost" id="pom-pause">Pause</button>
           <button class="btn btn-ghost" id="pom-reset">Reset</button>
           <button class="btn btn-ghost" id="pom-break">Break (5m)</button>
+          <button class="btn btn-ghost" id="pom-complete" title="Complete current session early" style="color:var(--color-success,#6dcc8a)">✓ Complete</button>
         </div>
         <div id="pom-log" style="width:100%;max-width:400px;margin-top:8px"></div>
       </div>
@@ -4654,39 +5257,41 @@ async function renderPomodoro() {
   refreshPicker();
 
   // ── Timer ────────────────────────────────────────────────────────────
+  function completeSession() {
+    clearInterval(pomTimer); pomTimer = null; pomState.running = false;
+    try {
+      const ac = new AudioContext();
+      const osc = ac.createOscillator(); osc.type = 'sine'; osc.frequency.value = 800;
+      osc.connect(ac.destination); osc.start(); osc.stop(ac.currentTime + 0.3);
+    } catch(e) {}
+    if (pomState.mode === 'work') {
+      const now = new Date();
+      pomState.finished.push({ task: pomState.taskTitle || '(no task)', time: now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) });
+      renderLog();
+      if (pomState.taskId) {
+        const t = allTasksCache.find(x => x.id === pomState.taskId);
+        const cur = t ? (t.pomodoros_finished || 0) : 0;
+        api('PATCH', `/api/tasks/${pomState.taskId}`, { pomodoros_finished: cur + 1 }).catch(()=>{});
+        if (t) t.pomodoros_finished = cur + 1;
+        // Refresh stats table & picker
+        const freshTasks = allTasksCache.filter(tt => (tt.pomodoros_planned||0)>0 || (tt.pomodoros_finished||0)>0);
+        const wrap = document.getElementById('pom-stats-table-wrap');
+        if (wrap) wrap.innerHTML = renderPomStatsTable(freshTasks);
+        refreshPicker();
+      }
+      pomState.mode = 'break'; pomState.seconds = 5*60;
+      updateDisplay();
+    } else {
+      pomState.mode = 'work'; pomState.seconds = 25*60;
+      updateDisplay();
+    }
+  }
+
   function tick() {
     if (!pomState.running) return;
     pomState.seconds--;
     updateDisplay();
-    if (pomState.seconds <= 0) {
-      clearInterval(pomTimer); pomTimer = null; pomState.running = false;
-      try {
-        const ac = new AudioContext();
-        const osc = ac.createOscillator(); osc.type = 'sine'; osc.frequency.value = 800;
-        osc.connect(ac.destination); osc.start(); osc.stop(ac.currentTime + 0.3);
-      } catch(e) {}
-      if (pomState.mode === 'work') {
-        const now = new Date();
-        pomState.finished.push({ task: pomState.taskTitle || '(no task)', time: now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) });
-        renderLog();
-        if (pomState.taskId) {
-          const t = allTasksCache.find(x => x.id === pomState.taskId);
-          const cur = t ? (t.pomodoros_finished || 0) : 0;
-          api('PATCH', `/api/tasks/${pomState.taskId}`, { pomodoros_finished: cur + 1 }).catch(()=>{});
-          if (t) t.pomodoros_finished = cur + 1;
-          // Refresh stats table & picker
-          const freshTasks = allTasksCache.filter(tt => (tt.pomodoros_planned||0)>0 || (tt.pomodoros_finished||0)>0);
-          const wrap = document.getElementById('pom-stats-table-wrap');
-          if (wrap) wrap.innerHTML = renderPomStatsTable(freshTasks);
-          refreshPicker();
-        }
-        pomState.mode = 'break'; pomState.seconds = 5*60;
-        updateDisplay();
-      } else {
-        pomState.mode = 'work'; pomState.seconds = 25*60;
-        updateDisplay();
-      }
-    }
+    if (pomState.seconds <= 0) completeSession();
   }
 
   document.getElementById('pom-start').onclick = () => {
@@ -4713,6 +5318,10 @@ async function renderPomodoro() {
     pomState.seconds = pomState.mode === 'work' ? 25*60 : 5*60;
     document.getElementById('pom-break').textContent = pomState.mode === 'work' ? 'Break (5m)' : 'Work (25m)';
     updateDisplay();
+  };
+  document.getElementById('pom-complete').onclick = () => {
+    if (!pomState.running && pomState.mode !== 'work') return;
+    completeSession();
   };
 
   if (pomState.taskId) {
@@ -4868,7 +5477,7 @@ function bindDetailTaskEvents(onRefresh) {
 async function getTaskModalResources() {
   let projects = [], sprints = [], tasks = [], goals = [];
   try { [projects, sprints, tasks, goals] = await Promise.all([
-    api('GET', '/api/projects'), api('GET', '/api/sprints'), api('GET', '/api/tasks'), api('GET', '/api/goals')
+    api('GET', '/api/projects'), api('GET', '/api/sprints'), api('GET', '/api/tasks?all=1'), api('GET', '/api/goals')
   ]); } catch(e) {}
   return { projects, sprints, tasks, goals };
 }
@@ -5361,6 +5970,9 @@ function showSprintModal(projects, sprint) {
       <div class="form-group"><label class="form-label">Start Date</label><input type="date" id="sp-start" value="${s.start_date||''}" /></div>
       <div class="form-group"><label class="form-label">End Date</label><input type="date" id="sp-end" value="${s.end_date||''}" /></div>
     </div>
+    <div class="form-group"><label class="form-label">Capacity (Story Points)</label>
+      <input type="number" id="sp-story-points" min="0" placeholder="e.g. 40" value="${s.story_points != null ? s.story_points : ''}" style="width:100%" />
+    </div>
     <div class="form-actions">
       <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
       <button class="btn btn-primary" id="modal-save-btn">${s.id ? 'Save' : 'Create'}</button>
@@ -5391,11 +6003,13 @@ function showSprintModal(projects, sprint) {
     };
   }
   document.getElementById('modal-save-btn').onclick = async () => {
+    const spVal = document.getElementById('sp-story-points').value.trim();
     const data = {
       title: document.getElementById('sp-title').value.trim(),
       project_id: document.getElementById('sp-project').value ? parseInt(document.getElementById('sp-project').value) : null,
       start_date: document.getElementById('sp-start').value || null,
       end_date: document.getElementById('sp-end').value || null,
+      story_points: spVal !== '' ? parseInt(spVal, 10) : null,
     };
     if (!data.title) { alert('Title is required'); return; }
     if (s.id) {
@@ -5586,6 +6200,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Theme toggles
   document.getElementById('theme-btn').onclick = toggleTheme;
   document.getElementById('mob-theme-btn').onclick = toggleTheme;
+
+  // Refresh button — re-renders the current view
+  document.getElementById('refresh-btn').onclick = () => {
+    const btn = document.getElementById('refresh-btn');
+    btn.classList.add('spinning');
+    btn.addEventListener('animationend', () => btn.classList.remove('spinning'), { once: true });
+    renderView(currentView);
+  };
 
   // Mobile menu toggle
   const mobMenuBtn = document.getElementById('mob-menu-btn');

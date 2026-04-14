@@ -137,6 +137,9 @@ func applyMigrations(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_notes_goal        ON notes(goal_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_goals_category    ON goals(category_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_projects_category ON projects(category_id)`,
+
+		// ── sprints: story_points capacity ─────────────────────────────────
+		`ALTER TABLE sprints ADD COLUMN story_points INTEGER`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -457,10 +460,10 @@ func (s *sqliteStorage) CreateSprint(sp *domain.Sprint) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.Exec(
-		`INSERT INTO sprints (project_id, title, goal, start_date, end_date, status)
-		 VALUES (?,?,?,?,?,?)`,
+		`INSERT INTO sprints (project_id, title, goal, start_date, end_date, status, story_points)
+		 VALUES (?,?,?,?,?,?,?)`,
 		sp.ProjectID, sp.Title, sp.Goal,
-		nullTime(sp.StartDate), nullTime(sp.EndDate), string(sp.Status),
+		nullTime(sp.StartDate), nullTime(sp.EndDate), string(sp.Status), sp.StoryPoints,
 	)
 	if err != nil {
 		return 0, err
@@ -472,7 +475,7 @@ func (s *sqliteStorage) ListSprints(projectID int64) ([]*domain.Sprint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rows, err := s.db.Query(
-		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at
+		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points
 		 FROM sprints WHERE project_id=? ORDER BY created_at DESC`, projectID)
 	if err != nil {
 		return nil, err
@@ -493,7 +496,7 @@ func (s *sqliteStorage) GetActiveSprint(projectID int64) (*domain.Sprint, error)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row := s.db.QueryRow(
-		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at
+		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points
 		 FROM sprints WHERE project_id=? AND status='active' LIMIT 1`, projectID)
 	return scanSprint(row)
 }
@@ -984,8 +987,9 @@ func scanSprint(sc scanner) (*domain.Sprint, error) {
 	sp := &domain.Sprint{}
 	var createdAt, status string
 	var startDate, endDate sql.NullString
+	var storyPoints sql.NullInt64
 	err := sc.Scan(&sp.ID, &sp.ProjectID, &sp.Title, &sp.Goal,
-		&startDate, &endDate, &status, &createdAt)
+		&startDate, &endDate, &status, &createdAt, &storyPoints)
 	if err != nil {
 		return nil, err
 	}
@@ -997,6 +1001,10 @@ func scanSprint(sc scanner) (*domain.Sprint, error) {
 	if endDate.Valid {
 		t, _ := parseTime(endDate.String)
 		sp.EndDate = &t
+	}
+	if storyPoints.Valid {
+		v := int(storyPoints.Int64)
+		sp.StoryPoints = &v
 	}
 	sp.CreatedAt, _ = parseTime(createdAt)
 	return sp, nil

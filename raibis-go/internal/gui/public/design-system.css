@@ -1,0 +1,325 @@
+/*
+ * LifeOS Design System — Notion × macOS Aesthetic
+ * ─────────────────────────────────────────────────
+ * This file defines every design token for the LifeOS redesign.
+ * Import before style.css. All components consume these tokens.
+ *
+ * Palette philosophy:
+ *   - True white (#FFFFFF) card surfaces; warm off-white (#FAFAF9) page bg
+ *   - High-contrast dark gray text (not pure black) — #1C1C1E (macOS label)
+ *   - Borders at #E5E5E5 — barely-there, like Notion
+ *   - Sidebar: glassmorphism / backdrop-blur with very light translucency
+ *   - Accent: neutral indigo-blue (like Notion blue), never neon
+ *   - Tags/badges: muted pastel fills, low-saturation
+ *
+ * Tailwind mapping (for reference when migrating to Tailwind later):
+ *   --color-bg             → bg-[#FAFAF9]    (stone-50 equivalent)
+ *   --color-surface        → bg-white
+ *   --color-sidebar        → bg-white/70 + backdrop-blur-xl
+ *   --color-border         → border-[#E5E5E5]  (zinc-200)
+ *   --color-text           → text-[#1C1C1E]    (macOS label)
+ *   --color-text-secondary → text-[#6B7280]    (gray-500)
+ *   --color-text-tertiary  → text-[#9CA3AF]    (gray-400)
+ *   --color-accent         → bg-[#2563EB]
+ *   rounded-xl             → 12px
+ *   rounded-2xl            → 16px
+ *   shadow-sm              → var(--shadow-float)
+ *   shadow-md              → var(--shadow-modal)
+ */
+
+/* ══════════════════════════════════════════════════════
+   LIGHT THEME (default — Notion/macOS)
+   ══════════════════════════════════════════════════════ */
+:root,
+[data-theme="light"] {
+
+  /* ── Page background ─────────────────────────────── */
+  --color-bg:            #FAFAF9;   /* warm off-white, Notion page bg  */
+  --color-bg-elevated:   #F5F5F4;   /* slightly darker for sections    */
+
+  /* ── Surface (cards, panels, modals) ─────────────── */
+  --color-surface:       #FFFFFF;
+  --color-surface-hover: #F9F9F8;   /* 2% tint on hover                */
+
+  /* ── Sidebar (glassmorphism) ─────────────────────── */
+  --color-sidebar-bg:    rgba(255, 255, 255, 0.72);
+  --color-sidebar-blur:  20px;       /* backdrop-filter: blur()         */
+  --color-sidebar-sat:   180%;       /* backdrop-filter: saturate()     */
+  --color-sidebar-border:rgba(229, 229, 229, 0.8);
+
+  /* ── Borders ─────────────────────────────────────── */
+  --color-border:        #E5E5E5;   /* Notion-style hairline border    */
+  --color-border-strong: #D1D5DB;   /* slightly more visible           */
+  --color-border-focus:  #2563EB;   /* input focus ring                */
+
+  /* ── Typography ──────────────────────────────────── */
+  --color-text:          #1C1C1E;   /* macOS label — near-black        */
+  --color-text-secondary:#6B7280;   /* gray-500 — subdued labels       */
+  --color-text-tertiary: #9CA3AF;   /* gray-400 — placeholders, dims   */
+  --color-text-inverse:  #FFFFFF;
+
+  /* ── Accent (Notion-style blue) ──────────────────── */
+  --color-accent:        #2563EB;   /* Notion blue / Apple blue        */
+  --color-accent-hover:  #1D4ED8;
+  --color-accent-subtle: rgba(37, 99, 235, 0.08);
+  --color-accent-dim:    rgba(37, 99, 235, 0.12);
+
+  /* ── Semantic colors ─────────────────────────────── */
+  --color-success:       #16A34A;
+  --color-success-bg:    rgba(22, 163, 74, 0.08);
+  --color-warning:       #D97706;
+  --color-warning-bg:    rgba(217, 119, 6, 0.08);
+  --color-danger:        #DC2626;
+  --color-danger-bg:     rgba(220, 38, 38, 0.08);
+
+  /* ── Muted pastel tag fills (Notion tag system) ──── */
+  --tag-blue-bg:         #EFF6FF;  --tag-blue-text:   #1D4ED8;
+  --tag-green-bg:        #F0FDF4;  --tag-green-text:  #15803D;
+  --tag-red-bg:          #FEF2F2;  --tag-red-text:    #B91C1C;
+  --tag-yellow-bg:       #FFFBEB;  --tag-yellow-text: #92400E;
+  --tag-purple-bg:       #F5F3FF;  --tag-purple-text: #6D28D9;
+  --tag-orange-bg:       #FFF7ED;  --tag-orange-text: #C2410C;
+  --tag-pink-bg:         #FDF2F8;  --tag-pink-text:   #9D174D;
+  --tag-cyan-bg:         #ECFEFF;  --tag-cyan-text:   #0E7490;
+  --tag-gray-bg:         #F9FAFB;  --tag-gray-text:   #374151;
+
+  /* ── Shadows (soft, diffused, macOS-native) ──────── */
+  /* Flat surface — cards in grid, table rows           */
+  --shadow-none:         none;
+
+  /* Small floating — dropdowns, tooltips               */
+  --shadow-float:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 4px 12px rgba(0, 0, 0, 0.06);
+
+  /* Slide-over panels, popovers                        */
+  --shadow-panel:
+    0 2px 8px rgba(0, 0, 0, 0.04),
+    0 8px 32px rgba(0, 0, 0, 0.10),
+    0 24px 64px rgba(0, 0, 0, 0.06);
+
+  /* Modals — centered dialogs                          */
+  --shadow-modal:
+    0 4px 16px rgba(0, 0, 0, 0.06),
+    0 16px 48px rgba(0, 0, 0, 0.12),
+    0 40px 96px rgba(0, 0, 0, 0.08);
+
+  /* Micro hover lift on cards                          */
+  --shadow-hover:
+    0 2px 6px rgba(0, 0, 0, 0.06),
+    0 8px 24px rgba(0, 0, 0, 0.08);
+
+  /* ── Border radii ────────────────────────────────── */
+  --radius-xs:  4px;    /* badges, tags, chips          */
+  --radius-sm:  6px;    /* inputs, small buttons        */
+  --radius-md:  8px;    /* standard cards               */
+  --radius-lg:  12px;   /* rounded-xl — panels, modals  */
+  --radius-xl:  16px;   /* rounded-2xl — slide-overs    */
+  --radius-pill:999px;  /* pill buttons, toggles        */
+
+  /* ── Spacing scale (4-point grid) ───────────────── */
+  --space-1:   4px;
+  --space-2:   8px;
+  --space-3:   12px;
+  --space-4:   16px;
+  --space-5:   20px;
+  --space-6:   24px;
+  --space-8:   32px;
+  --space-10:  40px;
+  --space-12:  48px;
+  --space-16:  64px;
+
+  /* ── Typography ──────────────────────────────────── */
+  --font-sans:    'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text',
+                  'Segoe UI', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace,
+                  monospace;
+
+  /* Type scale */
+  --text-xs:    11px;   /* captions, version labels     */
+  --text-sm:    12px;   /* badges, helper text          */
+  --text-base:  14px;   /* body copy                    */
+  --text-md:    15px;   /* slightly emphasized body     */
+  --text-lg:    18px;   /* section headings             */
+  --text-xl:    22px;   /* page titles                  */
+  --text-2xl:   28px;   /* stat values                  */
+
+  /* Line heights */
+  --leading-tight:  1.25;
+  --leading-snug:   1.375;
+  --leading-normal: 1.5;
+  --leading-relaxed:1.625;
+
+  /* Font weights */
+  --weight-light:   300;
+  --weight-regular: 400;
+  --weight-medium:  500;
+  --weight-semibold:600;
+  --weight-bold:    700;
+
+  /* ── Sidebar dimensions ──────────────────────────── */
+  --sidebar-width:      240px;
+  --sidebar-collapsed:  60px;
+
+  /* ── Z-index scale ───────────────────────────────── */
+  --z-base:       0;
+  --z-raised:     10;
+  --z-dropdown:   100;
+  --z-sticky:     200;
+  --z-overlay:    300;
+  --z-panel:      400;
+  --z-modal:      500;
+  --z-toast:      600;
+  --z-top:        9999;
+
+  /* ── Animation tokens ────────────────────────────── */
+  --duration-fast:    150ms;
+  --duration-base:    200ms;
+  --duration-slow:    300ms;
+  --duration-panel:   280ms;
+  --ease-out:         cubic-bezier(0.16, 1, 0.3, 1);  /* expo-out — snappy */
+  --ease-in:          cubic-bezier(0.4, 0, 1, 1);
+  --ease-inout:       cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring:      cubic-bezier(0.34, 1.56, 0.64, 1); /* gentle spring  */
+
+  /* ── Scrollbar ───────────────────────────────────── */
+  --scrollbar-track:  transparent;
+  --scrollbar-thumb:  #D1D5DB;
+
+  color-scheme: light;
+}
+
+/* ══════════════════════════════════════════════════════
+   DARK THEME — Notion dark / macOS dark
+   ══════════════════════════════════════════════════════ */
+[data-theme="dark"] {
+
+  --color-bg:            #191919;   /* Notion dark page bg             */
+  --color-bg-elevated:   #1F1F1F;
+
+  --color-surface:       #252525;   /* Notion dark card surface        */
+  --color-surface-hover: #2C2C2C;
+
+  --color-sidebar-bg:    rgba(25, 25, 25, 0.80);
+  --color-sidebar-blur:  20px;
+  --color-sidebar-sat:   150%;
+  --color-sidebar-border:rgba(255, 255, 255, 0.06);
+
+  --color-border:        #2F2F2F;
+  --color-border-strong: #3D3D3D;
+  --color-border-focus:  #5B8DEF;
+
+  --color-text:          #EFEFEF;   /* off-white — not pure #FFF       */
+  --color-text-secondary:#9B9B9B;
+  --color-text-tertiary: #5E5E5E;
+  --color-text-inverse:  #191919;
+
+  --color-accent:        #5B8DEF;   /* desaturated blue for dark mode  */
+  --color-accent-hover:  #7AA7F5;
+  --color-accent-subtle: rgba(91, 141, 239, 0.10);
+  --color-accent-dim:    rgba(91, 141, 239, 0.15);
+
+  --color-success:       #4ADE80;
+  --color-success-bg:    rgba(74, 222, 128, 0.10);
+  --color-warning:       #FBBF24;
+  --color-warning-bg:    rgba(251, 191, 36, 0.10);
+  --color-danger:        #F87171;
+  --color-danger-bg:     rgba(248, 113, 113, 0.10);
+
+  /* Dark pastel tags — desaturated, softer            */
+  --tag-blue-bg:         rgba(59, 130, 246, 0.15);  --tag-blue-text:   #93C5FD;
+  --tag-green-bg:        rgba(34, 197, 94, 0.12);   --tag-green-text:  #86EFAC;
+  --tag-red-bg:          rgba(239, 68, 68, 0.12);   --tag-red-text:    #FCA5A5;
+  --tag-yellow-bg:       rgba(234, 179, 8, 0.12);   --tag-yellow-text: #FDE68A;
+  --tag-purple-bg:       rgba(139, 92, 246, 0.12);  --tag-purple-text: #C4B5FD;
+  --tag-orange-bg:       rgba(249, 115, 22, 0.12);  --tag-orange-text: #FDBA74;
+  --tag-pink-bg:         rgba(236, 72, 153, 0.10);  --tag-pink-text:   #F9A8D4;
+  --tag-cyan-bg:         rgba(6, 182, 212, 0.10);   --tag-cyan-text:   #67E8F9;
+  --tag-gray-bg:         rgba(156, 163, 175, 0.10); --tag-gray-text:   #9CA3AF;
+
+  --shadow-float:
+    0 1px 2px rgba(0, 0, 0, 0.20),
+    0 4px 12px rgba(0, 0, 0, 0.30);
+
+  --shadow-panel:
+    0 2px 8px rgba(0, 0, 0, 0.25),
+    0 8px 32px rgba(0, 0, 0, 0.40),
+    0 24px 64px rgba(0, 0, 0, 0.20);
+
+  --shadow-modal:
+    0 4px 16px rgba(0, 0, 0, 0.30),
+    0 16px 48px rgba(0, 0, 0, 0.50),
+    0 40px 96px rgba(0, 0, 0, 0.25);
+
+  --shadow-hover:
+    0 2px 6px rgba(0, 0, 0, 0.25),
+    0 8px 24px rgba(0, 0, 0, 0.30);
+
+  --scrollbar-track:  transparent;
+  --scrollbar-thumb:  #3D3D3D;
+
+  color-scheme: dark;
+}
+
+/* ══════════════════════════════════════════════════════
+   TAILWIND CONFIG REFERENCE (use this in tailwind.config.js)
+   ══════════════════════════════════════════════════════
+   This block is a comment-only record for when/if the project
+   migrates to Tailwind. No actual Tailwind is used here.
+
+   module.exports = {
+     theme: {
+       extend: {
+         fontFamily: {
+           sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', ...],
+           mono: ['JetBrains Mono', 'SF Mono', ...],
+         },
+         colors: {
+           // Semantic tokens map to CSS vars via theme('colors.*')
+           brand: {
+             DEFAULT: '#2563EB',
+             hover:   '#1D4ED8',
+             subtle:  'rgba(37,99,235,0.08)',
+           },
+           surface: {
+             DEFAULT: '#FFFFFF',
+             bg:      '#FAFAF9',
+             elevated:'#F5F5F4',
+           },
+           text: {
+             DEFAULT:   '#1C1C1E',
+             secondary: '#6B7280',
+             tertiary:  '#9CA3AF',
+           },
+           border: {
+             DEFAULT: '#E5E5E5',
+             strong:  '#D1D5DB',
+           },
+         },
+         borderRadius: {
+           xs:  '4px',
+           sm:  '6px',
+           md:  '8px',
+           lg:  '12px',  // rounded-xl feel
+           xl:  '16px',  // rounded-2xl
+           pill:'999px',
+         },
+         boxShadow: {
+           float: '0 1px 2px rgba(0,0,0,.04), 0 4px 12px rgba(0,0,0,.06)',
+           panel: '0 2px 8px rgba(0,0,0,.04), 0 8px 32px rgba(0,0,0,.10), 0 24px 64px rgba(0,0,0,.06)',
+           modal: '0 4px 16px rgba(0,0,0,.06), 0 16px 48px rgba(0,0,0,.12), 0 40px 96px rgba(0,0,0,.08)',
+           hover: '0 2px 6px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.08)',
+         },
+         transitionTimingFunction: {
+           'expo-out':  'cubic-bezier(0.16, 1, 0.3, 1)',
+           'spring':    'cubic-bezier(0.34, 1.56, 0.64, 1)',
+         },
+         transitionDuration: {
+           'fast': '150ms',
+           'base': '200ms',
+           'slow': '300ms',
+         },
+       },
+     },
+   }
+   ══════════════════════════════════════════════════════ */
