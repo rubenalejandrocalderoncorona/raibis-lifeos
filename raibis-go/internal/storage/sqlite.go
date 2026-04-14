@@ -85,6 +85,7 @@ func applyMigrations(db *sql.DB) error {
 		`ALTER TABLE tasks ADD COLUMN category        TEXT`,
 		`ALTER TABLE tasks ADD COLUMN category_id     INTEGER REFERENCES categories(id) ON DELETE SET NULL`,
 		`ALTER TABLE tasks ADD COLUMN focus_block      DATE`,
+		`ALTER TABLE tasks ADD COLUMN focus_block_start DATE`,
 		`ALTER TABLE tasks ADD COLUMN recur_interval   INTEGER`,
 		`ALTER TABLE tasks ADD COLUMN recur_unit       TEXT`,
 		`ALTER TABLE tasks ADD COLUMN story_points     INTEGER`,
@@ -97,6 +98,10 @@ func applyMigrations(db *sql.DB) error {
 		`ALTER TABLE tasks ADD COLUMN pomodoros_finished INTEGER`,
 		// ── tasks: start_date for timeline/gantt view ───────────────────────
 		`ALTER TABLE tasks ADD COLUMN start_date DATE`,
+
+		// ── projects: date range support ────────────────────────────────────
+		`ALTER TABLE projects ADD COLUMN start_date DATE`,
+		`ALTER TABLE projects ADD COLUMN due_date   DATE`,
 
 		// ── entity_properties: custom key-value pairs for any entity ───────
 		`CREATE TABLE IF NOT EXISTS entity_properties (
@@ -132,6 +137,9 @@ func applyMigrations(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_notes_goal        ON notes(goal_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_goals_category    ON goals(category_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_projects_category ON projects(category_id)`,
+
+		// ── sprints: story_points capacity ─────────────────────────────────
+		`ALTER TABLE sprints ADD COLUMN story_points INTEGER`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -162,14 +170,14 @@ func (s *sqliteStorage) CreateTask(t *domain.Task) (int64, error) {
 		`INSERT INTO tasks
 		    (goal_id, project_id, sprint_id, parent_task_id, title, description,
 		     status, priority, start_date, due_date, estimated_mins, logged_mins,
-		     category, category_id, focus_block, recur_interval, recur_unit,
+		     category, category_id, focus_block, focus_block_start, recur_interval, recur_unit,
 		     story_points, pomodoros_planned, pomodoros_finished)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.GoalID, t.ProjectID, t.SprintID, t.ParentTaskID,
 		t.Title, t.Description,
 		string(t.Status), string(t.Priority),
 		nullTime(t.StartDate), nullTime(t.DueDate), t.EstimatedMin, t.LoggedMins,
-		t.Category, t.CategoryID, t.FocusBlock, t.RecurInterval, t.RecurUnit,
+		t.Category, t.CategoryID, t.FocusBlock, t.FocusBlockStart, t.RecurInterval, t.RecurUnit,
 		t.StoryPoints, t.PomodorosPlanned, t.PomodorosFinished,
 	)
 	if err != nil {
@@ -250,7 +258,7 @@ func (s *sqliteStorage) UpdateTask(t *domain.Task) error {
 		    goal_id=?, project_id=?, sprint_id=?, parent_task_id=?,
 		    title=?, description=?, status=?, priority=?,
 		    start_date=?, due_date=?, estimated_mins=?, logged_mins=?,
-		    category=?, category_id=?, focus_block=?, recur_interval=?, recur_unit=?,
+		    category=?, category_id=?, focus_block=?, focus_block_start=?, recur_interval=?, recur_unit=?,
 		    story_points=?, pomodoros_planned=?, pomodoros_finished=?,
 		    updated_at=datetime('now')
 		 WHERE id=?`,
@@ -258,7 +266,7 @@ func (s *sqliteStorage) UpdateTask(t *domain.Task) error {
 		t.Title, t.Description,
 		string(t.Status), string(t.Priority),
 		nullTime(t.StartDate), nullTime(t.DueDate), t.EstimatedMin, t.LoggedMins,
-		t.Category, t.CategoryID, t.FocusBlock, t.RecurInterval, t.RecurUnit,
+		t.Category, t.CategoryID, t.FocusBlock, t.FocusBlockStart, t.RecurInterval, t.RecurUnit,
 		t.StoryPoints, t.PomodorosPlanned, t.PomodorosFinished,
 		t.ID,
 	)
@@ -277,7 +285,7 @@ const taskSelectCols = `
 SELECT t.id, t.goal_id, t.project_id, t.sprint_id, t.parent_task_id,
        t.title, t.description, t.status, t.priority, t.start_date, t.due_date,
        t.estimated_mins, t.logged_mins, t.created_at, t.updated_at,
-       COALESCE(t.category,''), t.category_id, t.focus_block,
+       COALESCE(t.category,''), t.category_id, t.focus_block, t.focus_block_start,
        t.recur_interval, t.recur_unit, t.story_points,
        t.pomodoros_planned, t.pomodoros_finished,
        COALESCE(c.name,'') AS category_name
@@ -418,10 +426,12 @@ func (s *sqliteStorage) UpdateProject(p *domain.Project) error {
 	}
 	_, err := s.db.Exec(
 		`UPDATE projects SET goal_id=?, title=?, description=?, status=?,
-		  macro_area=?, kanban_col=?, archived=?, category_id=?
+		  macro_area=?, kanban_col=?, archived=?, category_id=?,
+		  start_date=?, due_date=?
 		 WHERE id=?`,
 		p.GoalID, p.Title, p.Description, string(p.Status),
 		emptyToNil(p.MacroArea), emptyToNil(p.KanbanCol), archived, p.CategoryID,
+		nullTime(p.StartDate), nullTime(p.DueDate),
 		p.ID,
 	)
 	return err
@@ -438,7 +448,8 @@ const projSelectCols = `
 SELECT p.id, p.goal_id, p.title, p.description, p.status, p.created_at,
        COALESCE(g.title,'') AS goal_title,
        COALESCE(p.macro_area,''), COALESCE(p.kanban_col,''), p.archived,
-       p.category_id, COALESCE(c.name,'') AS category_name
+       p.category_id, COALESCE(c.name,'') AS category_name,
+       p.start_date, p.due_date
 FROM projects p
 LEFT JOIN goals g      ON p.goal_id     = g.id
 LEFT JOIN categories c ON p.category_id = c.id`
@@ -449,10 +460,10 @@ func (s *sqliteStorage) CreateSprint(sp *domain.Sprint) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.Exec(
-		`INSERT INTO sprints (project_id, title, goal, start_date, end_date, status)
-		 VALUES (?,?,?,?,?,?)`,
+		`INSERT INTO sprints (project_id, title, goal, start_date, end_date, status, story_points)
+		 VALUES (?,?,?,?,?,?,?)`,
 		sp.ProjectID, sp.Title, sp.Goal,
-		nullTime(sp.StartDate), nullTime(sp.EndDate), string(sp.Status),
+		nullTime(sp.StartDate), nullTime(sp.EndDate), string(sp.Status), sp.StoryPoints,
 	)
 	if err != nil {
 		return 0, err
@@ -464,7 +475,7 @@ func (s *sqliteStorage) ListSprints(projectID int64) ([]*domain.Sprint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rows, err := s.db.Query(
-		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at
+		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points
 		 FROM sprints WHERE project_id=? ORDER BY created_at DESC`, projectID)
 	if err != nil {
 		return nil, err
@@ -485,7 +496,7 @@ func (s *sqliteStorage) GetActiveSprint(projectID int64) (*domain.Sprint, error)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row := s.db.QueryRow(
-		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at
+		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points
 		 FROM sprints WHERE project_id=? AND status='active' LIMIT 1`, projectID)
 	return scanSprint(row)
 }
@@ -787,6 +798,7 @@ func scanTask(sc scanner) (*domain.Task, error) {
 		startDate             sql.NullString
 		dueDate               sql.NullString
 		focusBlock            sql.NullString
+		focusBlockStart       sql.NullString
 		status, priority      string
 		recurInterval         sql.NullInt64
 		recurUnit             sql.NullString
@@ -801,7 +813,7 @@ func scanTask(sc scanner) (*domain.Task, error) {
 		&t.Title, &t.Description, &status, &priority,
 		&startDate, &dueDate, &t.EstimatedMin, &t.LoggedMins,
 		&createdAt, &updatedAt,
-		&t.Category, &categoryID, &focusBlock,
+		&t.Category, &categoryID, &focusBlock, &focusBlockStart,
 		&recurInterval, &recurUnit, &storyPoints,
 		&pomodorosPlanned, &pomodorosFinished,
 		&t.CategoryName,
@@ -827,6 +839,9 @@ func scanTask(sc scanner) (*domain.Task, error) {
 	}
 	if focusBlock.Valid {
 		t.FocusBlock = &focusBlock.String
+	}
+	if focusBlockStart.Valid {
+		t.FocusBlockStart = &focusBlockStart.String
 	}
 	if recurInterval.Valid {
 		v := int(recurInterval.Int64)
@@ -895,11 +910,13 @@ func scanProject(sc scanner) (*domain.Project, error) {
 		createdAt  string
 		archived   int
 		categoryID sql.NullInt64
+		startDate  sql.NullString
+		dueDate    sql.NullString
 	)
 	if err := sc.Scan(
 		&p.ID, &p.GoalID, &p.Title, &p.Description, &p.Status, &createdAt,
 		&p.GoalTitle, &p.MacroArea, &p.KanbanCol, &archived,
-		&categoryID, &p.CategoryName,
+		&categoryID, &p.CategoryName, &startDate, &dueDate,
 	); err != nil {
 		return nil, err
 	}
@@ -907,6 +924,16 @@ func scanProject(sc scanner) (*domain.Project, error) {
 	p.Archived = archived == 1
 	if categoryID.Valid {
 		p.CategoryID = &categoryID.Int64
+	}
+	if startDate.Valid && startDate.String != "" {
+		if t, err := time.Parse("2006-01-02", startDate.String[:10]); err == nil {
+			p.StartDate = &t
+		}
+	}
+	if dueDate.Valid && dueDate.String != "" {
+		if t, err := time.Parse("2006-01-02", dueDate.String[:10]); err == nil {
+			p.DueDate = &t
+		}
 	}
 	return p, nil
 }
@@ -960,8 +987,9 @@ func scanSprint(sc scanner) (*domain.Sprint, error) {
 	sp := &domain.Sprint{}
 	var createdAt, status string
 	var startDate, endDate sql.NullString
+	var storyPoints sql.NullInt64
 	err := sc.Scan(&sp.ID, &sp.ProjectID, &sp.Title, &sp.Goal,
-		&startDate, &endDate, &status, &createdAt)
+		&startDate, &endDate, &status, &createdAt, &storyPoints)
 	if err != nil {
 		return nil, err
 	}
@@ -973,6 +1001,10 @@ func scanSprint(sc scanner) (*domain.Sprint, error) {
 	if endDate.Valid {
 		t, _ := parseTime(endDate.String)
 		sp.EndDate = &t
+	}
+	if storyPoints.Valid {
+		v := int(storyPoints.Int64)
+		sp.StoryPoints = &v
 	}
 	sp.CreatedAt, _ = parseTime(createdAt)
 	return sp, nil

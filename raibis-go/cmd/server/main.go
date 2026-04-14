@@ -280,6 +280,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 				StartDate          string  `json:"start_date"`
 				DueDate            string  `json:"due_date"`
 				FocusBlock         string  `json:"focus_block"`
+				FocusBlockStart    string  `json:"focus_block_start"`
 				GoalID             *int64  `json:"goal_id"`
 				ProjectID          *int64  `json:"project_id"`
 				SprintID           *int64  `json:"sprint_id"`
@@ -335,6 +336,9 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 			}
 			if body.FocusBlock != "" {
 				t.FocusBlock = &body.FocusBlock
+			}
+			if body.FocusBlockStart != "" {
+				t.FocusBlockStart = &body.FocusBlockStart
 			}
 			created, err := svc.Create(t)
 			if err != nil {
@@ -505,6 +509,9 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 			if v, ok := body["focus_block"].(string); ok {
 				t.FocusBlock = &v
 			}
+			if v, ok := body["focus_block_start"].(string); ok {
+				t.FocusBlockStart = &v
+			}
 			if v, ok := body["goal_id"]; ok {
 				if v == nil {
 					t.GoalID = nil
@@ -527,6 +534,14 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 				} else if fv, ok := v.(float64); ok {
 					pid := int64(fv)
 					t.ParentTaskID = &pid
+				}
+			}
+			if v, ok := body["sprint_id"]; ok {
+				if v == nil {
+					t.SprintID = nil
+				} else if fv, ok := v.(float64); ok {
+					sid := int64(fv)
+					t.SprintID = &sid
 				}
 			}
 			if v, ok := body["category_id"]; ok {
@@ -987,6 +1002,20 @@ func projectHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http
 					p.CategoryID = &cid
 				}
 			}
+			if v, ok := body["start_date"].(string); ok && v != "" {
+				if t, err := time.Parse("2006-01-02", v); err == nil {
+					p.StartDate = &t
+				}
+			} else if _, ok := body["start_date"]; ok {
+				p.StartDate = nil
+			}
+			if v, ok := body["due_date"].(string); ok && v != "" {
+				if t, err := time.Parse("2006-01-02", v); err == nil {
+					p.DueDate = &t
+				}
+			} else if _, ok := body["due_date"]; ok {
+				p.DueDate = nil
+			}
 			if err := store.UpdateProject(p); err != nil {
 				errJSON(w, 500, err.Error())
 				return
@@ -1024,19 +1053,21 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 
 		case http.MethodPost:
 			var body struct {
-				Title     string `json:"title"`
-				ProjectID int64  `json:"project_id"`
-				StartDate string `json:"start_date"`
-				EndDate   string `json:"end_date"`
+				Title       string `json:"title"`
+				ProjectID   int64  `json:"project_id"`
+				StartDate   string `json:"start_date"`
+				EndDate     string `json:"end_date"`
+				StoryPoints *int   `json:"story_points"`
 			}
 			if err := readJSON(r, &body); err != nil || body.Title == "" || body.ProjectID == 0 {
 				errJSON(w, 400, "title and project_id are required")
 				return
 			}
 			sp := &domain.Sprint{
-				ProjectID: body.ProjectID,
-				Title:     body.Title,
-				Status:    domain.Status("planned"),
+				ProjectID:   body.ProjectID,
+				Title:       body.Title,
+				Status:      domain.Status("planned"),
+				StoryPoints: body.StoryPoints,
 			}
 			if body.StartDate != "" {
 				if t, err := time.Parse("2006-01-02", body.StartDate); err == nil {
@@ -1079,11 +1110,13 @@ func sprintHandler(store storage.Storage, svc service.TaskService) http.HandlerF
 				ProjectTitle string           `json:"project_title,omitempty"`
 				StartDate    string           `json:"start_date,omitempty"`
 				EndDate      string           `json:"end_date,omitempty"`
+				StoryPoints  *int             `json:"story_points,omitempty"`
 				Tasks        []*domain.Task   `json:"tasks"`
 				Progress     struct {
-					Done  int `json:"done"`
-					Total int `json:"total"`
-					Pct   int `json:"pct"`
+					Done        int `json:"done"`
+					Total       int `json:"total"`
+					Pct         int `json:"pct"`
+					StoryPoints int `json:"story_points"` // sum of assigned tasks' story_points
 				} `json:"progress"`
 			}
 			// Find sprint from the sprints list (no direct GetSprint method)
@@ -1109,9 +1142,11 @@ func sprintHandler(store storage.Storage, svc service.TaskService) http.HandlerF
 					det.ProjectTitle = sp.ProjectTitle
 					det.StartDate = sp.StartDate
 					det.EndDate = sp.EndDate
+					det.StoryPoints = sp.StoryPoints
 					det.Progress.Done = sp.Progress.Done
 					det.Progress.Total = sp.Progress.Total
 					det.Progress.Pct = sp.Progress.Pct
+					det.Progress.StoryPoints = sp.Progress.StoryPoints
 					break
 				}
 			}
@@ -1127,6 +1162,24 @@ func sprintHandler(store storage.Storage, svc service.TaskService) http.HandlerF
 				if err := store.UpdateSprintStatus(id, status); err != nil {
 					errJSON(w, 500, "update sprint: "+err.Error())
 					return
+				}
+			}
+			if sp, ok := body["story_points"]; ok {
+				var pts *int
+				if sp != nil {
+					if v, ok := sp.(float64); ok {
+						iv := int(v)
+						pts = &iv
+					}
+				}
+				db, err := openRawDB(defaultDBPath())
+				if err == nil {
+					if pts == nil {
+						db.Exec(`UPDATE sprints SET story_points=NULL WHERE id=?`, id)
+					} else {
+						db.Exec(`UPDATE sprints SET story_points=? WHERE id=?`, *pts, id)
+					}
+					db.Close()
 				}
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
@@ -1919,28 +1972,32 @@ func dashboardHandler(svc service.TaskService, store storage.Storage, dbPath str
 
 		// Active sprint
 		type sprintWidget struct {
-			ID           int64  `json:"id"`
-			Title        string `json:"title"`
-			ProjectTitle string `json:"project_title"`
-			StartDate    string `json:"start_date"`
-			EndDate      string `json:"end_date"`
-			Total        int    `json:"total"`
-			Done         int    `json:"done"`
-			Pct          int    `json:"pct"`
+			ID              int64  `json:"id"`
+			Title           string `json:"title"`
+			ProjectTitle    string `json:"project_title"`
+			StartDate       string `json:"start_date"`
+			EndDate         string `json:"end_date"`
+			Total           int    `json:"total"`
+			Done            int    `json:"done"`
+			Pct             int    `json:"pct"`
+			StoryPoints     *int   `json:"story_points,omitempty"`
+			StoryPointsDone int    `json:"story_points_done"`
 		}
 		var activeSprint *sprintWidget
 		sprints := listSprints(store, svc, dbPath, nil)
 		for _, s := range sprints {
 			if s.Status == "active" {
 				activeSprint = &sprintWidget{
-					ID:           s.ID,
-					Title:        s.Title,
-					ProjectTitle: s.ProjectTitle,
-					StartDate:    s.StartDate,
-					EndDate:      s.EndDate,
-					Total:        s.Progress.Total,
-					Done:         s.Progress.Done,
-					Pct:          s.Progress.Pct,
+					ID:              s.ID,
+					Title:           s.Title,
+					ProjectTitle:    s.ProjectTitle,
+					StartDate:       s.StartDate,
+					EndDate:         s.EndDate,
+					Total:           s.Progress.Total,
+					Done:            s.Progress.Done,
+					Pct:             s.Progress.Pct,
+					StoryPoints:     s.StoryPoints,
+					StoryPointsDone: s.Progress.StoryPoints,
 				}
 				break
 			}
@@ -2032,10 +2089,12 @@ type sprintOut struct {
 	Status       string `json:"status"`
 	StartDate    string `json:"start_date,omitempty"`
 	EndDate      string `json:"end_date,omitempty"`
+	StoryPoints  *int   `json:"story_points,omitempty"`
 	Progress     struct {
-		Done  int `json:"done"`
-		Total int `json:"total"`
-		Pct   int `json:"pct"`
+		Done        int `json:"done"`
+		Total       int `json:"total"`
+		Pct         int `json:"pct"`
+		StoryPoints int `json:"story_points"` // sum of assigned tasks' story_points
 	} `json:"progress"`
 }
 
@@ -2048,7 +2107,7 @@ func listSprints(store storage.Storage, svc service.TaskService, dbPath string, 
 
 	q := `SELECT s.id, s.project_id, s.title, s.status,
 	             COALESCE(s.start_date,''), COALESCE(s.end_date,''),
-	             COALESCE(p.title,'')
+	             COALESCE(p.title,''), COALESCE(s.story_points,0)
 	      FROM sprints s LEFT JOIN projects p ON s.project_id = p.id
 	      WHERE 1=1`
 	args := []any{}
@@ -2067,15 +2126,22 @@ func listSprints(store storage.Storage, svc service.TaskService, dbPath string, 
 	var out []sprintOut
 	for rows.Next() {
 		var so sprintOut
+		var rawSP int
 		if err := rows.Scan(&so.ID, &so.ProjectID, &so.Title, &so.Status,
-			&so.StartDate, &so.EndDate, &so.ProjectTitle); err != nil {
+			&so.StartDate, &so.EndDate, &so.ProjectTitle, &rawSP); err != nil {
 			continue
+		}
+		if rawSP > 0 {
+			so.StoryPoints = &rawSP
 		}
 		tasks, _ := svc.List(domain.TaskFilter{SprintID: &so.ID})
 		for _, t := range tasks {
 			so.Progress.Total++
 			if t.Status == domain.StatusDone {
 				so.Progress.Done++
+			}
+			if t.StoryPoints != nil {
+				so.Progress.StoryPoints += *t.StoryPoints
 			}
 		}
 		if so.Progress.Total > 0 {

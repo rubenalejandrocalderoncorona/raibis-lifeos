@@ -198,6 +198,13 @@ input:focus, select:focus, textarea:focus {
   border-color: var(--color-accent);
   color: var(--color-accent);
 }
+@keyframes spin-once {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+#refresh-btn.spinning svg {
+  animation: spin-once 0.5s var(--ease-out) forwards;
+}
 
 /* ── Nav ──────────────────────────────────────────────────────────── */
 .sidebar-nav {
@@ -574,9 +581,13 @@ tr:hover td {
 /* ─── Kanban Board ────────────────────────────────────────────────── */
 .kanban-board {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: var(--space-4);
   align-items: start;
+}
+.kanban-col-body {
+  display: flex;
+  flex-direction: column;
 }
 .kanban-col {
   background: var(--color-bg-elevated, var(--color-bg));
@@ -925,6 +936,90 @@ tr:hover td {
   font-variant-numeric: tabular-nums;
 }
 
+/* ─── Pomodoro focus block timeline ───────────────────────────────── */
+.pom-timeline-section {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-6);
+  margin-top: var(--space-6);
+}
+.pom-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.pom-timeline-empty {
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+  padding: var(--space-4) 0;
+}
+.pom-tl-group {
+  display: flex;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+.pom-tl-date-label {
+  min-width: 120px;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-secondary);
+  padding-top: 6px;
+  flex-shrink: 0;
+}
+.pom-tl-group.today .pom-tl-date-label {
+  color: var(--color-accent);
+}
+.pom-tl-group.past .pom-tl-date-label {
+  color: var(--color-text-tertiary);
+  text-decoration: line-through;
+}
+.pom-tl-tasks {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pom-timeline-task {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast);
+}
+.pom-timeline-task:hover { background: var(--color-surface-hover); border-color: var(--color-accent); }
+.pom-tl-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.pom-tl-title {
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pom-tl-meta {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+}
+.pom-tl-badge {
+  font-size: var(--text-xs);
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  text-transform: capitalize;
+}
+.pom-tl-badge.urgent { background: var(--color-danger-bg); color: var(--color-danger); }
+.pom-tl-badge.high { background: var(--color-warning-bg); color: var(--color-warning); }
+.pom-tl-badge.medium { background: var(--color-accent-subtle); color: var(--color-accent); }
 /* ─── Filter row ──────────────────────────────────────────────────── */
 .filter-row {
   display: flex;
@@ -1179,24 +1274,26 @@ tr:hover td {
 }
 
 .slideover-header {
+  position: absolute;
+  top: 0; right: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: var(--space-5) var(--space-6) var(--space-4);
-  border-bottom: 1px solid var(--color-border);
-  flex-shrink: 0;
+  justify-content: flex-end;
+  padding: var(--space-4) var(--space-5);
+  pointer-events: none; /* let clicks pass through except the close button */
+}
+.slideover-header .modal-close {
+  pointer-events: all;
 }
 .slideover-title {
-  font-family: var(--font-sans);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-semibold);
-  color: var(--color-text);
-  letter-spacing: -0.015em;
+  display: none;
 }
 .slideover-body {
   flex: 1;
   overflow-y: auto;
   padding: var(--space-5) var(--space-6);
+  padding-top: calc(var(--space-5) + 20px); /* extra room so content starts below close button */
 }
 
 /* ─── Command Center Dashboard ────────────────────────────────────── */
@@ -1456,6 +1553,8 @@ tr:hover td {
   flex-shrink: 0;
 }
 .prop-chips-more:hover { background: var(--accent-glow); border-color: var(--accent); color: var(--accent); }
+.prop-chip.chip-empty .chip-value { color: var(--text-dim); opacity: 0.55; }
+.prop-chip.chip-empty:hover .chip-value { opacity: 1; }
 
 /* ─── Custom combobox popover ──────────────────────────────────────── */
 .combo-popover {
@@ -1506,11 +1605,30 @@ tr:hover td {
 }
 .combo-item:hover, .combo-item.focused { background: var(--accent-glow); }
 .combo-item.selected { color: var(--accent); }
-.combo-item.selected::after {
-  content: '✓';
-  margin-left: auto;
-  font-size: 12px;
+.combo-item.selected::after { content: none; }
+.combo-item-check { margin-left: auto; font-size: 11px; color: var(--accent); flex-shrink: 0; }
+.combo-selected-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
 }
+.combo-sel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  background: var(--accent-glow);
+  color: var(--accent);
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+.combo-sel-chip:hover { background: var(--accent-dim); }
+.combo-sel-chip-x { margin-left: 2px; font-size: 12px; opacity: 0.7; }
+.combo-sel-chip:hover .combo-sel-chip-x { opacity: 1; }
 .combo-item.create-new {
   color: var(--accent);
   border-top: 1px solid var(--border);
@@ -1519,6 +1637,10 @@ tr:hover td {
 }
 .combo-item.create-new:hover { background: var(--accent-dim); }
 .combo-empty { padding: 12px; text-align: center; font-size: 12px; color: var(--text-dim); }
+.editable-val-item .combo-rename-btn { opacity: 0; transition: opacity 80ms; }
+.editable-val-item:hover .combo-rename-btn { opacity: 0.5; }
+.combo-item-editing { cursor: default; gap: 4px; }
+.combo-item-editing:hover { background: transparent; }
 
 /* ─── Multi-select badge chips ─────────────────────────────────────── */
 .multi-chips-wrap {
@@ -1836,9 +1958,34 @@ tr:hover td {
   font-size: 14px;
   transition: all var(--duration-fast) var(--ease-out);
   cursor: pointer;
+  position: relative;
 }
 .view-toggle-btn:hover { color: var(--color-accent); background: var(--color-accent-subtle); }
 .view-toggle-btn.active { background: var(--color-accent-dim); color: var(--color-accent); }
+/* Tooltip label shown on hover */
+.view-toggle-btn::after {
+  content: attr(title);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--color-bg-elevated, #1a1a1a);
+  color: var(--color-text);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  z-index: 9999;
+}
+.view-toggle-btn:hover::after {
+  opacity: 1;
+}
 
 /* ─── Notion-style table ──────────────────────────────────────────── */
 .notion-table-wrap { overflow-x: auto; max-width: 100%; min-width: 0; }
@@ -1901,9 +2048,10 @@ tr:hover td {
   transition: transform 160ms cubic-bezier(0.4,0,0.2,1), color 120ms ease, background 120ms ease, opacity 120ms ease;
   user-select: none;
   opacity: 0.5;
+  transform: rotate(-90deg);
 }
 .task-toggle-arrow:hover { color: var(--accent); background: var(--accent-dim); opacity: 1; }
-.task-toggle-arrow.expanded { transform: rotate(90deg); color: var(--accent); opacity: 1; }
+.task-toggle-arrow.expanded { transform: rotate(0deg); color: var(--accent); opacity: 1; }
 
 /* Ghost arrow for tasks without subtasks — invisible until row hover */
 .task-add-sub-btn {
@@ -1918,11 +2066,13 @@ tr:hover td {
   cursor: pointer;
   border-radius: 3px;
   opacity: 0;
+  transform: rotate(-90deg);
   transition: opacity 120ms ease, color 120ms ease, background 120ms ease, transform 160ms cubic-bezier(0.4,0,0.2,1);
   user-select: none;
 }
 .task-row:hover .task-add-sub-btn { opacity: 0.35; }
 .task-add-sub-btn:hover { opacity: 1 !important; color: var(--accent); background: var(--accent-dim); }
+.task-add-sub-btn.expanded { transform: rotate(0deg); opacity: 1; color: var(--accent); }
 
 /* ─── Recurring badge ─────────────────────────────────────────────── */
 .task-recur-badge {
@@ -2398,6 +2548,13 @@ tr:hover td {
   gap: 10px;
   z-index: var(--z-top);
   align-items: center;
+  transition: right var(--duration-panel) var(--ease-out);
+}
+.fab-group.panel-open-main {
+  right: calc(680px + var(--space-6));
+}
+.fab-group.panel-open-form {
+  right: calc(620px + var(--space-6));
 }
 
 /* ─── AI Assistant Panel ──────────────────────────────────────────── */

@@ -1,0 +1,49 @@
+{
+  "identifier": "com.raibis.lifeos",
+  "productName": "Raibis LifeOS",
+  "version": "1.0.5",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://localhost:3344",
+    "beforeBuildCommand": "",
+    "frontendDist": "http://localhost:3344"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Raibis LifeOS",
+        "url": "http://localhost:3344",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true,
+        "visible": true,
+        "decorations": true,
+        "resizable": true,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/lifeos"],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "entitlements": null,
+      "signingIdentity": null
+    }
+  }
+}

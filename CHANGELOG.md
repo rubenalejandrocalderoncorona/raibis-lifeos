@@ -1,5 +1,29 @@
 # Changelog
 
+## dev — current version: v1.0.4
+
+| Version | Branch | Date | Notes |
+|---|---|---|---|
+| v1.0.4 | dev | 2026-04-06 | Native macOS Tauri app, focus_block_start, emoji expansion |
+
+---
+
+## v1.0.4 — 2026-04-06
+
+### Added
+- Native macOS app via Tauri v2 (WKWebView shell + Go sidecar)
+- System tray icon with Open / Quick HUD / Quit menu
+- Global hotkey ⌘⇧Space → floating HUD window (always-on-top, no decorations)
+- Hide-on-close: closing the main window keeps the server alive in the tray
+- `focus_block_start` field — tasks now store a date range (start → end) for the Focus chip
+- Expanded emoji picker: 500+ emojis across 10 groups (up from 79 in 3 groups)
+- Styled "+ Add Subtask" inline button in dashboard and detail views
+- `.chip-empty` CSS state for the Focus chip when no date is set
+- `raibis-go/Makefile` with `build-sidecar`, `build-sidecar-intel`, and `dev` targets
+- `raibis-tauri/PACKAGING.md` — guide for building, packaging, and distributing the app
+
+---
+
 ## main — current version: v1.0.2-alpha.5
 
 | Version | Branch | Date | Notes |

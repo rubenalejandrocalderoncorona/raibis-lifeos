@@ -323,6 +323,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 				Priority          string `json:"priority"`
 				DueDate           string `json:"due_date"`
 				FocusBlock        string `json:"focus_block"`
+				FocusBlockStart   string `json:"focus_block_start"`
 				GoalID            *int64 `json:"goal_id"`
 				ProjectID         *int64 `json:"project_id"`
 				SprintID          *int64 `json:"sprint_id"`
@@ -373,6 +374,9 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 			}
 			if body.FocusBlock != "" {
 				t.FocusBlock = &body.FocusBlock
+			}
+			if body.FocusBlockStart != "" {
+				t.FocusBlockStart = &body.FocusBlockStart
 			}
 			created, err := svc.Create(t)
 			if err != nil {
@@ -533,6 +537,9 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 			}
 			if v, ok := body["focus_block"].(string); ok {
 				t.FocusBlock = &v
+			}
+			if v, ok := body["focus_block_start"].(string); ok {
+				t.FocusBlockStart = &v
 			}
 			if v, ok := body["goal_id"]; ok {
 				if v == nil {

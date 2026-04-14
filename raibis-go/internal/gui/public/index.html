@@ -1,72 +1,138 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>raibis — LifeOS</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=2.1.0" />
+  <!-- Inter (Notion/macOS body + headings) + JetBrains Mono (code/mono) -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <!-- GSAP for micro-interactions and transitions -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" defer></script>
+  <!-- Design system tokens (must load before style.css) -->
+  <link rel="stylesheet" href="design-system.css?v=3.0.0" />
+  <link rel="stylesheet" href="style.css?v=3.0.0" />
 </head>
 <body>
   <header class="mobile-header">
-    <button class="mob-menu-btn" id="mob-menu-btn" aria-label="Menu">&#9776;</button>
+    <button class="mob-menu-btn" id="mob-menu-btn" aria-label="Open menu">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
     <span class="mob-title">raibis</span>
-    <button class="theme-btn" id="mob-theme-btn" aria-label="Toggle theme">&#9790;</button>
+    <button class="theme-btn" id="mob-theme-btn" aria-label="Toggle theme">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+    </button>
   </header>
 
   <div class="layout">
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-inner">
+
         <div class="sidebar-brand">
-          <span class="brand-icon">◈</span>
+          <!-- Brand wordmark -->
+          <svg class="brand-icon" width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <rect x="2" y="2" width="7" height="7" rx="2" fill="currentColor"/>
+            <rect x="11" y="2" width="7" height="7" rx="2" fill="currentColor" opacity=".5"/>
+            <rect x="2" y="11" width="7" height="7" rx="2" fill="currentColor" opacity=".5"/>
+            <rect x="11" y="11" width="7" height="7" rx="2" fill="currentColor"/>
+          </svg>
           <span class="brand-name">raibis</span>
-          <button class="theme-btn" id="theme-btn" aria-label="Toggle theme" title="Toggle theme">&#9790;</button>
+          <button class="theme-btn" id="theme-btn" aria-label="Toggle theme" title="Toggle theme">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="5"/>
+              <line x1="12" y1="1" x2="12" y2="3"/>
+              <line x1="12" y1="21" x2="12" y2="23"/>
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+              <line x1="1" y1="12" x2="3" y2="12"/>
+              <line x1="21" y1="12" x2="23" y2="12"/>
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </svg>
+          </button>
+          <button class="theme-btn" id="refresh-btn" aria-label="Refresh" title="Refresh view">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="23 4 23 10 17 10"/>
+              <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+            </svg>
+          </button>
         </div>
 
         <nav class="sidebar-nav">
           <div class="nav-section-label">Workspace</div>
+
           <a class="nav-item active" data-view="dashboard" href="#">
-            <span class="nav-icon">⊞</span> Dashboard
-          </a>
-          <a class="nav-item" data-view="tasks" href="#">
-            <span class="nav-icon">✓</span> Tasks
-          </a>
-          <a class="nav-item" data-view="projects" href="#">
-            <span class="nav-icon">◆</span> Projects
-          </a>
-          <a class="nav-item" data-view="goals" href="#">
-            <span class="nav-icon">◈</span> Goals
-          </a>
-          <a class="nav-item" data-view="notes" href="#">
-            <span class="nav-icon">◎</span> Notes
-          </a>
-          <a class="nav-item" data-view="resources" href="#">
-            <span class="nav-icon">⬡</span> Resources
-          </a>
-          <a class="nav-item" data-view="sprints" href="#">
-            <span class="nav-icon">⚡</span> Sprints
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            <span>Dashboard</span>
           </a>
 
-          <div class="nav-section-label" style="margin-top:12px">Taxonomy</div>
-          <a class="nav-item" data-view="categories" href="#">
-            <span class="nav-icon">◉</span> Categories
+          <a class="nav-item" data-view="tasks" href="#">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+            <span>Tasks</span>
           </a>
+
+          <a class="nav-item" data-view="projects" href="#">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></svg>
+            <span>Projects</span>
+          </a>
+
+          <a class="nav-item" data-view="goals" href="#">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+            <span>Goals</span>
+          </a>
+
+          <a class="nav-item" data-view="notes" href="#">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+            <span>Notes</span>
+          </a>
+
+          <a class="nav-item" data-view="resources" href="#">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+            <span>Resources</span>
+          </a>
+
+          <a class="nav-item" data-view="sprints" href="#">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            <span>Sprints</span>
+          </a>
+
+          <a class="nav-item" data-view="calendar" href="#">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            <span>Calendar</span>
+          </a>
+
+          <a class="nav-item" data-view="pomodoro" href="#">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span>Pomodoro</span>
+          </a>
+
+          <div class="nav-section-label" style="margin-top:var(--space-4)">Taxonomy</div>
+
+          <a class="nav-item" data-view="categories" href="#">
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+            <span>Categories</span>
+          </a>
+
           <a class="nav-item" data-view="tags" href="#">
-            <span class="nav-icon">⬖</span> Tags
+            <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+            <span>Tags</span>
           </a>
         </nav>
 
         <div class="sidebar-footer">
-          <a class="ext-link version-btn" id="version-btn" href="https://github.com/raibis/raibis-go" target="_blank" rel="noopener" title="View source">
-            <span class="nav-icon">⬡</span> v1.0.0-alpha.2
+          <a class="ext-link version-btn" id="version-btn" href="https://github.com/rubenalejandrocalderoncorona/raibis-lifeos" target="_blank" rel="noopener" title="View source on GitHub">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+            v1.0.3-alpha.1
           </a>
         </div>
       </div>
     </aside>
 
-    <main class="main" id="main-content"></main>
+    <div class="main-wrap">
+      <nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb"></nav>
+      <main class="main" id="main-content"></main>
+    </div>
   </div>
 
   <div class="grain" aria-hidden="true"></div>
@@ -81,6 +147,15 @@
     <div class="slideover-body" id="slideover-body"></div>
   </div>
 
+  <!-- Form slide-over panel for create/edit forms -->
+  <div class="form-slideover" id="form-slideover">
+    <div class="slideover-header">
+      <h2 class="slideover-title" id="form-slideover-title">New Item</h2>
+      <button class="modal-close" id="form-slideover-close">&times;</button>
+    </div>
+    <div class="slideover-body" id="form-slideover-body"></div>
+  </div>
+
   <!-- Modal -->
   <div class="modal" id="modal" role="dialog" aria-modal="true">
     <div class="modal-header">
@@ -90,6 +165,49 @@
     <div class="modal-body" id="modal-body"></div>
   </div>
 
-  <script src="app.js?v=2.1.0"></script>
+  <!-- AI Assistant side panel -->
+  <div class="ai-panel" id="ai-panel">
+    <div class="ai-panel-header">
+      <span class="ai-panel-title">◈ AI Assistant</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <a class="btn btn-sm btn-ghost" href="http://localhost:3344/raibis-chat/" target="_blank" rel="noopener" title="Open full raibis-chat" style="font-size:11px;padding:4px 8px">↗ Full</a>
+        <button class="modal-close" id="ai-panel-close">&times;</button>
+      </div>
+    </div>
+    <div class="ai-panel-tabs">
+      <button class="ai-tab active" id="ai-tab-text" data-tab="text">Text</button>
+      <button class="ai-tab" id="ai-tab-voice" data-tab="voice">Voice</button>
+    </div>
+    <div class="ai-chat-feed" id="ai-chat-feed">
+      <div class="ai-empty" id="ai-empty">
+        <div style="font-size:24px;margin-bottom:8px">◈</div>
+        <div style="font-size:13px;color:var(--text-muted)">Ask me anything about your tasks, goals, or life OS</div>
+      </div>
+    </div>
+    <div class="ai-input-area" id="ai-text-area">
+      <textarea class="ai-textarea" id="ai-input" placeholder="Ask anything…" rows="1"></textarea>
+      <button class="btn btn-primary ai-send-btn" id="ai-send-btn">↑</button>
+    </div>
+    <div class="ai-input-area ai-voice-area hidden" id="ai-voice-area">
+      <div id="ai-voice-unsupported" class="hidden" style="color:var(--text-muted);font-size:12px;text-align:center;padding:8px">Voice not supported in this browser</div>
+      <div id="ai-voice-controls" style="display:flex;flex-direction:column;align-items:center;gap:8px;width:100%">
+        <button class="ai-mic-btn" id="ai-mic-btn" title="Click to record">🎤</button>
+        <div class="ai-voice-status" id="ai-voice-status">Tap to speak</div>
+        <div class="ai-voice-preview" id="ai-voice-preview"></div>
+      </div>
+    </div>
+  </div>
+  <div class="fab-group" id="fab-group">
+    <button class="quick-note-fab" id="quick-note-fab" title="Quick Note" aria-label="New Quick Note">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+    </button>
+    <button class="ai-fab" id="ai-fab" title="AI Assistant" aria-label="Open AI Assistant">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a10 10 0 110 20A10 10 0 0112 2z"/><path d="M12 8v4l3 3"/></svg>
+    </button>
+  </div>
+
+  <!-- GSAP animations utility (loads after GSAP CDN via defer ordering) -->
+  <script src="animations.js?v=3.0.0"></script>
+  <script src="app.js?v=3.0.0"></script>
 </body>
 </html>
