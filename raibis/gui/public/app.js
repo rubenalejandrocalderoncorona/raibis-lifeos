@@ -12,6 +12,8 @@ const GOAL_TYPES = ['12 Weeks','12 Months','3 Years','5 Years'];
 const GOAL_YEARS = ['2025','2026','2027','Multiyear'];
 const MACRO_AREAS = ['Soul (Connection & Restoration)','Output (Deep Work & Career)','Growth (Input & Optimization)','Body (Physicality)'];
 const KANBAN_COLS = ['Backlog','Maintenance','Sprint'];
+const PROJECT_STATUSES = ['active','on_hold','completed','archived'];
+const GOAL_STATUSES = ['active','on_hold','completed','archived'];
 const COLOR_OPTIONS = ['blue','green','red','yellow','purple','cyan','orange','pink'];
 const COLOR_HEX = {blue:'#378ADD',green:'#6dcc8a',red:'#e07070',yellow:'#d4a84b',purple:'#a78bfa',cyan:'#22d3ee',orange:'#fb923c',pink:'#f472b6'};
 
@@ -229,10 +231,13 @@ let tasksKanbanGroupBy = localStorage.getItem('tasksKanbanGroupBy') || 'status';
 // Hidden kanban columns per groupBy key — stored as { status: ['cancelled'], priority: [] }
 let kanbanHiddenCols = JSON.parse(localStorage.getItem('kanbanHiddenCols') || '{}');
 let projectsViewMode = localStorage.getItem('projectsViewMode') || 'cards';
+let projsKanbanGroupBy = localStorage.getItem('projsKanbanGroupBy') || 'status';
 let goalsViewMode = localStorage.getItem('goalsViewMode') || 'cards';
+let goalsKanbanGroupBy = localStorage.getItem('goalsKanbanGroupBy') || 'status';
 let notesViewMode = localStorage.getItem('notesViewMode') || 'cards';
 let resourcesViewMode = localStorage.getItem('resourcesViewMode') || 'table';
 let sprintsViewMode = localStorage.getItem('sprintsViewMode') || 'cards';
+let habitsViewMode  = localStorage.getItem('habitsViewMode')  || 'table';
 let pomTimer = null;
 let pomState = { running: false, seconds: 25*60, mode: 'work', taskId: null, taskTitle: '', finished: [] };
 let calYear = new Date().getFullYear();
@@ -460,7 +465,7 @@ function bindCustomSelects(container, onChange) {
 }
 
 function viewToggleHtml(modes, current, storageKey) {
-  const icons = { cards: '⊟', table: '⊞', list: '≡', dashboard: '▦', calendar: '◫' };
+  const icons = { cards: '⊟', table: '⊞', list: '≡', dashboard: '▦', calendar: '◫', kanban: '⊡' };
   return `<div class="view-toggle">${modes.map(m =>
     `<button class="view-toggle-btn ${current===m.key?'active':''}" data-mode="${m.key}" title="${m.label}">${icons[m.key] || m.label}</button>`
   ).join('')}</div>`;
@@ -859,7 +864,7 @@ function closeFormSlideover() {
 const VIEW_LABELS = {
   dashboard: 'Dashboard', tasks: 'Tasks', projects: 'Projects', goals: 'Goals',
   notes: 'Notes', resources: 'Resources', sprints: 'Sprints', calendar: 'Calendar',
-  pomodoro: 'Pomodoro', categories: 'Categories', tags: 'Tags',
+  pomodoro: 'Pomodoro', categories: 'Categories', tags: 'Tags', habits: 'Habits',
 };
 
 function updateBreadcrumb(view, params, detailLabel) {
@@ -927,6 +932,7 @@ function renderView(view, params) {
     case 'tags':            renderTags(); break;
     case 'pomodoro':        renderPomodoro(); break;
     case 'calendar':        renderCalendarView(); break;
+    case 'habits':          renderHabits(); break;
     default:
       main.innerHTML = `<div class="view"><div class="empty-state"><div class="empty-state-icon">?</div><div class="empty-state-text">Unknown view</div></div></div>`;
   }
@@ -1494,7 +1500,10 @@ async function renderTasks() {
       const tasks = grouped[colKey] || [];
       const cards = tasks.map(t => {
         const dueCls = isOverdue(t.due_date) ? 'overdue' : isToday(t.due_date) ? 'today' : '';
-        return `<div class="kanban-card" data-task-id="${t.id}" style="cursor:pointer">
+        return `<div class="kanban-card" data-task-id="${t.id}" draggable="true"
+          ondragstart="event.dataTransfer.setData('text/plain',${t.id});event.currentTarget.classList.add('kanban-dragging')"
+          ondragend="event.currentTarget.classList.remove('kanban-dragging')"
+          style="cursor:pointer">
           <div class="kanban-card-title">${t.title}${t.recur_interval>0?' <span class="task-recur-badge">↺</span>':''}</div>
           ${t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t.project_title}</div>` : ''}
           <div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">
@@ -1505,7 +1514,10 @@ async function renderTasks() {
       }).join('');
       const label = colKey.replace(/_/g,' ');
       const colColor = getValueColor(groupBy === 'status' ? 'taskStatuses' : 'taskPriorities', colKey);
-      return `<div class="kanban-col">
+      return `<div class="kanban-col" data-col="${colKey}"
+          ondragover="event.preventDefault();event.currentTarget.classList.add('kanban-drag-over')"
+          ondragleave="event.currentTarget.classList.remove('kanban-drag-over')"
+          ondrop="event.preventDefault();event.currentTarget.classList.remove('kanban-drag-over');window._taskKanbanDrop(event,'${colKey}')">
         <div class="kanban-col-header" style="${colColor ? `color:${colColor}` : ''}">
           <span>${label}</span>
           <span class="kanban-count">${tasks.length}</span>
@@ -1519,9 +1531,18 @@ async function renderTasks() {
     const colCount = allKeys.length;
     const colWidth = 260; // px per column
     const boardStyle = `display:grid;grid-template-columns:repeat(${colCount},minmax(${colWidth}px,1fr));gap:var(--space-4);align-items:start;padding-bottom:16px`;
-    return `<div style="overflow-x:auto;width:100%"><div class="kanban-board" style="${boardStyle}">${colsHtml}</div></div>`;
+    return `<div style="overflow-x:auto;width:100%"><div class="kanban-board" style="${boardStyle}" data-groupby="${groupBy}">${colsHtml}</div></div>`;
   }
 
+  window._taskKanbanDrop = async (e, newColKey) => {
+    const taskId = e.dataTransfer.getData('text/plain');
+    if (!taskId) return;
+    // Read groupBy from the board element so it's always current
+    const board = document.querySelector('.kanban-board[data-groupby]');
+    const patchField = board ? board.dataset.groupby : tasksKanbanGroupBy;
+    await api('PATCH', `/api/tasks/${taskId}`, { [patchField]: newColKey });
+    renderTasks();
+  };
 
   let filterBarInitialized = false;
   function render() {
@@ -1733,12 +1754,11 @@ async function renderProjects() {
       `<div style="font-size:12px;color:var(--text-muted);padding:2px 0">• ${t}</div>`
     ).join('');
     const tagChips = (p.tags || []).map(t => tagHtml(t)).join('');
-    return `<div class="card detail-nav" data-proj-id="${p.id}" style="cursor:pointer">
+    return `<div class="card proj-slideover-card" data-proj-id="${p.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
         <span class="card-title"><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${p.title}</span>
         <div class="flex gap-8" onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button>
-          <button class="btn btn-sm btn-ghost proj-edit-btn" data-proj-id="${p.id}">Edit</button>
           <button class="btn btn-sm btn-danger proj-del-btn" data-proj-id="${p.id}">Delete</button>
         </div>
       </div>
@@ -1776,7 +1796,6 @@ async function renderProjects() {
         <td>${(p.tags||[]).map(t=>tagHtml(t)).join('')}</td>
         <td onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button>
-          <button class="btn btn-sm btn-ghost proj-edit-btn" data-proj-id="${p.id}">Edit</button>
           <button class="btn btn-sm btn-danger proj-del-btn" data-proj-id="${p.id}">Del</button>
         </td>
       </tr>`;
@@ -1786,8 +1805,79 @@ async function renderProjects() {
       <tbody>${rows}</tbody></table></div>`;
   }
 
+  function buildProjectKanbanView(list) {
+    const groupBy = projsKanbanGroupBy; // 'status' | 'macro_area' | 'kanban_col'
+    const allVals = groupBy === 'status'
+      ? PROJECT_STATUSES
+      : groupBy === 'kanban_col'
+        ? KANBAN_COLS
+        : [...new Set(list.map(p => p.macro_area || 'none').filter(Boolean))].sort();
+    const grouped = {};
+    allVals.forEach(v => { grouped[v] = []; });
+    list.forEach(p => {
+      const raw = groupBy === 'status' ? p.status : groupBy === 'kanban_col' ? p.kanban_col : p.macro_area;
+      const key = raw || allVals[0];
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(p);
+    });
+    const cols = allVals.filter(v => grouped[v]?.length > 0 || groupBy === 'status');
+    const colsHtml = cols.map(colKey => {
+      const items = grouped[colKey] || [];
+      const cards = items.map(p => {
+        const prog = p.progress || {};
+        const pct = prog.pct || 0;
+        return `<div class="kanban-card proj-kanban-card" data-proj-id="${p.id}" draggable="true"
+            ondragstart="event.dataTransfer.setData('text/plain','${p.id}');event.currentTarget.classList.add('kanban-dragging')"
+            ondragend="event.currentTarget.classList.remove('kanban-dragging')"
+            style="cursor:pointer">
+          <div class="kanban-card-title">${p.title}</div>
+          ${p.goal_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${p.goal_title}</div>` : ''}
+          <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+            ${groupBy !== 'status' ? statusBadge(p.status) : ''}
+            ${groupBy !== 'macro_area' && p.macro_area ? `<span style="font-size:10px;color:var(--text-muted)">${p.macro_area.split('(')[0].trim()}</span>` : ''}
+          </div>
+          <div style="margin-top:8px">
+            <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${pct}% · ${prog.done||0}/${prog.total||0}</div>
+          </div>
+        </div>`;
+      }).join('');
+      const label = colKey.replace(/_/g,' ');
+      return `<div class="kanban-col proj-kanban-col" data-col="${colKey}"
+          ondragover="event.preventDefault();event.currentTarget.classList.add('kanban-drag-over')"
+          ondragleave="event.currentTarget.classList.remove('kanban-drag-over')"
+          ondrop="event.preventDefault();event.currentTarget.classList.remove('kanban-drag-over');window._projKanbanDrop(event,'${colKey}','${groupBy}')">
+        <div class="kanban-col-header">
+          <span>${label}</span>
+          <span class="kanban-count">${items.length}</span>
+        </div>
+        <div class="kanban-col-body">${cards || '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No projects</div>'}</div>
+      </div>`;
+    }).join('');
+    const colWidth = 260;
+    const boardStyle = `display:grid;grid-template-columns:repeat(${cols.length},minmax(${colWidth}px,1fr));gap:var(--space-4);align-items:start;padding-bottom:16px`;
+    const gbBtnStyle = (v) => `padding:3px 8px;font-size:11px;border-radius:var(--radius-sm);border:1px solid var(--border);cursor:pointer;background:${projsKanbanGroupBy===v?'var(--accent)':'var(--bg-surface)'};color:${projsKanbanGroupBy===v?'#fff':'var(--text-primary)'}`;
+    const groupByBar = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;font-size:11px;color:var(--text-muted)">
+      <span>Group by:</span>
+      <button id="proj-gb-status" style="${gbBtnStyle('status')}">Status</button>
+      <button id="proj-gb-area" style="${gbBtnStyle('macro_area')}">Area</button>
+      <button id="proj-gb-kanban" style="${gbBtnStyle('kanban_col')}">Kanban col</button>
+    </div>`;
+    return `${groupByBar}<div style="overflow-x:auto;width:100%"><div class="kanban-board" style="${boardStyle}">${colsHtml}</div></div>`;
+  }
+
+  window._projKanbanDrop = async (e, newColKey, groupBy) => {
+    const projId = e.dataTransfer.getData('text/plain');
+    if (!projId) return;
+    const field = groupBy === 'macro_area' ? 'macro_area' : 'status';
+    await api('PATCH', `/api/projects/${projId}`, { [field]: newColKey });
+    const p = projects.find(x => String(x.id) === projId);
+    if (p) p[field] = newColKey;
+    render();
+  };
+
   const toggle = viewToggleHtml(
-    [{key:'cards',label:'Cards'},{key:'table',label:'Table'}],
+    [{key:'cards',label:'Cards'},{key:'table',label:'Table'},{key:'kanban',label:'Kanban'}],
     projectsViewMode
   );
 
@@ -1832,10 +1922,27 @@ async function renderProjects() {
 
   function render() {
     const list = getFiltered();
-    document.getElementById('proj-list').innerHTML =
-      projectsViewMode === 'table' ? buildTableView(list) : buildCardsView(list);
+    let html;
+    if (projectsViewMode === 'table') html = buildTableView(list);
+    else if (projectsViewMode === 'kanban') html = buildProjectKanbanView(list);
+    else html = buildCardsView(list);
+    document.getElementById('proj-list').innerHTML = html;
     bindProjEvents();
     injectListIcons('project', list.map(p => p.id));
+    if (projectsViewMode === 'kanban') {
+      document.getElementById('proj-gb-status')?.addEventListener('click', () => {
+        projsKanbanGroupBy = 'status'; localStorage.setItem('projsKanbanGroupBy', 'status'); render();
+      });
+      document.getElementById('proj-gb-area')?.addEventListener('click', () => {
+        projsKanbanGroupBy = 'macro_area'; localStorage.setItem('projsKanbanGroupBy', 'macro_area'); render();
+      });
+      document.getElementById('proj-gb-kanban')?.addEventListener('click', () => {
+        projsKanbanGroupBy = 'kanban_col'; localStorage.setItem('projsKanbanGroupBy', 'kanban_col'); render();
+      });
+      document.querySelectorAll('.proj-kanban-card').forEach(card => {
+        card.addEventListener('click', () => renderView('project-detail', card.dataset.projId));
+      });
+    }
   }
 
   document.getElementById('new-proj-btn').onclick = () => showProjectModal(null, goals);
@@ -1847,14 +1954,19 @@ async function renderProjects() {
   render();
 
   function bindProjEvents() {
-    document.querySelectorAll('.detail-nav').forEach(el => {
+    document.querySelectorAll('.proj-slideover-card').forEach(el => {
       el.onclick = (e) => {
-        if (e.target.closest('.proj-edit-btn, .proj-del-btn, .proj-export-btn')) return;
-        renderView('project-detail', el.dataset.projId);
+        if (e.target.closest('.proj-del-btn, .proj-export-btn')) return;
+        const p = projects.find(x => String(x.id) === el.dataset.projId);
+        showProjectSlideover(p, goals, () => renderProjects());
       };
     });
     document.querySelectorAll('.task-title-link[data-proj-id]').forEach(el => {
-      el.onclick = (e) => { e.stopPropagation(); renderView('project-detail', el.dataset.projId); };
+      el.onclick = (e) => {
+        e.stopPropagation();
+        const p = projects.find(x => String(x.id) === el.dataset.projId);
+        showProjectSlideover(p, goals, () => renderProjects());
+      };
     });
     document.querySelectorAll('.proj-export-btn').forEach(el => {
       el.onclick = async (e) => {
@@ -1862,13 +1974,6 @@ async function renderProjects() {
         const data = await api('GET', `/api/export/project/${el.dataset.projId}`);
         const p = projects.find(x => String(x.id) === el.dataset.projId);
         downloadJSON(data, `project-${p?.title||el.dataset.projId}.json`);
-      };
-    });
-    document.querySelectorAll('.proj-edit-btn').forEach(el => {
-      el.onclick = async (e) => {
-        e.stopPropagation();
-        const p = projects.find(x => String(x.id) === el.dataset.projId);
-        showProjectModal(p, goals);
       };
     });
     document.querySelectorAll('.proj-del-btn').forEach(el => {
@@ -1901,12 +2006,11 @@ async function renderGoals() {
     const prog = g.progress || {};
     const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
     const tagChips = (g.tags || []).map(t => tagHtml(t)).join('');
-    return `<div class="card detail-nav-goal" data-goal-id="${g.id}" style="cursor:pointer">
+    return `<div class="card goal-slideover-card" data-goal-id="${g.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
         <span class="card-title"><span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${g.title}</span>
         <div class="flex gap-8" onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button>
-          <button class="btn btn-sm btn-ghost goal-edit-btn" data-goal-id="${g.id}">Edit</button>
           <button class="btn btn-sm btn-danger goal-del-btn" data-goal-id="${g.id}">Delete</button>
         </div>
       </div>
@@ -1942,7 +2046,6 @@ async function renderGoals() {
         <td>${(g.tags||[]).map(t=>tagHtml(t)).join('')}</td>
         <td onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button>
-          <button class="btn btn-sm btn-ghost goal-edit-btn" data-goal-id="${g.id}">Edit</button>
           <button class="btn btn-sm btn-danger goal-del-btn" data-goal-id="${g.id}">Del</button>
         </td>
       </tr>`;
@@ -1952,8 +2055,79 @@ async function renderGoals() {
       <tbody>${rows}</tbody></table></div>`;
   }
 
+  function buildGoalKanbanView(list) {
+    const groupBy = goalsKanbanGroupBy; // 'status' | 'type' | 'year'
+    const allVals = groupBy === 'status'
+      ? GOAL_STATUSES
+      : groupBy === 'type'
+        ? GOAL_TYPES
+        : GOAL_YEARS;
+    const grouped = {};
+    allVals.forEach(v => { grouped[v] = []; });
+    list.forEach(g => {
+      const raw = groupBy === 'status' ? g.status : groupBy === 'type' ? g.type : g.year;
+      const key = raw || allVals[0];
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(g);
+    });
+    const cols = allVals.filter(v => grouped[v]?.length > 0 || groupBy === 'status');
+    const colsHtml = cols.map(colKey => {
+      const items = grouped[colKey] || [];
+      const cards = items.map(g => {
+        const prog = g.progress || {};
+        const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
+        return `<div class="kanban-card goal-kanban-card" data-goal-id="${g.id}" draggable="true"
+            ondragstart="event.dataTransfer.setData('text/plain','${g.id}');event.currentTarget.classList.add('kanban-dragging')"
+            ondragend="event.currentTarget.classList.remove('kanban-dragging')"
+            style="cursor:pointer">
+          <div class="kanban-card-title">${g.title}</div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
+            ${groupBy !== 'status' ? statusBadge(g.status) : ''}
+            ${groupBy !== 'type' && g.type ? `<span>${g.type}</span>` : ''}
+            ${groupBy !== 'year' && g.year ? `<span>${g.year}</span>` : ''}
+          </div>
+          <div style="margin-top:8px">
+            <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${pct}% · ${prog.done||0}/${prog.total||0}</div>
+          </div>
+        </div>`;
+      }).join('');
+      const label = colKey.replace(/_/g,' ');
+      return `<div class="kanban-col goal-kanban-col" data-col="${colKey}"
+          ondragover="event.preventDefault();event.currentTarget.classList.add('kanban-drag-over')"
+          ondragleave="event.currentTarget.classList.remove('kanban-drag-over')"
+          ondrop="event.preventDefault();event.currentTarget.classList.remove('kanban-drag-over');window._goalKanbanDrop(event,'${colKey}','${groupBy}')">
+        <div class="kanban-col-header">
+          <span>${label}</span>
+          <span class="kanban-count">${items.length}</span>
+        </div>
+        <div class="kanban-col-body">${cards || '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No goals</div>'}</div>
+      </div>`;
+    }).join('');
+    const colWidth = 260;
+    const boardStyle = `display:grid;grid-template-columns:repeat(${cols.length},minmax(${colWidth}px,1fr));gap:var(--space-4);align-items:start;padding-bottom:16px`;
+    const gbBtnStyle = (v) => `padding:3px 8px;font-size:11px;border-radius:var(--radius-sm);border:1px solid var(--border);cursor:pointer;background:${goalsKanbanGroupBy===v?'var(--accent)':'var(--bg-surface)'};color:${goalsKanbanGroupBy===v?'#fff':'var(--text-primary)'}`;
+    const groupByBar = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;font-size:11px;color:var(--text-muted)">
+      <span>Group by:</span>
+      <button id="goal-gb-status" style="${gbBtnStyle('status')}">Status</button>
+      <button id="goal-gb-type" style="${gbBtnStyle('type')}">Type</button>
+      <button id="goal-gb-year" style="${gbBtnStyle('year')}">Year</button>
+    </div>`;
+    return `${groupByBar}<div style="overflow-x:auto;width:100%"><div class="kanban-board" style="${boardStyle}">${colsHtml}</div></div>`;
+  }
+
+  window._goalKanbanDrop = async (e, newColKey, groupBy) => {
+    const goalId = e.dataTransfer.getData('text/plain');
+    if (!goalId) return;
+    const field = groupBy === 'type' ? 'type' : 'status';
+    await api('PATCH', `/api/goals/${goalId}`, { [field]: newColKey });
+    const g = goals.find(x => String(x.id) === goalId);
+    if (g) g[field] = newColKey;
+    render();
+  };
+
   const toggle = viewToggleHtml(
-    [{key:'cards',label:'Cards'},{key:'table',label:'Table'}],
+    [{key:'cards',label:'Cards'},{key:'table',label:'Table'},{key:'kanban',label:'Kanban'}],
     goalsViewMode
   );
 
@@ -2000,10 +2174,27 @@ async function renderGoals() {
 
   function render() {
     const list = getFiltered();
-    document.getElementById('goal-list').innerHTML =
-      goalsViewMode === 'table' ? buildTableView(list) : buildCardsView(list);
+    let html;
+    if (goalsViewMode === 'table') html = buildTableView(list);
+    else if (goalsViewMode === 'kanban') html = buildGoalKanbanView(list);
+    else html = buildCardsView(list);
+    document.getElementById('goal-list').innerHTML = html;
     bindGoalEvents();
     injectListIcons('goal', list.map(g => g.id));
+    if (goalsViewMode === 'kanban') {
+      document.getElementById('goal-gb-status')?.addEventListener('click', () => {
+        goalsKanbanGroupBy = 'status'; localStorage.setItem('goalsKanbanGroupBy', 'status'); render();
+      });
+      document.getElementById('goal-gb-type')?.addEventListener('click', () => {
+        goalsKanbanGroupBy = 'type'; localStorage.setItem('goalsKanbanGroupBy', 'type'); render();
+      });
+      document.getElementById('goal-gb-year')?.addEventListener('click', () => {
+        goalsKanbanGroupBy = 'year'; localStorage.setItem('goalsKanbanGroupBy', 'year'); render();
+      });
+      document.querySelectorAll('.goal-kanban-card').forEach(card => {
+        card.addEventListener('click', () => renderView('goal-detail', card.dataset.goalId));
+      });
+    }
   }
 
   document.getElementById('new-goal-btn').onclick = () => showGoalModal(null);
@@ -2015,14 +2206,19 @@ async function renderGoals() {
   render();
 
   function bindGoalEvents() {
-    document.querySelectorAll('.detail-nav-goal').forEach(el => {
+    document.querySelectorAll('.goal-slideover-card').forEach(el => {
       el.onclick = (e) => {
-        if (e.target.closest('.goal-edit-btn, .goal-del-btn, .goal-export-btn')) return;
-        renderView('goal-detail', el.dataset.goalId);
+        if (e.target.closest('.goal-del-btn, .goal-export-btn')) return;
+        const g = goals.find(x => String(x.id) === el.dataset.goalId);
+        showGoalSlideover(g, () => renderGoals());
       };
     });
     document.querySelectorAll('.goal-nav-link').forEach(el => {
-      el.onclick = (e) => { e.stopPropagation(); renderView('goal-detail', el.dataset.goalId); };
+      el.onclick = (e) => {
+        e.stopPropagation();
+        const g = goals.find(x => String(x.id) === el.dataset.goalId);
+        showGoalSlideover(g, () => renderGoals());
+      };
     });
     document.querySelectorAll('.goal-export-btn').forEach(el => {
       el.onclick = async (e) => {
@@ -2030,13 +2226,6 @@ async function renderGoals() {
         const data = await api('GET', `/api/export/goal/${el.dataset.goalId}`);
         const g = goals.find(x => String(x.id) === el.dataset.goalId);
         downloadJSON(data, `goal-${g?.title||el.dataset.goalId}.json`);
-      };
-    });
-    document.querySelectorAll('.goal-edit-btn').forEach(el => {
-      el.onclick = (e) => {
-        e.stopPropagation();
-        const g = goals.find(x => String(x.id) === el.dataset.goalId);
-        showGoalModal(g);
       };
     });
     document.querySelectorAll('.goal-del-btn').forEach(el => {
@@ -2451,7 +2640,15 @@ async function renderSprintDetail(sprintId) {
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
       <div class="widget">
-        <div class="widget-header"><span class="widget-title">Unassigned Tasks</span></div>
+        <div class="widget-header" style="display:flex;align-items:center;justify-content:space-between">
+          <span class="widget-title">Unassigned Tasks</span>
+          <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-muted)">
+            <span>SP color:</span>
+            <button id="sd-sp-color-badge" class="btn btn-sm btn-ghost" style="font-size:10px;padding:2px 6px">Badge</button>
+            <button id="sd-sp-color-default" class="btn btn-sm btn-ghost" style="font-size:10px;padding:2px 6px">Default</button>
+            <button id="sd-sp-color-row" class="btn btn-sm btn-ghost" style="font-size:10px;padding:2px 6px">Row</button>
+          </div>
+        </div>
         <input type="text" id="sd-unassigned-search" placeholder="Search…" style="width:100%;box-sizing:border-box;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-surface);color:var(--text-primary);font-size:12px;margin-bottom:8px">
         <div id="sd-unassigned-list" style="max-height:320px;overflow-y:auto"></div>
       </div>
@@ -2485,32 +2682,29 @@ async function renderSprintDetail(sprintId) {
 
   // ── Story Points capacity widget ─────────────────────────────────────
   const spWidget = document.getElementById('sd-sp-widget');
-  if (spWidget) {
-    const capacity = sprint.story_points || 0;
-    const assigned = (prog.story_points || 0);
+  const spCapacity = sprint.story_points || 0;
 
-    // spGradientColor is defined at module scope below renderView
-    const color = spGradientColor(assigned, capacity);
-    const pctBar = capacity > 0 ? Math.min(100, Math.round((assigned / capacity) * 100)) : 0;
-
+  function updateSpWidget(assignedPts) {
+    if (!spWidget) return;
+    const color = spGradientColor(assignedPts, spCapacity);
+    const pctBar = spCapacity > 0 ? Math.min(100, Math.round((assignedPts / spCapacity) * 100)) : 0;
     spWidget.innerHTML = `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <div style="flex:1;min-width:140px">
         <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:4px">
           <span>Story Points</span>
-          <span style="font-weight:600;color:${color}">${assigned}${capacity ? ' / ' + capacity : ''}</span>
+          <span style="font-weight:600;color:${color}">${assignedPts}${spCapacity ? ' / ' + spCapacity : ''}</span>
         </div>
-        ${capacity ? `<div class="progress-track" style="height:6px">
+        ${spCapacity ? `<div class="progress-track" style="height:6px">
           <div class="progress-fill" style="width:${pctBar}%;background:${color};transition:width 0.3s,background 0.3s"></div>
         </div>` : '<span style="font-size:11px;color:var(--text-muted)">No capacity set</span>'}
       </div>
       <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
         <span style="font-size:11px;color:var(--text-muted)">Capacity:</span>
-        <input id="sd-sp-capacity" type="number" min="0" value="${capacity || ''}" placeholder="—"
+        <input id="sd-sp-capacity" type="number" min="0" value="${spCapacity || ''}" placeholder="—"
           style="width:60px;font-size:12px;padding:3px 6px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-surface);color:var(--text-primary);text-align:center" />
         <button class="btn btn-sm btn-ghost" id="sd-sp-save" style="font-size:11px">Set</button>
       </div>
     </div>`;
-
     document.getElementById('sd-sp-save').onclick = async () => {
       const val = document.getElementById('sd-sp-capacity').value.trim();
       const pts = val === '' ? null : parseInt(val, 10);
@@ -2521,9 +2715,22 @@ async function renderSprintDetail(sprintId) {
       if (e.key === 'Enter') document.getElementById('sd-sp-save').click();
     };
   }
+  updateSpWidget(prog.story_points || 0);
 
   // ── Assign / Unassign task panels ─────────────────────────────────────
   let sdSearchText = '';
+  let sdSpColorMode = 'badge'; // 'badge' | 'default' | 'row'
+
+  function spColor(pts) {
+    if (!pts || pts <= 0) return null;
+    // absolute scale: 1sp=light green, 5sp=yellow, 8sp=orange, 13sp+=red
+    const ratio = Math.min(1, pts / 13);
+    const h = Math.round(120 - ratio * 120);
+    const s = Math.round(55 + ratio * 30);
+    const l = Math.round(50 - ratio * 12);
+    return `hsl(${h},${s}%,${l}%)`;
+  }
+
   function renderAssignPanels(allTasks) {
     const sid = parseInt(sprintId);
     const assignedTasks = allTasks.filter(t => t.sprint_id && String(t.sprint_id) === String(sprintId));
@@ -2539,11 +2746,32 @@ async function renderSprintDetail(sprintId) {
         : hasStoryPoints
           ? `<button class="btn btn-sm btn-ghost sd-assign-btn" data-task-id="${t.id}" style="font-size:11px;flex-shrink:0">+ Assign</button>`
           : `<button class="btn btn-sm btn-ghost sd-assign-disabled" data-task-id="${t.id}" title="Add story points to this task first" style="font-size:11px;flex-shrink:0;opacity:0.4;cursor:not-allowed" disabled>No SP</button>`;
-      const sp = t.story_points ? `<span style="font-size:10px;color:var(--text-muted);margin-right:4px">${t.story_points}sp</span>` : '';
-      return `<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border)">
+
+      const color = t.story_points ? spColor(t.story_points) : null;
+      let spBadge = '';
+      let rowStyle = '';
+      if (color) {
+        if (sdSpColorMode === 'row') {
+          // Full saturated background covers entire row
+          rowStyle = `background:${color};`;
+          spBadge = `<span style="font-size:10px;font-weight:600;color:#fff;margin-right:4px;flex-shrink:0;text-shadow:0 1px 2px rgba(0,0,0,.3)">${t.story_points}sp</span>`;
+        } else if (sdSpColorMode === 'default') {
+          // Light tint background
+          rowStyle = `background:${color}28;`;
+          spBadge = `<span style="font-size:10px;font-weight:600;color:${color};margin-right:4px;flex-shrink:0">${t.story_points}sp</span>`;
+        } else {
+          // Badge only
+          spBadge = `<span style="font-size:10px;font-weight:600;background:${color};color:#fff;padding:1px 5px;border-radius:3px;margin-right:4px;flex-shrink:0;text-shadow:0 1px 2px rgba(0,0,0,.25)">${t.story_points}sp</span>`;
+        }
+      } else if (t.story_points) {
+        spBadge = `<span style="font-size:10px;color:var(--text-muted);margin-right:4px;flex-shrink:0">${t.story_points}sp</span>`;
+      }
+
+      const textColor = sdSpColorMode === 'row' && color ? 'color:#fff;' : '';
+      return `<div style="display:flex;align-items:center;gap:6px;padding:5px 4px;border-bottom:1px solid var(--border);${rowStyle}${textColor}">
         ${statusBadge(t.status)}
-        <span class="sd-task-open-link" data-task-id="${t.id}" style="flex:1;font-size:13px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;color:var(--accent)" title="${t.title}">${t.title}</span>
-        ${sp}${assignBtn}
+        <span class="sd-task-open-link" data-task-id="${t.id}" style="flex:1;font-size:13px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;${sdSpColorMode==='row'&&color?'color:#fff;':'color:var(--accent);'}" title="${t.title}">${t.title}</span>
+        ${spBadge}${assignBtn}
       </div>`;
     }
 
@@ -2559,6 +2787,10 @@ async function renderSprintDetail(sprintId) {
         ? assignedTasks.map(t => taskRow(t, true)).join('')
         : `<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No tasks assigned to this sprint</div>`;
     }
+
+    // Update SP widget to reflect current assigned total
+    const assignedSp = assignedTasks.reduce((s, t) => s + (t.story_points || 0), 0);
+    updateSpWidget(assignedSp);
 
     // Task title click → open slideover
     document.querySelectorAll('.sd-task-open-link[data-task-id]').forEach(el => {
@@ -2588,8 +2820,357 @@ async function renderSprintDetail(sprintId) {
     sdSearchText = e.target.value.toLowerCase();
     renderAssignPanels(allTasks);
   };
+  function updateSpColorBtns() {
+    document.getElementById('sd-sp-color-badge')?.classList.toggle('btn-primary', sdSpColorMode === 'badge');
+    document.getElementById('sd-sp-color-badge')?.classList.toggle('btn-ghost', sdSpColorMode !== 'badge');
+    document.getElementById('sd-sp-color-default')?.classList.toggle('btn-primary', sdSpColorMode === 'default');
+    document.getElementById('sd-sp-color-default')?.classList.toggle('btn-ghost', sdSpColorMode !== 'default');
+    document.getElementById('sd-sp-color-row')?.classList.toggle('btn-primary', sdSpColorMode === 'row');
+    document.getElementById('sd-sp-color-row')?.classList.toggle('btn-ghost', sdSpColorMode !== 'row');
+  }
+  updateSpColorBtns();
+  document.getElementById('sd-sp-color-badge')?.addEventListener('click', () => {
+    sdSpColorMode = 'badge'; updateSpColorBtns(); renderAssignPanels(allTasks);
+  });
+  document.getElementById('sd-sp-color-default')?.addEventListener('click', () => {
+    sdSpColorMode = 'default'; updateSpColorBtns(); renderAssignPanels(allTasks);
+  });
+  document.getElementById('sd-sp-color-row')?.addEventListener('click', () => {
+    sdSpColorMode = 'row'; updateSpColorBtns(); renderAssignPanels(allTasks);
+  });
 
   bindDetailTaskEvents(() => renderSprintDetail(sprintId));
+}
+
+/* ─── Habits View ─────────────────────────────────────────────────────── */
+async function renderHabits() {
+  let habits = [];
+  let apiError = null;
+  try { habits = await api('GET', '/api/habits'); } catch(e) { apiError = e.message || String(e); }
+
+  if (apiError) {
+    document.getElementById('main-content').innerHTML = `<div class="view">
+      <div class="api-error-banner">⚠ Cannot reach raibis server. Restart: <code>cd raibis-go && go run ./cmd/server/main.go</code><br><small style="color:var(--text-muted)">${apiError}</small></div>
+    </div>`;
+    return;
+  }
+
+  const habitFilterState = { filters: {}, sort: {}, searchText: '' };
+
+  // ── Helpers ──────────────────────────────────────────────────────────
+  const HABIT_TYPE_COLORS = {
+    learning:    { bg: 'var(--tag-blue-bg)',   text: 'var(--tag-blue-text)'   },
+    fitness:     { bg: 'var(--tag-green-bg)',  text: 'var(--tag-green-text)'  },
+    meditation:  { bg: 'var(--tag-purple-bg)', text: 'var(--tag-purple-text)' },
+    general:     { bg: 'var(--tag-gray-bg)',   text: 'var(--color-text-secondary)' },
+  };
+
+  function habitTypeBadge(type) {
+    const t = (type || 'general').toLowerCase();
+    const c = HABIT_TYPE_COLORS[t] || HABIT_TYPE_COLORS.general;
+    return `<span class="badge" style="background:${c.bg};color:${c.text}">${t}</span>`;
+  }
+
+  function refLink(h) {
+    if (!h.reference_id) return '—';
+    return `<span style="font-size:11px;color:var(--accent);font-family:var(--font-mono)">${h.reference_id}</span>`;
+  }
+
+  // ── Table view ───────────────────────────────────────────────────────
+  function buildTableView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">○</div><div class="empty-state-text">No habits yet — add one to get started</div></div>`;
+    const rows = list.map(h => `<tr>
+      <td style="font-weight:500">${h.title}</td>
+      <td>${habitTypeBadge(h.type)}</td>
+      <td>${refLink(h)}</td>
+      <td style="font-size:11px;color:var(--text-muted)">${fmtDate(h.created_at) || '—'}</td>
+      <td onclick="event.stopPropagation()" style="white-space:nowrap">
+        <button class="btn btn-sm btn-ghost habit-edit-btn" data-habit-id="${h.id}">Edit</button>
+        <button class="btn btn-sm btn-danger habit-del-btn" data-habit-id="${h.id}">Del</button>
+      </td>
+    </tr>`).join('');
+    return `<div class="notion-table-wrap"><table class="notion-table">
+      <thead><tr><th>Title</th><th>Type</th><th>Reference</th><th>Created</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  }
+
+  // ── Cards view ───────────────────────────────────────────────────────
+  function buildCardsView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">○</div><div class="empty-state-text">No habits yet — add one to get started</div></div>`;
+    return list.map(h => `<div class="card" style="cursor:default">
+      <div class="flex-between gap-8" style="margin-bottom:6px">
+        <span class="card-title">${h.title}</span>
+        <div class="flex gap-8" onclick="event.stopPropagation()">
+          <button class="btn btn-sm btn-ghost habit-edit-btn" data-habit-id="${h.id}">Edit</button>
+          <button class="btn btn-sm btn-danger habit-del-btn" data-habit-id="${h.id}">Delete</button>
+        </div>
+      </div>
+      <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:6px">
+        ${habitTypeBadge(h.type)}
+        ${h.reference_id ? `<span class="badge" style="background:var(--tag-cyan-bg,#e0f7fa);color:var(--tag-cyan-text,#00838f);font-family:var(--font-mono)">ref: ${h.reference_id}</span>` : ''}
+      </div>
+      <div style="font-size:11px;color:var(--text-muted)">Added ${fmtDate(h.created_at) || '—'}</div>
+    </div>`).join('');
+  }
+
+  // ── Calendar view ────────────────────────────────────────────────────
+  // Shows one month grid; marks the habit's creation week and today so
+  // the user can see "active since" at a glance. Each habit gets a
+  // colour-coded bar spanning from its created_at date to today.
+  function buildCalendarView(list) {
+    const now   = new Date();
+    const year  = now.getFullYear();
+    const month = now.getMonth(); // 0-based
+
+    const firstDay = new Date(year, month, 1);
+    const lastDay  = new Date(year, month + 1, 0);
+    const startOffset = firstDay.getDay(); // 0=Sun
+
+    const monthName = firstDay.toLocaleString('default', { month: 'long', year: 'numeric' });
+    const todayStr  = now.toISOString().slice(0, 10);
+
+    // Assign a colour to each habit
+    const HABIT_PALETTE = ['#378ADD','#6dcc8a','#a78bfa','#fb923c','#f472b6','#22d3ee','#d4a84b','#e07070'];
+    const habitColors = {};
+    list.forEach((h, i) => { habitColors[h.id] = HABIT_PALETTE[i % HABIT_PALETTE.length]; });
+
+    // Build 7-column week grid
+    const totalCells = startOffset + lastDay.getDate();
+    const rows = Math.ceil(totalCells / 7);
+
+    let calRows = '';
+    for (let row = 0; row < rows; row++) {
+      let cells = '';
+      for (let col = 0; col < 7; col++) {
+        const cellIndex = row * 7 + col;
+        const dayNum    = cellIndex - startOffset + 1;
+        if (dayNum < 1 || dayNum > lastDay.getDate()) {
+          cells += `<div class="calendar-day" style="background:var(--bg);opacity:.35"></div>`;
+          continue;
+        }
+        const dateStr = `${year}-${String(month + 1).padStart(2,'0')}-${String(dayNum).padStart(2,'0')}`;
+        const isToday = dateStr === todayStr;
+
+        // Which habits are "active" on this day?
+        const activeHabits = list.filter(h => {
+          const created = h.created_at ? h.created_at.slice(0, 10) : null;
+          return created && created <= dateStr && dateStr <= todayStr;
+        });
+
+        const chips = activeHabits.map(h =>
+          `<div class="cal-task-chip" style="border-left:2px solid ${habitColors[h.id]};background:var(--bg-card);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${h.title}">${h.title}</div>`
+        ).join('');
+
+        cells += `<div class="calendar-day${isToday ? ' today' : ''}">
+          <div class="cal-day-num-cell${isToday ? ' today' : ''}">${dayNum}</div>
+          ${chips}
+        </div>`;
+      }
+      calRows += `<div style="display:grid;grid-template-columns:repeat(7,1fr);border-bottom:1px solid var(--border)">${cells}</div>`;
+    }
+
+    const dayLabels = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const header = dayLabels.map(d =>
+      `<div style="padding:6px 8px;font-size:11px;font-weight:600;color:var(--text-muted);text-align:center;border-right:1px solid var(--border)">${d}</div>`
+    ).join('');
+
+    // Legend
+    const legend = list.length ? `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:16px;font-size:12px">
+      ${list.map(h => `<span style="display:flex;align-items:center;gap:4px">
+        <span style="width:10px;height:10px;border-radius:50%;background:${habitColors[h.id]};flex-shrink:0"></span>
+        ${h.title}
+      </span>`).join('')}
+    </div>` : '';
+
+    return `<div>
+      <div style="text-align:center;font-weight:600;font-size:15px;margin-bottom:12px;color:var(--text)">${monthName}</div>
+      <div class="calendar-month-wrap">
+        <div style="display:grid;grid-template-columns:repeat(7,1fr);background:var(--bg-card);border-bottom:1px solid var(--border)">${header}</div>
+        ${calRows}
+      </div>
+      ${legend}
+    </div>`;
+  }
+
+  // ── Shell ────────────────────────────────────────────────────────────
+  const toggle = viewToggleHtml(
+    [{key:'table',label:'Table'},{key:'cards',label:'Cards'},{key:'calendar',label:'Calendar'}],
+    habitsViewMode
+  );
+
+  document.getElementById('main-content').innerHTML = `<div class="view">
+    <div class="view-header">
+      <div>
+        <h1 class="view-title">Habits</h1>
+        <div class="view-subtitle">${habits.length} habit${habits.length !== 1 ? 's' : ''} tracked</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        ${toggle}
+        <button class="btn btn-primary" id="new-habit-btn">+ New Habit</button>
+      </div>
+    </div>
+    <div id="habit-list"></div>
+  </div>`;
+
+  // Filter + sort bar (table/cards only)
+  const habitFilterDefs = [
+    { key: 'type', label: 'Type', multi: true, options: ['learning','fitness','meditation','general'].map(v => ({ value: v, label: v })) },
+  ];
+  const habitSortDefs = [
+    { key: 'title',      label: 'Title'   },
+    { key: 'type',       label: 'Type'    },
+    { key: 'created_at', label: 'Created' },
+  ];
+
+  if (habitsViewMode !== 'calendar') {
+    const viewEl   = document.querySelector('#main-content .view');
+    const headerEl = viewEl?.querySelector('.view-header');
+    if (headerEl) {
+      const barDiv = document.createElement('div');
+      barDiv.id = 'habit-filter-bar-container';
+      headerEl.after(barDiv);
+      notionFilterBar('habit-filter-bar-container', habitFilterDefs, habitSortDefs, habitFilterState, () => render());
+    }
+  }
+
+  function getFiltered() {
+    return applySortFilter(habits, habitFilterState, {
+      type:       h => h.type || 'general',
+      title:      h => h.title,
+      created_at: h => h.created_at || '',
+      _text:      h => h.title + ' ' + (h.reference_id || '') + ' ' + (h.type || ''),
+    });
+  }
+
+  function render() {
+    const list = getFiltered();
+    const el   = document.getElementById('habit-list');
+    if (!el) return;
+    if (habitsViewMode === 'table')    el.innerHTML = buildTableView(list);
+    else if (habitsViewMode === 'cards')   el.innerHTML = buildCardsView(list);
+    else if (habitsViewMode === 'calendar') el.innerHTML = buildCalendarView(list);
+    bindHabitEvents();
+  }
+
+  document.getElementById('new-habit-btn').onclick = () => showHabitModal(null);
+
+  bindViewToggle([], null, (mode) => {
+    habitsViewMode = mode;
+    localStorage.setItem('habitsViewMode', mode);
+    // Calendar doesn't use filter bar — re-render whole view to add/remove it cleanly
+    renderHabits();
+  });
+
+  render();
+
+  function bindHabitEvents() {
+    document.querySelectorAll('.habit-edit-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const h = habits.find(x => String(x.id) === btn.dataset.habitId);
+        showHabitModal(h);
+      };
+    });
+    document.querySelectorAll('.habit-del-btn').forEach(btn => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm('Delete this habit?')) return;
+        await api('DELETE', `/api/habits/${btn.dataset.habitId}`);
+        renderHabits();
+      };
+    });
+  }
+}
+
+// ── Habit create/edit modal ───────────────────────────────────────────────────
+function showHabitModal(habit) {
+  const isEdit = !!habit;
+  const title  = isEdit ? 'Edit Habit' : 'New Habit';
+
+  const body = `
+    <div class="form-group">
+      <label class="form-label">Title *</label>
+      <input type="text" id="h-title" value="${isEdit ? _esc(habit.title) : ''}" placeholder="e.g. Morning run, Read 30 min…" autocomplete="off" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Type</label>
+      <select id="h-type">
+        ${['general','learning','fitness','meditation'].map(t =>
+          `<option value="${t}"${isEdit && habit.type === t ? ' selected' : ''}>${t.charAt(0).toUpperCase()+t.slice(1)}</option>`
+        ).join('')}
+      </select>
+    </div>
+    <div class="form-group" id="h-ref-group" style="${(isEdit && habit.type === 'learning') || (!isEdit) ? '' : 'display:none'}">
+      <label class="form-label">StudyTrack Reference ID <span style="font-weight:400;color:var(--text-muted)">(required for Learning)</span></label>
+      <input type="text" id="h-ref" value="${isEdit && habit.reference_id ? _esc(habit.reference_id) : ''}" placeholder="e.g. gcp-ml-engineer" autocomplete="off" style="font-family:var(--font-mono);font-size:13px" />
+    </div>
+    <div id="h-error" style="display:none;color:var(--danger,#DC2626);font-size:13px;margin-top:8px;padding:8px 12px;background:var(--danger-bg,#fff1f1);border-radius:6px"></div>
+    <div class="form-actions">
+      <button class="btn btn-ghost" id="h-cancel-btn">Cancel</button>
+      <button class="btn btn-primary" id="h-save-btn">${isEdit ? 'Save changes' : 'Create Habit'}</button>
+    </div>`;
+
+  openFormSlideover(title, body);
+
+  // Show/hide reference field based on type selection
+  const typeEl = document.getElementById('h-type');
+  const refGroup = document.getElementById('h-ref-group');
+  typeEl.onchange = () => {
+    refGroup.style.display = typeEl.value === 'learning' ? '' : 'none';
+  };
+  // Set initial state
+  refGroup.style.display = (typeEl.value === 'learning') ? '' : 'none';
+
+  document.getElementById('h-cancel-btn').onclick = closeFormSlideover;
+
+  document.getElementById('h-save-btn').onclick = async () => {
+    const errEl = document.getElementById('h-error');
+    errEl.style.display = 'none';
+
+    const titleVal = document.getElementById('h-title').value.trim();
+    const typeVal  = document.getElementById('h-type').value;
+    const refVal   = document.getElementById('h-ref').value.trim();
+
+    if (!titleVal) {
+      errEl.textContent = 'Title is required.';
+      errEl.style.display = 'block';
+      document.getElementById('h-title').focus();
+      return;
+    }
+    if (typeVal === 'learning' && !refVal) {
+      errEl.textContent = 'A StudyTrack Reference ID is required for Learning habits.';
+      errEl.style.display = 'block';
+      document.getElementById('h-ref').focus();
+      return;
+    }
+
+    const payload = { title: titleVal, type: typeVal };
+    if (refVal) payload.reference_id = refVal;
+
+    const saveBtn = document.getElementById('h-save-btn');
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+
+    try {
+      if (isEdit) {
+        payload.id = habit.id;
+        await api('PATCH', `/api/habits/${habit.id}`, payload);
+      } else {
+        await api('POST', '/api/habits', payload);
+      }
+      closeFormSlideover();
+      renderHabits();
+    } catch(err) {
+      errEl.textContent = err.message || 'Failed to save habit. Check the server logs.';
+      errEl.style.display = 'block';
+      saveBtn.disabled = false;
+      saveBtn.textContent = isEdit ? 'Save changes' : 'Create Habit';
+    }
+  };
+
+  // Focus title on open
+  setTimeout(() => document.getElementById('h-title')?.focus(), 60);
 }
 
 /* ─── Resources View ─────────────────────────────────────────────────── */
@@ -2613,16 +3194,15 @@ async function renderResources() {
     const rows = list.map(r => {
       const rawUrl = r.url || '';
       const link = rawUrl
-        ? `<a href="${rawUrl}" target="_blank" rel="noopener">${rawUrl.length > 40 ? rawUrl.slice(0,40) + '…' : rawUrl}</a>`
+        ? `<a href="${rawUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${rawUrl.length > 40 ? rawUrl.slice(0,40) + '…' : rawUrl}</a>`
         : (r.body ? r.body.slice(0,60) + '…' : '—');
       const linked = r.goal_title || r.project_title || r.task_title || '—';
-      return `<tr>
+      return `<tr class="res-row" data-res-id="${r.id}" style="cursor:pointer">
         <td><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${r.title}</td>
         <td>${r.resource_type || '—'}</td>
         <td>${linked}</td>
         <td>${link}</td>
-        <td>
-          <button class="btn btn-sm btn-ghost res-edit-btn" data-res-id="${r.id}">Edit</button>
+        <td onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-danger res-del-btn" data-res-id="${r.id}">×</button>
         </td>
       </tr>`;
@@ -2638,17 +3218,16 @@ async function renderResources() {
     return `<div style="display:grid;gap:12px">${list.map(r => {
       const rawUrl = r.url || '';
       const linked = r.goal_title || r.project_title || r.task_title;
-      return `<div class="card">
+      return `<div class="card res-row" data-res-id="${r.id}" style="cursor:pointer">
         <div class="flex-between gap-8" style="margin-bottom:6px">
           <span class="card-title"><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="18" style="display:none;margin-right:6px;vertical-align:middle;font-size:18px"></span>${r.title}</span>
-          <div class="flex gap-8">
-            <button class="btn btn-sm btn-ghost res-edit-btn" data-res-id="${r.id}">Edit</button>
+          <div class="flex gap-8" onclick="event.stopPropagation()">
             <button class="btn btn-sm btn-danger res-del-btn" data-res-id="${r.id}">×</button>
           </div>
         </div>
         ${r.resource_type ? `<span class="badge badge-todo">${r.resource_type}</span>` : ''}
         ${linked ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">→ ${linked}</div>` : ''}
-        ${rawUrl ? `<div style="margin-top:6px"><a href="${rawUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent)">${rawUrl.length > 60 ? rawUrl.slice(0,60)+'…' : rawUrl}</a></div>` : ''}
+        ${rawUrl ? `<div style="margin-top:6px" onclick="event.stopPropagation()"><a href="${rawUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent)">${rawUrl.length > 60 ? rawUrl.slice(0,60)+'…' : rawUrl}</a></div>` : ''}
         ${r.body ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${r.body.slice(0,120)}${r.body.length>120?'…':''}</div>` : ''}
       </div>`;
     }).join('')}</div>`;
@@ -2708,14 +3287,16 @@ async function renderResources() {
   render();
 
   function bindResEvents() {
-    document.querySelectorAll('.res-edit-btn').forEach(el => {
-      el.onclick = async () => {
+    document.querySelectorAll('.res-row').forEach(el => {
+      el.onclick = async (e) => {
+        if (e.target.closest('.res-del-btn') || e.target.closest('a')) return;
         const r = resources.find(x => String(x.id) === el.dataset.resId);
-        showResourceModal(r, () => renderResources());
+        if (r) showResourceSlideover(r, () => renderResources());
       };
     });
     document.querySelectorAll('.res-del-btn').forEach(el => {
-      el.onclick = async () => {
+      el.onclick = async (e) => {
+        e.stopPropagation();
         if (!confirm('Delete this resource?')) return;
         await api('DELETE', `/api/resources/${el.dataset.resId}`);
         renderResources();
@@ -4885,10 +5466,11 @@ async function renderCalendarView() {
     document.querySelectorAll('.tl-bar[data-task-id]').forEach(bar => {
       bar.onclick = (e) => { e.stopPropagation(); showTaskSlideover(bar.dataset.taskId); };
     });
-    // Timeline scroll sync: keep header and tracks in horizontal lock-step
-    const hdrScroll = document.querySelector('.tl-hdr-scroll');
-    const trkScroll = document.querySelector('.tl-tracks-scroll');
-    if (hdrScroll && trkScroll) {
+    // Timeline scroll sync: keep header and tracks in horizontal lock-step (one pair per wrapper)
+    document.querySelectorAll('.tl-wrap').forEach(wrap => {
+      const hdrScroll = wrap.querySelector('.tl-hdr-scroll');
+      const trkScroll = wrap.querySelector('.tl-tracks-scroll');
+      if (!hdrScroll || !trkScroll) return;
       let syncLock = false;
       hdrScroll.addEventListener('scroll', () => {
         if (syncLock) return;
@@ -4902,7 +5484,7 @@ async function renderCalendarView() {
         hdrScroll.scrollLeft = trkScroll.scrollLeft;
         syncLock = false;
       });
-    }
+    });
     // Overflow "show more" — expand cell inline
     document.querySelectorAll('.cal-overflow-btn').forEach(btn => {
       if (btn.classList.contains('cal-collapse-btn')) return;
@@ -5334,6 +5916,17 @@ async function renderPomodoro() {
   document.querySelectorAll('.pom-tl-wrap .tl-label[data-task-id], .pom-tl-wrap .tl-bar[data-task-id], .pom-tl-track-row').forEach(el => {
     el.onclick = () => { const id = el.dataset.taskId; if (id) showTaskSlideover(id); };
   });
+  // Focus block timeline scroll sync
+  const pomWrap = document.querySelector('.pom-tl-wrap');
+  if (pomWrap) {
+    const hdr = pomWrap.querySelector('.tl-hdr-scroll');
+    const trk = pomWrap.querySelector('.tl-tracks-scroll');
+    if (hdr && trk) {
+      let lock = false;
+      hdr.addEventListener('scroll', () => { if (lock) return; lock = true; trk.scrollLeft = hdr.scrollLeft; lock = false; });
+      trk.addEventListener('scroll', () => { if (lock) return; lock = true; hdr.scrollLeft = trk.scrollLeft; lock = false; });
+    }
+  }
 }
 
 /* ─── Dashboard task list bindings ──────────────────────────────────── */
@@ -5643,7 +6236,7 @@ async function showGoalModal(goal, afterSave) {
   const v = goal || {};
   const typeOpts = GOAL_TYPES.map(t => `<option value="${t}" ${v.type===t?'selected':''}>${t}</option>`).join('');
   const yearOpts = GOAL_YEARS.map(y => `<option value="${y}" ${v.year===y?'selected':''}>${y}</option>`).join('');
-  const statusOpts = ['todo','in_progress','done'].map(s =>
+  const statusOpts = GOAL_STATUSES.map(s =>
     `<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
   const catOpts = categoryOptions(v.category_id, true);
 
@@ -5733,6 +6326,212 @@ async function showGoalModal(goal, afterSave) {
       renderGoals();
     };
   }
+}
+
+/* ─── Project Slideover (auto-save, expand to detail) ───────────────── */
+async function showProjectSlideover(project, goals, afterSave) {
+  if (!project?.id) { showProjectModal(project, goals, afterSave); return; }
+  const v = project;
+  const goalOpts = '<option value="">— none —</option>' + (goals||[]).map(g =>
+    `<option value="${g.id}" ${String(g.id)===String(v.goal_id)?'selected':''}>${g.title}</option>`).join('');
+  const statusOpts = PROJECT_STATUSES.map(s =>
+    `<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
+  const macroOpts = '<option value="">— none —</option>' + MACRO_AREAS.map(m =>
+    `<option value="${m}" ${v.macro_area===m?'selected':''}>${m}</option>`).join('');
+  const kanbanOpts = '<option value="">— none —</option>' + KANBAN_COLS.map(k =>
+    `<option value="${k}" ${v.kanban_col===k?'selected':''}>${k}</option>`).join('');
+  const catOpts = categoryOptions(v.category_id, true);
+  let existingTagIds = [];
+  try { existingTagIds = (await api('GET', `/api/projects/${v.id}/tags`) || []).map(t => t.id); } catch(e) {}
+
+  const body = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <span style="font-size:11px;color:var(--text-muted)">Auto-saved</span>
+      <button id="proj-sl-expand" title="Open full detail view" style="background:none;border:none;cursor:pointer;padding:4px;color:var(--text-muted);font-size:16px">⤢</button>
+    </div>
+    <div class="form-group"><label class="form-label">Title</label>
+      <input type="text" id="psl-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
+    <div class="form-group"><label class="form-label">Description</label>
+      <textarea id="psl-desc">${v.description||''}</textarea></div>
+    <div class="grid-2">
+      <div class="form-group"><label class="form-label">Goal</label><select id="psl-goal">${goalOpts}</select></div>
+      <div class="form-group"><label class="form-label">Status</label><select id="psl-status">${statusOpts}</select></div>
+    </div>
+    <div class="grid-2">
+      <div class="form-group"><label class="form-label">Macro Area</label><select id="psl-macro">${macroOpts}</select></div>
+      <div class="form-group"><label class="form-label">Kanban Column</label><select id="psl-kanban">${kanbanOpts}</select></div>
+    </div>
+    <div class="grid-2">
+      <div class="form-group"><label class="form-label">Category</label><select id="psl-category">${catOpts}</select></div>
+      <div class="form-group"><label class="form-label" style="margin-top:20px;display:flex;align-items:center;gap:8px">
+        <input type="checkbox" id="psl-archived" ${v.archived?'checked':''} style="width:auto" /> Archived
+      </label></div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Date</label>
+      <div class="date-mode-toggle">
+        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
+        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
+      </div>
+      <div id="psl-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
+        <input type="date" id="psl-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
+      </div>
+      <div id="psl-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
+        <input type="date" id="psl-start" value="${stripDate(v.start_date)}" />
+        <span class="date-range-arrow">→</span>
+        <input type="date" id="psl-due-range" value="${stripDate(v.due_date)}" />
+      </div>
+    </div>
+    <div class="form-group"><label class="form-label">Tags</label>${tagPickerHtml(existingTagIds)}</div>
+    <div class="form-actions">
+      <button class="btn btn-danger" id="psl-delete-btn">Delete</button>
+    </div>`;
+
+  openFormSlideover('Edit Project', body);
+  bindTagPicker();
+  bindDateModeToggle('psl-date-due-wrap', 'psl-date-range-wrap');
+
+  document.getElementById('proj-sl-expand').onclick = () => {
+    closeFormSlideover();
+    renderView('project-detail', v.id);
+  };
+
+  let saveTimer = null;
+  async function autoSave() {
+    const isRange = document.getElementById('psl-date-range-wrap')?.style.display !== 'none';
+    const data = {
+      title: document.getElementById('psl-title').value.trim(),
+      description: document.getElementById('psl-desc').value,
+      goal_id: document.getElementById('psl-goal').value ? parseInt(document.getElementById('psl-goal').value) : null,
+      status: document.getElementById('psl-status').value,
+      macro_area: document.getElementById('psl-macro').value || null,
+      kanban_col: document.getElementById('psl-kanban').value || null,
+      category_id: document.getElementById('psl-category').value ? parseInt(document.getElementById('psl-category').value) : null,
+      archived: document.getElementById('psl-archived').checked,
+      start_date: isRange ? (document.getElementById('psl-start')?.value || null) : null,
+      due_date: isRange ? (document.getElementById('psl-due-range')?.value || null) : (document.getElementById('psl-due')?.value || null),
+    };
+    if (!data.title) return;
+    await api('PATCH', `/api/projects/${v.id}`, data);
+    const tagIds = getSelectedTagIds();
+    try { await api('PUT', `/api/projects/${v.id}/tags`, { tag_ids: tagIds }); } catch(e) {}
+    if (afterSave) afterSave();
+  }
+  function scheduleAutoSave() { clearTimeout(saveTimer); saveTimer = setTimeout(autoSave, 600); }
+
+  ['psl-title','psl-desc','psl-due','psl-start','psl-due-range'].forEach(id =>
+    document.getElementById(id)?.addEventListener('input', scheduleAutoSave));
+  ['psl-goal','psl-status','psl-macro','psl-kanban','psl-category'].forEach(id =>
+    document.getElementById(id)?.addEventListener('change', () => { clearTimeout(saveTimer); autoSave(); }));
+  document.getElementById('psl-archived')?.addEventListener('change', () => { clearTimeout(saveTimer); autoSave(); });
+
+  document.getElementById('psl-delete-btn').onclick = async () => {
+    if (!confirm('Delete this project?')) return;
+    await api('DELETE', `/api/projects/${v.id}`);
+    closeFormSlideover();
+    renderProjects();
+  };
+}
+
+/* ─── Goal Slideover (auto-save, expand to detail) ──────────────────── */
+async function showGoalSlideover(goal, afterSave) {
+  if (!goal?.id) { showGoalModal(goal, afterSave); return; }
+  const v = goal;
+  const typeOpts = GOAL_TYPES.map(t => `<option value="${t}" ${v.type===t?'selected':''}>${t}</option>`).join('');
+  const yearOpts = GOAL_YEARS.map(y => `<option value="${y}" ${v.year===y?'selected':''}>${y}</option>`).join('');
+  const statusOpts = GOAL_STATUSES.map(s =>
+    `<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
+  const catOpts = categoryOptions(v.category_id, true);
+  let existingTagIds = [];
+  try { existingTagIds = (await api('GET', `/api/goals/${v.id}/tags`) || []).map(t => t.id); } catch(e) {}
+
+  const body = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <span style="font-size:11px;color:var(--text-muted)">Auto-saved</span>
+      <button id="goal-sl-expand" title="Open full detail view" style="background:none;border:none;cursor:pointer;padding:4px;color:var(--text-muted);font-size:16px">⤢</button>
+    </div>
+    <div class="form-group"><label class="form-label">Title</label>
+      <input type="text" id="gsl-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
+    <div class="form-group"><label class="form-label">Description</label>
+      <textarea id="gsl-desc">${v.description||''}</textarea></div>
+    <div class="grid-2">
+      <div class="form-group"><label class="form-label">Type</label><select id="gsl-type">${typeOpts}</select></div>
+      <div class="form-group"><label class="form-label">Year</label><select id="gsl-year">${yearOpts}</select></div>
+    </div>
+    <div class="grid-2">
+      <div class="form-group"><label class="form-label">Status</label><select id="gsl-status">${statusOpts}</select></div>
+      <div class="form-group"><label class="form-label">Category</label><select id="gsl-category">${catOpts}</select></div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Date</label>
+      <div class="date-mode-toggle">
+        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
+        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
+      </div>
+      <div id="gsl-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
+        <input type="date" id="gsl-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
+      </div>
+      <div id="gsl-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
+        <input type="date" id="gsl-start" value="${stripDate(v.start_date)}" />
+        <span class="date-range-arrow">→</span>
+        <input type="date" id="gsl-due-range" value="${stripDate(v.due_date)}" />
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="form-group"><label class="form-label">Start Value</label><input type="number" id="gsl-sv" value="${v.start_value||''}" /></div>
+      <div class="form-group"><label class="form-label">Current Value</label><input type="number" id="gsl-cv" value="${v.current_value||''}" /></div>
+    </div>
+    <div class="form-group"><label class="form-label">Target Value</label>
+      <input type="number" id="gsl-target" value="${v.target||''}" /></div>
+    <div class="form-group"><label class="form-label">Tags</label>${tagPickerHtml(existingTagIds)}</div>
+    <div class="form-actions">
+      <button class="btn btn-danger" id="gsl-delete-btn">Delete</button>
+    </div>`;
+
+  openFormSlideover('Edit Goal', body);
+  bindTagPicker();
+  bindDateModeToggle('gsl-date-due-wrap', 'gsl-date-range-wrap');
+
+  document.getElementById('goal-sl-expand').onclick = () => {
+    closeFormSlideover();
+    renderView('goal-detail', v.id);
+  };
+
+  let saveTimer = null;
+  async function autoSave() {
+    const isRange = document.getElementById('gsl-date-range-wrap')?.style.display !== 'none';
+    const data = {
+      title: document.getElementById('gsl-title').value.trim(),
+      description: document.getElementById('gsl-desc').value,
+      type: document.getElementById('gsl-type').value,
+      year: document.getElementById('gsl-year').value,
+      status: document.getElementById('gsl-status').value,
+      category_id: document.getElementById('gsl-category').value ? parseInt(document.getElementById('gsl-category').value) : null,
+      start_date: isRange ? (document.getElementById('gsl-start')?.value || null) : null,
+      due_date: isRange ? (document.getElementById('gsl-due-range')?.value || null) : (document.getElementById('gsl-due')?.value || null),
+      start_value: parseFloat(document.getElementById('gsl-sv').value) || 0,
+      current_value: parseFloat(document.getElementById('gsl-cv').value) || 0,
+      target: parseFloat(document.getElementById('gsl-target').value) || 0,
+    };
+    if (!data.title) return;
+    await api('PATCH', `/api/goals/${v.id}`, data);
+    const tagIds = getSelectedTagIds();
+    try { await api('PUT', `/api/goals/${v.id}/tags`, { tag_ids: tagIds }); } catch(e) {}
+    if (afterSave) afterSave();
+  }
+  function scheduleAutoSave() { clearTimeout(saveTimer); saveTimer = setTimeout(autoSave, 600); }
+
+  ['gsl-title','gsl-desc','gsl-due','gsl-start','gsl-due-range','gsl-sv','gsl-cv','gsl-target'].forEach(id =>
+    document.getElementById(id)?.addEventListener('input', scheduleAutoSave));
+  ['gsl-type','gsl-year','gsl-status','gsl-category'].forEach(id =>
+    document.getElementById(id)?.addEventListener('change', () => { clearTimeout(saveTimer); autoSave(); }));
+
+  document.getElementById('gsl-delete-btn').onclick = async () => {
+    if (!confirm('Delete this goal?')) return;
+    await api('DELETE', `/api/goals/${v.id}`);
+    closeFormSlideover();
+    renderGoals();
+  };
 }
 
 /* ─── Project Modal ──────────────────────────────────────────────────── */
@@ -6023,12 +6822,12 @@ function showSprintModal(projects, sprint) {
   };
 }
 
-/* ─── Resource Modal ─────────────────────────────────────────────────── */
-async function showResourceModal(resource, afterSave) {
+/* ─── Resource Slideover (view + auto-save) ──────────────────────────── */
+async function showResourceSlideover(resource, afterSave) {
   const v = resource || {};
-  let projects = [], tasks = [], goals = [], notes = [];
-  try { [projects, tasks, goals, notes] = await Promise.all([
-    api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals'), api('GET', '/api/notes')
+  let projects = [], tasks = [], goals = [];
+  try { [projects, tasks, goals] = await Promise.all([
+    api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
   ]); } catch(e) {}
 
   const goalOpts = '<option value="">— none —</option>' + goals.map(g =>
@@ -6038,53 +6837,94 @@ async function showResourceModal(resource, afterSave) {
   const taskOpts = '<option value="">— none —</option>' + tasks.map(t =>
     `<option value="${t.id}" ${String(t.id)===String(v.task_id)?'selected':''}>${t.title}</option>`).join('');
 
+  const rawUrl = v.url || '';
+  const urlDisplay = rawUrl
+    ? `<a href="${rawUrl}" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">${rawUrl}</a>`
+    : '<span style="color:var(--text-muted)">—</span>';
+
   const body = `
-    <div class="form-group"><label class="form-label">Title *</label>
-      <input type="text" id="r-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
-    <div class="form-group"><label class="form-label">Type</label>
-      <input type="text" id="r-type" value="${v.resource_type||v.type||''}" placeholder="e.g. link, book, tool…" /></div>
-    <div class="form-group"><label class="form-label">URL</label>
-      <input type="url" id="r-url" value="${v.url||''}" /></div>
-    <div class="form-group"><label class="form-label">Body / Notes</label>
-      <textarea id="r-body">${v.body||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Goal</label><select id="r-goal">${goalOpts}</select></div>
-      <div class="form-group"><label class="form-label">Project</label><select id="r-project">${projOpts}</select></div>
-    </div>
-    <div class="form-group"><label class="form-label">Task</label><select id="r-task">${taskOpts}</select></div>
-    <div class="form-actions">
-      ${v.id ? `<button class="btn btn-danger" id="modal-delete-btn">Delete</button>` : ''}
-      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">Save</button>
+    <div style="display:flex;flex-direction:column;gap:12px;padding:4px 0">
+      <div class="form-group" style="margin:0">
+        <label class="form-label">Title</label>
+        <input type="text" id="rs-title" value="${(v.title||'').replace(/"/g,'&quot;')}" style="width:100%;box-sizing:border-box" />
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">Type</label>
+        <input type="text" id="rs-type" value="${v.resource_type||v.type||''}" placeholder="e.g. link, book, tool…" style="width:100%;box-sizing:border-box" />
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">URL</label>
+        <input type="url" id="rs-url" value="${rawUrl}" style="width:100%;box-sizing:border-box" />
+        <div id="rs-url-preview" style="margin-top:4px;font-size:12px">${urlDisplay}</div>
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">Body / Notes</label>
+        <textarea id="rs-body" style="width:100%;box-sizing:border-box;min-height:100px">${v.body||''}</textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div class="form-group" style="margin:0"><label class="form-label">Goal</label><select id="rs-goal" style="width:100%">${goalOpts}</select></div>
+        <div class="form-group" style="margin:0"><label class="form-label">Project</label><select id="rs-project" style="width:100%">${projOpts}</select></div>
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">Task</label>
+        <select id="rs-task" style="width:100%">${taskOpts}</select>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:4px">
+        <button class="btn btn-danger btn-sm" id="rs-delete-btn">Delete resource</button>
+      </div>
+      <div id="rs-save-indicator" style="font-size:11px;color:var(--text-muted);text-align:right;min-height:16px"></div>
     </div>`;
 
-  openFormSlideover(v.id ? 'Edit Resource' : 'New Resource', body);
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  document.getElementById('modal-save-btn').onclick = async () => {
+  openSlideover(v.title || 'Resource', body);
+
+  const indicator = document.getElementById('rs-save-indicator');
+  let saveTimer = null;
+
+  async function autoSave() {
+    const urlVal = document.getElementById('rs-url').value.trim();
     const data = {
-      title: document.getElementById('r-title').value.trim(),
-      resource_type: document.getElementById('r-type').value || 'note',
-      type: document.getElementById('r-type').value || 'note',
-      url: document.getElementById('r-url').value || null,
-      body: document.getElementById('r-body').value,
-      goal_id: document.getElementById('r-goal').value ? parseInt(document.getElementById('r-goal').value) : null,
-      project_id: document.getElementById('r-project').value ? parseInt(document.getElementById('r-project').value) : null,
-      task_id: document.getElementById('r-task').value ? parseInt(document.getElementById('r-task').value) : null,
+      title:        document.getElementById('rs-title').value.trim() || v.title,
+      resource_type: document.getElementById('rs-type').value || 'note',
+      url:          urlVal || null,
+      body:         document.getElementById('rs-body').value,
+      goal_id:      document.getElementById('rs-goal').value ? parseInt(document.getElementById('rs-goal').value) : null,
+      project_id:   document.getElementById('rs-project').value ? parseInt(document.getElementById('rs-project').value) : null,
+      task_id:      document.getElementById('rs-task').value ? parseInt(document.getElementById('rs-task').value) : null,
     };
-    if (!data.title) { alert('Title is required'); return; }
-    if (v.id) await api('PATCH', `/api/resources/${v.id}`, data);
-    else await api('POST', '/api/resources', data);
-    closeFormSlideover();
+    indicator.textContent = 'Saving…';
+    try {
+      await api('PATCH', `/api/resources/${v.id}`, data);
+      indicator.textContent = 'Saved';
+      // Update url preview link
+      document.getElementById('rs-url-preview').innerHTML = urlVal
+        ? `<a href="${urlVal}" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">${urlVal}</a>`
+        : '<span style="color:var(--text-muted)">—</span>';
+      if (afterSave) afterSave();
+    } catch(e) {
+      indicator.textContent = 'Save failed';
+    }
+  }
+
+  function scheduleAutoSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(autoSave, 700);
+  }
+
+  ['rs-title','rs-type','rs-url','rs-body'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', scheduleAutoSave);
+  });
+  ['rs-goal','rs-project','rs-task'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', autoSave);
+  });
+
+  document.getElementById('rs-delete-btn').onclick = async () => {
+    if (!confirm('Delete this resource?')) return;
+    await api('DELETE', `/api/resources/${v.id}`);
+    closeSlideover();
     if (afterSave) afterSave(); else renderResources();
   };
-  if (v.id) {
-    document.getElementById('modal-delete-btn').onclick = async () => {
-      if (!confirm('Delete this resource?')) return;
-      await api('DELETE', `/api/resources/${v.id}`);
-      closeFormSlideover();
-      if (afterSave) afterSave(); else renderResources();
-    };
-  }
 }
 
 /* ─── Category Modal ─────────────────────────────────────────────────── */

@@ -638,6 +638,18 @@ tr:hover td {
   border-color: var(--color-border-strong);
   box-shadow: var(--shadow-float);
 }
+.kanban-card.kanban-dragging {
+  opacity: 0.45;
+  box-shadow: none;
+}
+.kanban-col.kanban-drag-over > .kanban-col-body,
+.proj-kanban-col.kanban-drag-over > .kanban-col-body,
+.goal-kanban-col.kanban-drag-over > .kanban-col-body {
+  background: var(--color-surface-raised, rgba(55,132,221,.07));
+  border-radius: var(--radius-md, 6px);
+  outline: 2px dashed var(--color-accent, #378ADD);
+  outline-offset: -2px;
+}
 .kanban-card-title { font-size: var(--text-base); margin-bottom: var(--space-2); line-height: var(--leading-snug); }
 .kanban-card-meta { font-size: var(--text-sm); color: var(--color-text-secondary); }
 

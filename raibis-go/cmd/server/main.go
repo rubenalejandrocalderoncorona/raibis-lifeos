@@ -38,7 +38,8 @@ func main() {
 	log.Printf("vault at %s", v.Root)
 
 	svc := service.New(store)
-	mux := buildMux(svc, store, v, dbPath)
+	habitSvc := service.NewHabitService(store)
+	mux := buildMux(svc, habitSvc, store, v, dbPath)
 
 	port := os.Getenv("LIFEOS_PORT")
 	if port == "" {
@@ -52,7 +53,7 @@ func main() {
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
-func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, dbPath string) http.Handler {
+func buildMux(svc service.TaskService, habitSvc *service.HabitService, store storage.Storage, v *vault.Vault, dbPath string) http.Handler {
 	mux := http.NewServeMux()
 
 	// Tasks
@@ -96,6 +97,10 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 
 	// Export
 	mux.HandleFunc("/api/export/", withCORS(exportHandler(store, v)))
+
+	// Habits
+	mux.HandleFunc("/api/habits", withCORS(habitsHandler(habitSvc)))
+	mux.HandleFunc("/api/habits/", withCORS(habitHandler(habitSvc)))
 
 	// Static files
 	guiDir := guiPublicDir()
@@ -2328,6 +2333,111 @@ func propertiesHandler(store storage.Storage) http.HandlerFunc {
 				return
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// ── Habits ────────────────────────────────────────────────────────────────────
+
+// habitsHandler handles GET /api/habits (list) and POST /api/habits (create).
+func habitsHandler(svc *service.HabitService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			habits, err := svc.List()
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, habits)
+
+		case http.MethodPost:
+			var body struct {
+				Title       string `json:"title"`
+				Type        string `json:"type"`
+				ReferenceID string `json:"reference_id"`
+			}
+			if err := readJSON(r, &body); err != nil {
+				errJSON(w, 400, "invalid JSON: "+err.Error())
+				return
+			}
+			h := &domain.Habit{
+				Title: body.Title,
+				Type:  domain.HabitType(body.Type),
+			}
+			if body.ReferenceID != "" {
+				h.ReferenceID = &body.ReferenceID
+			}
+			created, err := svc.Create(h)
+			if err != nil {
+				errJSON(w, 400, err.Error())
+				return
+			}
+			writeJSON(w, 201, created)
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// habitHandler handles GET/PATCH/DELETE /api/habits/:id.
+func habitHandler(svc *service.HabitService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseID(r.URL.Path)
+		if !ok {
+			errJSON(w, 400, "invalid habit id")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			h, err := svc.Get(id)
+			if err != nil {
+				errJSON(w, 404, "habit not found")
+				return
+			}
+			writeJSON(w, 200, h)
+
+		case http.MethodPatch:
+			h, err := svc.Get(id)
+			if err != nil {
+				errJSON(w, 404, "habit not found")
+				return
+			}
+			var body map[string]any
+			if err := readJSON(r, &body); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			if v, ok := body["title"].(string); ok {
+				h.Title = v
+			}
+			if v, ok := body["type"].(string); ok {
+				h.Type = domain.HabitType(v)
+			}
+			if v, ok := body["reference_id"]; ok {
+				if v == nil {
+					h.ReferenceID = nil
+				} else if s, ok := v.(string); ok {
+					h.ReferenceID = &s
+				}
+			}
+			updated, err := svc.Update(h)
+			if err != nil {
+				errJSON(w, 400, err.Error())
+				return
+			}
+			writeJSON(w, 200, updated)
+
+		case http.MethodDelete:
+			if err := svc.Delete(id); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}

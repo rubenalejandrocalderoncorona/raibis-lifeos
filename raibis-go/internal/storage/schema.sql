@@ -179,3 +179,18 @@ CREATE INDEX IF NOT EXISTS idx_resources_proj  ON resources(project_id);
 CREATE INDEX IF NOT EXISTS idx_sprints_project ON sprints(project_id);
 CREATE INDEX IF NOT EXISTS idx_entity_tags     ON entity_tags(entity_type, entity_id);
 -- category/taxonomy indexes added by applyMigrations after FK columns exist
+
+-- ─────────────────────────────────────────
+-- Habits — trackable behaviours
+--
+--   type        : e.g. "learning", "fitness", "meditation"
+--   reference_id: external ID linking to another service (e.g. StudyTrack
+--                 objective ID for type="learning"). Validated on creation.
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS habits (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    title        TEXT    NOT NULL,
+    type         TEXT    NOT NULL DEFAULT 'general',
+    reference_id TEXT,
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

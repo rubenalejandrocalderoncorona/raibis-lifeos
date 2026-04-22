@@ -135,9 +135,13 @@ fn main() {
             let show_handle = handle.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 wait_for_server();
+                // Extra pause so the HTTP server is fully ready to serve responses
+                thread::sleep(Duration::from_millis(300));
                 if let Some(w) = show_handle.get_webview_window(MAIN_LABEL) {
                     let _ = w.show();
                     let _ = w.set_focus();
+                    // Force a fresh load to avoid WKWebView serving a blank cached page
+                    let _ = w.eval("window.location.reload()");
                 }
             });
 

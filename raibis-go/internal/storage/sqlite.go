@@ -471,6 +471,15 @@ func (s *sqliteStorage) CreateSprint(sp *domain.Sprint) (int64, error) {
 	return res.LastInsertId()
 }
 
+func (s *sqliteStorage) GetSprint(id int64) (*domain.Sprint, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	row := s.db.QueryRow(
+		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points
+		 FROM sprints WHERE id=?`, id)
+	return scanSprint(row)
+}
+
 func (s *sqliteStorage) ListSprints(projectID int64) ([]*domain.Sprint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

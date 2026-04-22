@@ -28,6 +28,7 @@ type Storage interface {
 
 	// ── Sprints ──────────────────────────────────────────────────────────────
 	CreateSprint(s *domain.Sprint) (int64, error)
+	GetSprint(id int64) (*domain.Sprint, error)
 	ListSprints(projectID int64) ([]*domain.Sprint, error)
 	GetActiveSprint(projectID int64) (*domain.Sprint, error)
 	UpdateSprintStatus(id int64, status string) error
@@ -65,4 +66,11 @@ type Storage interface {
 
 	// Close releases the database connection.
 	Close() error
+
+	// ── Habits ───────────────────────────────────────────────────────────────
+	CreateHabit(h *domain.Habit) (int64, error)
+	GetHabit(id int64) (*domain.Habit, error)
+	ListHabits() ([]*domain.Habit, error)
+	UpdateHabit(h *domain.Habit) error
+	DeleteHabit(id int64) error
 }

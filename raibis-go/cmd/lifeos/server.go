@@ -557,6 +557,14 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 					t.ProjectID = &pid
 				}
 			}
+			if v, ok := body["sprint_id"]; ok {
+				if v == nil {
+					t.SprintID = nil
+				} else if fv, ok := v.(float64); ok {
+					sid := int64(fv)
+					t.SprintID = &sid
+				}
+			}
 			if v, ok := body["parent_task_id"]; ok {
 				if v == nil {
 					t.ParentTaskID = nil
@@ -1079,17 +1087,71 @@ func sprintHandler(store storage.Storage) http.HandlerFunc {
 			errJSON(w, 400, "invalid sprint id")
 			return
 		}
-		if r.Method != http.MethodPatch {
+		switch r.Method {
+		case http.MethodGet:
+			sp, err := store.GetSprint(id)
+			if err != nil {
+				errJSON(w, 404, "sprint not found")
+				return
+			}
+			tasks, _ := store.ListTasks(domain.TaskFilter{SprintID: &id})
+			done := 0
+			for _, t := range tasks {
+				if t.Status == domain.StatusDone {
+					done++
+				}
+			}
+			pct := 0
+			if len(tasks) > 0 {
+				pct = done * 100 / len(tasks)
+			}
+			startDate := ""
+			endDate := ""
+			if sp.StartDate != nil {
+				startDate = sp.StartDate.Format("2006-01-02")
+			}
+			if sp.EndDate != nil {
+				endDate = sp.EndDate.Format("2006-01-02")
+			}
+			proj, _ := store.GetProject(sp.ProjectID)
+			projTitle := ""
+			if proj != nil {
+				projTitle = proj.Title
+			}
+			writeJSON(w, 200, map[string]any{
+				"id":            sp.ID,
+				"title":         sp.Title,
+				"project_id":    sp.ProjectID,
+				"project_title": projTitle,
+				"status":        string(sp.Status),
+				"start_date":    startDate,
+				"end_date":      endDate,
+				"story_points":  sp.StoryPoints,
+				"tasks":         tasks,
+				"progress": map[string]any{
+					"total": len(tasks),
+					"done":  done,
+					"pct":   pct,
+				},
+			})
+
+		case http.MethodPatch:
+			var body map[string]any
+			if err := readJSON(r, &body); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			if v, ok := body["status"].(string); ok {
+				if err := store.UpdateSprintStatus(id, v); err != nil {
+					errJSON(w, 500, err.Error())
+					return
+				}
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+
+		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
 		}
-		var body map[string]any
-		if err := readJSON(r, &body); err != nil {
-			errJSON(w, 400, "invalid JSON")
-			return
-		}
-		_ = id
-		writeJSON(w, 200, map[string]bool{"ok": true})
 	}
 }
 
