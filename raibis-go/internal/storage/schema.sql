@@ -194,3 +194,16 @@ CREATE TABLE IF NOT EXISTS habits (
     reference_id TEXT,
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- ─────────────────────────────────────────
+-- Comments — threaded notes on any entity
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS comments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT    NOT NULL,
+    entity_id   INTEGER NOT NULL,
+    author      TEXT    NOT NULL DEFAULT 'me',
+    body        TEXT    NOT NULL,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_comments_entity ON comments(entity_type, entity_id);

@@ -140,6 +140,17 @@ func applyMigrations(db *sql.DB) error {
 
 		// ── sprints: story_points capacity ─────────────────────────────────
 		`ALTER TABLE sprints ADD COLUMN story_points INTEGER`,
+
+		// ── comments: threaded notes on any entity ──────────────────────────
+		`CREATE TABLE IF NOT EXISTS comments (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity_type TEXT    NOT NULL,
+			entity_id   INTEGER NOT NULL,
+			author      TEXT    NOT NULL DEFAULT 'me',
+			body        TEXT    NOT NULL,
+			created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_comments_entity ON comments(entity_type, entity_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -1048,4 +1059,56 @@ func emptyToNil(s string) any {
 		return nil
 	}
 	return s
+}
+
+// ── Comments ──────────────────────────────────────────────────────────────────
+
+func (s *sqliteStorage) CreateComment(c *domain.Comment) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(
+		`INSERT INTO comments (entity_type, entity_id, author, body, created_at)
+		 VALUES (?, ?, ?, ?, datetime('now'))`,
+		c.EntityType, c.EntityID, c.Author, c.Body,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *sqliteStorage) ListComments(entityType string, entityID int64) ([]*domain.Comment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT id, entity_type, entity_id, author, body, created_at
+		 FROM comments WHERE entity_type=? AND entity_id=? ORDER BY created_at ASC`,
+		entityType, entityID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var comments []*domain.Comment
+	for rows.Next() {
+		c := &domain.Comment{}
+		var createdAt string
+		if err := rows.Scan(&c.ID, &c.EntityType, &c.EntityID, &c.Author, &c.Body, &createdAt); err != nil {
+			return nil, err
+		}
+		c.CreatedAt, _ = parseTime(createdAt)
+		comments = append(comments, c)
+	}
+	return comments, rows.Err()
+}
+
+func (s *sqliteStorage) CountComments(entityType string, entityID int64) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM comments WHERE entity_type=? AND entity_id=?`,
+		entityType, entityID,
+	).Scan(&n)
+	return n, err
 }

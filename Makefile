@@ -28,9 +28,12 @@ app:
 	@lsof -ti tcp:$(PORT) | xargs kill -9 2>/dev/null || true
 	@sleep 2
 	@echo "→ Clearing WKWebView cache..."
-	@rm -rf ~/Library/WebKit/com.raibis.lifeos 2>/dev/null || true
-	@rm -rf ~/Library/Caches/com.raibis.lifeos 2>/dev/null || true
-	@rm -rf ~/Library/Caches/raibis-lifeos 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/WebKit/com.raibis.lifeos" 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/Caches/com.raibis.lifeos" 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/Caches/raibis-lifeos" 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/HTTPStorages/com.raibis.lifeos" 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/Application Support/com.raibis.lifeos" 2>/dev/null || true
+	@defaults delete com.raibis.lifeos 2>/dev/null || true
 	@echo "→ Building Go sidecar..."
 	@cd $(GO_DIR) && for f in app.js style.css index.html animations.js design-system.css; do \
 	    cp ../raibis/gui/public/$$f internal/gui/public/$$f 2>/dev/null || true; \
@@ -75,10 +78,17 @@ restart-web: stop
 	@sleep 1
 	@$(MAKE) web
 
-## Restart the macOS app (stop everything, rebuild, relaunch)
-restart-app: stop
-	@sleep 1
-	@$(MAKE) app
+## Restart the macOS app (stop everything, clear ALL caches, rebuild, relaunch)
+restart-app:
+	$(MAKE) stop
+	@echo "→ Clearing all WKWebView and app caches..."
+	@rm -rf "$(HOME)/Library/WebKit/com.raibis.lifeos" 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/Caches/com.raibis.lifeos" 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/Caches/raibis-lifeos" 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/HTTPStorages/com.raibis.lifeos" 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/Application Support/com.raibis.lifeos" 2>/dev/null || true
+	@defaults delete com.raibis.lifeos 2>/dev/null || true
+	$(MAKE) app
 
 # ── Hard refresh ───────────────────────────────────────────────────────────────
 
@@ -99,9 +109,12 @@ hard:
 	@echo "→ Rebuilding Go binary..."
 ifeq ($(or $(mode),$(MODE)),app)
 	@echo "→ Clearing WKWebView cache..."
-	@rm -rf ~/Library/WebKit/com.raibis.lifeos 2>/dev/null || true
-	@rm -rf ~/Library/Caches/com.raibis.lifeos 2>/dev/null || true
-	@rm -rf ~/Library/Caches/raibis-lifeos 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/WebKit/com.raibis.lifeos" 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/Caches/com.raibis.lifeos" 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/Caches/raibis-lifeos" 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/HTTPStorages/com.raibis.lifeos" 2>/dev/null || true
+	@rm -rf "$(HOME)/Library/Application Support/com.raibis.lifeos" 2>/dev/null || true
+	@defaults delete com.raibis.lifeos 2>/dev/null || true
 	@cd $(GO_DIR) && GOOS=darwin GOARCH=arm64 \
 	    go build -o ../raibis-tauri/src-tauri/binaries/lifeos-aarch64-apple-darwin ./cmd/lifeos
 	@echo "→ Injecting sidecar into /Applications/Raibis LifeOS.app..."

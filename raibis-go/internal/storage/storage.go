@@ -73,4 +73,9 @@ type Storage interface {
 	ListHabits() ([]*domain.Habit, error)
 	UpdateHabit(h *domain.Habit) error
 	DeleteHabit(id int64) error
+
+	// ── Comments ─────────────────────────────────────────────────────────────
+	CreateComment(c *domain.Comment) (int64, error)
+	ListComments(entityType string, entityID int64) ([]*domain.Comment, error)
+	CountComments(entityType string, entityID int64) (int, error)
 }

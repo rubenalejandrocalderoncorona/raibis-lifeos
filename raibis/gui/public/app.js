@@ -536,6 +536,7 @@ function bindAddPropBtn(entity, onAdd) {
           defs.push({ key, label: name.trim(), type: propType });
           setCustomPropDefs(entity, defs);
           onAdd();
+          document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
         };
       });
       document.addEventListener('click', function outsideClick(ev) {
@@ -647,6 +648,18 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
 function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
   const panel = document.querySelector(`.inline-prop-panel[data-entity="${entity}"]`);
   if (!panel) return;
+
+  // Auto re-render when a property is added from another panel (same entity type)
+  const propDefsHandler = (e) => { if (e.detail.entity === entity) onRerender(); };
+  document.addEventListener('propDefsChanged', propDefsHandler);
+  // Clean up listener when panel is removed from DOM
+  const observer = new MutationObserver(() => {
+    if (!document.contains(panel)) {
+      document.removeEventListener('propDefsChanged', propDefsHandler);
+      observer.disconnect();
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
 
   // Wire builtin value clicks
   panel.querySelectorAll('.inline-prop-row[data-is-custom="false"] .inline-prop-value').forEach(valEl => {
@@ -1314,6 +1327,7 @@ function taskRowHtml(task, showProject, indent, viewMode) {
       <div class="task-meta-row">${projBadge}${dueBadge}${tagChips}${statusChip}${priorityChip}${storyPts}</div>
     </div>
     <span class="task-row-due-right">${vis('due_date') && task.due_date ? fmtDate(task.due_date) : ''}</span>
+    <span class="ctx-handle" data-entity="task" data-id="${task.id}" title="Actions">⠿</span>
   </li>`;
 }
 
@@ -1496,6 +1510,314 @@ function renderView(view, params) {
     default:
       main.innerHTML = `<div class="view"><div class="empty-state"><div class="empty-state-icon">?</div><div class="empty-state-text">Unknown view</div></div></div>`;
   }
+}
+
+/* ─── Context Menu ───────────────────────────────────────────────────── */
+
+// Entity → API path mapping
+const ENTITY_API_MAP = {
+  task: 'tasks', goal: 'goals', project: 'projects',
+  note: 'notes', resource: 'resources', sprint: 'sprints'
+};
+
+// Render the current view after a mutation
+function renderCurrentView() {
+  switch (currentView) {
+    case 'tasks':          renderTasks(); break;
+    case 'projects':       renderProjects(); break;
+    case 'project-detail': renderProjectDetail(currentParams); break;
+    case 'goals':          renderGoals(); break;
+    case 'goal-detail':    renderGoalDetail(currentParams); break;
+    case 'notes':          renderNotes(); break;
+    case 'sprints':        renderSprints(); break;
+    case 'sprint-detail':  renderSprintDetail(currentParams); break;
+    case 'resources':      renderResources(); break;
+    case 'dashboard':      renderDashboard(); break;
+  }
+}
+
+function showContextMenu(entityType, entityId, anchorEl) {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+
+  const svgIcon = (paths) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+  const icons = {
+    editIcon: svgIcon('<circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/>'),
+    comment:  svgIcon('<path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>'),
+    duplicate:svgIcon('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>'),
+    moveTo:   svgIcon('<polyline points="5 9 2 12 5 15"/><path d="M2 12h14"/><polyline points="15 9 18 12 15 15"/><path d="M18 12h4"/>'),
+    trash:    svgIcon('<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>'),
+  };
+
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+
+  // Build items with search filter support
+  const items = [
+    { action: 'edit-icon', icon: icons.editIcon, label: 'Edit icon', shortcut: '' },
+    { action: 'comment',   icon: icons.comment,  label: 'Comment',   shortcut: '⌘⇧M' },
+    { action: 'duplicate', icon: icons.duplicate,label: 'Duplicate', shortcut: '⌘D' },
+    { action: 'move-to',   icon: icons.moveTo,   label: 'Move to',   shortcut: '⌘⇧P' },
+  ];
+
+  const renderItems = (filter) => {
+    const filtered = items.filter(it => !filter || it.label.toLowerCase().includes(filter.toLowerCase()));
+    return `
+      <div class="ctx-menu-section">Page</div>
+      ${filtered.map(it => `
+        <div class="ctx-menu-item" data-action="${it.action}">
+          ${it.icon}<span>${it.label}</span>
+          ${it.shortcut ? `<span class="ctx-menu-shortcut">${it.shortcut}</span>` : ''}
+        </div>`).join('')}
+      <div class="ctx-menu-separator"></div>
+      ${(!filter || 'trash move to trash delete'.includes(filter.toLowerCase())) ? `
+      <div class="ctx-menu-item ctx-menu-item--danger" data-action="trash">
+        ${icons.trash}<span>Move to Trash</span>
+        <span class="ctx-menu-shortcut">Del</span>
+      </div>` : ''}
+    `;
+  };
+
+  menu.innerHTML = `
+    <div class="ctx-menu-search">
+      <input class="ctx-menu-search-input" placeholder="Search actions…" autocomplete="off">
+    </div>
+    <div class="ctx-menu-items">${renderItems('')}</div>
+    <div class="ctx-menu-footer">Last edited · ${entityType} #${entityId}</div>
+  `;
+  document.body.appendChild(menu);
+
+  // Position relative to anchor
+  const rect = anchorEl.getBoundingClientRect();
+  const mw = 230, mh = 280;
+  const left = Math.min(rect.right + 4, window.innerWidth - mw - 8);
+  const top  = Math.min(rect.top, window.innerHeight - mh - 8);
+  menu.style.left = left + 'px';
+  menu.style.top  = top + 'px';
+
+  // Search filter
+  const searchInp = menu.querySelector('.ctx-menu-search-input');
+  searchInp.focus();
+  searchInp.oninput = () => {
+    menu.querySelector('.ctx-menu-items').innerHTML = renderItems(searchInp.value);
+    bindMenuItemActions();
+  };
+
+  function bindMenuItemActions() {
+    menu.querySelectorAll('.ctx-menu-item').forEach(el => {
+      el.onclick = (e) => {
+        e.stopPropagation();
+        menu.remove();
+        const action = el.dataset.action;
+        if (action === 'edit-icon') {
+          // Find the icon slot for this entity and open picker
+          const slot = document.querySelector(`[data-icon-entity="${entityType}"][data-icon-id="${entityId}"]`);
+          if (slot) showIconPicker(slot, entityType, entityId, null, () => {});
+        } else if (action === 'comment') {
+          openCommentPanel(entityType, entityId);
+        } else if (action === 'duplicate') {
+          duplicateEntity(entityType, entityId);
+        } else if (action === 'move-to') {
+          openMoveToPanel(entityType, entityId, anchorEl);
+        } else if (action === 'trash') {
+          deleteEntity(entityType, entityId);
+        }
+      };
+    });
+  }
+  bindMenuItemActions();
+
+  // Close on outside click
+  setTimeout(() => {
+    document.addEventListener('click', function handler(e) {
+      if (!menu.contains(e.target)) {
+        menu.remove();
+        document.removeEventListener('click', handler);
+      }
+    });
+  }, 0);
+}
+
+async function deleteEntity(entityType, entityId) {
+  const apiPath = ENTITY_API_MAP[entityType];
+  if (!apiPath) return;
+  if (!confirm(`Move this ${entityType} to trash?`)) return;
+  await api('DELETE', `/api/${apiPath}/${entityId}`);
+  closeSlideover();
+  renderCurrentView();
+}
+
+async function duplicateEntity(entityType, entityId) {
+  const apiPath = ENTITY_API_MAP[entityType];
+  if (!apiPath) return;
+  let orig;
+  try { orig = await api('GET', `/api/${apiPath}/${entityId}`); } catch (e) { return; }
+  const copy = { ...orig };
+  delete copy.id; delete copy.created_at; delete copy.updated_at;
+  if (copy.title) copy.title = copy.title + ' (copy)';
+  else if (copy.name) copy.name = copy.name + ' (copy)';
+  try { await api('POST', `/api/${apiPath}`, copy); } catch (e) { return; }
+  renderCurrentView();
+}
+
+function openMoveToPanel(entityType, entityId, anchorEl) {
+  document.querySelectorAll('.move-to-picker').forEach(m => m.remove());
+  const allTypes = ['task','goal','project','note','resource','sprint'];
+  const others = allTypes.filter(t => t !== entityType);
+  const picker = document.createElement('div');
+  picker.className = 'ctx-menu move-to-picker';
+  picker.innerHTML = `
+    <div class="ctx-menu-section">Move to…</div>
+    ${others.map(t => `<div class="ctx-menu-item" data-target="${t}">
+      <span style="text-transform:capitalize">${t}</span>
+    </div>`).join('')}
+  `;
+  document.body.appendChild(picker);
+  const rect = anchorEl.getBoundingClientRect();
+  picker.style.left = Math.min(rect.right + 4, window.innerWidth - 240) + 'px';
+  picker.style.top  = rect.top + 'px';
+  picker.querySelectorAll('.ctx-menu-item').forEach(el => {
+    el.onclick = async (e) => {
+      e.stopPropagation();
+      picker.remove();
+      const targetType = el.dataset.target;
+      const srcPath = ENTITY_API_MAP[entityType];
+      const dstPath = ENTITY_API_MAP[targetType];
+      if (!srcPath || !dstPath) return;
+      let orig;
+      try { orig = await api('GET', `/api/${srcPath}/${entityId}`); } catch (ex) { return; }
+      const copy = { ...orig };
+      delete copy.id; delete copy.created_at; delete copy.updated_at;
+      try {
+        await api('POST', `/api/${dstPath}`, copy);
+        await api('DELETE', `/api/${srcPath}/${entityId}`);
+        closeSlideover();
+        renderCurrentView();
+      } catch (ex) { alert('Move failed: ' + ex.message); }
+    };
+  });
+  setTimeout(() => {
+    document.addEventListener('click', function h(e) {
+      if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener('click', h); }
+    });
+  }, 0);
+}
+
+function openCommentPanel(entityType, entityId) {
+  // Focus the comment section in the currently open slideover/detail panel
+  const sec = document.querySelector('.comment-section');
+  if (sec) {
+    const inp = sec.querySelector('.comment-input');
+    if (inp) { sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); inp.focus(); }
+  }
+}
+
+// Global click delegation for ctx-handle
+document.addEventListener('click', (e) => {
+  const h = e.target.closest('.ctx-handle');
+  if (h) {
+    e.stopPropagation();
+    e.preventDefault();
+    showContextMenu(h.dataset.entity, h.dataset.id, h);
+  }
+});
+
+// ⌘⇧M global shortcut → focus comment input
+document.addEventListener('keydown', (e) => {
+  if (e.metaKey && e.shiftKey && e.key === 'm') {
+    const inp = document.querySelector('.comment-section .comment-input');
+    if (inp) inp.focus();
+  }
+});
+
+/* ─── Comment Section ────────────────────────────────────────────────── */
+
+function buildCommentSection(entityType, entityId) {
+  return `<div class="comment-section" data-entity-type="${entityType}" data-entity-id="${entityId}">
+    <div class="comment-section-header">Comments</div>
+    <div class="comment-list"></div>
+    <div class="comment-input-row">
+      <div class="comment-avatar">M</div>
+      <input class="comment-input" placeholder="Add a comment…" autocomplete="off">
+      <button class="comment-send-btn" title="Send">↑</button>
+    </div>
+  </div>`;
+}
+
+async function bindCommentSection(el) {
+  if (!el) return;
+  const entityType = el.dataset.entityType;
+  const entityId   = el.dataset.entityId;
+  const listEl     = el.querySelector('.comment-list');
+  const inp        = el.querySelector('.comment-input');
+  const sendBtn    = el.querySelector('.comment-send-btn');
+
+  async function loadComments() {
+    let comments = [];
+    try { comments = await api('GET', `/api/comments?entity_type=${entityType}&entity_id=${entityId}`); } catch(e) {}
+    if (!comments || !comments.length) {
+      listEl.innerHTML = '<div class="comment-empty">No comments yet.</div>';
+      return;
+    }
+    listEl.innerHTML = comments.map(c => {
+      const initial = (c.author || 'M').charAt(0).toUpperCase();
+      const relTime = relativeTime(c.created_at);
+      return `<div class="comment-row">
+        <div class="comment-avatar">${initial}</div>
+        <div class="comment-body">
+          <div class="comment-meta"><span class="comment-author">${c.author || 'me'}</span><span class="comment-time">${relTime}</span></div>
+          <div class="comment-text">${escHtml(c.body)}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  await loadComments();
+
+  async function sendComment() {
+    const body = inp.value.trim();
+    if (!body) return;
+    inp.value = '';
+    try {
+      await api('POST', '/api/comments', { entity_type: entityType, entity_id: parseInt(entityId), body, author: 'me' });
+      await loadComments();
+      updateCommentBadge(entityType, entityId);
+    } catch(e) {}
+  }
+
+  sendBtn.onclick = sendComment;
+  inp.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendComment(); } };
+}
+
+function updateCommentBadge(entityType, entityId) {
+  // Refresh badge on any visible card/row for this entity
+  api('GET', `/api/comments?entity_type=${entityType}&entity_id=${entityId}`)
+    .then(comments => {
+      const count = (comments || []).length;
+      document.querySelectorAll(`.ctx-handle[data-entity="${entityType}"][data-id="${entityId}"]`).forEach(h => {
+        const badge = h.closest('[data-task-id],[data-proj-id],[data-goal-id],[data-note-id],[data-res-id],[data-sprint-id]');
+        if (badge) {
+          const existing = badge.querySelector('.comment-badge');
+          if (count > 0) {
+            if (existing) existing.textContent = count;
+            else badge.insertAdjacentHTML('beforeend', `<span class="comment-badge">${count}</span>`);
+          } else if (existing) existing.remove();
+        }
+      });
+    }).catch(() => {});
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function relativeTime(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(typeof dateStr === 'string' ? dateStr.replace(' ', 'T') : dateStr);
+  const diff = Date.now() - d.getTime();
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return Math.floor(diff/60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff/3600000) + 'h ago';
+  return Math.floor(diff/86400000) + 'd ago';
 }
 
 /* ─── Dashboard ──────────────────────────────────────────────────────── */
@@ -2004,7 +2326,7 @@ async function renderTasks() {
         const customCols = getCustomPropDefs('task').map(def => customPropCell('task', t.id, def)).join('');
         html += `<tr class="task-table-row" data-task-id="${t.id}" style="position:relative">
           ${titleCell}${visibleCols.map(c => c.cell(t)).join('')}${customCols}
-          <td><button class="btn btn-sm btn-danger task-del-btn" data-task-id="${t.id}">×</button></td>
+          <td><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></td>
         </tr>`;
         if (isExpanded && children.length > 0) {
           html += tableRows(children, depth + 1);
@@ -2099,7 +2421,7 @@ async function renderTasks() {
         const metaLine = [statusLine, dueLine, tagLine, storyPts].some(Boolean)
           ? `<div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">${statusLine}${dueLine}${tagLine}${storyPts}</div>` : '';
         return `<div class="kanban-card" data-task-id="${t.id}" style="cursor:grab">
-          <div class="kanban-card-title">${t.title}${recurBadge}</div>
+          <div class="kanban-card-header"><div class="kanban-card-title">${t.title}${recurBadge}</div><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></div>
           ${projLine}${metaLine}
         </div>`;
       }).join('');
@@ -2294,16 +2616,6 @@ async function renderTasks() {
       };
     });
 
-    // Delete buttons (table view)
-    document.querySelectorAll('.task-del-btn').forEach(el => {
-      el.onclick = async (e) => {
-        e.stopPropagation();
-        if (!confirm('Delete this task?')) return;
-        await api('DELETE', `/api/tasks/${el.dataset.taskId}`);
-        renderTasks();
-      };
-    });
-
     // Kanban card click → slideover
     document.querySelectorAll('.kanban-card[data-task-id]').forEach(card => {
       card.onclick = () => showTaskSlideover(card.dataset.taskId);
@@ -2357,7 +2669,7 @@ async function renderProjects() {
         <span class="card-title"><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${p.title}</span>
         <div class="flex gap-8" onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button>
-          <button class="btn btn-sm btn-danger proj-del-btn" data-proj-id="${p.id}">Delete</button>
+          <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span>
         </div>
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
@@ -2396,7 +2708,7 @@ async function renderProjects() {
         ${customCols}
         <td onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button>
-          <button class="btn btn-sm btn-danger proj-del-btn" data-proj-id="${p.id}">Del</button>
+          <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span>
         </td>
       </tr>`;
     }).join('');
@@ -2608,14 +2920,6 @@ async function renderProjects() {
         showJSONModal(`/api/export/project/${el.dataset.projId}`, `project-${p?.title||el.dataset.projId}.json`);
       };
     });
-    document.querySelectorAll('.proj-del-btn').forEach(el => {
-      el.onclick = async (e) => {
-        e.stopPropagation();
-        if (!confirm('Delete this project?')) return;
-        await api('DELETE', `/api/projects/${el.dataset.projId}`);
-        renderProjects();
-      };
-    });
   }
 }
 
@@ -2644,7 +2948,7 @@ async function renderGoals() {
         <span class="card-title"><span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${g.title}</span>
         <div class="flex gap-8" onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button>
-          <button class="btn btn-sm btn-danger goal-del-btn" data-goal-id="${g.id}">Delete</button>
+          <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span>
         </div>
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
@@ -2682,7 +2986,7 @@ async function renderGoals() {
         ${customCols}
         <td onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button>
-          <button class="btn btn-sm btn-danger goal-del-btn" data-goal-id="${g.id}">Del</button>
+          <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span>
         </td>
       </tr>`;
     }).join('');
@@ -2894,14 +3198,6 @@ async function renderGoals() {
         showJSONModal(`/api/export/goal/${el.dataset.goalId}`, `goal-${g?.title||el.dataset.goalId}.json`);
       };
     });
-    document.querySelectorAll('.goal-del-btn').forEach(el => {
-      el.onclick = async (e) => {
-        e.stopPropagation();
-        if (!confirm('Delete this goal?')) return;
-        await api('DELETE', `/api/goals/${el.dataset.goalId}`);
-        renderGoals();
-      };
-    });
   }
 }
 
@@ -2928,7 +3224,7 @@ async function renderNotes() {
         <div class="note-title"><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="18" style="display:none;margin-right:5px;vertical-align:middle;font-size:18px"></span>${n.title || 'Untitled'}</div>
         <div onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost note-json-btn" data-note-id="${n.id}">Show JSON</button>
-          <button class="btn btn-sm btn-danger note-del-btn" data-note-id="${n.id}">Delete</button>
+          <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span>
         </div>
       </div>
       <div class="note-body-preview">${n.body || ''}</div>
@@ -2951,7 +3247,7 @@ async function renderNotes() {
         ${vis('category') ? `<td>${n.category_name || '—'}</td>` : ''}
         ${vis('tags')     ? `<td>${(n.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
         ${customCols}
-        <td onclick="event.stopPropagation()"><button class="btn btn-sm btn-danger note-del-btn" data-note-id="${n.id}">Del</button></td>
+        <td onclick="event.stopPropagation()"><span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span></td>
       </tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('note').map(d => `<th>${d.label}</th>`).join('');
@@ -3057,7 +3353,7 @@ async function renderNotes() {
   function bindNoteEvents() {
     document.querySelectorAll('.note-card').forEach(el => {
       el.onclick = (e) => {
-        if (e.target.closest('.note-del-btn, .note-json-btn')) return;
+        if (e.target.closest('.ctx-handle, .note-json-btn')) return;
         const n = notes.find(x => String(x.id) === el.dataset.noteId);
         if (n) showNoteModal(n, () => renderNotes());
       };
@@ -3067,14 +3363,6 @@ async function renderNotes() {
         e.stopPropagation();
         const n = notes.find(x => String(x.id) === el.dataset.noteId);
         showJSONModal(`/api/export/note/${el.dataset.noteId}`, `note-${n?.title||el.dataset.noteId}.json`);
-      };
-    });
-    document.querySelectorAll('.note-del-btn').forEach(el => {
-      el.onclick = async (e) => {
-        e.stopPropagation();
-        if (!confirm('Delete this note?')) return;
-        await api('DELETE', `/api/notes/${el.dataset.noteId}`);
-        renderNotes();
       };
     });
   }
@@ -3100,7 +3388,7 @@ async function renderSprints() {
           ${prevStatus ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
           ${nextStatus ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="${nextStatus}">${nextLabel}</button>` : ''}
           <button class="btn btn-sm btn-ghost sprint-edit-btn" data-sprint-id="${s.id}">Edit</button>
-          <button class="btn btn-sm btn-danger sprint-del-btn" data-sprint-id="${s.id}">Delete</button>
+          <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span>
         </div>
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
@@ -3146,7 +3434,7 @@ async function renderSprints() {
           ${s.status === 'planned' ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="active">Start</button>` : ''}
           ${s.status === 'active' ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="completed">Complete</button>` : ''}
           <button class="btn btn-sm btn-ghost sprint-edit-btn" data-sprint-id="${s.id}">Edit</button>
-          <button class="btn btn-sm btn-danger sprint-del-btn" data-sprint-id="${s.id}">Del</button>
+          <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span>
         </td>
       </tr>`;
     }).join('');
@@ -3291,6 +3579,7 @@ async function renderSprints() {
         renderSprints();
       };
     });
+    // ctx-handle for sprint rows handled by global delegation
     document.querySelectorAll('.sprint-edit-btn').forEach(el => {
       el.onclick = (e) => {
         e.stopPropagation();
@@ -3407,6 +3696,7 @@ async function renderSprintDetail(sprintId) {
       <div class="widget-header"><span class="widget-title">Custom Properties</span></div>
       ${buildInlinePropPanel('sprint', sprintId, [])}
     </div>
+    ${buildCommentSection('sprint', sprintId)}
   </div>`;
 
   document.getElementById('sd-back-btn').onclick = () => renderView('sprints');
@@ -3593,6 +3883,7 @@ async function renderSprintDetail(sprintId) {
 
   bindDetailTaskEvents(() => renderSprintDetail(sprintId));
   bindInlinePropPanel('sprint', sprintId, {}, () => renderSprintDetail(sprintId));
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="sprint"]'));
 }
 
 /* ─── Habits View ─────────────────────────────────────────────────────── */
@@ -3959,7 +4250,7 @@ async function renderResources() {
         ${vis('url')    ? `<td>${link}</td>` : ''}
         ${customCols}
         <td onclick="event.stopPropagation()">
-          <button class="btn btn-sm btn-danger res-del-btn" data-res-id="${r.id}">×</button>
+          <span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions">⠿</span>
         </td>
       </tr>`;
     }).join('');
@@ -3989,7 +4280,7 @@ async function renderResources() {
         <div class="flex-between gap-8" style="margin-bottom:6px">
           <span class="card-title"><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="18" style="display:none;margin-right:6px;vertical-align:middle;font-size:18px"></span>${r.title}</span>
           <div class="flex gap-8" onclick="event.stopPropagation()">
-            <button class="btn btn-sm btn-danger res-del-btn" data-res-id="${r.id}">×</button>
+            <span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions">⠿</span>
           </div>
         </div>
         ${vis('type') && r.resource_type ? `<span class="badge badge-todo">${r.resource_type}</span>` : ''}
@@ -4076,17 +4367,9 @@ async function renderResources() {
   function bindResEvents() {
     document.querySelectorAll('.res-row').forEach(el => {
       el.onclick = async (e) => {
-        if (e.target.closest('.res-del-btn') || e.target.closest('a')) return;
+        if (e.target.closest('.ctx-handle') || e.target.closest('a')) return;
         const r = resources.find(x => String(x.id) === el.dataset.resId);
         if (r) showResourceSlideover(r, () => renderResources());
-      };
-    });
-    document.querySelectorAll('.res-del-btn').forEach(el => {
-      el.onclick = async (e) => {
-        e.stopPropagation();
-        if (!confirm('Delete this resource?')) return;
-        await api('DELETE', `/api/resources/${el.dataset.resId}`);
-        renderResources();
       };
     });
   }
@@ -4310,6 +4593,7 @@ async function renderProjectDetail(projectId) {
       </div>
       <div id="pd-props-list"></div>
     </div>
+    ${buildCommentSection('project', projectId)}
   </div>`;
 
   document.getElementById('pd-back-btn').onclick = () => renderView('projects');
@@ -4357,6 +4641,7 @@ async function renderProjectDetail(projectId) {
   bindDetailTaskEvents(() => renderProjectDetail(projectId));
   bindPropertiesWidget('project', projectId, 'pd-props-list', 'pd-add-prop-btn');
   bindInlinePropPanel('project', projectId, {}, () => renderProjectDetail(projectId));
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
 }
 async function renderGoalDetail(goalId) {
   let g;
@@ -4491,6 +4776,7 @@ async function renderGoalDetail(goalId) {
       </div>
       <div id="gd-props-list"></div>
     </div>
+    ${buildCommentSection('goal', goalId)}
   </div>`;
 
   document.getElementById('gd-back-btn').onclick = () => renderView('goals');
@@ -4536,6 +4822,7 @@ async function renderGoalDetail(goalId) {
   bindDetailTaskEvents(() => renderGoalDetail(goalId));
   bindPropertiesWidget('goal', goalId, 'gd-props-list', 'gd-add-prop-btn');
   bindInlinePropPanel('goal', goalId, {}, () => renderGoalDetail(goalId));
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="goal"]'));
 }
 
 /* ─── Properties Widget ──────────────────────────────────────────────── */
@@ -4918,6 +5205,7 @@ async function showTaskSlideover(taskId) {
       </div>
       <div id="props-list"></div>
     </div>
+    ${buildCommentSection('task', taskId)}
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border)">
       <button class="btn btn-ghost btn-sm" id="task-export-btn">Export JSON</button>
     </div>
@@ -5179,9 +5467,7 @@ async function showTaskSlideover(taskId) {
     },
   };
   bindInlinePropPanel('task', taskId, taskInlinePropEditFns, () => showTaskSlideover(taskId));
-
-
-  // Allows searching, renaming existing values, and creating new ones.
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="task"]'));
   // Persists to localStorage under `storageKey`.
   function openEditableValueCombo(anchorEl, valuesArray, storageKey, currentVal, onSelect) {
     closeCombo();
@@ -7609,6 +7895,7 @@ async function showNoteModal(note, afterSave) {
       <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Custom Properties</div>
       ${buildInlinePropPanel('note', v.id, [])}
     </div>` : ''}
+    ${v.id ? buildCommentSection('note', v.id) : ''}
     <div class="form-actions">
       ${v.id ? `<button class="btn btn-danger" id="modal-delete-btn">Delete</button>` : ''}
       ${isNew ? `<button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
@@ -7644,6 +7931,7 @@ async function showNoteModal(note, afterSave) {
 
   // Bind inline custom props panel (for existing notes only)
   if (v.id) bindInlinePropPanel('note', v.id, {}, () => showNoteModal(note, afterSave));
+  if (v.id) bindCommentSection(document.querySelector('.comment-section[data-entity-type="note"]'));
 
   // Tag picker toggle
   document.querySelectorAll('#note-tag-picker .tag-chip').forEach(chip => {
@@ -7850,12 +8138,14 @@ async function showResourceSlideover(resource, afterSave) {
         <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Custom Properties</div>
         ${buildInlinePropPanel('resource', v.id, [])}
       </div>` : ''}
+      ${v.id ? buildCommentSection('resource', v.id) : ''}
     </div>`;
 
   openSlideover(v.title || 'Resource', body);
 
   const indicator = document.getElementById('rs-save-indicator');
   if (v.id) bindInlinePropPanel('resource', v.id, {}, () => showResourceSlideover(resource, afterSave));
+  if (v.id) bindCommentSection(document.querySelector('.comment-section[data-entity-type="resource"]'));
   let saveTimer = null;
 
   async function autoSave() {

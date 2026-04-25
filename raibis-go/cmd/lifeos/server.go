@@ -186,6 +186,9 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	mux.HandleFunc("/api/search", withCORS(searchHandler(store, dbPath)))
 	mux.HandleFunc("/api/version", withCORS(versionHandler()))
 
+	// Comments
+	mux.HandleFunc("/api/comments", withCORS(commentsHandler(store)))
+
 	// Embedded Web GUI — self-contained, no external /public folder needed.
 	// Serves index.html + assets for all non-/api/ requests.
 	sub, err := gui.Sub()
@@ -2556,5 +2559,70 @@ func searchHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			"tasks":    tasks,
 			"notes":    notes,
 		})
+	}
+}
+
+// ── Comments ──────────────────────────────────────────────────────────────────
+
+func commentsHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			q := r.URL.Query()
+			entityType := q.Get("entity_type")
+			entityIDStr := q.Get("entity_id")
+			if entityType == "" || entityIDStr == "" {
+				errJSON(w, 400, "entity_type and entity_id required")
+				return
+			}
+			entityID, err := strconv.ParseInt(entityIDStr, 10, 64)
+			if err != nil {
+				errJSON(w, 400, "invalid entity_id")
+				return
+			}
+			comments, err := store.ListComments(entityType, entityID)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			if comments == nil {
+				comments = []*domain.Comment{}
+			}
+			writeJSON(w, 200, comments)
+		case http.MethodPost:
+			var body struct {
+				EntityType string `json:"entity_type"`
+				EntityID   int64  `json:"entity_id"`
+				Author     string `json:"author"`
+				Body       string `json:"body"`
+			}
+			if err := readJSON(r, &body); err != nil {
+				errJSON(w, 400, err.Error())
+				return
+			}
+			if body.EntityType == "" || body.EntityID == 0 || body.Body == "" {
+				errJSON(w, 400, "entity_type, entity_id and body required")
+				return
+			}
+			author := body.Author
+			if author == "" {
+				author = "me"
+			}
+			c := &domain.Comment{
+				EntityType: body.EntityType,
+				EntityID:   body.EntityID,
+				Author:     author,
+				Body:       body.Body,
+			}
+			id, err := store.CreateComment(c)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			c.ID = id
+			writeJSON(w, 201, c)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
 	}
 }
