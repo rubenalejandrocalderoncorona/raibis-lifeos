@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -172,12 +173,14 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	mux.HandleFunc("/api/kanban", withCORS(kanbanHandler(svc, store)))
 	mux.HandleFunc("/api/resources", withCORS(resourcesHandler(store, dbPath)))
 	mux.HandleFunc("/api/resources/", withCORS(resourceHandler(store, dbPath)))
+	mux.HandleFunc("/api/resource-upload/", withCORS(resourceUploadHandler(dbPath)))
+	mux.HandleFunc("/api/resource-file/", withCORS(resourceFileServeHandler(dbPath)))
 	mux.HandleFunc("/api/pomodoro", withCORS(pomodoroHandler(store, dbPath)))
 	mux.HandleFunc("/api/quick-capture", withCORS(captureHandler(svc)))
 	mux.HandleFunc("/api/dashboard", withCORS(dashboardHandler(svc, store, dbPath)))
 
 	// Export
-	mux.HandleFunc("/api/export/", withCORS(exportHandler(store, v)))
+	mux.HandleFunc("/api/export/", withCORS(exportHandler(store, v, dbPath)))
 
 	// Search & Version
 	mux.HandleFunc("/api/search", withCORS(searchHandler(store, dbPath)))
@@ -1831,6 +1834,82 @@ func resourceHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 	}
 }
 
+// ── Resource file upload / serve ──────────────────────────────────────────────
+
+func resourceFilesDir(dbPath string) string {
+	return filepath.Join(filepath.Dir(dbPath), "files")
+}
+
+func resourceUploadHandler(dbPath string) http.HandlerFunc {
+	db, _ := openRawDB(dbPath)
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		id, ok := parseID(r.URL.Path)
+		if !ok {
+			errJSON(w, 400, "invalid resource id")
+			return
+		}
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			errJSON(w, 400, "failed to parse form: "+err.Error())
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			errJSON(w, 400, "missing file field")
+			return
+		}
+		defer file.Close()
+
+		dir := resourceFilesDir(dbPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			errJSON(w, 500, "cannot create files dir")
+			return
+		}
+		// Use resource ID as prefix to avoid collisions
+		dest := filepath.Join(dir, fmt.Sprintf("%d_%s", id, header.Filename))
+		out, err := os.Create(dest)
+		if err != nil {
+			errJSON(w, 500, "cannot create file")
+			return
+		}
+		defer out.Close()
+		if _, err := io.Copy(out, file); err != nil {
+			errJSON(w, 500, "failed to write file")
+			return
+		}
+		if _, err := db.Exec(`UPDATE resources SET file_path=?, updated_at=datetime('now') WHERE id=?`, dest, id); err != nil {
+			errJSON(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"file_path": dest, "filename": header.Filename})
+	}
+}
+
+func resourceFileServeHandler(dbPath string) http.HandlerFunc {
+	db, _ := openRawDB(dbPath)
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		id, ok := parseID(r.URL.Path)
+		if !ok {
+			errJSON(w, 400, "invalid resource id")
+			return
+		}
+		var filePath string
+		if err := db.QueryRow(`SELECT COALESCE(file_path,'') FROM resources WHERE id=?`, id).Scan(&filePath); err != nil || filePath == "" {
+			errJSON(w, 404, "no file attached")
+			return
+		}
+		w.Header().Set("Content-Disposition", "attachment; filename="+filepath.Base(filePath))
+		http.ServeFile(w, r, filePath)
+	}
+}
+
 // ── Pomodoro ──────────────────────────────────────────────────────────────────
 
 func pomodoroHandler(store storage.Storage, dbPath string) http.HandlerFunc {
@@ -2006,7 +2085,7 @@ func dashboardHandler(svc service.TaskService, store storage.Storage, dbPath str
 
 // ── Export ────────────────────────────────────────────────────────────────────
 
-func exportHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
+func exportHandler(store storage.Storage, v *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -2109,6 +2188,56 @@ func exportHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 				n.Body, _ = v.ReadFile(*n.FilePath)
 			}
 			writeJSON(w, 200, map[string]any{"entity": "note", "note": n})
+
+		case "sprint":
+			s, err := store.GetSprint(id)
+			if err != nil {
+				errJSON(w, 404, "sprint not found")
+				return
+			}
+			tasks, _ := store.ListTasks(domain.TaskFilter{SprintID: &id})
+			for _, t := range tasks {
+				t.Tags, _ = store.GetEntityTags("task", t.ID)
+			}
+			writeJSON(w, 200, map[string]any{"entity": "sprint", "sprint": s, "tasks": tasks})
+
+		case "resource":
+			db, err := openRawDB(dbPath)
+			if err != nil {
+				errJSON(w, 500, "db unavailable")
+				return
+			}
+			defer db.Close()
+			type resOut struct {
+				ID           int64  `json:"id"`
+				Title        string `json:"title"`
+				URL          string `json:"url,omitempty"`
+				FilePath     string `json:"file_path,omitempty"`
+				ResourceType string `json:"resource_type"`
+				Body         string `json:"body,omitempty"`
+				TaskTitle    string `json:"task_title,omitempty"`
+				ProjectTitle string `json:"project_title,omitempty"`
+				GoalTitle    string `json:"goal_title,omitempty"`
+				CreatedAt    string `json:"created_at"`
+			}
+			row := db.QueryRow(`
+				SELECT r.id, r.title, COALESCE(r.url,''), COALESCE(r.file_path,''),
+				       r.resource_type, COALESCE(r.body,''),
+				       COALESCE(t.title,''), COALESCE(p.title,''), COALESCE(g.title,''),
+				       r.created_at
+				FROM resources r
+				LEFT JOIN tasks    t ON r.task_id = t.id
+				LEFT JOIN projects p ON r.project_id = p.id
+				LEFT JOIN goals    g ON r.goal_id = g.id
+				WHERE r.id = ?`, id)
+			var res resOut
+			if err := row.Scan(&res.ID, &res.Title, &res.URL, &res.FilePath,
+				&res.ResourceType, &res.Body,
+				&res.TaskTitle, &res.ProjectTitle, &res.GoalTitle, &res.CreatedAt); err != nil {
+				errJSON(w, 404, "resource not found")
+				return
+			}
+			writeJSON(w, 200, map[string]any{"entity": "resource", "resource": res})
 
 		default:
 			errJSON(w, 400, "unknown entity: "+entity)

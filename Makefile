@@ -27,6 +27,10 @@ app:
 	@pkill -f "lifeos server" 2>/dev/null || true
 	@lsof -ti tcp:$(PORT) | xargs kill -9 2>/dev/null || true
 	@sleep 2
+	@echo "→ Clearing WKWebView cache..."
+	@rm -rf ~/Library/WebKit/com.raibis.lifeos 2>/dev/null || true
+	@rm -rf ~/Library/Caches/com.raibis.lifeos 2>/dev/null || true
+	@rm -rf ~/Library/Caches/raibis-lifeos 2>/dev/null || true
 	@echo "→ Building Go sidecar..."
 	@cd $(GO_DIR) && for f in app.js style.css index.html animations.js design-system.css; do \
 	    cp ../raibis/gui/public/$$f internal/gui/public/$$f 2>/dev/null || true; \
@@ -94,6 +98,10 @@ hard:
 	done
 	@echo "→ Rebuilding Go binary..."
 ifeq ($(or $(mode),$(MODE)),app)
+	@echo "→ Clearing WKWebView cache..."
+	@rm -rf ~/Library/WebKit/com.raibis.lifeos 2>/dev/null || true
+	@rm -rf ~/Library/Caches/com.raibis.lifeos 2>/dev/null || true
+	@rm -rf ~/Library/Caches/raibis-lifeos 2>/dev/null || true
 	@cd $(GO_DIR) && GOOS=darwin GOARCH=arm64 \
 	    go build -o ../raibis-tauri/src-tauri/binaries/lifeos-aarch64-apple-darwin ./cmd/lifeos
 	@echo "→ Injecting sidecar into /Applications/Raibis LifeOS.app..."

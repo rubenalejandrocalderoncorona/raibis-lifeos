@@ -235,6 +235,92 @@ let projsKanbanGroupBy = localStorage.getItem('projsKanbanGroupBy') || 'status';
 let goalsViewMode = localStorage.getItem('goalsViewMode') || 'cards';
 let goalsKanbanGroupBy = localStorage.getItem('goalsKanbanGroupBy') || 'status';
 let notesViewMode = localStorage.getItem('notesViewMode') || 'cards';
+
+// Shared kanban drag state (mouse-based — WKWebView doesn't support HTML5 drag API)
+let _kanbanDrag = { id: null, type: null, el: null, ghost: null, startX: 0, startY: 0, moved: false };
+
+function bindKanbanDrag(board, cardSelector, idAttr, onDrop) {
+  if (!board) return;
+  const THRESHOLD = 6; // px before drag activates
+
+  board.querySelectorAll(cardSelector).forEach(card => {
+    card.addEventListener('mousedown', e => {
+      if (e.button !== 0) return;
+      if (e.target.closest('button,a,input,select,textarea')) return;
+      _kanbanDrag.id = card.dataset[idAttr];
+      _kanbanDrag.el = card;
+      _kanbanDrag.startX = e.clientX;
+      _kanbanDrag.startY = e.clientY;
+      _kanbanDrag.moved = false;
+      _kanbanDrag.ghost = null;
+    });
+  });
+
+  const onMouseMove = e => {
+    if (!_kanbanDrag.id) return;
+    const dx = e.clientX - _kanbanDrag.startX;
+    const dy = e.clientY - _kanbanDrag.startY;
+
+    if (!_kanbanDrag.moved && Math.hypot(dx, dy) < THRESHOLD) return;
+
+    if (!_kanbanDrag.moved) {
+      _kanbanDrag.moved = true;
+      document.body.classList.add('kanban-dragging-active');
+      const ghost = _kanbanDrag.el.cloneNode(true);
+      ghost.style.cssText = `position:fixed;z-index:9999;pointer-events:none;opacity:0.85;
+        width:${_kanbanDrag.el.offsetWidth}px;box-shadow:0 8px 24px rgba(0,0,0,.25);
+        transform:rotate(2deg);transition:none`;
+      document.body.appendChild(ghost);
+      _kanbanDrag.ghost = ghost;
+      _kanbanDrag.el.classList.add('kanban-dragging');
+    }
+
+    const ghost = _kanbanDrag.ghost;
+    const rect = _kanbanDrag.el.getBoundingClientRect();
+    ghost.style.left = (rect.left + dx) + 'px';
+    ghost.style.top  = (rect.top  + dy) + 'px';
+
+    // Highlight drop target
+    board.querySelectorAll('.kanban-col-body').forEach(b => b.classList.remove('kanban-drag-over'));
+    const target = document.elementFromPoint(e.clientX, e.clientY);
+    const body = target?.closest('.kanban-col-body');
+    if (body && board.contains(body)) body.classList.add('kanban-drag-over');
+  };
+
+  const onMouseUp = async e => {
+    if (!_kanbanDrag.id) return;
+    const id = _kanbanDrag.id;
+    const moved = _kanbanDrag.moved;
+
+    if (_kanbanDrag.ghost) { _kanbanDrag.ghost.remove(); _kanbanDrag.ghost = null; }
+    if (_kanbanDrag.el) _kanbanDrag.el.classList.remove('kanban-dragging');
+    document.body.classList.remove('kanban-dragging-active');
+    board.querySelectorAll('.kanban-col-body').forEach(b => b.classList.remove('kanban-drag-over'));
+    _kanbanDrag = { id: null, type: null, el: null, ghost: null, startX: 0, startY: 0, moved: false };
+
+    if (!moved) return;
+
+    const target = document.elementFromPoint(e.clientX, e.clientY);
+    const body = target?.closest('.kanban-col-body');
+    if (!body || !board.contains(body)) return;
+    const colKey = body.closest('.kanban-col')?.dataset.col;
+    if (!colKey) return;
+
+    await onDrop(id, colKey);
+  };
+
+  board.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('mouseup', onMouseUp, { once: false });
+  // Clean up listeners when board is removed
+  const observer = new MutationObserver(() => {
+    if (!document.contains(board)) {
+      board.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      observer.disconnect();
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+}
 let resourcesViewMode = localStorage.getItem('resourcesViewMode') || 'table';
 let sprintsViewMode = localStorage.getItem('sprintsViewMode') || 'cards';
 let habitsViewMode  = localStorage.getItem('habitsViewMode')  || 'table';
@@ -249,7 +335,453 @@ let globalSearchDebounce = null;
 // Column visibility for table views
 const TASK_TABLE_COLS = ['title','project','status','priority','due','tags'];
 let taskTableCols = JSON.parse(localStorage.getItem('taskTableCols') || 'null') || [...TASK_TABLE_COLS];
+
+// Property visibility per task view mode
+const TASK_PROPS = [
+  { key: 'status',      label: 'Status' },
+  { key: 'priority',    label: 'Priority' },
+  { key: 'due_date',    label: 'Due Date' },
+  { key: 'project',     label: 'Project' },
+  { key: 'tags',        label: 'Tags' },
+  { key: 'story_points',label: 'Story Points' },
+  { key: 'category',    label: 'Category' },
+  { key: 'recurrence',  label: 'Recurrence' },
+  { key: 'description', label: 'Description' },
+];
+const TASK_PROP_DEFAULTS = TASK_PROPS.map(p => p.key); // all visible by default
+function getTaskVisProps(viewMode) {
+  const stored = localStorage.getItem(`taskVisProps_${viewMode}`);
+  return stored ? JSON.parse(stored) : [...TASK_PROP_DEFAULTS];
+}
+function setTaskVisProps(viewMode, keys) {
+  localStorage.setItem(`taskVisProps_${viewMode}`, JSON.stringify(keys));
+}
+function propVisible(viewMode, key) {
+  return getTaskVisProps(viewMode).includes(key);
+}
+
+// Generic property visibility for non-task entities (projects, goals, resources, notes)
+const ENTITY_PROPS = {
+  project:  [
+    { key: 'status',    label: 'Status' },
+    { key: 'goal',      label: 'Goal' },
+    { key: 'area',      label: 'Area' },
+    { key: 'progress',  label: 'Progress' },
+    { key: 'tags',      label: 'Tags' },
+  ],
+  goal:     [
+    { key: 'status',    label: 'Status' },
+    { key: 'type',      label: 'Type' },
+    { key: 'year',      label: 'Year' },
+    { key: 'progress',  label: 'Progress' },
+    { key: 'tags',      label: 'Tags' },
+  ],
+  resource: [
+    { key: 'type',      label: 'Type' },
+    { key: 'linked',    label: 'Linked' },
+    { key: 'url',       label: 'URL / Preview' },
+  ],
+  note:     [
+    { key: 'date',      label: 'Date' },
+    { key: 'category',  label: 'Category' },
+    { key: 'tags',      label: 'Tags' },
+  ],
+  sprint:   [
+    { key: 'status',    label: 'Status' },
+    { key: 'project',   label: 'Project' },
+    { key: 'dates',     label: 'Dates' },
+    { key: 'progress',  label: 'Progress' },
+  ],
+};
+function getEntityVisProps(entity) {
+  const stored = localStorage.getItem(`entityVisProps_${entity}`);
+  return stored ? JSON.parse(stored) : (ENTITY_PROPS[entity] || []).map(p => p.key);
+}
+function setEntityVisProps(entity, keys) {
+  localStorage.setItem(`entityVisProps_${entity}`, JSON.stringify(keys));
+}
+function entityPropVisible(entity, key) {
+  return getEntityVisProps(entity).includes(key);
+}
+
+// Build a reusable property visibility panel and wire it up.
+// anchorEl: the button/wrap element to append the panel to
+// props: array of {key, label}
+// getVis: () => string[]  — current visible keys
+// setVis: (keys) => void  — persist new keys
+// onToggle: () => void    — called after toggling (e.g. render())
+function bindPropVisPanel(anchorEl, props, getVis, setVis, onToggle) {
+  const existing = document.getElementById('prop-vis-panel');
+  if (existing) { existing.remove(); return; }
+  const eyeOn  = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+  const eyeOff = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+  const vis = getVis();
+  const panel = document.createElement('div');
+  panel.id = 'prop-vis-panel';
+  panel.className = 'prop-vis-panel';
+  panel.innerHTML = `<div style="padding:6px 12px 4px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Property visibility</div>` +
+    props.map(p => {
+      const on = vis.includes(p.key);
+      return `<div class="prop-vis-row${on?'':' hidden-prop'}" data-prop="${p.key}">
+        <span class="prop-vis-name">${p.label}</span>
+        <span class="prop-vis-eye">${on ? eyeOn : eyeOff}</span>
+      </div>`;
+    }).join('');
+  anchorEl.appendChild(panel);
+  panel.querySelectorAll('.prop-vis-row').forEach(row => {
+    row.onclick = () => {
+      const key = row.dataset.prop;
+      let cur = getVis();
+      if (cur.includes(key)) cur = cur.filter(k => k !== key);
+      else cur = [...cur, key];
+      setVis(cur);
+      row.classList.toggle('hidden-prop', !cur.includes(key));
+      row.querySelector('.prop-vis-eye').innerHTML = cur.includes(key) ? eyeOn : eyeOff;
+      onToggle();
+    };
+  });
+  document.addEventListener('click', function outsideClick(e) {
+    if (!panel.contains(e.target) && e.target !== anchorEl && !anchorEl.contains(e.target)) {
+      panel.remove();
+      document.removeEventListener('click', outsideClick);
+    }
+  });
+}
+
+// ── Custom property definitions (schema-level, stored in localStorage until backend ready) ──
+const CUSTOM_PROP_TYPES = [
+  { type: 'text',         label: 'Text',         icon: '<line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="15" y2="18"/>' },
+  { type: 'number',       label: 'Number',       icon: '<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>' },
+  { type: 'select',       label: 'Select',       icon: '<circle cx="12" cy="12" r="10"/><polyline points="8 12 11 15 16 9"/>' },
+  { type: 'multi_select', label: 'Multi-select', icon: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3" cy="6" r="2"/><circle cx="3" cy="12" r="2"/><circle cx="3" cy="18" r="2"/>' },
+  { type: 'status',       label: 'Status',       icon: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>' },
+  { type: 'date',         label: 'Date',         icon: '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>' },
+  { type: 'checkbox',     label: 'Checkbox',     icon: '<polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>' },
+  { type: 'url',          label: 'URL',          icon: '<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>' },
+  { type: 'phone',        label: 'Phone',        icon: '<path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 8.81 19.79 19.79 0 01.02 2.18 2 2 0 012 0h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L6.09 7.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/>' },
+  { type: 'email',        label: 'Email',        icon: '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>' },
+  { type: 'relation',     label: 'Relation',     icon: '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="15 6 21 12 15 18"/><polyline points="9 6 3 12 9 18"/>' },
+];
+
+function getCustomPropDefs(entity) {
+  const stored = localStorage.getItem(`customPropDefs_${entity}`);
+  return stored ? JSON.parse(stored) : [];
+}
+
+function setCustomPropDefs(entity, defs) {
+  localStorage.setItem(`customPropDefs_${entity}`, JSON.stringify(defs));
+}
+
+function getCustomPropValues(entity, recordId) {
+  const stored = localStorage.getItem(`customPropVals_${entity}_${recordId}`);
+  return stored ? JSON.parse(stored) : {};
+}
+
+function setCustomPropValue(entity, recordId, key, value) {
+  const vals = getCustomPropValues(entity, recordId);
+  vals[key] = value;
+  localStorage.setItem(`customPropVals_${entity}_${recordId}`, JSON.stringify(vals));
+}
+
+function customPropCell(entity, recordId, def) {
+  const vals = getCustomPropValues(entity, recordId);
+  const val = vals[def.key] ?? '';
+  if (def.type === 'checkbox') {
+    return `<td><input type="checkbox" class="custom-prop-check" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" ${val?'checked':''}></td>`;
+  }
+  if (def.type === 'date') {
+    return `<td><input type="date" class="custom-prop-input" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" value="${val}" style="font-size:11px;border:none;background:transparent;color:var(--text-primary);width:110px"></td>`;
+  }
+  return `<td><span class="custom-prop-text" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" contenteditable="true" style="font-size:12px;outline:none;min-width:60px;display:inline-block">${val}</span></td>`;
+}
+
+function addPropColumnHeader(entity) {
+  return `<th class="add-prop-th" style="position:relative;cursor:pointer;width:32px;text-align:center">
+    <span class="add-prop-btn" data-entity="${entity}" style="font-size:16px;color:var(--text-muted);cursor:pointer;user-select:none;padding:0 8px">+</span>
+  </th>`;
+}
+
+function bindAddPropBtn(entity, onAdd) {
+  document.querySelectorAll(`.add-prop-btn[data-entity="${entity}"]`).forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const existing = document.getElementById('add-prop-picker');
+      if (existing) { existing.remove(); return; }
+      const picker = document.createElement('div');
+      picker.id = 'add-prop-picker';
+      picker.className = 'prop-vis-panel';
+      picker.style.cssText = 'position:absolute;z-index:300;min-width:280px;padding:8px 6px 6px';
+      const typeSvg = (iconPath) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconPath}</svg>`;
+      picker.innerHTML = `<div style="padding:2px 8px 8px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Select type</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px">` +
+        CUSTOM_PROP_TYPES.map(pt => `<div class="prop-type-row" data-type="${pt.type}">
+          <span class="prop-type-icon">${typeSvg(pt.icon)}</span>
+          <span>${pt.label}</span>
+        </div>`).join('') +
+        `</div>`;
+      // Anchor: use closest th (table header), or the btn's parent as relative anchor
+      const anchor = btn.closest('th') || btn.parentElement;
+      anchor.style.position = 'relative';
+      anchor.appendChild(picker);
+      picker.querySelectorAll('.prop-type-row').forEach(row => {
+        row.onclick = (ev) => {
+          ev.stopPropagation();
+          picker.remove();
+          const propType = row.dataset.type;
+          const name = prompt(`Name for the new ${propType} property:`);
+          if (!name || !name.trim()) return;
+          const key = name.trim().toLowerCase().replace(/\s+/g, '_');
+          const defs = getCustomPropDefs(entity);
+          if (defs.some(d => d.key === key)) { alert('A property with that name already exists.'); return; }
+          defs.push({ key, label: name.trim(), type: propType });
+          setCustomPropDefs(entity, defs);
+          onAdd();
+        };
+      });
+      document.addEventListener('click', function outsideClick(ev) {
+        if (!picker.contains(ev.target) && ev.target !== btn) {
+          picker.remove();
+          document.removeEventListener('click', outsideClick);
+        }
+      });
+    };
+  });
+}
+
+function bindCustomPropCells() {
+  document.querySelectorAll('.custom-prop-check').forEach(el => {
+    el.onchange = () => setCustomPropValue(el.dataset.entity, el.dataset.recordId, el.dataset.propKey, el.checked);
+  });
+  document.querySelectorAll('.custom-prop-input').forEach(el => {
+    el.onchange = () => setCustomPropValue(el.dataset.entity, el.dataset.recordId, el.dataset.propKey, el.value);
+  });
+  document.querySelectorAll('.custom-prop-text').forEach(el => {
+    el.onblur = () => setCustomPropValue(el.dataset.entity, el.dataset.recordId, el.dataset.propKey, el.textContent.trim());
+  });
+}
 const CAL_EVENT_TYPES = ['task','goal','project','sprint'];
+
+// ── Prop panel order persistence ──────────────────────────────────────────
+function getEntityPropOrder(entity) {
+  const s = localStorage.getItem(`propOrder_${entity}`);
+  return s ? JSON.parse(s) : null;
+}
+function setEntityPropOrder(entity, order) {
+  localStorage.setItem(`propOrder_${entity}`, JSON.stringify(order));
+}
+
+// ── buildInlinePropPanel ──────────────────────────────────────────────────
+// Renders a .inline-prop-panel div with built-in + custom prop rows, each
+// with a drag handle for reordering. builtinDefs is an array of:
+//   { key, label, icon, getValue(recordId), renderValue(val), onEdit(rowEl, recordId, patchFn) }
+// onReorder(newOrderKeys) is called after drag-drop.
+// Returns HTML string; call bindInlinePropPanel(entity, recordId, ...) after inserting into DOM.
+function buildInlinePropPanel(entity, recordId, builtinDefs) {
+  const order = getEntityPropOrder(entity);
+  const customDefs = getCustomPropDefs(entity);
+  const customVals = recordId != null ? getCustomPropValues(entity, recordId) : {};
+
+  // Merge all def keys in order
+  const allBuiltinKeys = builtinDefs.map(d => d.key);
+  const allCustomKeys = customDefs.map(d => d.key);
+  const allKeys = [...allBuiltinKeys, ...allCustomKeys];
+  let orderedKeys;
+  if (order) {
+    // Merge: known order first, then any new keys not in order
+    const known = order.filter(k => allKeys.includes(k));
+    const novel = allKeys.filter(k => !order.includes(k));
+    orderedKeys = [...known, ...novel];
+  } else {
+    orderedKeys = allKeys;
+  }
+
+  const propTypeIcon = (type) => {
+    const pt = CUSTOM_PROP_TYPES.find(p => p.type === type);
+    if (!pt) return '';
+    return `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${pt.icon}</svg>`;
+  };
+
+  const rows = orderedKeys.map(key => {
+    const builtin = builtinDefs.find(d => d.key === key);
+    const custom = customDefs.find(d => d.key === key);
+    if (!builtin && !custom) return '';
+
+    const labelText = builtin ? builtin.label : custom.label;
+    const iconHtml = builtin
+      ? (builtin.icon || '')
+      : propTypeIcon(custom.type);
+    const valHtml = builtin
+      ? (builtin.renderValue ? builtin.renderValue() : '<span class="empty">—</span>')
+      : (() => {
+          const val = customVals[key] ?? '';
+          if (custom.type === 'checkbox') {
+            return `<input type="checkbox" class="icp-check" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" ${val?'checked':''}
+              style="cursor:pointer;accent-color:var(--accent)" onclick="event.stopPropagation()">`;
+          }
+          return val
+            ? `<span>${String(val).replace(/</g,'&lt;')}</span>`
+            : `<span class="empty">—</span>`;
+        })();
+    const isCustom = !!custom;
+    return `<div class="inline-prop-row" data-prop-key="${key}" data-is-custom="${isCustom}">
+      <span class="inline-prop-drag-handle" title="Drag to reorder">⠿</span>
+      <div class="inline-prop-label">${iconHtml}${labelText}</div>
+      <div class="inline-prop-value${!valHtml || valHtml.includes('class="empty"') ? ' empty' : ''}" data-prop-key="${key}">${valHtml}</div>
+      ${isCustom ? `<button class="prop-del-btn btn btn-sm btn-ghost icp-del-btn" data-entity="${entity}" data-prop-key="${key}" title="Remove property" style="opacity:0;font-size:13px">×</button>` : ''}
+    </div>`;
+  }).filter(Boolean).join('');
+
+  const addBtnHtml = `<div class="inline-prop-add-row">
+    <span class="inline-prop-add-btn add-prop-btn" data-entity="${entity}" data-record-id="${recordId || ''}">
+      + Add property
+    </span>
+  </div>`;
+
+  return `<div class="inline-prop-panel" data-entity="${entity}" data-record-id="${recordId || ''}">${rows}${addBtnHtml}</div>`;
+}
+
+// ── bindInlinePropPanel ───────────────────────────────────────────────────
+// Wires drag-to-reorder, custom prop editing, delete, and the Add button.
+// builtinEditFns: { [key]: (rowEl, valueEl) => void } — called on value click
+// onRerender: () => void — called to rebuild the panel after any change
+function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
+  const panel = document.querySelector(`.inline-prop-panel[data-entity="${entity}"]`);
+  if (!panel) return;
+
+  // Wire builtin value clicks
+  panel.querySelectorAll('.inline-prop-row[data-is-custom="false"] .inline-prop-value').forEach(valEl => {
+    const key = valEl.dataset.propKey;
+    const fn = builtinEditFns[key];
+    if (fn) valEl.onclick = (e) => { e.stopPropagation(); fn(valEl); };
+  });
+
+  // Wire custom prop value clicks (inline edit)
+  panel.querySelectorAll('.inline-prop-row[data-is-custom="true"] .inline-prop-value').forEach(valEl => {
+    const key = valEl.dataset.propKey;
+    const defs = getCustomPropDefs(entity);
+    const def = defs.find(d => d.key === key);
+    if (!def) return;
+    if (def.type === 'checkbox') return; // handled by input directly
+    valEl.onclick = (e) => {
+      e.stopPropagation();
+      if (valEl.querySelector('input,textarea')) return;
+      const currentVals = getCustomPropValues(entity, recordId);
+      const cur = currentVals[key] ?? '';
+      const inp = def.type === 'date'
+        ? Object.assign(document.createElement('input'), { type: 'date', value: cur })
+        : def.type === 'number'
+          ? Object.assign(document.createElement('input'), { type: 'number', value: cur })
+          : Object.assign(document.createElement('input'), { type: 'text', value: cur, placeholder: def.label });
+      inp.style.cssText = 'width:100%;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
+      valEl.innerHTML = '';
+      valEl.appendChild(inp);
+      inp.focus();
+      const save = () => {
+        setCustomPropValue(entity, recordId, key, inp.value);
+        onRerender();
+      };
+      inp.onblur = save;
+      inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); if (ke.key === 'Escape') { valEl.innerHTML = cur || '<span class="empty">—</span>'; } };
+    };
+  });
+
+  // Wire custom checkbox changes
+  panel.querySelectorAll('.icp-check').forEach(chk => {
+    chk.onchange = () => setCustomPropValue(chk.dataset.entity, chk.dataset.recordId, chk.dataset.propKey, chk.checked);
+  });
+
+  // Wire delete buttons (remove custom prop def + values)
+  panel.querySelectorAll('.icp-del-btn').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const key = btn.dataset.propKey;
+      if (!confirm(`Remove property "${key}"?`)) return;
+      const defs = getCustomPropDefs(entity).filter(d => d.key !== key);
+      setCustomPropDefs(entity, defs);
+      // Remove from order
+      const ord = getEntityPropOrder(entity);
+      if (ord) setEntityPropOrder(entity, ord.filter(k => k !== key));
+      onRerender();
+    };
+  });
+
+  // Wire Add property button
+  bindAddPropBtn(entity, onRerender);
+
+  // Wire drag-to-reorder
+  bindPropPanelDrag(panel, entity, onRerender);
+}
+
+// ── bindPropPanelDrag ─────────────────────────────────────────────────────
+// Mouse-based drag-to-reorder for .inline-prop-row rows inside panelEl.
+// On drop, saves new order to localStorage and calls onRerender.
+function bindPropPanelDrag(panelEl, entity, onRerender) {
+  let dragRow = null, dragIdx = -1, placeholder = null, startY = 0;
+
+  panelEl.querySelectorAll('.inline-prop-drag-handle').forEach(handle => {
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const row = handle.closest('.inline-prop-row');
+      if (!row) return;
+      dragRow = row;
+      const rows = [...panelEl.querySelectorAll('.inline-prop-row')];
+      dragIdx = rows.indexOf(row);
+      startY = e.clientY;
+
+      // Create placeholder
+      placeholder = document.createElement('div');
+      placeholder.className = 'inline-prop-row';
+      placeholder.style.cssText = `height:${row.offsetHeight}px;opacity:0.3;background:var(--accent-glow);border-radius:var(--radius-sm)`;
+
+      row.style.cssText += ';opacity:0.4;pointer-events:none;';
+
+      const onMove = (ev) => {
+        const currentRows = [...panelEl.querySelectorAll('.inline-prop-row:not([style*="pointer-events"])')];
+        const panelRect = panelEl.getBoundingClientRect();
+        const relY = ev.clientY - panelRect.top;
+        let insertBefore = null;
+        for (const r of currentRows) {
+          const rRect = r.getBoundingClientRect();
+          const rMid = rRect.top - panelRect.top + rRect.height / 2;
+          if (relY < rMid) { insertBefore = r; break; }
+        }
+        if (insertBefore) panelEl.insertBefore(placeholder, insertBefore);
+        else {
+          // Insert before add-row
+          const addRow = panelEl.querySelector('.inline-prop-add-row');
+          panelEl.insertBefore(placeholder, addRow || null);
+        }
+      };
+
+      panelEl.insertBefore(placeholder, row.nextSibling);
+
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if (!dragRow || !placeholder) return;
+
+        // Determine final order from current DOM
+        const finalRows = [...panelEl.querySelectorAll('.inline-prop-row')];
+        const phIdx = finalRows.indexOf(placeholder);
+        // Insert dragRow where placeholder is
+        panelEl.insertBefore(dragRow, placeholder);
+        placeholder.remove();
+        dragRow.style.opacity = '';
+        dragRow.style.pointerEvents = '';
+
+        // Save new order
+        const newOrder = [...panelEl.querySelectorAll('.inline-prop-row')].map(r => r.dataset.propKey).filter(Boolean);
+        setEntityPropOrder(entity, newOrder);
+        onRerender();
+        dragRow = null; placeholder = null;
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+}
+
 let calEventTypes = JSON.parse(localStorage.getItem('calEventTypes') || 'null') || [...CAL_EVENT_TYPES];
 
 /* ─── Utilities ──────────────────────────────────────────────────────── */
@@ -368,6 +900,27 @@ function downloadJSON(data, filename) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+async function showJSONModal(endpoint, filename) {
+  const data = await api('GET', endpoint);
+  const json = JSON.stringify(data, null, 2);
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `<div class="modal json-modal open" style="position:static;transform:none;opacity:1;visibility:visible;max-width:720px;width:95vw;max-height:85vh;overflow:hidden">
+    <div class="modal-header">
+      <span class="modal-title">${filename}</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-ghost btn-sm" id="json-download-btn">Download</button>
+        <button class="modal-close" id="json-close-btn">×</button>
+      </div>
+    </div>
+    <pre class="json-preview">${json.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('#json-close-btn').onclick = () => modal.remove();
+  modal.querySelector('#json-download-btn').onclick = () => downloadJSON(data, filename);
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
 }
 
 /* Parse query string like "status:todo priority:high due:before:2025-12-31 text" */
@@ -563,15 +1116,14 @@ function notionFilterBar(containerId, filterDefs, sortDefs, state, onChange) {
         ${filterDefs.map(fd => `
           <div class="filter-dropdown-section">
             <span class="filter-dropdown-label">${fd.label}</span>
+            <div class="filter-pill-row">
             ${fd.options.map(opt => {
-              const checked = fd.multi
+              const active = fd.multi
                 ? (state.filters[fd.key] && state.filters[fd.key].has(String(opt.value)))
                 : String(state.filters[fd.key]) === String(opt.value);
-              return `<div class="filter-dropdown-opt">
-                <input type="checkbox" data-filter-key="${fd.key}" data-filter-val="${opt.value}" data-filter-multi="${fd.multi?'1':'0'}" ${checked?'checked':''} />
-                <span>${opt.label}</span>
-              </div>`;
+              return `<button class="filter-pill-btn${active ? ' active' : ''}" data-filter-key="${fd.key}" data-filter-val="${opt.value}" data-filter-multi="${fd.multi?'1':'0'}">${opt.label}</button>`;
             }).join('')}
+            </div>
           </div>`).join('')}
       </div>
     </div>
@@ -630,21 +1182,24 @@ function notionFilterBar(containerId, filterDefs, sortDefs, state, onChange) {
   const filterDrop = document.getElementById(`${containerId}-filter-dropdown`);
   if (filterAddBtn && filterDrop) {
     filterAddBtn.onclick = (e) => { e.stopPropagation(); filterDrop.classList.toggle('hidden'); sortDrop?.classList.add('hidden'); };
-    filterDrop.querySelectorAll('input[data-filter-key]').forEach(chk => {
-      chk.onchange = (e) => {
+    filterDrop.querySelectorAll('.filter-pill-btn').forEach(btn => {
+      btn.onclick = (e) => {
         e.stopPropagation();
-        const key = chk.dataset.filterKey;
-        const val = chk.dataset.filterVal;
-        const isMulti = chk.dataset.filterMulti === '1';
+        const key = btn.dataset.filterKey;
+        const val = btn.dataset.filterVal;
+        const isMulti = btn.dataset.filterMulti === '1';
         if (isMulti) {
           if (!state.filters[key]) state.filters[key] = new Set();
-          if (chk.checked) state.filters[key].add(val);
-          else state.filters[key].delete(val);
+          if (state.filters[key].has(val)) state.filters[key].delete(val);
+          else state.filters[key].add(val);
           if (state.filters[key].size === 0) delete state.filters[key];
         } else {
-          if (chk.checked) state.filters[key] = val;
-          else delete state.filters[key];
+          if (state.filters[key] === val) delete state.filters[key];
+          else state.filters[key] = val;
         }
+        btn.classList.toggle('active', isMulti
+          ? !!(state.filters[key] && state.filters[key].has(val))
+          : state.filters[key] === val);
         refreshChips();
         onChange();
       };
@@ -723,27 +1278,32 @@ function getSelectedTagIds() {
   return [...document.querySelectorAll('.modal-body .tag-chip.selected, #form-slideover-body .tag-chip.selected')].map(c => parseInt(c.dataset.tagId));
 }
 
-function taskRowHtml(task, showProject, indent) {
+function taskRowHtml(task, showProject, indent, viewMode) {
+  const vm = viewMode || 'list';
+  const vis = (key) => propVisible(vm, key);
   const done = task.status === 'done';
   const titleCls = done ? 'task-title-text done' : 'task-title-text';
-  const projBadge = showProject && task.project_title
+  const projBadge = showProject && task.project_title && vis('project')
     ? `<span class="task-project">${task.project_title}</span>` : '';
-  const dueBadge = dueBadgeHtml(task.due_date);
+  const dueBadge = vis('due_date') ? dueBadgeHtml(task.due_date) : '';
   const hasChildren = (task.sub_task_count || task.subtask_count || 0) > 0;
   const isExpanded = expandedTasks.has(String(task.id));
   const chevronSvg = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,3 5,7 8,3"/></svg>`;
   const toggleArrow = `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${task.id}" title="Toggle subtasks">${chevronSvg}</span>`;
-  const tagChips = (task.tags || []).slice(0, 2).map(t => tagHtml(t)).join('');
-  const recurBadge = task.recur_interval > 0 ? `<span class="task-recur-badge" title="Repeats every ${task.recur_interval} ${task.recur_unit||'days'}">↺</span>` : '';
+  const tagChips = vis('tags') ? (task.tags || []).slice(0, 2).map(t => tagHtml(t)).join('') : '';
+  const recurBadge = vis('recurrence') && task.recur_interval > 0 ? `<span class="task-recur-badge" title="Repeats every ${task.recur_interval} ${task.recur_unit||'days'}">↺</span>` : '';
   const indentStyle = indent ? `padding-left:${indent * 24 + 12}px` : '';
 
   // Category color dot
   let catColor = '';
-  if (task.category_id) {
+  if (vis('category') && task.category_id) {
     const cat = allCategories.find(c => c.id === task.category_id);
     catColor = cat ? (COLOR_HEX[cat.color] || cat.color || '') : '';
   }
   const catDot = catColor ? `<span class="cat-dot" style="background:${catColor}" title="${task.category||''}"></span>` : '';
+  const statusChip = vis('status') ? statusBadge(task.status) : '';
+  const priorityChip = vis('priority') ? priorityBadge(task.priority) : '';
+  const storyPts = vis('story_points') && task.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${task.story_points}pt</span>` : '';
 
   return `<li class="task-row ${indent ? 'task-row-sub' : ''}" data-task-id="${task.id}" style="${indentStyle}">
     ${toggleArrow}
@@ -751,22 +1311,22 @@ function taskRowHtml(task, showProject, indent) {
     ${catDot}
     <div class="task-content">
       <div class="${titleCls}"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${task.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${task.title} ${recurBadge}</div>
-      <div class="task-meta-row">${projBadge}${dueBadge}${tagChips}</div>
+      <div class="task-meta-row">${projBadge}${dueBadge}${tagChips}${statusChip}${priorityChip}${storyPts}</div>
     </div>
-    <span class="task-row-due-right">${task.due_date ? fmtDate(task.due_date) : ''}</span>
+    <span class="task-row-due-right">${vis('due_date') && task.due_date ? fmtDate(task.due_date) : ''}</span>
   </li>`;
 }
 
 // Module-level tree row builder — used by dashboard and renderTasks list view
-function buildTaskTreeRows(tasks, allTasks, depth, showProject) {
+function buildTaskTreeRows(tasks, allTasks, depth, showProject, viewMode) {
   let html = '';
   for (const t of tasks) {
-    html += taskRowHtml(t, showProject && depth === 0, depth);
+    html += taskRowHtml(t, showProject && depth === 0, depth, viewMode);
     const isExpanded = expandedTasks.has(String(t.id));
     const children = allTasks.filter(s => s.parent_task_id === t.id);
     if (isExpanded) {
       if (children.length > 0) {
-        html += buildTaskTreeRows(children, allTasks, depth + 1, false);
+        html += buildTaskTreeRows(children, allTasks, depth + 1, false, viewMode);
       }
       html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
         <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px;opacity:0.6">+ Add Subtask</button>
@@ -1286,18 +1846,21 @@ async function renderTasks() {
     </div>
   </div>`;
 
-  // Columns picker: table cols for list/table view; kanban column visibility for kanban view
+  // Columns picker: only shown for kanban view to control column visibility
   const isKanban = tasksViewMode === 'kanban';
   const kanbanCols = isKanban ? (tasksKanbanGroupBy === 'status' ? TASK_STATUSES : TASK_PRIORITIES) : [];
   const hiddenForGroup = isKanban ? (kanbanHiddenCols[tasksKanbanGroupBy] || []) : [];
-  const colPickerHtml = `<div class="col-picker-wrap" style="position:relative" id="col-picker-wrap">
+  const colPickerHtml = `<div class="col-picker-wrap" style="position:relative${isKanban?'':';display:none'}" id="col-picker-wrap">
     <button class="btn btn-sm btn-ghost" id="col-picker-btn" title="Show/hide columns">⊟ Columns</button>
     <div class="col-picker-dropdown hidden" id="col-picker-dropdown">
-      ${isKanban
-        ? kanbanCols.map(col => `<label class="col-picker-item"><input type="checkbox" class="kanban-col-check" data-col="${col}" ${hiddenForGroup.includes(col)?'':'checked'}> ${col.replace(/_/g,' ')}</label>`).join('')
-        : TASK_TABLE_COLS.map(col => `<label class="col-picker-item"><input type="checkbox" class="col-picker-check" data-col="${col}" ${taskTableCols.includes(col)?'checked':''}> ${col}</label>`).join('')
-      }
+      ${kanbanCols.map(col => `<label class="col-picker-item"><input type="checkbox" class="kanban-col-check" data-col="${col}" ${hiddenForGroup.includes(col)?'':'checked'}> ${col.replace(/_/g,' ')}</label>`).join('')}
     </div>
+  </div>`;
+
+  // Property visibility button (eye icon) — shown for list, table, kanban, dashboard
+  const eyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+  const propVisHtml = `<div class="prop-vis-wrap" id="prop-vis-wrap">
+    <button class="btn btn-sm btn-ghost" id="prop-vis-btn" title="Property visibility">${eyeSvg}</button>
   </div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
@@ -1307,6 +1870,7 @@ async function renderTasks() {
         ${viewToggle}
         ${kanbanGroupByHtml}
         ${colPickerHtml}
+        ${propVisHtml}
         <button class="btn btn-primary" id="new-task-btn">+ New Task</button>
       </div>
     </div>
@@ -1352,9 +1916,27 @@ async function renderTasks() {
       btn.classList.add('active');
       const gbWrap = document.getElementById('kanban-groupby-wrap');
       if (gbWrap) gbWrap.style.display = tasksViewMode === 'kanban' ? '' : 'none';
+      const colWrap = document.getElementById('col-picker-wrap');
+      if (colWrap) colWrap.style.display = tasksViewMode === 'kanban' ? '' : 'none';
       render();
     };
   });
+
+  // Property visibility panel (tasks — applies to list, table, kanban, dashboard)
+  const propVisBtn = document.getElementById('prop-vis-btn');
+  const propVisWrap = document.getElementById('prop-vis-wrap');
+  if (propVisBtn && propVisWrap) {
+    propVisBtn.onclick = (e) => {
+      e.stopPropagation();
+      bindPropVisPanel(
+        propVisWrap,
+        TASK_PROPS,
+        () => getTaskVisProps(tasksViewMode),
+        (keys) => setTaskVisProps(tasksViewMode, keys),
+        render
+      );
+    };
+  }
 
   // Kanban group-by dropdown
   const kanbanGbBtn = document.getElementById('kanban-groupby-btn');
@@ -1388,21 +1970,25 @@ async function renderTasks() {
 
   function buildListView(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">✓</div><div class="empty-state-text">No tasks found</div></div>`;
-    return '<ul class="task-list">' + buildTaskTreeRows(list, allTasksFull, 0, true) + '</ul>';
+    return '<ul class="task-list">' + buildTaskTreeRows(list, allTasksFull, 0, true, 'list') + '</ul>';
   }
 
   function buildTableView(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">✓</div><div class="empty-state-text">No tasks found</div></div>`;
 
-    const cols = taskTableCols.length ? taskTableCols : TASK_TABLE_COLS;
-    const colDef = {
-      title:    { header: 'Title',    cell: (t, depth, toggleBtn) => `<td><div class="task-title-cell" style="padding-left:${depth*20}px">${toggleBtn}<span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span></div></td>` },
-      project:  { header: 'Project',  cell: (t) => `<td>${t.project_title ? `<span class="badge badge-todo">${t.project_title}</span>` : '—'}</td>` },
-      status:   { header: 'Status',   cell: (t) => { const sopts = TASK_STATUSES.map(s => `<option value="${s}" ${t.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join(''); return `<td><select class="inline-status-select" data-task-id="${t.id}" style="font-size:11px;padding:2px 6px;border-radius:3px">${sopts}</select></td>`; } },
-      priority: { header: 'Priority', cell: (t) => `<td>${priorityBadge(t.priority)}</td>` },
-      due:      { header: 'Due',      cell: (t) => `<td class="${isOverdue(t.due_date)?'task-due overdue':isToday(t.due_date)?'task-due today':''}">${fmtDate(t.due_date)||'—'}</td>` },
-      tags:     { header: 'Tags',     cell: (t) => `<td>${(t.tags||[]).map(tg=>tagHtml(tg)).join('')}</td>` },
-    };
+    const vis = (key) => propVisible('table', key);
+    const allColDef = [
+      { key: 'project',      header: 'Project',      cell: (t) => `<td>${t.project_title ? `<span class="badge badge-todo">${t.project_title}</span>` : '—'}</td>` },
+      { key: 'status',       header: 'Status',        cell: (t) => { const sopts = TASK_STATUSES.map(s => `<option value="${s}" ${t.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join(''); return `<td><select class="inline-status-select" data-task-id="${t.id}" style="font-size:11px;padding:2px 6px;border-radius:3px">${sopts}</select></td>`; } },
+      { key: 'priority',     header: 'Priority',      cell: (t) => `<td>${priorityBadge(t.priority)}</td>` },
+      { key: 'due_date',     header: 'Due',           cell: (t) => `<td class="${isOverdue(t.due_date)?'task-due overdue':isToday(t.due_date)?'task-due today':''}">${fmtDate(t.due_date)||'—'}</td>` },
+      { key: 'tags',         header: 'Tags',          cell: (t) => `<td>${(t.tags||[]).map(tg=>tagHtml(tg)).join('')}</td>` },
+      { key: 'story_points', header: 'Points',        cell: (t) => `<td>${t.story_points ? `<span style="font-size:11px;border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '—'}</td>` },
+      { key: 'category',     header: 'Category',      cell: (t) => `<td>${t.category ? `<span style="font-size:11px;color:var(--text-muted)">${t.category}</span>` : '—'}</td>` },
+      { key: 'recurrence',   header: 'Recurrence',    cell: (t) => `<td>${t.recur_interval > 0 ? `<span class="task-recur-badge">↺ every ${t.recur_interval} ${(t.recur_unit||'').toLowerCase()}</span>` : '—'}</td>` },
+      { key: 'description',  header: 'Description',   cell: (t) => `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--text-muted)">${t.description||'—'}</td>` },
+    ];
+    const visibleCols = allColDef.filter(c => vis(c.key));
 
     function tableRows(tasks, depth) {
       let html = '';
@@ -1414,13 +2000,15 @@ async function renderTasks() {
         const toggleBtn = hasChildren
           ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${t.id}" title="Toggle subtasks">${chevronSvg}</span>`
           : `<span class="task-add-sub-btn" data-add-sub-id="${t.id}" title="Add subtask">${chevronSvg}</span>`;
+        const titleCell = `<td><div class="task-title-cell" style="padding-left:${depth*20}px">${toggleBtn}<span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span></div></td>`;
+        const customCols = getCustomPropDefs('task').map(def => customPropCell('task', t.id, def)).join('');
         html += `<tr class="task-table-row" data-task-id="${t.id}" style="position:relative">
-          ${cols.map(c => colDef[c] ? (c === 'title' ? colDef.title.cell(t, depth, toggleBtn) : colDef[c].cell(t)) : '').join('')}
+          ${titleCell}${visibleCols.map(c => c.cell(t)).join('')}${customCols}
           <td><button class="btn btn-sm btn-danger task-del-btn" data-task-id="${t.id}">×</button></td>
         </tr>`;
         if (isExpanded && children.length > 0) {
           html += tableRows(children, depth + 1);
-          const colspan = cols.length + 1;
+          const colspan = visibleCols.length + 2;
           html += `<tr class="task-quick-add-row task-table-add-row" data-add-parent="${t.id}">
             <td colspan="${colspan}" style="padding:4px 8px 4px ${(depth+1)*20+8}px">
               <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:12px;color:var(--color-text-secondary)">+ Add Subtask</button>
@@ -1431,7 +2019,8 @@ async function renderTasks() {
       return html;
     }
 
-    const headers = cols.map(c => colDef[c] ? `<th>${colDef[c].header}</th>` : '').join('') + '<th></th>';
+    const customHeaders = getCustomPropDefs('task').map(d => `<th>${d.label}</th>`).join('');
+    const headers = `<th>Title</th>` + visibleCols.map(c => `<th>${c.header}</th>`).join('') + customHeaders + '<th></th>' + addPropColumnHeader('task');
     return `<div class="notion-table-wrap"><table class="notion-table">
       <thead><tr>${headers}</tr></thead>
       <tbody>${tableRows(list, 0)}</tbody></table></div>`;
@@ -1500,29 +2089,30 @@ async function renderTasks() {
       const tasks = grouped[colKey] || [];
       const cards = tasks.map(t => {
         const dueCls = isOverdue(t.due_date) ? 'overdue' : isToday(t.due_date) ? 'today' : '';
-        return `<div class="kanban-card" data-task-id="${t.id}" draggable="true"
-          ondragstart="event.dataTransfer.setData('text/plain',${t.id});event.currentTarget.classList.add('kanban-dragging')"
-          ondragend="event.currentTarget.classList.remove('kanban-dragging')"
-          style="cursor:pointer">
-          <div class="kanban-card-title">${t.title}${t.recur_interval>0?' <span class="task-recur-badge">↺</span>':''}</div>
-          ${t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t.project_title}</div>` : ''}
-          <div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">
-            ${groupBy === 'status' ? priorityBadge(t.priority) : statusBadge(t.status)}
-            ${t.due_date ? `<span class="task-due ${dueCls}" style="font-size:10px">${fmtDate(t.due_date)}</span>` : ''}
-          </div>
+        const kVis = (key) => propVisible('kanban', key);
+        const recurBadge = kVis('recurrence') && t.recur_interval > 0 ? ' <span class="task-recur-badge">↺</span>' : '';
+        const projLine = kVis('project') && t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t.project_title}</div>` : '';
+        const statusLine = kVis('status') ? (groupBy === 'status' ? (kVis('priority') ? priorityBadge(t.priority) : '') : statusBadge(t.status)) : '';
+        const dueLine = kVis('due_date') && t.due_date ? `<span class="task-due ${dueCls}" style="font-size:10px">${fmtDate(t.due_date)}</span>` : '';
+        const tagLine = kVis('tags') ? (t.tags||[]).slice(0,2).map(tg => tagHtml(tg)).join('') : '';
+        const storyPts = kVis('story_points') && t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
+        const metaLine = [statusLine, dueLine, tagLine, storyPts].some(Boolean)
+          ? `<div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">${statusLine}${dueLine}${tagLine}${storyPts}</div>` : '';
+        return `<div class="kanban-card" data-task-id="${t.id}" style="cursor:grab">
+          <div class="kanban-card-title">${t.title}${recurBadge}</div>
+          ${projLine}${metaLine}
         </div>`;
       }).join('');
       const label = colKey.replace(/_/g,' ');
       const colColor = getValueColor(groupBy === 'status' ? 'taskStatuses' : 'taskPriorities', colKey);
-      return `<div class="kanban-col" data-col="${colKey}"
-          ondragover="event.preventDefault();event.currentTarget.classList.add('kanban-drag-over')"
-          ondragleave="event.currentTarget.classList.remove('kanban-drag-over')"
-          ondrop="event.preventDefault();event.currentTarget.classList.remove('kanban-drag-over');window._taskKanbanDrop(event,'${colKey}')">
+      return `<div class="kanban-col" data-col="${colKey}">
         <div class="kanban-col-header" style="${colColor ? `color:${colColor}` : ''}">
           <span>${label}</span>
           <span class="kanban-count">${tasks.length}</span>
         </div>
-        <div class="kanban-col-body">${cards || '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No tasks</div>'}</div>
+        <div class="kanban-col-body">
+          ${cards || '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No tasks</div>'}
+        </div>
         <button class="btn btn-sm btn-ghost kanban-add-btn" data-status="${colKey}" style="width:100%;margin-top:8px;font-size:12px">+ Add task</button>
       </div>`;
     }).join('');
@@ -1534,15 +2124,17 @@ async function renderTasks() {
     return `<div style="overflow-x:auto;width:100%"><div class="kanban-board" style="${boardStyle}" data-groupby="${groupBy}">${colsHtml}</div></div>`;
   }
 
-  window._taskKanbanDrop = async (e, newColKey) => {
-    const taskId = e.dataTransfer.getData('text/plain');
-    if (!taskId) return;
-    // Read groupBy from the board element so it's always current
+  function bindTaskKanban() {
     const board = document.querySelector('.kanban-board[data-groupby]');
-    const patchField = board ? board.dataset.groupby : tasksKanbanGroupBy;
-    await api('PATCH', `/api/tasks/${taskId}`, { [patchField]: newColKey });
-    renderTasks();
-  };
+    if (!board) return;
+    const groupBy = board.dataset.groupby;
+    bindKanbanDrag(board, '.kanban-card[data-task-id]', 'taskId', async (taskId, colKey) => {
+      await api('PATCH', `/api/tasks/${taskId}`, { [groupBy]: colKey });
+      const t = tasks.find(x => String(x.id) === String(taskId));
+      if (t) t[groupBy] = colKey;
+      render();
+    });
+  }
 
   let filterBarInitialized = false;
   function render() {
@@ -1577,6 +2169,10 @@ async function renderTasks() {
       }
     }
     bindTasksContentEvents();
+    if (tasksViewMode === 'table') {
+      bindAddPropBtn('task', render);
+      bindCustomPropCells();
+    }
     // Inject entity icons into task title slots — include subtask ids too
     injectListIcons('task', allTasksFull.map(t => t.id));
   }
@@ -1718,10 +2314,11 @@ async function renderTasks() {
       btn.onclick = () => {
         const presets = {};
         if (tasksKanbanGroupBy === 'status') presets.status = btn.dataset.status;
-        else if (tasksKanbanGroupBy === 'priority') presets.priority = btn.dataset.status; // dataset.status holds the col key
+        else if (tasksKanbanGroupBy === 'priority') presets.priority = btn.dataset.status;
         showNewTaskModal(presets, () => renderTasks());
       };
     });
+    bindTaskKanban();
 
     // Calendar nav
     document.getElementById('cal-prev')?.addEventListener('click', () => { calMonth--; if (calMonth<0){calMonth=11;calYear--;} renderCalendarView(); });
@@ -1750,10 +2347,11 @@ async function renderProjects() {
   function buildProjectCard(p) {
     const prog = p.progress || {};
     const pct = prog.pct || 0;
+    const vis = (key) => entityPropVisible('project', key);
     const activeTasks = (p.active_tasks || []).slice(0, 3).map(t =>
       `<div style="font-size:12px;color:var(--text-muted);padding:2px 0">• ${t}</div>`
     ).join('');
-    const tagChips = (p.tags || []).map(t => tagHtml(t)).join('');
+    const tagChips = vis('tags') ? (p.tags || []).map(t => tagHtml(t)).join('') : '';
     return `<div class="card proj-slideover-card" data-proj-id="${p.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
         <span class="card-title"><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${p.title}</span>
@@ -1763,16 +2361,15 @@ async function renderProjects() {
         </div>
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
-        ${statusBadge(p.status)}
-        ${p.macro_area ? `<span class="badge badge-todo">${p.macro_area.split('(')[0].trim()}</span>` : ''}
-        ${p.kanban_col ? `<span class="badge badge-progress">${p.kanban_col}</span>` : ''}
+        ${vis('status') ? statusBadge(p.status) : ''}
+        ${vis('area') && p.macro_area ? `<span class="badge badge-todo">${p.macro_area.split('(')[0].trim()}</span>` : ''}
         ${tagChips}
       </div>
-      ${p.goal_title ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">Goal: ${p.goal_title}</div>` : ''}
-      <div class="progress-wrap">
+      ${vis('goal') && p.goal_title ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">Goal: ${p.goal_title}</div>` : ''}
+      ${vis('progress') ? `<div class="progress-wrap">
         <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0}</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
-      </div>
+      </div>` : ''}
       ${activeTasks ? `<div style="margin-top:8px">${activeTasks}</div>` : ''}
     </div>`;
   }
@@ -1784,24 +2381,39 @@ async function renderProjects() {
 
   function buildTableView(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◆</div><div class="empty-state-text">No projects found</div></div>`;
+    const vis = (key) => entityPropVisible('project', key);
     const rows = list.map(p => {
       const prog = p.progress || {};
       const pct = prog.pct || 0;
+      const customCols = getCustomPropDefs('project').map(def => customPropCell('project', p.id, def)).join('');
       return `<tr>
         <td><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-proj-id="${p.id}">${p.title}</span></td>
-        <td>${statusBadge(p.status)}</td>
-        <td>${p.goal_title || '—'}</td>
-        <td>${p.macro_area ? p.macro_area.split('(')[0].trim() : '—'}</td>
-        <td>${pct}% (${prog.done||0}/${prog.total||0})</td>
-        <td>${(p.tags||[]).map(t=>tagHtml(t)).join('')}</td>
+        ${vis('status')   ? `<td>${statusBadge(p.status)}</td>` : ''}
+        ${vis('goal')     ? `<td>${p.goal_title || '—'}</td>` : ''}
+        ${vis('area')     ? `<td>${p.macro_area ? p.macro_area.split('(')[0].trim() : '—'}</td>` : ''}
+        ${vis('progress') ? `<td>${pct}% (${prog.done||0}/${prog.total||0})</td>` : ''}
+        ${vis('tags')     ? `<td>${(p.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
+        ${customCols}
         <td onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button>
           <button class="btn btn-sm btn-danger proj-del-btn" data-proj-id="${p.id}">Del</button>
         </td>
       </tr>`;
     }).join('');
+    const customHeaders = getCustomPropDefs('project').map(d => `<th>${d.label}</th>`).join('');
+    const headers = [
+      '<th>Title</th>',
+      vis('status')   ? '<th>Status</th>'   : '',
+      vis('goal')     ? '<th>Goal</th>'     : '',
+      vis('area')     ? '<th>Area</th>'     : '',
+      vis('progress') ? '<th>Progress</th>' : '',
+      vis('tags')     ? '<th>Tags</th>'     : '',
+      customHeaders,
+      '<th></th>',
+      addPropColumnHeader('project'),
+    ].join('');
     return `<div class="notion-table-wrap"><table class="notion-table">
-      <thead><tr><th>Title</th><th>Status</th><th>Goal</th><th>Area</th><th>Progress</th><th>Tags</th><th></th></tr></thead>
+      <thead><tr>${headers}</tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }
 
@@ -1826,32 +2438,29 @@ async function renderProjects() {
       const cards = items.map(p => {
         const prog = p.progress || {};
         const pct = prog.pct || 0;
-        return `<div class="kanban-card proj-kanban-card" data-proj-id="${p.id}" draggable="true"
-            ondragstart="event.dataTransfer.setData('text/plain','${p.id}');event.currentTarget.classList.add('kanban-dragging')"
-            ondragend="event.currentTarget.classList.remove('kanban-dragging')"
-            style="cursor:pointer">
+        const vis = (key) => entityPropVisible('project', key);
+        return `<div class="kanban-card proj-kanban-card" data-proj-id="${p.id}" style="cursor:grab">
           <div class="kanban-card-title">${p.title}</div>
-          ${p.goal_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${p.goal_title}</div>` : ''}
+          ${vis('goal') && p.goal_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${p.goal_title}</div>` : ''}
           <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
-            ${groupBy !== 'status' ? statusBadge(p.status) : ''}
-            ${groupBy !== 'macro_area' && p.macro_area ? `<span style="font-size:10px;color:var(--text-muted)">${p.macro_area.split('(')[0].trim()}</span>` : ''}
+            ${vis('status') && groupBy !== 'status' ? statusBadge(p.status) : ''}
+            ${vis('area') && groupBy !== 'macro_area' && p.macro_area ? `<span style="font-size:10px;color:var(--text-muted)">${p.macro_area.split('(')[0].trim()}</span>` : ''}
           </div>
-          <div style="margin-top:8px">
+          ${vis('progress') ? `<div style="margin-top:8px">
             <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${pct}% · ${prog.done||0}/${prog.total||0}</div>
-          </div>
+          </div>` : ''}
         </div>`;
       }).join('');
       const label = colKey.replace(/_/g,' ');
-      return `<div class="kanban-col proj-kanban-col" data-col="${colKey}"
-          ondragover="event.preventDefault();event.currentTarget.classList.add('kanban-drag-over')"
-          ondragleave="event.currentTarget.classList.remove('kanban-drag-over')"
-          ondrop="event.preventDefault();event.currentTarget.classList.remove('kanban-drag-over');window._projKanbanDrop(event,'${colKey}','${groupBy}')">
+      return `<div class="kanban-col proj-kanban-col" data-col="${colKey}">
         <div class="kanban-col-header">
           <span>${label}</span>
           <span class="kanban-count">${items.length}</span>
         </div>
-        <div class="kanban-col-body">${cards || '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No projects</div>'}</div>
+        <div class="kanban-col-body">
+          ${cards || '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No projects</div>'}
+        </div>
       </div>`;
     }).join('');
     const colWidth = 260;
@@ -1866,26 +2475,33 @@ async function renderProjects() {
     return `${groupByBar}<div style="overflow-x:auto;width:100%"><div class="kanban-board" style="${boardStyle}">${colsHtml}</div></div>`;
   }
 
-  window._projKanbanDrop = async (e, newColKey, groupBy) => {
-    const projId = e.dataTransfer.getData('text/plain');
-    if (!projId) return;
-    const field = groupBy === 'macro_area' ? 'macro_area' : 'status';
-    await api('PATCH', `/api/projects/${projId}`, { [field]: newColKey });
-    const p = projects.find(x => String(x.id) === projId);
-    if (p) p[field] = newColKey;
-    render();
-  };
+  function bindProjKanban() {
+    const board = document.querySelector('#proj-list .kanban-board');
+    if (!board) return;
+    const groupBy = projsKanbanGroupBy;
+    const field = groupBy === 'macro_area' ? 'macro_area' : groupBy === 'kanban_col' ? 'kanban_col' : 'status';
+    bindKanbanDrag(board, '.proj-kanban-card[data-proj-id]', 'projId', async (projId, colKey) => {
+      await api('PATCH', `/api/projects/${projId}`, { [field]: colKey });
+      const p = projects.find(x => String(x.id) === String(projId));
+      if (p) p[field] = colKey;
+      render();
+    });
+  }
 
   const toggle = viewToggleHtml(
     [{key:'cards',label:'Cards'},{key:'table',label:'Table'},{key:'kanban',label:'Kanban'}],
     projectsViewMode
   );
+  const projEyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
       <h1 class="view-title">Projects</h1>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         ${toggle}
+        <div class="prop-vis-wrap" id="proj-prop-vis-wrap">
+          <button class="btn btn-sm btn-ghost" id="proj-prop-vis-btn" title="Property visibility">${projEyeSvg}</button>
+        </div>
         <button class="btn btn-primary" id="new-proj-btn">+ New Project</button>
       </div>
     </div>
@@ -1928,6 +2544,7 @@ async function renderProjects() {
     else html = buildCardsView(list);
     document.getElementById('proj-list').innerHTML = html;
     bindProjEvents();
+    if (projectsViewMode === 'table') { bindAddPropBtn('project', render); bindCustomPropCells(); }
     injectListIcons('project', list.map(p => p.id));
     if (projectsViewMode === 'kanban') {
       document.getElementById('proj-gb-status')?.addEventListener('click', () => {
@@ -1942,6 +2559,7 @@ async function renderProjects() {
       document.querySelectorAll('.proj-kanban-card').forEach(card => {
         card.addEventListener('click', () => renderView('project-detail', card.dataset.projId));
       });
+      bindProjKanban();
     }
   }
 
@@ -1951,6 +2569,21 @@ async function renderProjects() {
     localStorage.setItem('projectsViewMode', mode);
     render();
   });
+
+  const projPropVisBtn = document.getElementById('proj-prop-vis-btn');
+  const projPropVisWrap = document.getElementById('proj-prop-vis-wrap');
+  if (projPropVisBtn && projPropVisWrap) {
+    projPropVisBtn.onclick = (e) => {
+      e.stopPropagation();
+      bindPropVisPanel(
+        projPropVisWrap,
+        ENTITY_PROPS.project,
+        () => getEntityVisProps('project'),
+        (keys) => setEntityVisProps('project', keys),
+        render
+      );
+    };
+  }
   render();
 
   function bindProjEvents() {
@@ -1969,11 +2602,10 @@ async function renderProjects() {
       };
     });
     document.querySelectorAll('.proj-export-btn').forEach(el => {
-      el.onclick = async (e) => {
+      el.onclick = (e) => {
         e.stopPropagation();
-        const data = await api('GET', `/api/export/project/${el.dataset.projId}`);
         const p = projects.find(x => String(x.id) === el.dataset.projId);
-        downloadJSON(data, `project-${p?.title||el.dataset.projId}.json`);
+        showJSONModal(`/api/export/project/${el.dataset.projId}`, `project-${p?.title||el.dataset.projId}.json`);
       };
     });
     document.querySelectorAll('.proj-del-btn').forEach(el => {
@@ -2005,7 +2637,8 @@ async function renderGoals() {
   function buildGoalCard(g) {
     const prog = g.progress || {};
     const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
-    const tagChips = (g.tags || []).map(t => tagHtml(t)).join('');
+    const vis = (key) => entityPropVisible('goal', key);
+    const tagChips = vis('tags') ? (g.tags || []).map(t => tagHtml(t)).join('') : '';
     return `<div class="card goal-slideover-card" data-goal-id="${g.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
         <span class="card-title"><span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${g.title}</span>
@@ -2015,15 +2648,15 @@ async function renderGoals() {
         </div>
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
-        ${g.type ? `<span class="badge badge-progress">${g.type}</span>` : ''}
-        ${g.year ? `<span class="badge badge-todo">${g.year}</span>` : ''}
-        ${statusBadge(g.status)}
+        ${vis('type') && g.type ? `<span class="badge badge-progress">${g.type}</span>` : ''}
+        ${vis('year') && g.year ? `<span class="badge badge-todo">${g.year}</span>` : ''}
+        ${vis('status') ? statusBadge(g.status) : ''}
         ${tagChips}
       </div>
-      <div class="progress-wrap">
+      ${vis('progress') ? `<div class="progress-wrap">
         <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0} tasks</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
-      </div>
+      </div>` : ''}
     </div>`;
   }
 
@@ -2034,24 +2667,39 @@ async function renderGoals() {
 
   function buildTableView(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◈</div><div class="empty-state-text">No goals found</div></div>`;
+    const vis = (key) => entityPropVisible('goal', key);
     const rows = list.map(g => {
       const prog = g.progress || {};
       const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
+      const customCols = getCustomPropDefs('goal').map(def => customPropCell('goal', g.id, def)).join('');
       return `<tr>
         <td><span style="cursor:pointer;color:var(--accent)" class="goal-nav-link" data-goal-id="${g.id}">${g.title}</span></td>
-        <td>${statusBadge(g.status)}</td>
-        <td>${g.type || '—'}</td>
-        <td>${g.year || '—'}</td>
-        <td>${pct}%</td>
-        <td>${(g.tags||[]).map(t=>tagHtml(t)).join('')}</td>
+        ${vis('status')   ? `<td>${statusBadge(g.status)}</td>` : ''}
+        ${vis('type')     ? `<td>${g.type || '—'}</td>` : ''}
+        ${vis('year')     ? `<td>${g.year || '—'}</td>` : ''}
+        ${vis('progress') ? `<td>${pct}%</td>` : ''}
+        ${vis('tags')     ? `<td>${(g.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
+        ${customCols}
         <td onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button>
           <button class="btn btn-sm btn-danger goal-del-btn" data-goal-id="${g.id}">Del</button>
         </td>
       </tr>`;
     }).join('');
+    const customHeaders = getCustomPropDefs('goal').map(d => `<th>${d.label}</th>`).join('');
+    const headers = [
+      '<th>Title</th>',
+      vis('status')   ? '<th>Status</th>'   : '',
+      vis('type')     ? '<th>Type</th>'     : '',
+      vis('year')     ? '<th>Year</th>'     : '',
+      vis('progress') ? '<th>Progress</th>' : '',
+      vis('tags')     ? '<th>Tags</th>'     : '',
+      customHeaders,
+      '<th></th>',
+      addPropColumnHeader('goal'),
+    ].join('');
     return `<div class="notion-table-wrap"><table class="notion-table">
-      <thead><tr><th>Title</th><th>Status</th><th>Type</th><th>Year</th><th>Progress</th><th>Tags</th><th></th></tr></thead>
+      <thead><tr>${headers}</tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }
 
@@ -2076,27 +2724,22 @@ async function renderGoals() {
       const cards = items.map(g => {
         const prog = g.progress || {};
         const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
-        return `<div class="kanban-card goal-kanban-card" data-goal-id="${g.id}" draggable="true"
-            ondragstart="event.dataTransfer.setData('text/plain','${g.id}');event.currentTarget.classList.add('kanban-dragging')"
-            ondragend="event.currentTarget.classList.remove('kanban-dragging')"
-            style="cursor:pointer">
+        const vis = (key) => entityPropVisible('goal', key);
+        return `<div class="kanban-card goal-kanban-card" data-goal-id="${g.id}" style="cursor:grab">
           <div class="kanban-card-title">${g.title}</div>
           <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
-            ${groupBy !== 'status' ? statusBadge(g.status) : ''}
-            ${groupBy !== 'type' && g.type ? `<span>${g.type}</span>` : ''}
-            ${groupBy !== 'year' && g.year ? `<span>${g.year}</span>` : ''}
+            ${vis('status') && groupBy !== 'status' ? statusBadge(g.status) : ''}
+            ${vis('type') && groupBy !== 'type' && g.type ? `<span>${g.type}</span>` : ''}
+            ${vis('year') && groupBy !== 'year' && g.year ? `<span>${g.year}</span>` : ''}
           </div>
-          <div style="margin-top:8px">
+          ${vis('progress') ? `<div style="margin-top:8px">
             <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${pct}% · ${prog.done||0}/${prog.total||0}</div>
-          </div>
+          </div>` : ''}
         </div>`;
       }).join('');
       const label = colKey.replace(/_/g,' ');
-      return `<div class="kanban-col goal-kanban-col" data-col="${colKey}"
-          ondragover="event.preventDefault();event.currentTarget.classList.add('kanban-drag-over')"
-          ondragleave="event.currentTarget.classList.remove('kanban-drag-over')"
-          ondrop="event.preventDefault();event.currentTarget.classList.remove('kanban-drag-over');window._goalKanbanDrop(event,'${colKey}','${groupBy}')">
+      return `<div class="kanban-col goal-kanban-col" data-col="${colKey}">
         <div class="kanban-col-header">
           <span>${label}</span>
           <span class="kanban-count">${items.length}</span>
@@ -2116,26 +2759,33 @@ async function renderGoals() {
     return `${groupByBar}<div style="overflow-x:auto;width:100%"><div class="kanban-board" style="${boardStyle}">${colsHtml}</div></div>`;
   }
 
-  window._goalKanbanDrop = async (e, newColKey, groupBy) => {
-    const goalId = e.dataTransfer.getData('text/plain');
-    if (!goalId) return;
+  function bindGoalKanban() {
+    const board = document.querySelector('#goal-list .kanban-board');
+    if (!board) return;
+    const groupBy = goalsKanbanGroupBy;
     const field = groupBy === 'type' ? 'type' : 'status';
-    await api('PATCH', `/api/goals/${goalId}`, { [field]: newColKey });
-    const g = goals.find(x => String(x.id) === goalId);
-    if (g) g[field] = newColKey;
-    render();
-  };
+    bindKanbanDrag(board, '.goal-kanban-card[data-goal-id]', 'goalId', async (goalId, colKey) => {
+      await api('PATCH', `/api/goals/${goalId}`, { [field]: colKey });
+      const g = goals.find(x => String(x.id) === String(goalId));
+      if (g) g[field] = colKey;
+      render();
+    });
+  }
 
   const toggle = viewToggleHtml(
     [{key:'cards',label:'Cards'},{key:'table',label:'Table'},{key:'kanban',label:'Kanban'}],
     goalsViewMode
   );
+  const goalEyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
       <h1 class="view-title">Goals</h1>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         ${toggle}
+        <div class="prop-vis-wrap" id="goal-prop-vis-wrap">
+          <button class="btn btn-sm btn-ghost" id="goal-prop-vis-btn" title="Property visibility">${goalEyeSvg}</button>
+        </div>
         <button class="btn btn-primary" id="new-goal-btn">+ New Goal</button>
       </div>
     </div>
@@ -2180,6 +2830,7 @@ async function renderGoals() {
     else html = buildCardsView(list);
     document.getElementById('goal-list').innerHTML = html;
     bindGoalEvents();
+    if (goalsViewMode === 'table') { bindAddPropBtn('goal', render); bindCustomPropCells(); }
     injectListIcons('goal', list.map(g => g.id));
     if (goalsViewMode === 'kanban') {
       document.getElementById('goal-gb-status')?.addEventListener('click', () => {
@@ -2194,6 +2845,7 @@ async function renderGoals() {
       document.querySelectorAll('.goal-kanban-card').forEach(card => {
         card.addEventListener('click', () => renderView('goal-detail', card.dataset.goalId));
       });
+      bindGoalKanban();
     }
   }
 
@@ -2203,6 +2855,21 @@ async function renderGoals() {
     localStorage.setItem('goalsViewMode', mode);
     render();
   });
+
+  const goalPropVisBtn = document.getElementById('goal-prop-vis-btn');
+  const goalPropVisWrap = document.getElementById('goal-prop-vis-wrap');
+  if (goalPropVisBtn && goalPropVisWrap) {
+    goalPropVisBtn.onclick = (e) => {
+      e.stopPropagation();
+      bindPropVisPanel(
+        goalPropVisWrap,
+        ENTITY_PROPS.goal,
+        () => getEntityVisProps('goal'),
+        (keys) => setEntityVisProps('goal', keys),
+        render
+      );
+    };
+  }
   render();
 
   function bindGoalEvents() {
@@ -2221,11 +2888,10 @@ async function renderGoals() {
       };
     });
     document.querySelectorAll('.goal-export-btn').forEach(el => {
-      el.onclick = async (e) => {
+      el.onclick = (e) => {
         e.stopPropagation();
-        const data = await api('GET', `/api/export/goal/${el.dataset.goalId}`);
         const g = goals.find(x => String(x.id) === el.dataset.goalId);
-        downloadJSON(data, `goal-${g?.title||el.dataset.goalId}.json`);
+        showJSONModal(`/api/export/goal/${el.dataset.goalId}`, `goal-${g?.title||el.dataset.goalId}.json`);
       };
     });
     document.querySelectorAll('.goal-del-btn').forEach(el => {
@@ -2255,18 +2921,20 @@ async function renderNotes() {
   const noteFilterState = { filters: {}, sort: {}, searchText: '' };
 
   function buildNoteCard(n) {
-    const tagChips = (n.tags || []).map(t => tagHtml(t)).join('');
+    const vis = (key) => entityPropVisible('note', key);
+    const tagChips = vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : '';
     return `<div class="note-card" data-note-id="${n.id}">
       <div class="flex-between gap-8">
         <div class="note-title"><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="18" style="display:none;margin-right:5px;vertical-align:middle;font-size:18px"></span>${n.title || 'Untitled'}</div>
         <div onclick="event.stopPropagation()">
+          <button class="btn btn-sm btn-ghost note-json-btn" data-note-id="${n.id}">Show JSON</button>
           <button class="btn btn-sm btn-danger note-del-btn" data-note-id="${n.id}">Delete</button>
         </div>
       </div>
       <div class="note-body-preview">${n.body || ''}</div>
       <div class="note-meta" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
-        ${fmtDate(n.note_date) ? `<span>${fmtDate(n.note_date)}</span>` : ''}
-        ${n.category_name ? `<span>· ${n.category_name}</span>` : ''}
+        ${vis('date') && fmtDate(n.note_date) ? `<span>${fmtDate(n.note_date)}</span>` : ''}
+        ${vis('category') && n.category_name ? `<span>· ${n.category_name}</span>` : ''}
         ${tagChips}
       </div>
     </div>`;
@@ -2274,15 +2942,30 @@ async function renderNotes() {
 
   function buildNoteTable(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
-    const rows = list.map(n => `<tr class="note-card" data-note-id="${n.id}" style="cursor:pointer">
-      <td><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${n.title || 'Untitled'}</td>
-      <td>${fmtDate(n.note_date) || '—'}</td>
-      <td>${n.category_name || '—'}</td>
-      <td>${(n.tags||[]).map(t=>tagHtml(t)).join('')}</td>
-      <td onclick="event.stopPropagation()"><button class="btn btn-sm btn-danger note-del-btn" data-note-id="${n.id}">Del</button></td>
-    </tr>`).join('');
+    const vis = (key) => entityPropVisible('note', key);
+    const rows = list.map(n => {
+      const customCols = getCustomPropDefs('note').map(def => customPropCell('note', n.id, def)).join('');
+      return `<tr class="note-card" data-note-id="${n.id}" style="cursor:pointer">
+        <td><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${n.title || 'Untitled'}</td>
+        ${vis('date')     ? `<td>${fmtDate(n.note_date) || '—'}</td>` : ''}
+        ${vis('category') ? `<td>${n.category_name || '—'}</td>` : ''}
+        ${vis('tags')     ? `<td>${(n.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
+        ${customCols}
+        <td onclick="event.stopPropagation()"><button class="btn btn-sm btn-danger note-del-btn" data-note-id="${n.id}">Del</button></td>
+      </tr>`;
+    }).join('');
+    const customHeaders = getCustomPropDefs('note').map(d => `<th>${d.label}</th>`).join('');
+    const headers = [
+      '<th>Title</th>',
+      vis('date')     ? '<th>Date</th>'     : '',
+      vis('category') ? '<th>Category</th>' : '',
+      vis('tags')     ? '<th>Tags</th>'     : '',
+      customHeaders,
+      '<th></th>',
+      addPropColumnHeader('note'),
+    ].join('');
     return `<div class="notion-table-wrap"><table class="notion-table">
-      <thead><tr><th>Title</th><th>Date</th><th>Category</th><th>Tags</th><th></th></tr></thead>
+      <thead><tr>${headers}</tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }
 
@@ -2290,12 +2973,16 @@ async function renderNotes() {
     [{key:'cards',label:'Cards'},{key:'table',label:'Table'}],
     notesViewMode
   );
+  const noteEyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
       <h1 class="view-title">Notes</h1>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         ${toggle}
+        <div class="prop-vis-wrap" id="note-prop-vis-wrap">
+          <button class="btn btn-sm btn-ghost" id="note-prop-vis-btn" title="Property visibility">${noteEyeSvg}</button>
+        </div>
         <button class="btn btn-primary" id="new-note-btn">+ New Note</button>
       </div>
     </div>
@@ -2340,6 +3027,7 @@ async function renderNotes() {
         `<div style="display:grid;gap:12px">${list.map(buildNoteCard).join('')}</div>`;
     }
     bindNoteEvents();
+    if (notesViewMode === 'table') { bindAddPropBtn('note', render); bindCustomPropCells(); }
     injectListIcons('note', list.map(n => n.id));
   }
 
@@ -2349,14 +3037,36 @@ async function renderNotes() {
     localStorage.setItem('notesViewMode', mode);
     render();
   });
+
+  const notePropVisBtn = document.getElementById('note-prop-vis-btn');
+  const notePropVisWrap = document.getElementById('note-prop-vis-wrap');
+  if (notePropVisBtn && notePropVisWrap) {
+    notePropVisBtn.onclick = (e) => {
+      e.stopPropagation();
+      bindPropVisPanel(
+        notePropVisWrap,
+        ENTITY_PROPS.note,
+        () => getEntityVisProps('note'),
+        (keys) => setEntityVisProps('note', keys),
+        render
+      );
+    };
+  }
   render();
 
   function bindNoteEvents() {
     document.querySelectorAll('.note-card').forEach(el => {
       el.onclick = (e) => {
-        if (e.target.classList.contains('note-del-btn')) return;
+        if (e.target.closest('.note-del-btn, .note-json-btn')) return;
         const n = notes.find(x => String(x.id) === el.dataset.noteId);
         if (n) showNoteModal(n, () => renderNotes());
+      };
+    });
+    document.querySelectorAll('.note-json-btn').forEach(el => {
+      el.onclick = (e) => {
+        e.stopPropagation();
+        const n = notes.find(x => String(x.id) === el.dataset.noteId);
+        showJSONModal(`/api/export/note/${el.dataset.noteId}`, `note-${n?.title||el.dataset.noteId}.json`);
       };
     });
     document.querySelectorAll('.note-del-btn').forEach(el => {
@@ -2378,6 +3088,7 @@ async function renderSprints() {
   function buildSprintCard(s) {
     const prog = s.progress || {};
     const pct = prog.pct || 0;
+    const vis = (key) => entityPropVisible('sprint', key);
     const nextStatus = s.status === 'planned' ? 'active' : s.status === 'active' ? 'completed' : null;
     const nextLabel = s.status === 'planned' ? 'Start' : s.status === 'active' ? 'Complete' : null;
     const prevStatus = s.status === 'active' ? 'planned' : s.status === 'completed' ? 'active' : null;
@@ -2393,14 +3104,14 @@ async function renderSprints() {
         </div>
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
-        ${statusBadge(s.status)}
-        ${s.project_title ? `<span class="badge badge-todo">${s.project_title}</span>` : ''}
+        ${vis('status') ? statusBadge(s.status) : ''}
+        ${vis('project') && s.project_title ? `<span class="badge badge-todo">${s.project_title}</span>` : ''}
       </div>
-      <div class="card-meta">${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</div>
-      <div class="progress-wrap">
+      ${vis('dates') ? `<div class="card-meta">${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</div>` : ''}
+      ${vis('progress') ? `<div class="progress-wrap">
         <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0}</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
-      </div>
+      </div>` : ''}
       ${s.story_points ? (() => {
         const cap = s.story_points;
         const used = (prog.story_points || 0);
@@ -2417,15 +3128,18 @@ async function renderSprints() {
 
   function buildSprintTable(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">⚡</div><div class="empty-state-text">No sprints found</div></div>`;
+    const vis = (key) => entityPropVisible('sprint', key);
     const rows = list.map(s => {
       const prog = s.progress || {};
       const pct = prog.pct || 0;
+      const customCols = getCustomPropDefs('sprint').map(def => customPropCell('sprint', s.id, def)).join('');
       return `<tr class="sprint-row" data-sprint-id="${s.id}" style="cursor:pointer">
         <td><span class="sprint-detail-link" data-sprint-id="${s.id}" style="color:var(--accent);cursor:pointer">${s.title}</span></td>
-        <td>${statusBadge(s.status)}</td>
-        <td>${s.project_title || '—'}</td>
-        <td>${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</td>
-        <td>${pct}%</td>
+        ${vis('status')   ? `<td>${statusBadge(s.status)}</td>` : ''}
+        ${vis('project')  ? `<td>${s.project_title || '—'}</td>` : ''}
+        ${vis('dates')    ? `<td>${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</td>` : ''}
+        ${vis('progress') ? `<td>${pct}%</td>` : ''}
+        ${customCols}
         <td>
           ${s.status === 'active' ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="planned">↩ Planned</button>` : ''}
           ${s.status === 'completed' ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="active">↩ Active</button>` : ''}
@@ -2436,8 +3150,19 @@ async function renderSprints() {
         </td>
       </tr>`;
     }).join('');
+    const customHeaders = getCustomPropDefs('sprint').map(d => `<th>${d.label}</th>`).join('');
+    const headers = [
+      '<th>Title</th>',
+      vis('status')   ? '<th>Status</th>'   : '',
+      vis('project')  ? '<th>Project</th>'  : '',
+      vis('dates')    ? '<th>Dates</th>'    : '',
+      vis('progress') ? '<th>Progress</th>' : '',
+      customHeaders,
+      '<th></th>',
+      addPropColumnHeader('sprint'),
+    ].join('');
     return `<div class="notion-table-wrap"><table class="notion-table">
-      <thead><tr><th>Title</th><th>Status</th><th>Project</th><th>Dates</th><th>Progress</th><th></th></tr></thead>
+      <thead><tr>${headers}</tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }
 
@@ -2445,12 +3170,16 @@ async function renderSprints() {
     [{key:'cards',label:'Cards'},{key:'table',label:'Table'}],
     sprintsViewMode
   );
+  const sprintEyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
       <h1 class="view-title">Sprints</h1>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         ${toggle}
+        <div class="prop-vis-wrap" id="sprint-prop-vis-wrap">
+          <button class="btn btn-sm btn-ghost" id="sprint-prop-vis-btn" title="Property visibility">${sprintEyeSvg}</button>
+        </div>
         <button class="btn btn-primary" id="new-sprint-btn">+ New Sprint</button>
       </div>
     </div>
@@ -2493,6 +3222,7 @@ async function renderSprints() {
       (list.map(buildSprintCard).join('') || `<div class="empty-state"><div class="empty-state-icon">⚡</div><div class="empty-state-text">No sprints found</div></div>`);
     bindSprintEvents();
     injectListIcons('sprint', list.map(s => s.id));
+    if (sprintsViewMode === 'table') { bindAddPropBtn('sprint', render); bindCustomPropCells(); }
   }
 
   document.getElementById('new-sprint-btn').onclick = () => showSprintModal(projects);
@@ -2501,6 +3231,21 @@ async function renderSprints() {
     localStorage.setItem('sprintsViewMode', mode);
     render();
   });
+
+  const sprintPropVisBtn = document.getElementById('sprint-prop-vis-btn');
+  const sprintPropVisWrap = document.getElementById('sprint-prop-vis-wrap');
+  if (sprintPropVisBtn && sprintPropVisWrap) {
+    sprintPropVisBtn.onclick = (e) => {
+      e.stopPropagation();
+      bindPropVisPanel(
+        sprintPropVisWrap,
+        ENTITY_PROPS.sprint,
+        () => getEntityVisProps('sprint'),
+        (keys) => setEntityVisProps('sprint', keys),
+        render
+      );
+    };
+  }
   render();
 
   function bindSprintEvents() {
@@ -2624,6 +3369,7 @@ async function renderSprintDetail(sprintId) {
         <button class="btn btn-ghost" id="sd-back-btn">← Back</button>
         ${prevStatus ? `<button class="btn btn-ghost" id="sd-prev-status-btn" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
         ${nextStatus ? `<button class="btn btn-ghost" id="sd-status-btn" data-next="${nextStatus}">${nextLabel}</button>` : ''}
+        <button class="btn btn-ghost" id="sd-json-btn">Show JSON</button>
         <button class="btn btn-primary" id="sd-add-task-btn">+ Task</button>
       </div>
     </div>
@@ -2657,9 +3403,15 @@ async function renderSprintDetail(sprintId) {
         <div id="sd-assigned-list" style="max-height:320px;overflow-y:auto"></div>
       </div>
     </div>
+    <div class="widget" style="margin-top:12px">
+      <div class="widget-header"><span class="widget-title">Custom Properties</span></div>
+      ${buildInlinePropPanel('sprint', sprintId, [])}
+    </div>
   </div>`;
 
   document.getElementById('sd-back-btn').onclick = () => renderView('sprints');
+  document.getElementById('sd-json-btn').onclick = () =>
+    showJSONModal(`/api/export/sprint/${sprintId}`, `sprint-${sprint.title.replace(/\s+/g,'-')}.json`);
   document.getElementById('sd-add-task-btn').onclick = () =>
     showNewTaskModal({ sprint_id: parseInt(sprintId) }, () => renderSprintDetail(sprintId));
   document.getElementById('sd-prev-status-btn')?.addEventListener('click', async (e) => {
@@ -2840,6 +3592,7 @@ async function renderSprintDetail(sprintId) {
   });
 
   bindDetailTaskEvents(() => renderSprintDetail(sprintId));
+  bindInlinePropPanel('sprint', sprintId, {}, () => renderSprintDetail(sprintId));
 }
 
 /* ─── Habits View ─────────────────────────────────────────────────────── */
@@ -3191,24 +3944,37 @@ async function renderResources() {
 
   function buildTable(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">⬡</div><div class="empty-state-text">No resources yet</div></div>`;
+    const vis = (key) => entityPropVisible('resource', key);
     const rows = list.map(r => {
       const rawUrl = r.url || '';
       const link = rawUrl
         ? `<a href="${rawUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${rawUrl.length > 40 ? rawUrl.slice(0,40) + '…' : rawUrl}</a>`
         : (r.body ? r.body.slice(0,60) + '…' : '—');
       const linked = r.goal_title || r.project_title || r.task_title || '—';
+      const customCols = getCustomPropDefs('resource').map(def => customPropCell('resource', r.id, def)).join('');
       return `<tr class="res-row" data-res-id="${r.id}" style="cursor:pointer">
         <td><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${r.title}</td>
-        <td>${r.resource_type || '—'}</td>
-        <td>${linked}</td>
-        <td>${link}</td>
+        ${vis('type')   ? `<td>${r.resource_type || '—'}</td>` : ''}
+        ${vis('linked') ? `<td>${linked}</td>` : ''}
+        ${vis('url')    ? `<td>${link}</td>` : ''}
+        ${customCols}
         <td onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-danger res-del-btn" data-res-id="${r.id}">×</button>
         </td>
       </tr>`;
     }).join('');
+    const customHeaders = getCustomPropDefs('resource').map(d => `<th>${d.label}</th>`).join('');
+    const headers = [
+      '<th>Title</th>',
+      vis('type')   ? '<th>Type</th>'           : '',
+      vis('linked') ? '<th>Linked</th>'          : '',
+      vis('url')    ? '<th>URL / Preview</th>'   : '',
+      customHeaders,
+      '<th></th>',
+      addPropColumnHeader('resource'),
+    ].join('');
     return `<div class="notion-table-wrap"><table class="notion-table">
-      <thead><tr><th>Title</th><th>Type</th><th>Linked</th><th>URL / Preview</th><th></th></tr></thead>
+      <thead><tr>${headers}</tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
   }
@@ -3218,6 +3984,7 @@ async function renderResources() {
     return `<div style="display:grid;gap:12px">${list.map(r => {
       const rawUrl = r.url || '';
       const linked = r.goal_title || r.project_title || r.task_title;
+      const vis = (key) => entityPropVisible('resource', key);
       return `<div class="card res-row" data-res-id="${r.id}" style="cursor:pointer">
         <div class="flex-between gap-8" style="margin-bottom:6px">
           <span class="card-title"><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="18" style="display:none;margin-right:6px;vertical-align:middle;font-size:18px"></span>${r.title}</span>
@@ -3225,21 +3992,25 @@ async function renderResources() {
             <button class="btn btn-sm btn-danger res-del-btn" data-res-id="${r.id}">×</button>
           </div>
         </div>
-        ${r.resource_type ? `<span class="badge badge-todo">${r.resource_type}</span>` : ''}
-        ${linked ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">→ ${linked}</div>` : ''}
-        ${rawUrl ? `<div style="margin-top:6px" onclick="event.stopPropagation()"><a href="${rawUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent)">${rawUrl.length > 60 ? rawUrl.slice(0,60)+'…' : rawUrl}</a></div>` : ''}
+        ${vis('type') && r.resource_type ? `<span class="badge badge-todo">${r.resource_type}</span>` : ''}
+        ${vis('linked') && linked ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">→ ${linked}</div>` : ''}
+        ${vis('url') && rawUrl ? `<div style="margin-top:6px" onclick="event.stopPropagation()"><a href="${rawUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent)">${rawUrl.length > 60 ? rawUrl.slice(0,60)+'…' : rawUrl}</a></div>` : ''}
         ${r.body ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${r.body.slice(0,120)}${r.body.length>120?'…':''}</div>` : ''}
       </div>`;
     }).join('')}</div>`;
   }
 
   const toggle = viewToggleHtml([{key:'table',label:'Table'},{key:'cards',label:'Cards'}], resourcesViewMode);
+  const resEyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
       <h1 class="view-title">Resources</h1>
       <div style="display:flex;gap:8px;align-items:center">
         ${toggle}
+        <div class="prop-vis-wrap" id="res-prop-vis-wrap">
+          <button class="btn btn-sm btn-ghost" id="res-prop-vis-btn" title="Property visibility">${resEyeSvg}</button>
+        </div>
         <button class="btn btn-primary" id="new-res-btn">+ New Resource</button>
       </div>
     </div>
@@ -3275,6 +4046,7 @@ async function renderResources() {
     document.getElementById('res-table').innerHTML =
       resourcesViewMode === 'cards' ? buildCards(list) : buildTable(list);
     bindResEvents();
+    if (resourcesViewMode === 'table') { bindAddPropBtn('resource', render); bindCustomPropCells(); }
     injectListIcons('resource', list.map(r => r.id));
   }
 
@@ -3284,6 +4056,21 @@ async function renderResources() {
     localStorage.setItem('resourcesViewMode', mode);
     render();
   });
+
+  const resPropVisBtn = document.getElementById('res-prop-vis-btn');
+  const resPropVisWrap = document.getElementById('res-prop-vis-wrap');
+  if (resPropVisBtn && resPropVisWrap) {
+    resPropVisBtn.onclick = (e) => {
+      e.stopPropagation();
+      bindPropVisPanel(
+        resPropVisWrap,
+        ENTITY_PROPS.resource,
+        () => getEntityVisProps('resource'),
+        (keys) => setEntityVisProps('resource', keys),
+        render
+      );
+    };
+  }
   render();
 
   function bindResEvents() {
@@ -3512,6 +4299,12 @@ async function renderProjectDetail(projectId) {
     </div>
     <div class="widget" style="margin-top:16px">
       <div class="widget-header">
+        <span class="widget-title">Custom Properties</span>
+      </div>
+      ${buildInlinePropPanel('project', projectId, [])}
+    </div>
+    <div class="widget" style="margin-top:16px">
+      <div class="widget-header">
         <span class="widget-title">Properties</span>
         <button class="btn btn-sm btn-ghost" id="pd-add-prop-btn">+ Add</button>
       </div>
@@ -3523,10 +4316,8 @@ async function renderProjectDetail(projectId) {
   document.getElementById('pd-add-task-btn').onclick = () => showNewTaskModal({ project_id: parseInt(projectId) }, () => renderProjectDetail(projectId));
   document.getElementById('pd-add-note-btn').onclick = () => showNoteModal({ project_id: parseInt(projectId) }, () => renderProjectDetail(projectId));
   document.getElementById('pd-add-res-btn').onclick = () => showResourceModal({ project_id: parseInt(projectId) }, () => renderProjectDetail(projectId));
-  document.getElementById('pd-export-btn').onclick = async () => {
-    const data = await api('GET', `/api/export/project/${projectId}`);
-    downloadJSON(data, `project-${p.title}.json`);
-  };
+  document.getElementById('pd-export-btn').onclick = () =>
+    showJSONModal(`/api/export/project/${projectId}`, `project-${p.title}.json`);
   // ── Project icon picker ──────────────────────────────────────────────
   const projIconBtn = document.getElementById('proj-icon-btn');
   const projIconDisplay = document.getElementById('proj-icon-display');
@@ -3565,6 +4356,7 @@ async function renderProjectDetail(projectId) {
   });
   bindDetailTaskEvents(() => renderProjectDetail(projectId));
   bindPropertiesWidget('project', projectId, 'pd-props-list', 'pd-add-prop-btn');
+  bindInlinePropPanel('project', projectId, {}, () => renderProjectDetail(projectId));
 }
 async function renderGoalDetail(goalId) {
   let g;
@@ -3688,6 +4480,12 @@ async function renderGoalDetail(goalId) {
     </div>
     <div class="widget" style="margin-top:16px">
       <div class="widget-header">
+        <span class="widget-title">Custom Properties</span>
+      </div>
+      ${buildInlinePropPanel('goal', goalId, [])}
+    </div>
+    <div class="widget" style="margin-top:16px">
+      <div class="widget-header">
         <span class="widget-title">Properties</span>
         <button class="btn btn-sm btn-ghost" id="gd-add-prop-btn">+ Add</button>
       </div>
@@ -3696,10 +4494,8 @@ async function renderGoalDetail(goalId) {
   </div>`;
 
   document.getElementById('gd-back-btn').onclick = () => renderView('goals');
-  document.getElementById('gd-export-btn').onclick = async () => {
-    const data = await api('GET', `/api/export/goal/${goalId}`);
-    downloadJSON(data, `goal-${g.title}.json`);
-  };
+  document.getElementById('gd-export-btn').onclick = () =>
+    showJSONModal(`/api/export/goal/${goalId}`, `goal-${g.title}.json`);
   document.getElementById('gd-add-task-btn').onclick = () => showNewTaskModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
   document.getElementById('gd-add-note-btn').onclick = () => showNoteModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
   document.getElementById('gd-add-res-btn').onclick = () => showResourceModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
@@ -3739,6 +4535,7 @@ async function renderGoalDetail(goalId) {
   });
   bindDetailTaskEvents(() => renderGoalDetail(goalId));
   bindPropertiesWidget('goal', goalId, 'gd-props-list', 'gd-add-prop-btn');
+  bindInlinePropPanel('goal', goalId, {}, () => renderGoalDetail(goalId));
 }
 
 /* ─── Properties Widget ──────────────────────────────────────────────── */
@@ -4034,6 +4831,22 @@ async function showTaskSlideover(taskId) {
   const projName = allProjects.find(p => String(p.id) === String(task.project_id)) ? allProjects.find(p => String(p.id) === String(task.project_id)).title : null;
   const goalName = allGoals.find(g => String(g.id) === String(task.goal_id)) ? allGoals.find(g => String(g.id) === String(task.goal_id)).title : null;
 
+  // ── Inline prop panel (built-in extra props + custom props) ──────────────
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const taskBuiltinDefs = [
+    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+    { key: 'goal',     label: 'Goal',     icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
+    { key: 'project',  label: 'Project',  icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+      renderValue: () => projName ? `<span>${projName}</span>` : '' },
+    { key: 'points',   label: 'Story Points', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
+      renderValue: () => task.story_points != null && task.story_points > 0 ? `<span>${task.story_points}</span>` : '' },
+    { key: 'recur',    label: 'Recurring', icon: pIco('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>'),
+      renderValue: () => (task.recur_interval||0) > 0 ? `<span>Every ${task.recur_interval} ${task.recur_unit||'days'}</span>` : '' },
+  ];
+  const taskInlinePropPanel = buildInlinePropPanel('task', taskId, taskBuiltinDefs);
+
   const body = `
     <button class="entity-icon-add-btn" id="task-icon-add-btn">
       <span id="task-icon-display"></span>
@@ -4067,6 +4880,8 @@ async function showTaskSlideover(taskId) {
       </button>
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
+
+    ${taskInlinePropPanel}
 
     <div class="form-group">
       <label class="form-label">Description</label>
@@ -4326,7 +5141,46 @@ async function showTaskSlideover(taskId) {
     setTimeout(() => document.addEventListener('mousedown', _comboOutside), 0);
   }
 
-  // ── Editable value combo (status / priority chips) ─────────────────────
+  // ── Bind inline prop panel (extra built-in + custom props) ───────────────
+  const taskInlinePropEditFns = {
+    category: (valEl) => {
+      const cats = (allCategories||TASK_CATEGORIES.map((n,i)=>({id:i+1,name:n}))).map(c => ({ value: c.id, label: c.name }));
+      openCombo(valEl, cats, task.category_id, async ({ value, label, create }) => {
+        if (create) {
+          try { const nc = await api('POST', '/api/categories', { name: create }); await patchTask({ category_id: nc.id }); } catch(err) {}
+        } else {
+          await patchTask({ category_id: value ? parseInt(value) : null });
+        }
+      }, { allowCreate: true });
+    },
+    goal: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...allGoals.map(g => ({ value: g.id, label: g.title }))];
+      openCombo(valEl, items, task.goal_id, async ({ value }) => {
+        await patchTask({ goal_id: value ? parseInt(value) : null });
+      });
+    },
+    project: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))];
+      openCombo(valEl, items, task.project_id, async ({ value }) => {
+        await patchTask({ project_id: value ? parseInt(value) : null });
+      });
+    },
+    points: (valEl) => {
+      const inp = document.createElement('input');
+      inp.type = 'number'; inp.min = '0'; inp.style.cssText = 'width:80px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
+      inp.value = task.story_points || '';
+      valEl.innerHTML = ''; valEl.appendChild(inp); inp.focus();
+      inp.onblur = async () => { await patchTask({ story_points: parseInt(inp.value) || 0 }); };
+      inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); };
+    },
+    recur: (valEl) => {
+      // Open the full more-panel for recurring (reuse existing ··· click)
+      document.getElementById('prop-chips-more')?.click();
+    },
+  };
+  bindInlinePropPanel('task', taskId, taskInlinePropEditFns, () => showTaskSlideover(taskId));
+
+
   // Allows searching, renaming existing values, and creating new ones.
   // Persists to localStorage under `storageKey`.
   function openEditableValueCombo(anchorEl, valuesArray, storageKey, currentVal, onSelect) {
@@ -4765,6 +5619,22 @@ async function showTaskSlideover(taskId) {
         <div class="prop-panel-label">${pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>')} Project</div>
         <div class="prop-panel-value" id="pp-project">${projName || '—'}</div>
       </div>
+      <div class="prop-panel-row" style="align-items:center">
+        <div class="prop-panel-label">${pIco('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>')} Recurring</div>
+        <div id="pp-recur" style="display:flex;align-items:center;gap:8px">
+          <label class="toggle-switch toggle-switch-sm">
+            <input type="checkbox" id="pp-recur-toggle" ${(task.recur_interval||0)>0?'checked':''} />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+          <div id="pp-recur-fields" style="display:${(task.recur_interval||0)>0?'flex':'none'};gap:6px;align-items:center">
+            <span style="font-size:12px;color:var(--text-muted)">Every</span>
+            <input type="number" id="pp-recur-interval" value="${task.recur_interval||1}" min="1" style="width:50px;font-size:12px" />
+            <select id="pp-recur-unit" style="font-size:12px">
+              ${['days','weeks','months','years'].map(u => `<option value="${u}" ${(task.recur_unit||'').toLowerCase()===u?'selected':''}>${u}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+      </div>
     </div>`;
 
     openFormSlideover('All Properties', panelBody);
@@ -4824,6 +5694,26 @@ async function showTaskSlideover(taskId) {
         await patchTask({ project_id: value ? parseInt(value) : null });
       });
     };
+
+    const recurToggle = document.getElementById('pp-recur-toggle');
+    const recurFields = document.getElementById('pp-recur-fields');
+    recurToggle.onchange = async () => {
+      recurFields.style.display = recurToggle.checked ? 'flex' : 'none';
+      if (!recurToggle.checked) {
+        task.recur_interval = 0; task.recur_unit = '';
+        await patchTask({ recur_interval: 0, recur_unit: '' });
+      }
+    };
+    const saveRecur = async () => {
+      if (!recurToggle.checked) return;
+      const interval = parseInt(document.getElementById('pp-recur-interval').value) || 1;
+      const unit = document.getElementById('pp-recur-unit').value || 'days';
+      task.recur_interval = interval; task.recur_unit = unit;
+      await patchTask({ recur_interval: interval, recur_unit: unit });
+    };
+    document.getElementById('pp-recur-interval').onblur = saveRecur;
+    document.getElementById('pp-recur-interval').onkeydown = e => { if (e.key === 'Enter') saveRecur(); };
+    document.getElementById('pp-recur-unit').onchange = saveRecur;
   };
 
   // ── Other existing bindings ──────────────────────────────────────────
@@ -4847,10 +5737,8 @@ async function showTaskSlideover(taskId) {
     showNoteModal({ task_id: parseInt(taskId) });
   };
 
-  document.getElementById('task-export-btn').onclick = async () => {
-    const data = await api('GET', `/api/export/task/${taskId}`);
-    downloadJSON(data, `task-${task.title.replace(/\s+/g,'-')}.json`);
-  };
+  document.getElementById('task-export-btn').onclick = () =>
+    showJSONModal(`/api/export/task/${taskId}`, `task-${task.title.replace(/\s+/g,'-')}.json`);
 
   // Properties widget
   bindPropertiesWidget('task', taskId, 'props-list', 'add-prop-btn');
@@ -6135,19 +7023,43 @@ function taskModalBody(task, resources) {
     <div class="form-group"><label class="form-label">Pomodoros Planned</label><input type="number" id="t-poms" value="${v.pomodoros_planned||''}" min="0" /></div>
     <div class="form-group">
       <label class="form-label">Recurring</label>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
-          <input type="checkbox" id="t-is-recurring" ${(v.recur_interval||0)>0?'checked':''} style="width:auto" /> Repeating task
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <label class="toggle-switch">
+          <input type="checkbox" id="t-is-recurring" ${(v.recur_interval||0)>0?'checked':''} />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-label">Repeating task</span>
         </label>
         <div id="recur-fields" style="display:${(v.recur_interval||0)>0?'flex':'none'};gap:8px;align-items:center;flex-wrap:wrap">
           <span style="font-size:12px;color:var(--text-muted)">Every</span>
-          <input type="number" id="t-recur-interval" value="${v.recur_interval||1}" min="1" style="width:60px" />
+          <input type="number" id="t-recur-interval" value="${v.recur_interval||1}" min="1" style="width:56px" />
           <select id="t-recur-unit">
             ${['days','weeks','months','years'].map(u => `<option value="${u}" ${(v.recur_unit||'').toLowerCase()===u?'selected':''}>${u}</option>`).join('')}
           </select>
         </div>
       </div>
     </div>
+    ${(() => {
+      const customDefs = getCustomPropDefs('task');
+      if (!customDefs.length) return '';
+      const fields = customDefs.map(def => {
+        const existing = (v.id != null) ? (getCustomPropValues('task', v.id)[def.key] ?? '') : '';
+        let input;
+        if (def.type === 'checkbox') {
+          input = `<input type="checkbox" id="t-cp-${def.key}" ${existing?'checked':''} style="width:auto;margin-top:4px">`;
+        } else if (def.type === 'date') {
+          input = `<input type="date" id="t-cp-${def.key}" value="${existing}">`;
+        } else if (def.type === 'number') {
+          input = `<input type="number" id="t-cp-${def.key}" value="${existing}" min="0">`;
+        } else {
+          input = `<input type="text" id="t-cp-${def.key}" value="${(String(existing)).replace(/"/g,'&quot;')}" placeholder="${def.label}">`;
+        }
+        return `<div class="form-group"><label class="form-label">${def.label}</label>${input}</div>`;
+      }).join('');
+      return `<div id="t-custom-props-section" style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
+        <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Custom Properties</div>
+        ${fields}
+      </div>`;
+    })()}
     <div class="form-actions">
       ${v.id ? `<button class="btn btn-danger" id="modal-delete-btn">Delete</button>` : ''}
       <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
@@ -6202,7 +7114,16 @@ async function showNewTaskModal(presets, afterSave) {
   document.getElementById('modal-save-btn').onclick = async () => {
     const data = collectTaskForm();
     if (!data.title) { alert('Title is required'); return; }
-    await api('POST', '/api/tasks', data);
+    const newTask = await api('POST', '/api/tasks', data);
+    // Save custom prop values if any were filled
+    if (newTask && newTask.id) {
+      getCustomPropDefs('task').forEach(def => {
+        const el = document.getElementById(`t-cp-${def.key}`);
+        if (!el) return;
+        const val = def.type === 'checkbox' ? el.checked : el.value;
+        if (val !== '' && val !== false) setCustomPropValue('task', newTask.id, def.key, val);
+      });
+    }
     closeFormSlideover();
     if (afterSave) afterSave(); else renderView(currentView);
   };
@@ -6220,6 +7141,13 @@ async function showEditTaskModal(task) {
     const data = collectTaskForm();
     if (!data.title) { alert('Title is required'); return; }
     await api('PATCH', `/api/tasks/${task.id}`, data);
+    // Save custom prop values
+    getCustomPropDefs('task').forEach(def => {
+      const el = document.getElementById(`t-cp-${def.key}`);
+      if (!el) return;
+      const val = def.type === 'checkbox' ? el.checked : el.value;
+      setCustomPropValue('task', task.id, def.key, val);
+    });
     closeFormSlideover();
     renderView(currentView);
   };
@@ -6651,7 +7579,12 @@ async function showNoteModal(note, afterSave) {
     `<option value="${t.id}" ${String(t.id)===String(v.task_id)?'selected':''}>${t.title}</option>`).join('');
   const selectedTagIds = (v.tags || []).map(t => t.id);
 
+  const isNew = !v.id;
   const body = `
+    ${!isNew ? `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <span style="font-size:11px;color:var(--text-muted)" id="note-save-indicator">Auto-saved</span>
+      <button class="btn btn-ghost btn-sm" id="note-json-inline-btn">Show JSON</button>
+    </div>` : ''}
     <div class="form-group"><label class="form-label">Title</label>
       <div style="display:flex;align-items:center;gap:8px">
         <button type="button" class="entity-icon-btn" id="note-icon-btn" title="Set icon"><span id="note-icon-display">☐</span></button>
@@ -6672,14 +7605,19 @@ async function showNoteModal(note, afterSave) {
     <div class="form-group"><label class="form-label">Tags</label>
       <div class="tag-picker" id="note-tag-picker">${tagPickerHtml(selectedTagIds)}</div>
     </div>
+    ${v.id ? `<div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
+      <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Custom Properties</div>
+      ${buildInlinePropPanel('note', v.id, [])}
+    </div>` : ''}
     <div class="form-actions">
       ${v.id ? `<button class="btn btn-danger" id="modal-delete-btn">Delete</button>` : ''}
-      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">Save</button>
+      ${isNew ? `<button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
+      <button class="btn btn-primary" id="modal-save-btn">Save</button>` : ''}
     </div>`;
 
   openFormSlideover(v.id ? 'Edit Note' : 'New Note', body);
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
+  const cancelBtn = document.getElementById('modal-cancel-btn');
+  if (cancelBtn) cancelBtn.onclick = closeFormSlideover;
 
   // ── Note icon picker ──────────────────────────────────────────────────
   const noteIconBtn = document.getElementById('note-icon-btn');
@@ -6704,12 +7642,15 @@ async function showNoteModal(note, afterSave) {
     };
   }
 
+  // Bind inline custom props panel (for existing notes only)
+  if (v.id) bindInlinePropPanel('note', v.id, {}, () => showNoteModal(note, afterSave));
+
   // Tag picker toggle
   document.querySelectorAll('#note-tag-picker .tag-chip').forEach(chip => {
     chip.onclick = () => chip.classList.toggle('selected');
   });
 
-  document.getElementById('modal-save-btn').onclick = async () => {
+  async function saveNote(isCreate) {
     const data = {
       title: document.getElementById('n-title').value.trim(),
       body: document.getElementById('n-body').value,
@@ -6719,27 +7660,43 @@ async function showNoteModal(note, afterSave) {
       project_id: document.getElementById('n-project').value ? parseInt(document.getElementById('n-project').value) : null,
       task_id: document.getElementById('n-task').value ? parseInt(document.getElementById('n-task').value) : null,
     };
-    if (!data.title) { alert('Title is required'); return; }
-    let savedId = v.id;
+    if (!data.title) { if (isCreate) alert('Title is required'); return; }
+    const indicator = document.getElementById('note-save-indicator');
+    if (indicator) indicator.textContent = 'Saving…';
     try {
+      let savedId = v.id;
       if (v.id) {
         await api('PATCH', `/api/notes/${v.id}`, data);
       } else {
         const created = await api('POST', '/api/notes', data);
         if (created) savedId = created.id;
       }
-    } catch(err) {
-      alert('Error saving note: ' + (err.message || String(err)));
-      return;
-    }
-    // Save tags
-    if (savedId) {
       const pickedIds = [...document.querySelectorAll('#note-tag-picker .tag-chip.selected')].map(c => parseInt(c.dataset.tagId));
-      try { await api('PUT', `/api/notes/${savedId}/tags`, { tag_ids: pickedIds }); } catch(err) {}
+      if (savedId) {
+        try { await api('PUT', `/api/notes/${savedId}/tags`, { tag_ids: pickedIds }); } catch(e) {}
+      }
+      if (indicator) indicator.textContent = 'Saved';
+      if (isCreate) { closeFormSlideover(); if (afterSave) afterSave(); else renderNotes(); }
+      else if (afterSave) afterSave();
+    } catch(err) {
+      if (indicator) indicator.textContent = 'Save failed';
+      if (isCreate) alert('Error saving note: ' + (err.message || String(err)));
     }
-    closeFormSlideover();
-    if (afterSave) afterSave(); else renderNotes();
-  };
+  }
+
+  if (isNew) {
+    document.getElementById('modal-save-btn').onclick = () => saveNote(true);
+  } else {
+    let saveTimer = null;
+    function scheduleAutoSave() { clearTimeout(saveTimer); saveTimer = setTimeout(() => saveNote(false), 600); }
+    ['n-title','n-body','n-date'].forEach(id => document.getElementById(id)?.addEventListener('input', scheduleAutoSave));
+    ['n-category','n-goal','n-project','n-task'].forEach(id => document.getElementById(id)?.addEventListener('change', () => { clearTimeout(saveTimer); saveNote(false); }));
+    document.querySelectorAll('#note-tag-picker .tag-chip').forEach(chip => {
+      chip.addEventListener('click', () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => saveNote(false), 300); });
+    });
+    document.getElementById('note-json-inline-btn')?.addEventListener('click', () =>
+      showJSONModal(`/api/export/note/${v.id}`, `note-${v.title||v.id}.json`));
+  }
   if (v.id) {
     document.getElementById('modal-delete-btn').onclick = async () => {
       if (!confirm('Delete this note?')) return;
@@ -6842,6 +7799,20 @@ async function showResourceSlideover(resource, afterSave) {
     ? `<a href="${rawUrl}" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">${rawUrl}</a>`
     : '<span style="color:var(--text-muted)">—</span>';
 
+  const fileName = v.file_path ? v.file_path.split('/').pop() : '';
+  const fileSection = `
+    <div class="form-group" style="margin:0">
+      <label class="form-label">Attached File</label>
+      <div id="rs-file-area" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        ${fileName ? `<a id="rs-file-link" href="/api/resource-file/${v.id}" download="${fileName}" style="font-size:12px;color:var(--accent)">📎 ${fileName}</a>` : '<span style="font-size:12px;color:var(--text-muted)" id="rs-file-link">No file attached</span>'}
+        <label class="btn btn-sm btn-ghost" style="cursor:pointer;margin:0">
+          Upload file
+          <input type="file" id="rs-file-input" style="display:none" />
+        </label>
+        <span id="rs-file-status" style="font-size:11px;color:var(--text-muted)"></span>
+      </div>
+    </div>`;
+
   const body = `
     <div style="display:flex;flex-direction:column;gap:12px;padding:4px 0">
       <div class="form-group" style="margin:0">
@@ -6861,6 +7832,7 @@ async function showResourceSlideover(resource, afterSave) {
         <label class="form-label">Body / Notes</label>
         <textarea id="rs-body" style="width:100%;box-sizing:border-box;min-height:100px">${v.body||''}</textarea>
       </div>
+      ${fileSection}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
         <div class="form-group" style="margin:0"><label class="form-label">Goal</label><select id="rs-goal" style="width:100%">${goalOpts}</select></div>
         <div class="form-group" style="margin:0"><label class="form-label">Project</label><select id="rs-project" style="width:100%">${projOpts}</select></div>
@@ -6869,15 +7841,21 @@ async function showResourceSlideover(resource, afterSave) {
         <label class="form-label">Task</label>
         <select id="rs-task" style="width:100%">${taskOpts}</select>
       </div>
-      <div style="display:flex;justify-content:flex-end;margin-top:4px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
+        <button class="btn btn-ghost btn-sm" id="rs-json-btn">Show JSON</button>
         <button class="btn btn-danger btn-sm" id="rs-delete-btn">Delete resource</button>
       </div>
       <div id="rs-save-indicator" style="font-size:11px;color:var(--text-muted);text-align:right;min-height:16px"></div>
+      ${v.id ? `<div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
+        <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Custom Properties</div>
+        ${buildInlinePropPanel('resource', v.id, [])}
+      </div>` : ''}
     </div>`;
 
   openSlideover(v.title || 'Resource', body);
 
   const indicator = document.getElementById('rs-save-indicator');
+  if (v.id) bindInlinePropPanel('resource', v.id, {}, () => showResourceSlideover(resource, afterSave));
   let saveTimer = null;
 
   async function autoSave() {
@@ -6925,9 +7903,110 @@ async function showResourceSlideover(resource, afterSave) {
     closeSlideover();
     if (afterSave) afterSave(); else renderResources();
   };
+  document.getElementById('rs-json-btn').onclick = () =>
+    showJSONModal(`/api/export/resource/${v.id}`, `resource-${(v.title||v.id).replace(/\s+/g,'-')}.json`);
+
+  const fileInput = document.getElementById('rs-file-input');
+  const fileStatus = document.getElementById('rs-file-status');
+  if (fileInput && v.id) {
+    fileInput.onchange = async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      fileStatus.textContent = 'Uploading…';
+      const form = new FormData();
+      form.append('file', file);
+      try {
+        const res = await fetch(`/api/resource-upload/${v.id}`, { method: 'POST', body: form });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        fileStatus.textContent = 'Uploaded';
+        const linkEl = document.getElementById('rs-file-link');
+        if (linkEl) {
+          linkEl.href = `/api/resource-file/${v.id}`;
+          linkEl.download = data.filename;
+          linkEl.textContent = `📎 ${data.filename}`;
+          linkEl.style.display = '';
+        }
+        if (afterSave) afterSave();
+      } catch(e) {
+        fileStatus.textContent = 'Upload failed';
+      }
+    };
+  }
 }
 
 /* ─── Category Modal ─────────────────────────────────────────────────── */
+
+async function showResourceModal(presets, afterSave) {
+  const p = presets || {};
+  let projects = [], tasks = [], goals = [];
+  try { [projects, tasks, goals] = await Promise.all([
+    api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
+  ]); } catch(e) {}
+
+  const goalOpts = '<option value="">— none —</option>' + goals.map(g =>
+    `<option value="${g.id}" ${String(g.id)===String(p.goal_id)?'selected':''}>${g.title}</option>`).join('');
+  const projOpts = '<option value="">— none —</option>' + projects.map(pr =>
+    `<option value="${pr.id}" ${String(pr.id)===String(p.project_id)?'selected':''}>${pr.title}</option>`).join('');
+  const taskOpts = '<option value="">— none —</option>' + tasks.map(t =>
+    `<option value="${t.id}" ${String(t.id)===String(p.task_id)?'selected':''}>${t.title}</option>`).join('');
+
+  const body = `
+    <div style="display:flex;flex-direction:column;gap:12px;padding:4px 0">
+      <div class="form-group" style="margin:0">
+        <label class="form-label">Title *</label>
+        <input type="text" id="rs-title" placeholder="Resource title" style="width:100%;box-sizing:border-box" />
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">Type</label>
+        <input type="text" id="rs-type" placeholder="e.g. link, book, tool…" style="width:100%;box-sizing:border-box" />
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">URL</label>
+        <input type="url" id="rs-url" style="width:100%;box-sizing:border-box" />
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">Body / Notes</label>
+        <textarea id="rs-body" style="width:100%;box-sizing:border-box;min-height:80px"></textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div class="form-group" style="margin:0"><label class="form-label">Goal</label><select id="rs-goal" style="width:100%">${goalOpts}</select></div>
+        <div class="form-group" style="margin:0"><label class="form-label">Project</label><select id="rs-project" style="width:100%">${projOpts}</select></div>
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">Task</label>
+        <select id="rs-task" style="width:100%">${taskOpts}</select>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
+        <button class="btn btn-primary" id="modal-save-btn">Create</button>
+      </div>
+    </div>`;
+
+  openFormSlideover('New Resource', body);
+  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
+  document.getElementById('modal-save-btn').onclick = async () => {
+    const title = document.getElementById('rs-title').value.trim();
+    if (!title) { alert('Title is required'); return; }
+    const data = {
+      title,
+      resource_type: document.getElementById('rs-type').value || 'note',
+      url: document.getElementById('rs-url').value.trim() || null,
+      body: document.getElementById('rs-body').value,
+      goal_id: document.getElementById('rs-goal').value ? parseInt(document.getElementById('rs-goal').value) : null,
+      project_id: document.getElementById('rs-project').value ? parseInt(document.getElementById('rs-project').value) : null,
+      task_id: document.getElementById('rs-task').value ? parseInt(document.getElementById('rs-task').value) : null,
+    };
+    try {
+      await api('POST', '/api/resources', data);
+      closeFormSlideover();
+      if (afterSave) afterSave();
+    } catch(e) {
+      alert('Failed to create resource: ' + e.message);
+    }
+  };
+}
+
 function showCategoryModal(cat) {
   const v = cat || {};
   const body = `
