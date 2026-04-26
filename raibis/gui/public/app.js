@@ -220,6 +220,7 @@ async function injectListIcons(entityType, ids) {
 
 /* ─── State ──────────────────────────────────────────────────────────── */
 let currentView = 'dashboard';
+let _connectedPropTypesCache = null;
 let currentParams = null;
 let navHistory = []; // [{view, params, label}]
 let allTags = [];
@@ -1146,6 +1147,21 @@ const CUSTOM_PROP_TYPES = [
   { type: 'relation',     label: 'Relation',     icon: '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="15 6 21 12 15 18"/><polyline points="9 6 3 12 9 18"/>' },
 ];
 
+async function getConnectedPropTypes() {
+  if (_connectedPropTypesCache) return _connectedPropTypesCache;
+  try {
+    const integrations = await api('GET', '/api/integrations');
+    _connectedPropTypesCache = integrations.map(i => ({
+      type: `connected:${i.id}`,
+      label: i.label || `${i.app_id}: ${i.name}`,
+      icon: '<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>',
+      connected: true,
+      integrationId: i.id,
+    }));
+    return _connectedPropTypesCache;
+  } catch { return []; }
+}
+
 function getCustomPropDefs(entity) {
   const stored = localStorage.getItem(`customPropDefs_${entity}`);
   return stored ? JSON.parse(stored) : [];
@@ -1186,7 +1202,7 @@ function addPropColumnHeader(entity) {
 
 function bindAddPropBtn(entity, onAdd) {
   document.querySelectorAll(`.add-prop-btn[data-entity="${entity}"]`).forEach(btn => {
-    btn.onclick = (e) => {
+    btn.onclick = async (e) => {
       e.stopPropagation();
       const existing = document.getElementById('add-prop-picker');
       if (existing) { existing.remove(); return; }
@@ -1195,13 +1211,19 @@ function bindAddPropBtn(entity, onAdd) {
       picker.className = 'prop-vis-panel';
       picker.style.cssText = 'position:absolute;z-index:300;min-width:280px;padding:8px 6px 6px';
       const typeSvg = (iconPath) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconPath}</svg>`;
-      picker.innerHTML = `<div style="padding:2px 8px 8px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Select type</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px">` +
-        CUSTOM_PROP_TYPES.map(pt => `<div class="prop-type-row" data-type="${pt.type}">
+
+      const connectedTypes = await getConnectedPropTypes();
+      const buildSection = (types) => `<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px">` +
+        types.map(pt => `<div class="prop-type-row" data-type="${pt.type}">
           <span class="prop-type-icon">${typeSvg(pt.icon)}</span>
           <span>${pt.label}</span>
-        </div>`).join('') +
-        `</div>`;
+        </div>`).join('') + `</div>`;
+
+      picker.innerHTML =
+        `<div style="padding:2px 8px 8px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Select type</div>` +
+        buildSection(CUSTOM_PROP_TYPES) +
+        (connectedTypes.length ? `<div class="prop-type-section-header">Connected Apps</div>` + buildSection(connectedTypes) : '');
+
       // Anchor: use closest th (table header), or the btn's parent as relative anchor
       const anchor = btn.closest('th') || btn.parentElement;
       anchor.style.position = 'relative';
@@ -1210,13 +1232,21 @@ function bindAddPropBtn(entity, onAdd) {
         row.onclick = (ev) => {
           ev.stopPropagation();
           picker.remove();
-          const propType = row.dataset.type;
-          const name = prompt(`Name for the new ${propType} property:`);
+          const rawType = row.dataset.type;
+          const isConnected = rawType.startsWith('connected:');
+          const pt = isConnected
+            ? connectedTypes.find(t => t.type === rawType)
+            : CUSTOM_PROP_TYPES.find(t => t.type === rawType);
+          const name = prompt(`Name for the new ${pt?.label || rawType} property:`);
           if (!name || !name.trim()) return;
           const key = name.trim().toLowerCase().replace(/\s+/g, '_');
           const defs = getCustomPropDefs(entity);
           if (defs.some(d => d.key === key)) { alert('A property with that name already exists.'); return; }
-          defs.push({ key, label: name.trim(), type: propType });
+          if (isConnected) {
+            defs.push({ key, label: name.trim(), type: 'connected', integrationId: pt.integrationId });
+          } else {
+            defs.push({ key, label: name.trim(), type: rawType });
+          }
           setCustomPropDefs(entity, defs);
           onAdd();
           document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
@@ -9141,13 +9171,15 @@ function openConnectedAppsPanel() {
         <div class="apps-loading">Checking app status…</div>
       </div>
       <div class="apps-panel-footer">
-        <span class="apps-footer-note">Configure apps via <code>~/.raibis/apps.json</code></span>
+        <span class="apps-footer-note">Connected apps</span>
+        <button class="apps-settings-link" id="_apps-open-settings">⚙ Open raibis Settings</button>
       </div>
     </div>
   `;
   document.body.appendChild(overlay);
 
   document.getElementById('_apps-close-btn').onclick = () => overlay.remove();
+  document.getElementById('_apps-open-settings').onclick = () => { overlay.remove(); openRaibisSettings('apps'); };
   overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
   document.addEventListener('keydown', function escHandler(e) {
     if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler); }
@@ -9215,6 +9247,346 @@ function openConnectedAppsPanel() {
         <div class="app-error" style="display:none"></div>
       </div>
     `;
+  }
+}
+
+/* ─── Raibis Settings Window ─────────────────────────────────────────── */
+async function openRaibisSettings(defaultTab = 'apps') {
+  document.getElementById('_settings-overlay')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = '_settings-overlay';
+  overlay.className = 'settings-overlay';
+
+  overlay.innerHTML = `
+    <div class="settings-modal" id="_settings-modal">
+      <div class="settings-sidebar">
+        <div class="settings-sidebar-header">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
+          raibis
+        </div>
+        <button class="settings-tab${defaultTab==='apps'?' active':''}" data-stab="apps">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          Connected Apps
+        </button>
+        <button class="settings-tab${defaultTab==='integrations'?' active':''}" data-stab="integrations">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+          App Integrations
+        </button>
+      </div>
+      <div class="settings-content" id="_settings-content">
+        <div class="settings-content-header">
+          <span class="settings-content-title" id="_settings-title">Connected Apps</span>
+          <button class="settings-close-btn" id="_settings-close">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="settings-body" id="_settings-body">
+          <div style="color:var(--text-muted);font-size:13px;text-align:center;padding:32px 0">Loading…</div>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  document.getElementById('_settings-close').onclick = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  document.addEventListener('keydown', function escH(e) {
+    if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escH); }
+  });
+
+  // Tab switching
+  overlay.querySelectorAll('.settings-tab').forEach(tab => {
+    tab.onclick = () => {
+      overlay.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      renderSettingsTab(tab.dataset.stab);
+    };
+  });
+
+  renderSettingsTab(defaultTab);
+
+  async function renderSettingsTab(tab) {
+    const body = document.getElementById('_settings-body');
+    const title = document.getElementById('_settings-title');
+    body.innerHTML = `<div style="color:var(--text-muted);font-size:13px;text-align:center;padding:32px 0">Loading…</div>`;
+
+    if (tab === 'apps') {
+      title.textContent = 'Connected Apps';
+      await renderAppsTab(body);
+    } else {
+      title.textContent = 'App Integrations';
+      await renderIntegrationsTab(body);
+    }
+  }
+
+  async function renderAppsTab(body) {
+    let apps;
+    try { apps = await api('GET', '/api/apps/status'); }
+    catch(e) { body.innerHTML = `<div class="apps-empty">Could not load apps.</div>`; return; }
+
+    function buildEditCard(app) {
+      const colorStyle = app.color ? `--app-color:${app.color}` : '';
+      return `
+        <div class="app-edit-card" data-app-id="${app.id}" style="${colorStyle}">
+          <div class="app-edit-card-header">
+            <span class="app-edit-card-title">
+              <span style="font-size:16px">${escHtml(app.icon||'⚙')}</span>
+              ${escHtml(app.name)}
+              <span class="app-status-badge ${app.running?'online':'offline'}" style="margin-left:4px">${app.running?'Running':'Offline'}</span>
+            </span>
+            <div class="app-edit-card-actions">
+              <button class="btn btn-sm app-del-btn" data-app-id="${app.id}" style="color:var(--danger,#e05252)">Delete</button>
+            </div>
+          </div>
+          <div class="app-edit-fields">
+            <div class="app-edit-field"><label>Name</label><input class="app-edit-input" data-field="name" value="${escHtml(app.name)}"></div>
+            <div class="app-edit-field"><label>Icon (emoji)</label><input class="app-edit-input" data-field="icon" value="${escHtml(app.icon||'')}"></div>
+            <div class="app-edit-field"><label>URL</label><input class="app-edit-input" data-field="url" value="${escHtml(app.url||'')}"></div>
+            <div class="app-edit-field"><label>Health Path</label><input class="app-edit-input" data-field="health_path" value="${escHtml(app.health_path||'')}"></div>
+            <div class="app-edit-field"><label>Color</label><input class="app-edit-input" type="color" data-field="color" value="${app.color||'#6366f1'}" style="height:30px;padding:2px 4px"></div>
+            <div class="app-edit-field"><label>Launch Mode</label>
+              <select class="app-edit-input" data-field="launch_mode">
+                ${['local_make','docker_local','docker_remote','none'].map(m => `<option value="${m}"${m===app.launch_mode?' selected':''}>${m}</option>`).join('')}
+              </select>
+            </div>
+            <div class="app-edit-field"><label>Launch Dir</label><input class="app-edit-input" data-field="launch_dir" value="${escHtml(app.launch_dir||'')}"></div>
+            <div class="app-edit-field"><label>Launch Cmd</label><input class="app-edit-input" data-field="launch_cmd" value="${escHtml(app.launch_cmd||'')}"></div>
+          </div>
+          <div class="app-edit-card-footer">
+            <span class="save-badge" id="save-badge-${app.id}">Saved ✓</span>
+            <button class="btn btn-sm app-save-btn btn-primary" data-app-id="${app.id}">Save changes</button>
+          </div>
+        </div>`;
+    }
+
+    body.innerHTML = apps.map(buildEditCard).join('') +
+      `<button class="btn btn-sm" id="_add-app-btn" style="margin-top:4px">+ Add App</button>`;
+
+    // Build mutable apps array from displayed state
+    const getAppsFromDOM = () => {
+      return [...body.querySelectorAll('.app-edit-card')].map(card => {
+        const get = (f) => card.querySelector(`[data-field="${f}"]`)?.value || '';
+        return {
+          id: card.dataset.appId,
+          name: get('name'),
+          icon: get('icon'),
+          url: get('url'),
+          health_path: get('health_path'),
+          color: get('color'),
+          launch_mode: get('launch_mode'),
+          launch_dir: get('launch_dir'),
+          launch_cmd: get('launch_cmd'),
+          description: '',
+        };
+      });
+    };
+
+    body.querySelectorAll('.app-save-btn').forEach(btn => {
+      btn.onclick = async () => {
+        const allApps = getAppsFromDOM();
+        try {
+          await api('PUT', '/api/apps', allApps);
+          const badge = document.getElementById(`save-badge-${btn.dataset.appId}`);
+          if (badge) { badge.classList.add('visible'); setTimeout(() => badge.classList.remove('visible'), 2000); }
+        } catch(e) { alert('Save failed: ' + e.message); }
+      };
+    });
+
+    body.querySelectorAll('.app-del-btn').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('Delete this app configuration?')) return;
+        const allApps = getAppsFromDOM().filter(a => a.id !== btn.dataset.appId);
+        try {
+          await api('PUT', '/api/apps', allApps);
+          await renderAppsTab(body);
+        } catch(e) { alert('Delete failed: ' + e.message); }
+      };
+    });
+
+    document.getElementById('_add-app-btn').onclick = () => {
+      const newId = 'app_' + Date.now();
+      const blank = { id: newId, name: 'New App', icon: '🔗', url: 'http://localhost:3000', health_path: '/api/health', color: '#6366f1', launch_mode: 'local_make', launch_dir: '', launch_cmd: 'make web', description: '' };
+      const card = document.createElement('div');
+      card.innerHTML = buildEditCard(blank);
+      document.getElementById('_add-app-btn').insertAdjacentElement('beforebegin', card.firstElementChild);
+      // Re-bind save/del buttons
+      card.querySelector('.app-save-btn').onclick = async () => {
+        const allApps = getAppsFromDOM();
+        try { await api('PUT', '/api/apps', allApps); await renderAppsTab(body); }
+        catch(e) { alert('Save failed: ' + e.message); }
+      };
+      card.querySelector('.app-del-btn').onclick = () => card.remove();
+    };
+  }
+
+  async function renderIntegrationsTab(body) {
+    let integrations, apps;
+    try {
+      [integrations, apps] = await Promise.all([
+        api('GET', '/api/integrations'),
+        api('GET', '/api/apps/status'),
+      ]);
+    } catch(e) { body.innerHTML = `<div class="apps-empty">Could not load integrations.</div>`; return; }
+
+    const appMap = Object.fromEntries(apps.map(a => [a.id, a]));
+
+    let html = '';
+    if (!integrations.length) {
+      html += `<div style="color:var(--text-muted);font-size:13px;padding:8px 0">No integrations configured yet.</div>`;
+    } else {
+      // Group by app
+      const grouped = {};
+      integrations.forEach(i => { (grouped[i.app_id] = grouped[i.app_id]||[]).push(i); });
+      for (const [appId, rows] of Object.entries(grouped)) {
+        const app = appMap[appId] || { name: appId, icon: '⚙' };
+        html += `<div class="intg-section-header">${escHtml(app.icon||'⚙')} ${escHtml(app.name)}</div>`;
+        rows.forEach((intg, idx) => {
+          html += `<div class="intg-row" data-intg-id="${escHtml(intg.id)}">
+            <span class="intg-row-label">${escHtml(intg.label||intg.name)}</span>
+            <span class="intg-row-meta">${escHtml(intg.endpoint)} → .${escHtml(intg.field_path)} → ${escHtml(intg.field_type)}</span>
+            <span class="intg-status unknown" id="intg-status-${escHtml(intg.id)}">—</span>
+            <button class="btn btn-sm intg-test-btn" data-intg-id="${escHtml(intg.id)}">Test</button>
+            <button class="btn btn-sm intg-del-btn" data-intg-id="${escHtml(intg.id)}" style="color:var(--danger,#e05252)">✕</button>
+          </div>`;
+        });
+      }
+    }
+
+    // Add integration form
+    const appOptions = apps.map(a => `<option value="${a.id}">${escHtml(a.name)}</option>`).join('');
+    html += `
+      <div class="add-intg-form" id="_add-intg-form">
+        <h4>+ Add Integration</h4>
+        <div class="add-intg-fields">
+          <div class="add-intg-field"><label>App</label>
+            <select id="_intg-app">${appOptions}</select>
+          </div>
+          <div class="add-intg-field"><label>Name</label>
+            <input id="_intg-name" placeholder="e.g. Repository">
+          </div>
+          <div class="add-intg-field"><label>Endpoint</label>
+            <input id="_intg-endpoint" placeholder="/api/repos">
+          </div>
+          <div class="add-intg-field"><label>Method</label>
+            <select id="_intg-method"><option>GET</option><option>POST</option></select>
+          </div>
+          <div class="add-intg-field"><label>Field Path</label>
+            <input id="_intg-field-path" placeholder="name or items.0.name">
+          </div>
+          <div class="add-intg-field"><label>Expected Type</label>
+            <select id="_intg-field-type">
+              <option value="text">Text</option>
+              <option value="number">Number</option>
+              <option value="date">Date</option>
+              <option value="url">URL</option>
+              <option value="checkbox">Checkbox</option>
+            </select>
+          </div>
+          <div class="add-intg-field" style="grid-column:1/-1"><label>Label (shown in property picker)</label>
+            <input id="_intg-label" placeholder="e.g. SuperGit: Repository">
+          </div>
+        </div>
+        <div class="test-result-box" id="_intg-test-result" style="display:none"></div>
+        <div class="add-intg-footer">
+          <button class="btn btn-sm" id="_intg-test-btn">Test Connection</button>
+          <button class="btn btn-sm btn-primary" id="_intg-save-btn">Save Integration</button>
+        </div>
+      </div>`;
+
+    body.innerHTML = html;
+
+    // Test existing integrations
+    body.querySelectorAll('.intg-test-btn').forEach(btn => {
+      btn.onclick = async () => {
+        const id = btn.dataset.intgId;
+        const intg = integrations.find(i => i.id === id);
+        if (!intg) return;
+        const statusEl = document.getElementById(`intg-status-${id}`);
+        if (statusEl) { statusEl.className = 'intg-status unknown'; statusEl.textContent = '…'; }
+        try {
+          const res = await api('POST', '/api/integrations/probe', {
+            app_id: intg.app_id, endpoint: intg.endpoint, method: intg.method || 'GET', field_path: intg.field_path, field_type: intg.field_type
+          });
+          if (statusEl) {
+            if (res.error) {
+              statusEl.className = 'intg-status error';
+              statusEl.textContent = 'Error';
+              statusEl.title = res.error;
+            } else {
+              statusEl.className = 'intg-status ok';
+              statusEl.textContent = 'OK';
+              statusEl.title = 'value: ' + JSON.stringify(res.value);
+            }
+          }
+        } catch(e) {
+          if (statusEl) { statusEl.className = 'intg-status error'; statusEl.textContent = 'Error'; }
+        }
+      };
+    });
+
+    // Delete integration
+    body.querySelectorAll('.intg-del-btn').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('Delete this integration? This will affect any properties using it.')) return;
+        const updated = integrations.filter(i => i.id !== btn.dataset.intgId);
+        try {
+          await api('PUT', '/api/integrations', updated);
+          _connectedPropTypesCache = null; // invalidate cache
+          await renderIntegrationsTab(body);
+        } catch(e) { alert('Delete failed: ' + e.message); }
+      };
+    });
+
+    // Test new integration form
+    document.getElementById('_intg-test-btn').onclick = async () => {
+      const appId = document.getElementById('_intg-app').value;
+      const endpoint = document.getElementById('_intg-endpoint').value.trim();
+      const method = document.getElementById('_intg-method').value;
+      const fieldPath = document.getElementById('_intg-field-path').value.trim();
+      const fieldType = document.getElementById('_intg-field-type').value;
+      const box = document.getElementById('_intg-test-result');
+      box.style.display = '';
+      box.className = 'test-result-box';
+      box.textContent = 'Testing…';
+      try {
+        const res = await api('POST', '/api/integrations/probe', { app_id: appId, endpoint, method, field_path: fieldPath, field_type: fieldType });
+        if (res.error) {
+          box.className = 'test-result-box error';
+          box.textContent = '✕ ' + res.error + (res.value != null ? '\n  got: ' + JSON.stringify(res.value) : '');
+        } else {
+          box.className = 'test-result-box ok';
+          box.textContent = '✓ ' + JSON.stringify(res.value) + '  (type: ' + res.inferred_type + ')';
+        }
+      } catch(e) {
+        box.className = 'test-result-box error';
+        box.textContent = '✕ ' + (e.message || 'Connection failed');
+      }
+    };
+
+    // Save new integration
+    document.getElementById('_intg-save-btn').onclick = async () => {
+      const appId = document.getElementById('_intg-app').value;
+      const name = document.getElementById('_intg-name').value.trim();
+      const endpoint = document.getElementById('_intg-endpoint').value.trim();
+      const method = document.getElementById('_intg-method').value;
+      const fieldPath = document.getElementById('_intg-field-path').value.trim();
+      const fieldType = document.getElementById('_intg-field-type').value;
+      const label = document.getElementById('_intg-label').value.trim();
+      if (!name || !endpoint || !fieldPath) { alert('Name, endpoint, and field path are required.'); return; }
+      const app = apps.find(a => a.id === appId);
+      const autoLabel = label || (app ? `${app.name}: ${name}` : name);
+      const newIntg = {
+        id: appId + '_' + name.toLowerCase().replace(/\s+/g,'_') + '_' + Date.now(),
+        app_id: appId, name, endpoint, method, field_path: fieldPath, field_type: fieldType,
+        label: autoLabel,
+      };
+      try {
+        await api('PUT', '/api/integrations', [...integrations, newIntg]);
+        _connectedPropTypesCache = null; // invalidate cache
+        await renderIntegrationsTab(body);
+      } catch(e) { alert('Save failed: ' + e.message); }
+    };
   }
 }
 

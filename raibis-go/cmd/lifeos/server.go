@@ -190,9 +190,14 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Vector sync feed — consumed by N8N / external embedding pipelines
 	mux.HandleFunc("/api/sync-feed", withCORS(syncFeedHandler(svc, store)))
 
-	// Connected apps — status probe + launch
+	// Connected apps — status probe + launch + save
 	mux.HandleFunc("/api/apps/status", withCORS(appsStatusHandler()))
 	mux.HandleFunc("/api/apps/launch", withCORS(appsLaunchHandler()))
+	mux.HandleFunc("/api/apps", withCORS(saveAppsHandler()))
+
+	// App integrations — CRUD + probe
+	mux.HandleFunc("/api/integrations", withCORS(integrationsHandler()))
+	mux.HandleFunc("/api/integrations/probe", withCORS(integrationsProbeHandler()))
 
 	// Comments
 	mux.HandleFunc("/api/comments", withCORS(commentsHandler(store)))
@@ -3057,6 +3062,213 @@ func appsLaunchHandler() http.HandlerFunc {
 			"id":          app.ID,
 			"launch_mode": app.LaunchMode,
 			"message":     "launch initiated",
+		})
+	}
+}
+
+// ─── App integrations ─────────────────────────────────────────────────────
+
+// integrationDef describes a configured data field from a connected app.
+type integrationDef struct {
+	ID        string `json:"id"`
+	AppID     string `json:"app_id"`
+	Name      string `json:"name"`
+	Endpoint  string `json:"endpoint"`   // e.g. "/api/repos"
+	Method    string `json:"method"`     // "GET" | "POST"
+	FieldPath string `json:"field_path"` // dot-notation: "name" or "items.0.name"
+	FieldType string `json:"field_type"` // "text"|"number"|"date"|"url"|"checkbox"
+	Label     string `json:"label"`      // shown in property picker: "SuperGit: Repository"
+}
+
+func raibisDir() string {
+	home := os.Getenv("HOME")
+	dir := filepath.Join(home, ".raibis")
+	_ = os.MkdirAll(dir, 0o755)
+	return dir
+}
+
+func loadIntegrations() []integrationDef {
+	data, err := os.ReadFile(filepath.Join(raibisDir(), "integrations.json"))
+	if err != nil {
+		return []integrationDef{}
+	}
+	var out []integrationDef
+	if err := json.Unmarshal(data, &out); err != nil {
+		return []integrationDef{}
+	}
+	return out
+}
+
+func saveIntegrations(defs []integrationDef) error {
+	data, err := json.MarshalIndent(defs, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(raibisDir(), "integrations.json"), data, 0o644)
+}
+
+// PUT /api/apps — save full apps list to ~/.raibis/apps.json
+func saveAppsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var apps []appDef
+		if err := readJSON(r, &apps); err != nil {
+			errJSON(w, 400, "invalid JSON: "+err.Error())
+			return
+		}
+		data, err := json.MarshalIndent(apps, "", "  ")
+		if err != nil {
+			errJSON(w, 500, err.Error())
+			return
+		}
+		if err := os.WriteFile(filepath.Join(raibisDir(), "apps.json"), data, 0o644); err != nil {
+			errJSON(w, 500, "write failed: "+err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "count": len(apps)})
+	}
+}
+
+// GET /api/integrations — list all; PUT /api/integrations — save all
+func integrationsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, 200, loadIntegrations())
+		case http.MethodPut:
+			var defs []integrationDef
+			if err := readJSON(r, &defs); err != nil {
+				errJSON(w, 400, "invalid JSON: "+err.Error())
+				return
+			}
+			if err := saveIntegrations(defs); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]any{"ok": true, "count": len(defs)})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// POST /api/integrations/probe
+// Body: { app_id, endpoint, method, field_path }
+// Returns: { value, inferred_type, error }
+func integrationsProbeHandler() http.HandlerFunc {
+	client := &http.Client{Timeout: 3 * time.Second}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			AppID     string `json:"app_id"`
+			Endpoint  string `json:"endpoint"`
+			Method    string `json:"method"`
+			FieldPath string `json:"field_path"`
+			FieldType string `json:"field_type"` // optional: for mismatch detection
+		}
+		if err := readJSON(r, &req); err != nil {
+			errJSON(w, 400, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.AppID == "" || req.Endpoint == "" {
+			errJSON(w, 400, "app_id and endpoint required")
+			return
+		}
+
+		// Look up app
+		apps := loadApps()
+		var app *appDef
+		for i := range apps {
+			if apps[i].ID == req.AppID {
+				app = &apps[i]
+				break
+			}
+		}
+		if app == nil {
+			errJSON(w, 404, "app not found: "+req.AppID)
+			return
+		}
+
+		method := strings.ToUpper(req.Method)
+		if method == "" {
+			method = "GET"
+		}
+		url := app.URL + req.Endpoint
+		httpReq, err := http.NewRequest(method, url, nil)
+		if err != nil {
+			errJSON(w, 400, "bad request: "+err.Error())
+			return
+		}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			writeJSON(w, 200, map[string]any{
+				"value": nil, "inferred_type": "", "error": "connection failed: " + err.Error(),
+			})
+			return
+		}
+		defer resp.Body.Close()
+
+		var body any
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			writeJSON(w, 200, map[string]any{
+				"value": nil, "inferred_type": "", "error": "response is not valid JSON",
+			})
+			return
+		}
+
+		// Walk field_path (dot-notation)
+		value := body
+		if req.FieldPath != "" {
+			for _, part := range strings.Split(req.FieldPath, ".") {
+				switch v := value.(type) {
+				case map[string]any:
+					value = v[part]
+				case []any:
+					idx := 0
+					fmt.Sscanf(part, "%d", &idx)
+					if idx >= 0 && idx < len(v) {
+						value = v[idx]
+					} else {
+						value = nil
+					}
+				default:
+					value = nil
+				}
+				if value == nil {
+					break
+				}
+			}
+		}
+
+		// Infer type
+		inferred := "text"
+		switch value.(type) {
+		case float64, int, int64:
+			inferred = "number"
+		case bool:
+			inferred = "checkbox"
+		}
+		if s, ok := value.(string); ok {
+			if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+				inferred = "url"
+			}
+		}
+
+		errMsg := ""
+		if req.FieldType != "" && req.FieldType != inferred {
+			errMsg = fmt.Sprintf("type mismatch: got %s, expected %s", inferred, req.FieldType)
+		}
+
+		writeJSON(w, 200, map[string]any{
+			"value":         value,
+			"inferred_type": inferred,
+			"error":         errMsg,
 		})
 	}
 }
