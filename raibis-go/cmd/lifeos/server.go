@@ -2852,8 +2852,8 @@ type appDef struct {
 	// Docker remote config (only when launch_mode == "docker_remote")
 	DockerHost  string `json:"docker_host,omitempty"`
 	DockerImage string `json:"docker_image,omitempty"`
-	Color       string `json:"color"`        // accent color for the UI card
-	Icon        string `json:"icon"`         // SVG path string
+	Color       string `json:"color"`   // accent color for the UI card
+	Icon        string `json:"icon"`    // emoji character shown in the card
 }
 
 var defaultApps = []appDef{
@@ -2867,7 +2867,7 @@ var defaultApps = []appDef{
 		LaunchDir:   "/Users/i754080/Documents/PersonalRepos/ClaudeCodeProjects/SuperGit",
 		LaunchCmd:   "make web",
 		Color:       "#6366f1",
-		Icon:        "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z",
+		Icon:        "⚡",
 	},
 	{
 		ID:          "studytrack",
@@ -2879,7 +2879,7 @@ var defaultApps = []appDef{
 		LaunchDir:   "/Users/i754080/Documents/PersonalRepos/ClaudeCodeProjects/studytrack",
 		LaunchCmd:   "make web",
 		Color:       "#10b981",
-		Icon:        "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z",
+		Icon:        "📚",
 	},
 	{
 		ID:          "raibis-chat",
@@ -2891,7 +2891,7 @@ var defaultApps = []appDef{
 		LaunchDir:   "/Users/i754080/Documents/PersonalRepos/ClaudeCodeProjects/raibis-chat",
 		LaunchCmd:   "",
 		Color:       "#f59e0b",
-		Icon:        "M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z",
+		Icon:        "💬",
 	},
 }
 
