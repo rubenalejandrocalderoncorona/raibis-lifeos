@@ -1,7 +1,7 @@
 {
   "identifier": "com.raibis.lifeos",
   "productName": "Raibis LifeOS",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "build": {
     "beforeDevCommand": "",
     "devUrl": "http://localhost:3344",

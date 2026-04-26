@@ -1465,6 +1465,17 @@ body.kanban-dragging-active * {
   flex-shrink: 0;
   opacity: 0.8;
 }
+.task-category-chip {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-hover, rgba(255,255,255,0.06));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+  line-height: 16px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 
 .task-content { flex: 1; min-width: 0; }
 .task-title-text {
@@ -2062,6 +2073,13 @@ body.kanban-dragging-active * {
 .task-table-row:hover .task-add-sub-btn,
 .notion-table tr:hover .task-add-sub-btn { opacity: 0.35; }
 .notion-table tbody tr { cursor: pointer; }
+.ctx-handle-th, .ctx-handle-cell {
+  width: 24px;
+  min-width: 24px;
+  max-width: 24px;
+  padding: 0 2px !important;
+  text-align: center;
+}
 
 /* Title cell in task table view — flex row like list view */
 .task-title-cell {
@@ -2599,6 +2617,9 @@ body.kanban-dragging-active * {
 }
 .fab-group.panel-open-form {
   right: calc(620px + var(--space-6));
+}
+.fab-group.panel-open-ai {
+  right: calc(420px + var(--space-6));
 }
 
 /* ─── AI Assistant Panel ──────────────────────────────────────────── */
@@ -3495,16 +3516,22 @@ body.kanban-dragging-active * {
 /* ── Context Handle ────────────────────────────────────────────────────── */
 .ctx-handle {
   opacity: 0;
+  pointer-events: none;
   cursor: pointer;
   padding: 2px 5px;
   border-radius: 4px;
   font-size: 15px;
   color: var(--text-muted);
-  transition: opacity 0.15s, background 0.1s;
+  transition: opacity 0.12s, background 0.1s;
   line-height: 1;
   flex-shrink: 0;
   user-select: none;
+  position: relative;
+  z-index: 2;
 }
+/* Show a dim hint while the parent row is hovered, with pointer-events on
+   so the cursor can reach the handle — but still transparent enough not to
+   look like an active button */
 .task-row:hover .ctx-handle,
 .kanban-card:hover .ctx-handle,
 .task-table-row:hover .ctx-handle,
@@ -3514,8 +3541,17 @@ tr:hover .ctx-handle,
 .note-card:hover .ctx-handle,
 .res-row:hover .ctx-handle,
 .sprint-row:hover .ctx-handle,
-.card:hover .ctx-handle { opacity: 1; }
-.ctx-handle:hover { background: var(--bg-hover, rgba(255,255,255,0.08)); color: var(--text); }
+.card:hover .ctx-handle {
+  opacity: 0.3;
+  pointer-events: auto;
+}
+/* Full visibility + highlight only when the cursor is directly over the handle */
+.ctx-handle:hover {
+  opacity: 1 !important;
+  pointer-events: auto;
+  background: var(--bg-hover, rgba(255,255,255,0.08));
+  color: var(--text);
+}
 
 .kanban-card-header {
   display: flex;
@@ -3653,14 +3689,439 @@ tr:hover .ctx-handle,
 }
 .comment-send-btn:hover { opacity: 0.85; }
 .comment-badge {
-  display: inline-flex; align-items: center; justify-content: center;
-  background: var(--accent);
-  color: #fff;
-  border-radius: 10px;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 1px 5px;
-  min-width: 16px;
-  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  margin-left: 6px;
+  vertical-align: middle;
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+.comment-badge-icon {
+  flex-shrink: 0;
   vertical-align: middle;
 }
+.slideover-comment-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 10px;
+  margin-top: 6px;
+  flex-shrink: 0;
+  padding: 3px 7px;
+  border-radius: 12px;
+  background: var(--bg-hover, rgba(255,255,255,0.07));
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.slideover-comment-icon:hover {
+  background: var(--bg-active, rgba(255,255,255,0.12));
+  color: var(--text);
+}
+
+/* ─── View Tab Bar ─────────────────────────────────────────────────────── */
+.view-tab-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0;
+  padding-top: 10px;
+  min-height: 38px;
+  flex-shrink: 0;
+}
+.view-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 4px 0;
+}
+.view-tabs::-webkit-scrollbar { display: none; }
+.view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-muted);
+  border-radius: 20px;
+  margin-bottom: 0;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+  flex-shrink: 0;
+}
+.view-tab.active {
+  color: var(--text-primary, var(--text));
+  background: rgba(0,0,0,0.08);
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+}
+.view-tab:hover:not(.active) {
+  background: rgba(0,0,0,0.05);
+  color: var(--text-primary, var(--text));
+}
+.view-tab-icon { font-size: 12px; line-height: 1; opacity: 0.7; }
+.view-tab.active .view-tab-icon { opacity: 1; }
+.view-tab-add {
+  padding: 5px 10px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  border-radius: 20px;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.view-tab-add:hover { background: var(--bg-hover); color: var(--text-primary, var(--text)); }
+.view-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0 8px 8px;
+  flex-shrink: 0;
+}
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm, 4px);
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+}
+.toolbar-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary, var(--text));
+}
+.toolbar-btn.active { color: var(--accent); }
+
+/* ─── Tab Rename Input ─────────────────────────────────────────────────── */
+.view-tab-rename-input {
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-card);
+  color: var(--text-primary, var(--text));
+  font-size: 13px;
+  padding: 2px 6px;
+  width: 100px;
+  outline: none;
+}
+
+/* ─── Add Tab Popover ──────────────────────────────────────────────────── */
+.add-tab-popover {
+  position: absolute;
+  z-index: 1000;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  box-shadow: var(--shadow-lg, 0 8px 32px rgba(0,0,0,0.4));
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 160px;
+}
+.add-tab-popover-title {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 2px;
+}
+.add-tab-type-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-primary, var(--text));
+  font-size: 13px;
+  border-radius: var(--radius-sm, 4px);
+  text-align: left;
+}
+.add-tab-type-btn:hover { background: var(--bg-hover); }
+
+/* ─── Tab Context Menu ─────────────────────────────────────────────────── */
+.tab-ctx-menu {
+  position: fixed;
+  z-index: 2000;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  box-shadow: var(--shadow-lg, 0 8px 32px rgba(0,0,0,0.4));
+  padding: 4px;
+  min-width: 140px;
+}
+.tab-ctx-item {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-primary, var(--text));
+  font-size: 13px;
+  border-radius: var(--radius-sm, 4px);
+  text-align: left;
+}
+.tab-ctx-item:hover { background: var(--bg-hover); }
+.tab-ctx-item.danger { color: var(--danger, #e05252); }
+
+/* ─── Filter/Sort Chips ─────────────────────────────────────────────────── */
+.filter-sort-chips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary, var(--text));
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s;
+  line-height: 1.4;
+}
+.chip:hover { background: var(--bg-hover); }
+.chip-add { color: var(--text-muted); }
+.chip-add:hover { color: var(--text-primary, var(--text)); background: var(--bg-hover); }
+.chip-filter { background: var(--bg-hover); border-color: var(--border); }
+.chip-sort   { background: var(--bg-hover); border-color: var(--border); }
+.chip-del {
+  font-size: 10px;
+  opacity: 0.55;
+  line-height: 1;
+  padding: 0 1px;
+}
+.chip-del:hover { opacity: 1; }
+.chip-separator {
+  color: var(--border);
+  padding: 0 2px;
+  font-size: 14px;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+/* ─── Filter/Sort Popovers ─────────────────────────────────────────────── */
+.filter-popover {
+  position: fixed;
+  z-index: 9200;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  box-shadow: var(--shadow-lg, 0 8px 32px rgba(0,0,0,0.35));
+  padding: 10px 12px;
+  min-width: 200px;
+  max-width: 280px;
+}
+.fp-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: nowrap;
+}
+.fp-field-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary, var(--text));
+  white-space: nowrap;
+}
+.fp-op-sel {
+  font-size: 12px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  min-width: 0;
+}
+.fp-del-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 0 2px;
+}
+.fp-del-btn:hover { color: var(--danger, #e05252); }
+.fp-option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.fp-option-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.fp-option-item:hover { background: var(--bg-hover); }
+.fp-text-input, .fp-num-input, .fp-date-input {
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: var(--text-primary, var(--text));
+  box-sizing: border-box;
+}
+.se-dir-btns {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0;
+}
+.se-dir-btn {
+  flex: 1;
+  padding: 5px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  background: none;
+  color: var(--text-muted);
+  transition: background 0.1s;
+}
+.se-dir-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.se-del-btn {
+  width: 100%;
+  padding: 5px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  background: none;
+  color: var(--danger, #e05252);
+  margin-top: 4px;
+}
+
+/* ─── Task Cards Grid ──────────────────────────────────────────────────── */
+.task-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  padding: 4px 0;
+}
+.task-card-item {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  padding: 12px 14px;
+  transition: box-shadow 0.15s, transform 0.1s;
+}
+.task-card-item:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  transform: translateY(-1px);
+}
+
+/* ─── View content padding after tab bar ──────────────────────────────── */
+.view-tab-bar + div:not(.filter-sort-bar):not(.entity-search-bar),
+.filter-sort-bar + div,
+.entity-search-bar + div {
+  padding-top: 12px;
+}
+
+/* ─── Filter popover field selector ───────────────────────────────────── */
+.fp-field-sel {
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  background: none;
+  color: var(--text-primary, var(--text));
+  cursor: pointer;
+  padding: 0 2px;
+  min-width: 0;
+}
+
+/* ─── Toolbar Icon Buttons ─────────────────────────────────────────────── */
+.tb-icons {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+.tb-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm, 4px);
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+}
+.tb-icon-btn:hover { background: var(--bg-hover); color: var(--text-primary, var(--text)); }
+.tb-icon-btn.tb-active { color: var(--accent, #5b8aff); }
+.tb-icon-btn.tb-future { opacity: 0.4; cursor: default; }
+.tb-icon-btn.tb-future:hover { background: none; color: var(--text-muted); }
+
+/* ─── Filter/Sort Bar (hideable) ───────────────────────────────────────── */
+.filter-sort-bar {
+  display: flex;
+  align-items: center;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface, var(--bg-card));
+  min-height: 36px;
+  flex-shrink: 0;
+}
+
+/* ─── Entity Search Bar ────────────────────────────────────────────────── */
+.entity-search-bar {
+  display: flex;
+  align-items: center;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface, var(--bg-card));
+}
+.entity-search-input {
+  flex: 1;
+  border: none;
+  background: none;
+  outline: none;
+  font-size: 13px;
+  color: var(--text-primary, var(--text));
+  padding: 2px 0;
+}
+.entity-search-input::placeholder { color: var(--text-muted); }

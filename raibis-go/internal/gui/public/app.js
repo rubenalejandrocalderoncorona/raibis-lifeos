@@ -404,6 +404,689 @@ function entityPropVisible(entity, key) {
   return getEntityVisProps(entity).includes(key);
 }
 
+/* ─── View Tabs + Filter/Sort System ─────────────────────────────── */
+
+// Operator definitions per field type
+const FILTER_OPERATORS = {
+  text:         ['is','is_not','contains','not_contains','starts_with','ends_with','is_empty','is_not_empty'],
+  select:       ['is','is_not','is_empty','is_not_empty'],
+  multi_select: ['contains','not_contains','is_empty','is_not_empty'],
+  number:       ['eq','neq','gt','lt','gte','lte','is_empty','is_not_empty'],
+  boolean:      ['is_true','is_false'],
+  date:         ['is','before','after','is_empty','is_not_empty'],
+};
+const OPERATOR_LABELS = {
+  is:'Is', is_not:'Is not', contains:'Contains', not_contains:'Does not contain',
+  starts_with:'Starts with', ends_with:'Ends with', is_empty:'Is empty', is_not_empty:'Is not empty',
+  eq:'=', neq:'≠', gt:'>', lt:'<', gte:'≥', lte:'≤',
+  is_true:'Checked', is_false:'Unchecked', before:'Before', after:'After',
+};
+
+// Filterable field definitions per entity (optionsFn resolved at bind time with live data)
+const FILTER_FIELDS = {
+  task: [
+    { key:'title',        label:'Title',        type:'text' },
+    { key:'status',       label:'Status',       type:'select',       options: () => TASK_STATUSES.map(s=>({value:s,label:s.replace(/_/g,' ')})) },
+    { key:'priority',     label:'Priority',     type:'select',       options: () => TASK_PRIORITIES.map(p=>({value:p,label:p})) },
+    { key:'due_date',     label:'Due Date',     type:'date' },
+    { key:'story_points', label:'Story Points', type:'number' },
+  ],
+  project: [
+    { key:'title',      label:'Title',  type:'text' },
+    { key:'status',     label:'Status', type:'select', options: () => ['todo','in_progress','blocked','done'].map(s=>({value:s,label:s.replace(/_/g,' ')})) },
+    { key:'macro_area', label:'Area',   type:'text' },
+  ],
+  goal: [
+    { key:'title',  label:'Title',  type:'text' },
+    { key:'status', label:'Status', type:'select', options: () => ['todo','in_progress','done'].map(s=>({value:s,label:s.replace(/_/g,' ')})) },
+    { key:'type',   label:'Type',   type:'text' },
+    { key:'year',   label:'Year',   type:'number' },
+  ],
+  note: [
+    { key:'title',         label:'Title',    type:'text' },
+    { key:'note_date',     label:'Date',     type:'date' },
+    { key:'category_name', label:'Category', type:'select', options: () => allCategories.map(c=>({value:c.name,label:c.name})) },
+  ],
+  sprint: [
+    { key:'title',  label:'Title',  type:'text' },
+    { key:'status', label:'Status', type:'select', options: () => ['planned','active','completed'].map(s=>({value:s,label:s})) },
+  ],
+  resource: [
+    { key:'title',         label:'Title', type:'text' },
+    { key:'resource_type', label:'Type',  type:'text' },
+  ],
+};
+
+// Resolve field options at call time
+function getFilterFieldOptions(entity, fieldKey) {
+  const fieldDef = (FILTER_FIELDS[entity] || []).find(f => f.key === fieldKey);
+  if (!fieldDef) return [];
+  if (typeof fieldDef.options === 'function') return fieldDef.options();
+  return fieldDef.options || [];
+}
+
+// View persistence
+function getDefaultViews(entity) {
+  const defaults = {
+    task:     [{id:'_list',  name:'List',  viewType:'list',  filters:[], sorts:[]}],
+    project:  [{id:'_cards', name:'Cards', viewType:'cards', filters:[], sorts:[]}],
+    goal:     [{id:'_cards', name:'Cards', viewType:'cards', filters:[], sorts:[]}],
+    note:     [{id:'_cards', name:'Cards', viewType:'cards', filters:[], sorts:[]}],
+    sprint:   [{id:'_cards', name:'Cards', viewType:'cards', filters:[], sorts:[]}],
+    resource: [{id:'_table', name:'Table', viewType:'table', filters:[], sorts:[]}],
+  };
+  return defaults[entity] || [{id:'_list',name:'List',viewType:'list',filters:[],sorts:[]}];
+}
+function getEntityViews(entity) {
+  try { return JSON.parse(localStorage.getItem(`savedViews_${entity}`)) || getDefaultViews(entity); } catch(e) { return getDefaultViews(entity); }
+}
+function saveEntityViews(entity, views) { localStorage.setItem(`savedViews_${entity}`, JSON.stringify(views)); }
+function getActiveTabId(entity) { return localStorage.getItem(`activeTab_${entity}`) || getEntityViews(entity)[0]?.id; }
+function setActiveTabId(entity, id) { localStorage.setItem(`activeTab_${entity}`, id); }
+function nanoid() { return Math.random().toString(36).slice(2,10) + Math.random().toString(36).slice(2,10); }
+
+// Filter + sort application
+function applyViewFiltersAndSorts(items, view, accessors) {
+  const filters = (view && view.filters) || [];
+  const sorts = (view && view.sorts) || [];
+
+  // Apply filters with AND/OR chaining
+  let filtered = items;
+  if (filters.length) {
+    filtered = items.filter(item => {
+      let result = matchFilterRule(item, filters[0], accessors);
+      for (let i = 1; i < filters.length; i++) {
+        const prev = filters[i - 1];
+        const match = matchFilterRule(item, filters[i], accessors);
+        result = (prev.logic === 'or') ? (result || match) : (result && match);
+      }
+      return result;
+    });
+  }
+
+  // Apply sorts in order (index 0 = highest precedence — apply last so it wins)
+  if (sorts.length) {
+    const sortsCopy = [...sorts].reverse(); // reverse so index 0 is applied last
+    sortsCopy.forEach(s => {
+      const acc = accessors[s.field] || (() => '');
+      filtered = [...filtered].sort((a, b) => {
+        const av = acc(a), bv = acc(b);
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        const na = Number(av), nb = Number(bv);
+        const cmp = (!isNaN(na) && !isNaN(nb))
+          ? na - nb
+          : String(av).localeCompare(String(bv), undefined, {numeric:true, sensitivity:'base'});
+        return s.dir === 'desc' ? -cmp : cmp;
+      });
+    });
+  }
+
+  return filtered;
+}
+
+function matchFilterRule(item, rule, accessors) {
+  const acc = accessors[rule.field];
+  const raw = acc ? acc(item) : undefined;
+  const op = rule.operator;
+  const val = rule.value;
+
+  // No-value operators
+  if (op === 'is_empty')    return raw == null || raw === '' || (Array.isArray(raw) && raw.length === 0);
+  if (op === 'is_not_empty') return raw != null && raw !== '' && !(Array.isArray(raw) && raw.length === 0);
+  if (op === 'is_true')  return !!raw;
+  if (op === 'is_false') return !raw;
+
+  const strRaw = String(raw ?? '').toLowerCase();
+  const strVal = String(val ?? '').toLowerCase();
+
+  if (op === 'is')           return strRaw === strVal;
+  if (op === 'is_not')       return strRaw !== strVal;
+  if (op === 'contains') {
+    if (Array.isArray(raw)) return raw.some(r => String(r).toLowerCase().includes(strVal));
+    return strRaw.includes(strVal);
+  }
+  if (op === 'not_contains') {
+    if (Array.isArray(raw)) return !raw.some(r => String(r).toLowerCase().includes(strVal));
+    return !strRaw.includes(strVal);
+  }
+  if (op === 'starts_with')  return strRaw.startsWith(strVal);
+  if (op === 'ends_with')    return strRaw.endsWith(strVal);
+
+  // Number operators
+  const numRaw = Number(raw), numVal = Number(val);
+  if (op === 'eq')  return numRaw === numVal;
+  if (op === 'neq') return numRaw !== numVal;
+  if (op === 'gt')  return numRaw > numVal;
+  if (op === 'lt')  return numRaw < numVal;
+  if (op === 'gte') return numRaw >= numVal;
+  if (op === 'lte') return numRaw <= numVal;
+
+  // Date operators (compare ISO strings lexicographically)
+  if (op === 'before') return strRaw !== '' && strRaw < strVal;
+  if (op === 'after')  return strRaw !== '' && strRaw > strVal;
+
+  return true;
+}
+
+// Build a view type icon for the tab
+function viewTypeIcon(viewType) {
+  const icons = { list:'≡', table:'⊞', cards:'⊟', kanban:'⊡', dashboard:'▦', calendar:'◫' };
+  return icons[viewType] || '≡';
+}
+
+// Build tab bar HTML
+// SVG icons for the toolbar
+const TB_ICONS = {
+  filter:   `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="9" y1="18" x2="15" y2="18"/></svg>`,
+  sort:     `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l4-4 4 4"/><path d="M7 4v16"/><path d="M21 16l-4 4-4-4"/><path d="M17 20V4"/></svg>`,
+  bolt:     `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
+  search:   `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`,
+  expand:   `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`,
+  settings: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+};
+
+function buildViewTabBar(entity, views, activeId) {
+  const activeView = views.find(v => v.id === activeId) || views[0];
+  const entityLabels = { task:'Task', project:'Project', goal:'Goal', note:'Note', sprint:'Sprint', resource:'Resource' };
+  const label = entityLabels[entity] || entity;
+
+  const tabsHtml = views.map(v => {
+    const icon = v.icon || viewTypeIcon(v.viewType);
+    return `
+    <button class="view-tab${v.id === activeId ? ' active' : ''}" data-tab-id="${v.id}" data-tab-entity="${entity}" title="${v.name}">
+      <span class="view-tab-icon">${icon}</span>
+      <span class="view-tab-name">${v.name}</span>
+    </button>`;
+  }).join('');
+
+  const hasFilters = (activeView?.filters || []).length > 0;
+  const hasSorts   = (activeView?.sorts   || []).length > 0;
+
+  const filterChips = buildFilterChipsHtml(entity, activeView);
+  const sortChips   = buildSortChipsHtml(entity, activeView);
+
+  return `<div class="view-tab-bar" id="${entity}-tab-bar">
+    <div class="view-tabs" id="${entity}-view-tabs">
+      ${tabsHtml}
+      <button class="view-tab-add" id="${entity}-add-tab-btn" title="Add view">+</button>
+    </div>
+    <div class="view-toolbar-right">
+      <div class="tb-icons">
+        <button class="tb-icon-btn${hasFilters ? ' tb-active' : ''}" id="${entity}-tb-filter" title="Toggle filter/sort bar">${TB_ICONS.filter}</button>
+        <button class="tb-icon-btn${hasSorts   ? ' tb-active' : ''}" id="${entity}-tb-sort"   title="Toggle filter/sort bar">${TB_ICONS.sort}</button>
+        <button class="tb-icon-btn tb-future"  id="${entity}-tb-bolt"     title="Automations (coming soon)">${TB_ICONS.bolt}</button>
+        <button class="tb-icon-btn"            id="${entity}-tb-search"   title="Toggle search">${TB_ICONS.search}</button>
+        <button class="tb-icon-btn tb-future"  id="${entity}-tb-expand"   title="Expand (coming soon)">${TB_ICONS.expand}</button>
+        <button class="tb-icon-btn"            id="${entity}-tb-settings" title="Settings">${TB_ICONS.settings}</button>
+      </div>
+      <button class="btn btn-primary" id="new-${entity}-btn">+ New ${label}</button>
+    </div>
+  </div>
+  <div class="filter-sort-bar" id="${entity}-filter-sort-bar" style="display:none">
+    <div class="filter-sort-chips" id="${entity}-filter-sort-chips">
+      ${filterChips}
+      <button class="chip chip-add" id="${entity}-filter-add-btn">+ Filter</button>
+      <span class="chip-separator">|</span>
+      ${sortChips}
+      <button class="chip chip-add" id="${entity}-sort-add-btn">+ Sort</button>
+    </div>
+  </div>`;
+}
+
+function getFilterValueLabel(rule, fd) {
+  if (!rule.value || (Array.isArray(rule.value) && !rule.value.length)) return '';
+  if (Array.isArray(rule.value)) {
+    if (fd && typeof fd.options === 'function') {
+      const opts = fd.options();
+      return rule.value.map(v => {
+        const o = opts.find(x => (typeof x === 'object' ? x.value : x) === v);
+        return o ? (typeof o === 'object' ? o.label : o) : v;
+      }).join(', ');
+    }
+    return rule.value.join(', ');
+  }
+  return String(rule.value);
+}
+
+function buildFilterChipsHtml(entity, view) {
+  const fields = FILTER_FIELDS[entity] || [];
+  return (view && view.filters || []).map(rule => {
+    const fd = fields.find(f => f.key === rule.field) || fields[0];
+    const noVal = ['is_empty','is_not_empty','is_true','is_false'].includes(rule.operator);
+    const opLabel = OPERATOR_LABELS[rule.operator] || rule.operator;
+    const valLabel = getFilterValueLabel(rule, fd);
+    const text = noVal
+      ? `${fd?.label || rule.field}: ${opLabel}`
+      : `${fd?.label || rule.field} ${opLabel}${valLabel ? ': ' + valLabel : ''}`;
+    const truncated = text.length > 30 ? text.slice(0, 28) + '…' : text;
+    return `<button class="chip chip-filter" data-filter-rule-id="${rule.id}" title="${text}">${truncated}</button>`;
+  }).join('');
+}
+
+function buildSortChipsHtml(entity, view) {
+  const fields = FILTER_FIELDS[entity] || [];
+  return (view && view.sorts || []).map((s, i) => {
+    const fd = fields.find(f => f.key === s.field);
+    const arrow = s.dir === 'desc' ? '↓' : '↑';
+    return `<button class="chip chip-sort" data-sort-idx="${i}">${arrow} ${fd?.label || s.field}<span class="chip-del" data-sort-del-idx="${i}">×</span></button>`;
+  }).join('');
+}
+
+function bindFilterSortChips(entity, activeViewRef, onUpdate) {
+  const container = document.getElementById(`${entity}-filter-sort-chips`);
+  if (!container) return;
+
+  function syncIconState() {
+    const hasFilters = (activeViewRef.filters || []).length > 0;
+    const hasSorts   = (activeViewRef.sorts   || []).length > 0;
+    document.getElementById(`${entity}-tb-filter`)?.classList.toggle('tb-active', hasFilters);
+    document.getElementById(`${entity}-tb-sort`)?.classList.toggle('tb-active', hasSorts);
+  }
+
+  function rebuild() {
+    container.innerHTML =
+      buildFilterChipsHtml(entity, activeViewRef) +
+      `<button class="chip chip-add" id="${entity}-filter-add-btn">+ Filter</button>` +
+      `<span class="chip-separator">|</span>` +
+      buildSortChipsHtml(entity, activeViewRef) +
+      `<button class="chip chip-add" id="${entity}-sort-add-btn">+ Sort</button>`;
+    syncIconState();
+    bindEvents();
+  }
+
+  function bindEvents() {
+    container.querySelectorAll('.chip-filter').forEach(chip => {
+      chip.onclick = (e) => {
+        e.stopPropagation();
+        const ruleId = chip.dataset.filterRuleId;
+        const rule = (activeViewRef.filters || []).find(r => r.id === ruleId);
+        if (rule) openFilterPopover(chip, entity, activeViewRef, rule, () => { onUpdate(activeViewRef); rebuild(); });
+      };
+    });
+
+    container.querySelectorAll('.chip-del[data-sort-del-idx]').forEach(del => {
+      del.onclick = (e) => {
+        e.stopPropagation();
+        const idx = parseInt(del.dataset.sortDelIdx);
+        (activeViewRef.sorts || []).splice(idx, 1);
+        onUpdate(activeViewRef); rebuild();
+      };
+    });
+
+    container.querySelectorAll('.chip-sort').forEach(chip => {
+      chip.onclick = (e) => {
+        if (e.target.classList.contains('chip-del')) return;
+        e.stopPropagation();
+        const idx = parseInt(chip.dataset.sortIdx);
+        openSortEditPopover(chip, entity, activeViewRef, idx, () => { onUpdate(activeViewRef); rebuild(); });
+      };
+    });
+
+    const addFilterBtn = document.getElementById(`${entity}-filter-add-btn`);
+    if (addFilterBtn) addFilterBtn.onclick = (e) => {
+      e.stopPropagation();
+      const firstField = (FILTER_FIELDS[entity] || [])[0];
+      if (!firstField) return;
+      const newRule = { id: nanoid(), field: firstField.key, operator: (FILTER_OPERATORS[firstField.type] || FILTER_OPERATORS.text)[0], value: '', logic: 'and' };
+      if (!activeViewRef.filters) activeViewRef.filters = [];
+      activeViewRef.filters.push(newRule);
+      onUpdate(activeViewRef);
+      rebuild();
+      const newChip = container.querySelector(`.chip-filter[data-filter-rule-id="${newRule.id}"]`);
+      if (newChip) openFilterPopover(newChip, entity, activeViewRef, newRule, () => { onUpdate(activeViewRef); rebuild(); });
+    };
+
+    const addSortBtn = document.getElementById(`${entity}-sort-add-btn`);
+    if (addSortBtn) addSortBtn.onclick = (e) => {
+      e.stopPropagation();
+      openSortAddPopover(addSortBtn, entity, activeViewRef, () => { onUpdate(activeViewRef); rebuild(); });
+    };
+  }
+
+  bindEvents();
+}
+
+function openFilterPopover(anchorEl, entity, view, rule, onSave) {
+  document.getElementById('_filter-popover')?.remove();
+  const fields = FILTER_FIELDS[entity] || [];
+  let fd = fields.find(f => f.key === rule.field) || fields[0];
+  let fieldType = fd?.type || 'text';
+  const noValueOps = ['is_empty','is_not_empty','is_true','is_false'];
+
+  function currentOps() { return FILTER_OPERATORS[fieldType] || FILTER_OPERATORS.text; }
+  function opOpts() { return currentOps().map(o => `<option value="${o}"${o===rule.operator?' selected':''}>${OPERATOR_LABELS[o]||o}</option>`).join(''); }
+  function fieldOpts() { return fields.map(f => `<option value="${f.key}"${f.key===rule.field?' selected':''}>${f.label}</option>`).join(''); }
+
+  function buildValueHtml() {
+    if (noValueOps.includes(rule.operator)) return '';
+    if (fieldType === 'select' || fieldType === 'multi_select') {
+      const opts = typeof fd?.options === 'function' ? fd.options() : (fd?.options || []);
+      const selVals = Array.isArray(rule.value) ? rule.value : (rule.value ? [String(rule.value)] : []);
+      return `<div class="fp-option-list">${opts.map(opt => {
+        const v = typeof opt === 'object' ? opt.value : opt;
+        const l = typeof opt === 'object' ? opt.label : opt;
+        const checked = selVals.includes(String(v));
+        return `<label class="fp-option-item"><input type="${fieldType==='multi_select'?'checkbox':'radio'}" class="fp-val-check" value="${v}"${checked?' checked':''}> ${l}</label>`;
+      }).join('')}</div>`;
+    }
+    if (fieldType === 'date') return `<input type="date" class="fp-date-input" value="${rule.value||''}">`;
+    if (fieldType === 'number') return `<input type="number" class="fp-num-input" placeholder="Type a value…" value="${rule.value||''}">`;
+    return `<input type="text" class="fp-text-input" placeholder="Type a value…" value="${rule.value||''}">`;
+  }
+
+  const pop = document.createElement('div');
+  pop.id = '_filter-popover';
+  pop.className = 'filter-popover';
+  pop.innerHTML = `
+    <div class="fp-header">
+      <select class="fp-field-sel">${fieldOpts()}</select>
+      <select class="fp-op-sel">${opOpts()}</select>
+      <span style="flex:1"></span>
+      <button class="fp-del-btn" title="Delete filter">🗑</button>
+    </div>
+    <div class="fp-value-wrap">${buildValueHtml()}</div>`;
+
+  const rect = anchorEl.getBoundingClientRect();
+  const left = Math.min(rect.left, window.innerWidth - 300);
+  pop.style.cssText = `top:${rect.bottom + 6}px;left:${left}px`;
+  document.body.appendChild(pop);
+
+  function bindValueEvents() {
+    pop.querySelectorAll('.fp-val-check').forEach(chk => {
+      chk.onchange = () => {
+        if (fieldType === 'multi_select') {
+          rule.value = [...pop.querySelectorAll('.fp-val-check:checked')].map(c => c.value);
+        } else {
+          rule.value = chk.value;
+        }
+        onSave();
+      };
+    });
+    const inp = pop.querySelector('.fp-text-input,.fp-num-input,.fp-date-input');
+    if (inp) inp.oninput = () => { rule.value = inp.value; onSave(); };
+  }
+
+  pop.querySelector('.fp-field-sel').onchange = (e) => {
+    rule.field = e.target.value;
+    fd = fields.find(f => f.key === rule.field) || fields[0];
+    fieldType = fd?.type || 'text';
+    rule.operator = (FILTER_OPERATORS[fieldType] || FILTER_OPERATORS.text)[0];
+    rule.value = '';
+    pop.querySelector('.fp-op-sel').innerHTML = opOpts();
+    pop.querySelector('.fp-value-wrap').innerHTML = buildValueHtml();
+    bindValueEvents();
+    onSave();
+  };
+
+  pop.querySelector('.fp-op-sel').onchange = (e) => {
+    rule.operator = e.target.value;
+    if (noValueOps.includes(rule.operator)) rule.value = '';
+    pop.querySelector('.fp-value-wrap').innerHTML = buildValueHtml();
+    bindValueEvents();
+    onSave();
+  };
+
+  pop.querySelector('.fp-del-btn').onclick = (e) => {
+    e.stopPropagation();
+    view.filters = (view.filters || []).filter(r => r.id !== rule.id);
+    onSave();
+    pop.remove();
+  };
+
+  bindValueEvents();
+  const close = (e) => { if (!pop.contains(e.target)) pop.remove(); };
+  setTimeout(() => document.addEventListener('click', close), 0);
+  pop.addEventListener('click', e => e.stopPropagation());
+}
+
+function openSortAddPopover(anchorEl, entity, view, onSave) {
+  document.getElementById('_sort-popover')?.remove();
+  const fields = FILTER_FIELDS[entity] || [];
+  const pop = document.createElement('div');
+  pop.id = '_sort-popover';
+  pop.className = 'filter-popover';
+  pop.innerHTML = `<div class="fp-option-list">${fields.map(f =>
+    `<div class="fp-option-item sa-field" data-field="${f.key}">${f.label}</div>`
+  ).join('')}</div>`;
+  const rect = anchorEl.getBoundingClientRect();
+  pop.style.cssText = `top:${rect.bottom + 6}px;left:${rect.left}px;min-width:160px`;
+  document.body.appendChild(pop);
+  pop.querySelectorAll('.sa-field').forEach(item => {
+    item.onclick = (e) => {
+      e.stopPropagation();
+      if (!view.sorts) view.sorts = [];
+      view.sorts.push({ field: item.dataset.field, dir: 'asc' });
+      onSave();
+      pop.remove();
+    };
+  });
+  const close = (e) => { if (!pop.contains(e.target)) pop.remove(); };
+  setTimeout(() => document.addEventListener('click', close), 0);
+  pop.addEventListener('click', e => e.stopPropagation());
+}
+
+function openSortEditPopover(anchorEl, entity, view, idx, onSave) {
+  document.getElementById('_sort-popover')?.remove();
+  const fields = FILTER_FIELDS[entity] || [];
+  const sort = (view.sorts || [])[idx];
+  if (!sort) return;
+  const fieldOpts = fields.map(f => `<option value="${f.key}"${f.key===sort.field?' selected':''}>${f.label}</option>`).join('');
+  const pop = document.createElement('div');
+  pop.id = '_sort-popover';
+  pop.className = 'filter-popover';
+  pop.innerHTML = `
+    <div class="fp-header">
+      <select class="se-field-sel" style="font-size:13px;border:none;background:none;color:var(--text-primary,var(--text));font-weight:500;cursor:pointer">${fieldOpts}</select>
+    </div>
+    <div class="se-dir-btns">
+      <button class="se-dir-btn${sort.dir==='asc'?' active':''}" data-dir="asc">↑ Ascending</button>
+      <button class="se-dir-btn${sort.dir==='desc'?' active':''}" data-dir="desc">↓ Descending</button>
+    </div>
+    <button class="se-del-btn">Delete sort</button>`;
+  const rect = anchorEl.getBoundingClientRect();
+  const left = Math.min(rect.left, window.innerWidth - 240);
+  pop.style.cssText = `top:${rect.bottom + 6}px;left:${left}px`;
+  document.body.appendChild(pop);
+  pop.querySelector('.se-field-sel').onchange = (e) => { sort.field = e.target.value; onSave(); };
+  pop.querySelectorAll('.se-dir-btn').forEach(btn => {
+    btn.onclick = (e) => { e.stopPropagation(); sort.dir = btn.dataset.dir; onSave(); pop.remove(); };
+  });
+  pop.querySelector('.se-del-btn').onclick = (e) => {
+    e.stopPropagation(); (view.sorts || []).splice(idx, 1); onSave(); pop.remove();
+  };
+  const close = (e) => { if (!pop.contains(e.target)) pop.remove(); };
+  setTimeout(() => document.addEventListener('click', close), 0);
+  pop.addEventListener('click', e => e.stopPropagation());
+}
+
+// Bind tab bar interactions
+function bindViewTabBar(entity, onTabSwitch, onViewsChanged) {
+  // Tab clicks — use mousedown to avoid conflict with dblclick/rename
+  document.querySelectorAll(`#${entity}-view-tabs .view-tab`).forEach(tab => {
+    tab.onclick = (e) => {
+      if (e.target.tagName === 'INPUT') return; // rename mode
+      if (tab.dataset.renaming) return;
+      setActiveTabId(entity, tab.dataset.tabId);
+      onTabSwitch(tab.dataset.tabId);
+    };
+    // Double-click to rename
+    tab.ondblclick = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const nameEl = tab.querySelector('.view-tab-name');
+      if (!nameEl) return;
+      tab.dataset.renaming = '1';
+      const oldName = nameEl.textContent.trim();
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = oldName;
+      input.className = 'view-tab-rename-input';
+      const w = Math.max(oldName.length * 8 + 20, 50);
+      input.style.cssText = `width:${w}px;min-width:40px;max-width:180px`;
+      nameEl.replaceWith(input);
+      // Use rAF to ensure DOM is ready before focusing
+      requestAnimationFrame(() => { input.focus(); input.select(); });
+      const finish = (save) => {
+        if (!tab.contains(input)) return; // already finished
+        const newName = save ? (input.value.trim() || oldName) : oldName;
+        if (save && newName !== oldName) {
+          const views = getEntityViews(entity);
+          const v = views.find(v => v.id === tab.dataset.tabId);
+          if (v) { v.name = newName; saveEntityViews(entity, views); }
+        }
+        const span = document.createElement('span');
+        span.className = 'view-tab-name';
+        span.textContent = newName;
+        input.replaceWith(span);
+        delete tab.dataset.renaming;
+      };
+      input.onblur = () => finish(true);
+      input.onkeydown = (ke) => {
+        ke.stopPropagation();
+        if (ke.key === 'Enter') { ke.preventDefault(); finish(true); }
+        if (ke.key === 'Escape') { ke.preventDefault(); finish(false); }
+      };
+      input.onclick = (ce) => ce.stopPropagation();
+    };
+    // Right-click context menu
+    tab.oncontextmenu = (e) => {
+      e.preventDefault();
+      const views = getEntityViews(entity);
+      const menu = document.createElement('div');
+      menu.className = 'ctx-menu';
+      menu.style.cssText = `position:fixed;top:${e.clientY}px;left:${e.clientX}px;z-index:9100`;
+      const canDelete = views.length > 1;
+      menu.innerHTML = `
+        <div class="ctx-menu-item" id="tab-ctx-rename">Rename</div>
+        <div class="ctx-menu-item" id="tab-ctx-icon">Change icon</div>
+        <div class="ctx-menu-item" id="tab-ctx-duplicate">Duplicate</div>
+        ${canDelete ? `<div class="ctx-menu-separator"></div><div class="ctx-menu-item ctx-menu-item--danger" id="tab-ctx-delete">Delete</div>` : ''}
+      `;
+      document.body.appendChild(menu);
+      const remove = () => menu.remove();
+      document.addEventListener('click', remove, {once:true});
+      menu.querySelector('#tab-ctx-rename')?.addEventListener('click', (e) => { e.stopPropagation(); remove(); tab.dispatchEvent(new MouseEvent('dblclick', {bubbles:true})); });
+      menu.querySelector('#tab-ctx-icon')?.addEventListener('click', (e) => {
+        e.stopPropagation(); remove();
+        const tabId = tab.dataset.tabId;
+        const iconOptions = ['≡','⊞','⊟','⊡','▦','◫','★','●','◆','▲','☰','♦','✦','⬡','⬢'];
+        const iconPop = document.createElement('div');
+        iconPop.className = 'ctx-menu';
+        iconPop.style.cssText = `position:fixed;top:${e.clientY}px;left:${e.clientX}px;z-index:9200;display:grid;grid-template-columns:repeat(5,1fr);gap:2px;padding:8px`;
+        iconPop.innerHTML = iconOptions.map(ic => `<button class="tab-icon-opt" style="font-size:16px;padding:6px;border:none;background:none;cursor:pointer;border-radius:4px">${ic}</button>`).join('');
+        document.body.appendChild(iconPop);
+        const removeIconPop = () => iconPop.remove();
+        setTimeout(() => document.addEventListener('click', removeIconPop, {once:true}), 0);
+        iconPop.addEventListener('click', ev => ev.stopPropagation());
+        iconPop.querySelectorAll('.tab-icon-opt').forEach(btn => {
+          btn.onmouseenter = () => { btn.style.background = 'var(--bg-hover)'; };
+          btn.onmouseleave = () => { btn.style.background = 'none'; };
+          btn.onclick = (ev) => {
+            ev.stopPropagation(); removeIconPop();
+            const vs = getEntityViews(entity);
+            const v = vs.find(v => v.id === tabId);
+            if (v) { v.icon = btn.textContent; saveEntityViews(entity, vs); onViewsChanged(vs); }
+          };
+        });
+      });
+      menu.querySelector('#tab-ctx-duplicate')?.addEventListener('click', (e) => {
+        e.stopPropagation(); remove();
+        const src = views.find(v => v.id === tab.dataset.tabId);
+        if (src) {
+          const copy = JSON.parse(JSON.stringify(src));
+          copy.id = nanoid(); copy.name = src.name + ' copy';
+          const idx = views.indexOf(src);
+          views.splice(idx + 1, 0, copy);
+          saveEntityViews(entity, views);
+          setActiveTabId(entity, copy.id);
+          onViewsChanged(views);
+        }
+      });
+      menu.querySelector('#tab-ctx-delete')?.addEventListener('click', (e) => {
+        e.stopPropagation(); remove();
+        const idx = views.findIndex(v => v.id === tab.dataset.tabId);
+        if (idx >= 0 && views.length > 1) {
+          views.splice(idx, 1);
+          saveEntityViews(entity, views);
+          const newActive = views[Math.min(idx, views.length-1)].id;
+          setActiveTabId(entity, newActive);
+          onViewsChanged(views);
+        }
+      });
+    };
+  });
+
+  // Add tab button → popover with view type picker
+  const addBtn = document.getElementById(`${entity}-add-tab-btn`);
+  if (addBtn) {
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      const existing = document.getElementById('add-tab-popover');
+      if (existing) { existing.remove(); return; }
+      const rect = addBtn.getBoundingClientRect();
+      const pop = document.createElement('div');
+      pop.id = 'add-tab-popover';
+      pop.className = 'ctx-menu';
+      pop.style.cssText = `position:fixed;top:${rect.bottom+4}px;left:${rect.left}px;z-index:9100;min-width:160px`;
+      const types = ['list','table','cards','kanban','dashboard'];
+      pop.innerHTML = types.map(t => `<div class="ctx-menu-item add-tab-type-btn" data-type="${t}" style="gap:8px"><span>${viewTypeIcon(t)}</span> ${t.charAt(0).toUpperCase()+t.slice(1)}</div>`).join('');
+      document.body.appendChild(pop);
+      const remove = () => pop.remove();
+      document.addEventListener('click', remove, {once:true});
+      pop.querySelectorAll('.add-tab-type-btn').forEach(btn => {
+        btn.onclick = (e) => {
+          e.stopPropagation(); remove();
+          const vt = btn.dataset.type;
+          const views = getEntityViews(entity);
+          const newView = { id: nanoid(), name: vt.charAt(0).toUpperCase()+vt.slice(1), viewType: vt, filters: [], sorts: [] };
+          views.push(newView);
+          saveEntityViews(entity, views);
+          setActiveTabId(entity, newView.id);
+          onViewsChanged(views);
+        };
+      });
+    };
+  }
+
+  // Toolbar icon buttons: filter, sort → toggle filter-sort-bar; others no-op for now
+  const filterSortBar = document.getElementById(`${entity}-filter-sort-bar`);
+  const tbFilter = document.getElementById(`${entity}-tb-filter`);
+  const tbSort   = document.getElementById(`${entity}-tb-sort`);
+  const tbSearch = document.getElementById(`${entity}-tb-search`);
+
+  function toggleFilterSortBar() {
+    if (!filterSortBar) return;
+    const hidden = filterSortBar.style.display === 'none';
+    filterSortBar.style.display = hidden ? '' : 'none';
+  }
+
+  if (tbFilter) tbFilter.onclick = (e) => { e.stopPropagation(); toggleFilterSortBar(); };
+  if (tbSort)   tbSort.onclick   = (e) => { e.stopPropagation(); toggleFilterSortBar(); };
+
+  // Search toggle: show/hide a search input row below the tab bar
+  if (tbSearch) tbSearch.onclick = (e) => {
+    e.stopPropagation();
+    const existingSearch = document.getElementById(`${entity}-search-bar`);
+    if (existingSearch) {
+      existingSearch.remove();
+      tbSearch.classList.remove('tb-active');
+      return;
+    }
+    const bar = document.createElement('div');
+    bar.id = `${entity}-search-bar`;
+    bar.className = 'entity-search-bar';
+    bar.innerHTML = `<input type="text" class="entity-search-input" placeholder="Search…" id="${entity}-search-input" autocomplete="off">`;
+    const tabBar = document.getElementById(`${entity}-tab-bar`);
+    if (tabBar) tabBar.insertAdjacentElement('afterend', bar);
+    tbSearch.classList.add('tb-active');
+    const inp = document.getElementById(`${entity}-search-input`);
+    if (inp) { inp.focus(); inp.oninput = () => { /* search handled per-entity */ }; }
+  };
+}
+
+
 // Build a reusable property visibility panel and wire it up.
 // anchorEl: the button/wrap element to append the panel to
 // props: array of {key, label}
@@ -1307,27 +1990,26 @@ function taskRowHtml(task, showProject, indent, viewMode) {
   const recurBadge = vis('recurrence') && task.recur_interval > 0 ? `<span class="task-recur-badge" title="Repeats every ${task.recur_interval} ${task.recur_unit||'days'}">↺</span>` : '';
   const indentStyle = indent ? `padding-left:${indent * 24 + 12}px` : '';
 
-  // Category color dot
-  let catColor = '';
+  // Category label
+  let catLabel = '';
   if (vis('category') && task.category_id) {
     const cat = allCategories.find(c => c.id === task.category_id);
-    catColor = cat ? (COLOR_HEX[cat.color] || cat.color || '') : '';
+    catLabel = cat ? cat.name : (task.category || '');
   }
-  const catDot = catColor ? `<span class="cat-dot" style="background:${catColor}" title="${task.category||''}"></span>` : '';
+  const catChip = catLabel ? `<span class="task-category-chip">${catLabel}</span>` : '';
   const statusChip = vis('status') ? statusBadge(task.status) : '';
   const priorityChip = vis('priority') ? priorityBadge(task.priority) : '';
   const storyPts = vis('story_points') && task.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${task.story_points}pt</span>` : '';
 
   return `<li class="task-row ${indent ? 'task-row-sub' : ''}" data-task-id="${task.id}" style="${indentStyle}">
+    <span class="ctx-handle" data-entity="task" data-id="${task.id}" title="Actions">⠿</span>
     ${toggleArrow}
     <div class="task-check ${done ? 'done' : ''}" data-check-id="${task.id}">${done ? '✓' : ''}</div>
-    ${catDot}
     <div class="task-content">
-      <div class="${titleCls}"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${task.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${task.title} ${recurBadge}</div>
-      <div class="task-meta-row">${projBadge}${dueBadge}${tagChips}${statusChip}${priorityChip}${storyPts}</div>
+      <div class="${titleCls}"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${task.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${task.title} <span class="comment-badge" data-comment-for="${task.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div>
+      <div class="task-meta-row">${projBadge}${dueBadge}${catChip}${tagChips}${statusChip}${priorityChip}${storyPts}</div>
     </div>
     <span class="task-row-due-right">${vis('due_date') && task.due_date ? fmtDate(task.due_date) : ''}</span>
-    <span class="ctx-handle" data-entity="task" data-id="${task.id}" title="Actions">⠿</span>
   </li>`;
 }
 
@@ -1703,23 +2385,54 @@ function openMoveToPanel(entityType, entityId, anchorEl) {
 }
 
 function openCommentPanel(entityType, entityId) {
-  // Focus the comment section in the currently open slideover/detail panel
-  const sec = document.querySelector('.comment-section');
-  if (sec) {
-    const inp = sec.querySelector('.comment-input');
-    if (inp) { sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); inp.focus(); }
+  // Focus existing comment input if the panel is already open
+  const existingSec = document.querySelector(`.comment-section[data-entity-type="${entityType}"][data-entity-id="${entityId}"]`);
+  if (existingSec) {
+    const inp = existingSec.querySelector('.comment-input');
+    if (inp) { existingSec.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); inp.focus(); }
+    return;
+  }
+  // Open the entity's detail/slideover then focus the comment input
+  const id = String(entityId);
+  const detailViews = { project: 'project-detail', goal: 'goal-detail', sprint: 'sprint-detail' };
+  if (detailViews[entityType]) {
+    renderView(detailViews[entityType], id);
+    setTimeout(() => {
+      const sec = document.querySelector('.comment-section');
+      if (sec) { const inp = sec.querySelector('.comment-input'); if (inp) { sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); inp.focus(); } }
+    }, 400);
+  } else if (entityType === 'task') {
+    showTaskSlideover(id);
+    setTimeout(() => {
+      const sec = document.querySelector('.comment-section');
+      if (sec) { const inp = sec.querySelector('.comment-input'); if (inp) { sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); inp.focus(); } }
+    }, 400);
+  } else if (entityType === 'note') {
+    // notes open as modal — just scroll if somehow visible
+    const sec = document.querySelector('.comment-section');
+    if (sec) { const inp = sec.querySelector('.comment-input'); if (inp) inp.focus(); }
+  } else if (entityType === 'resource') {
+    api('GET', `/api/resources/${id}`).then(r => {
+      if (r) showResourceSlideover(r, () => renderResources());
+      setTimeout(() => {
+        const sec = document.querySelector('.comment-section');
+        if (sec) { const inp = sec.querySelector('.comment-input'); if (inp) { sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); inp.focus(); } }
+      }, 400);
+    }).catch(() => {});
   }
 }
 
-// Global click delegation for ctx-handle
-document.addEventListener('click', (e) => {
-  const h = e.target.closest('.ctx-handle');
-  if (h) {
-    e.stopPropagation();
-    e.preventDefault();
-    showContextMenu(h.dataset.entity, h.dataset.id, h);
-  }
-});
+// Bind ctx-handle clicks directly on each element (avoids stopPropagation blocking delegation)
+function bindCtxHandles(root) {
+  const scope = root || document;
+  scope.querySelectorAll('.ctx-handle').forEach(h => {
+    h.onclick = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      showContextMenu(h.dataset.entity, h.dataset.id, h);
+    };
+  });
+}
 
 // ⌘⇧M global shortcut → focus comment input
 document.addEventListener('keydown', (e) => {
@@ -1756,6 +2469,7 @@ async function bindCommentSection(el) {
     try { comments = await api('GET', `/api/comments?entity_type=${entityType}&entity_id=${entityId}`); } catch(e) {}
     if (!comments || !comments.length) {
       listEl.innerHTML = '<div class="comment-empty">No comments yet.</div>';
+      updateSlideoverCommentIcon(0);
       return;
     }
     listEl.innerHTML = comments.map(c => {
@@ -1769,6 +2483,7 @@ async function bindCommentSection(el) {
         </div>
       </div>`;
     }).join('');
+    updateSlideoverCommentIcon(comments.length);
   }
 
   await loadComments();
@@ -1793,17 +2508,67 @@ function updateCommentBadge(entityType, entityId) {
   api('GET', `/api/comments?entity_type=${entityType}&entity_id=${entityId}`)
     .then(comments => {
       const count = (comments || []).length;
-      document.querySelectorAll(`.ctx-handle[data-entity="${entityType}"][data-id="${entityId}"]`).forEach(h => {
-        const badge = h.closest('[data-task-id],[data-proj-id],[data-goal-id],[data-note-id],[data-res-id],[data-sprint-id]');
-        if (badge) {
-          const existing = badge.querySelector('.comment-badge');
-          if (count > 0) {
-            if (existing) existing.textContent = count;
-            else badge.insertAdjacentHTML('beforeend', `<span class="comment-badge">${count}</span>`);
-          } else if (existing) existing.remove();
-        }
-      });
+      injectCommentBadge(entityType, String(entityId), count);
+      updateSlideoverCommentIcon(count);
     }).catch(() => {});
+}
+
+// Inject a comment count badge into a single entity's row/card
+function injectCommentBadge(entityType, entityId, count) {
+  const id = String(entityId);
+  const msgIcon = `<svg class="comment-badge-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
+  document.querySelectorAll(`[data-comment-for="${id}"][data-comment-entity="${entityType}"]`).forEach(el => {
+    if (count > 0) {
+      el.innerHTML = `${msgIcon}${count}`;
+      el.style.display = 'inline-flex';
+      el.title = `${count} comment${count!==1?'s':''}`;
+    } else {
+      el.style.display = 'none';
+      el.innerHTML = '';
+    }
+  });
+}
+
+// After rendering a list, fetch and inject comment counts for all visible entities
+async function injectCommentBadges(entityType, ids) {
+  if (!ids || !ids.length) return;
+  // Fetch counts for each id in parallel (batched to avoid overwhelming the server)
+  const unique = [...new Set(ids.map(String))];
+  await Promise.all(unique.map(async id => {
+    try {
+      const comments = await api('GET', `/api/comments?entity_type=${entityType}&entity_id=${id}`);
+      const count = (comments || []).length;
+      if (count > 0) injectCommentBadge(entityType, id, count);
+    } catch(e) {}
+  }));
+}
+
+function updateSlideoverCommentIcon(count) {
+  // Inject/update comment bubble next to the entity name in the open panel
+  const commentSvg = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
+
+  const titleArea = document.querySelector('#slideover-body .detail-title-area') ||
+                    document.querySelector('#main-content h1.view-title');
+  if (!titleArea) return;
+
+  let badge = titleArea.querySelector('.slideover-comment-icon');
+  if (count > 0) {
+    const label = `${commentSvg} ${count}`;
+    if (badge) {
+      badge.innerHTML = label;
+      badge.title = `${count} comment${count !== 1 ? 's' : ''}`;
+    } else {
+      titleArea.insertAdjacentHTML('beforeend',
+        `<span class="slideover-comment-icon" title="${count} comment${count !== 1 ? 's' : ''}">${label}</span>`);
+      const newBadge = titleArea.querySelector('.slideover-comment-icon');
+      if (newBadge) newBadge.onclick = () => {
+        const sec = document.querySelector('.comment-section');
+        if (sec) { sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); sec.querySelector('.comment-input')?.focus(); }
+      };
+    }
+  } else if (badge) {
+    badge.remove();
+  }
 }
 
 function escHtml(s) {
@@ -2061,7 +2826,10 @@ async function renderDashboard() {
   });
   bindTaskListEvents();
   document.querySelectorAll('.proj-row').forEach(el => {
-    el.onclick = () => renderView('project-detail', el.dataset.projId);
+    el.onclick = (e) => {
+      if (e.target.closest('.ctx-handle')) return;
+      renderView('project-detail', el.dataset.projId);
+    };
   });
   document.querySelectorAll('.sprint-name[data-sprint-id]').forEach(el => {
     el.onclick = () => renderView('sprint-detail', el.dataset.sprintId);
@@ -2118,6 +2886,7 @@ async function renderDashboard() {
   }
   // Inject task icons (dashboard task list)
   injectListIcons('task', allTasks.map(t => t.id));
+  injectCommentBadges('task', allTasks.map(t => t.id));
 }
 
 /* ─── Tasks View ─────────────────────────────────────────────────────── */
@@ -2151,14 +2920,10 @@ async function renderTasks() {
       t.sub_task_count = allTasksFull.filter(c => c.parent_task_id === t.id).length;
   });
 
-  const taskFilterState = { filters: {}, sort: {}, searchText: '' };
-
-  const viewToggle = `<div class="view-toggle">
-    <button class="view-toggle-btn ${tasksViewMode==='list'?'active':''}" data-mode="list" title="List">≡</button>
-    <button class="view-toggle-btn ${tasksViewMode==='table'?'active':''}" data-mode="table" title="Table">⊞</button>
-    <button class="view-toggle-btn ${tasksViewMode==='kanban'?'active':''}" data-mode="kanban" title="Kanban">⊟</button>
-    <button class="view-toggle-btn ${tasksViewMode==='dashboard'?'active':''}" data-mode="dashboard" title="Dashboard">▦</button>
-  </div>`;
+  const taskViews = getEntityViews('task');
+  const taskActiveId = getActiveTabId('task');
+  let activeTaskView = taskViews.find(v => v.id === taskActiveId) || taskViews[0];
+  tasksViewMode = activeTaskView.viewType;
 
   const kanbanGroupByHtml = `<div class="col-picker-wrap" id="kanban-groupby-wrap" style="${tasksViewMode==='kanban'?'':'display:none'}">
     <button class="btn btn-sm btn-ghost" id="kanban-groupby-btn" title="Group by">⊟ Group: ${tasksKanbanGroupBy}</button>
@@ -2168,7 +2933,6 @@ async function renderTasks() {
     </div>
   </div>`;
 
-  // Columns picker: only shown for kanban view to control column visibility
   const isKanban = tasksViewMode === 'kanban';
   const kanbanCols = isKanban ? (tasksKanbanGroupBy === 'status' ? TASK_STATUSES : TASK_PRIORITIES) : [];
   const hiddenForGroup = isKanban ? (kanbanHiddenCols[tasksKanbanGroupBy] || []) : [];
@@ -2179,25 +2943,29 @@ async function renderTasks() {
     </div>
   </div>`;
 
-  // Property visibility button (eye icon) — shown for list, table, kanban, dashboard
   const eyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
-  const propVisHtml = `<div class="prop-vis-wrap" id="prop-vis-wrap">
+  const propVisHtml = `<div class="prop-vis-wrap" id="prop-vis-wrap" style="margin-right:4px">
     <button class="btn btn-sm btn-ghost" id="prop-vis-btn" title="Property visibility">${eyeSvg}</button>
   </div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
       <h1 class="view-title">Tasks</h1>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        ${viewToggle}
-        ${kanbanGroupByHtml}
-        ${colPickerHtml}
-        ${propVisHtml}
-        <button class="btn btn-primary" id="new-task-btn">+ New Task</button>
-      </div>
     </div>
+    ${buildViewTabBar('task', taskViews, activeTaskView.id).replace('id="new-task-btn"', 'id="new-task-btn" style="display:none"')}
     <div id="tasks-content"></div>
   </div>`;
+
+  // Inject extra toolbar items (kanban group-by, col picker, prop-vis) into toolbar-right before new btn
+  const toolbarRight = document.querySelector('#task-tab-bar .view-toolbar-right');
+  if (toolbarRight) {
+    const newBtn = toolbarRight.querySelector('#new-task-btn');
+    if (newBtn) {
+      newBtn.style.display = '';
+      newBtn.textContent = '+ New Task';
+      toolbarRight.insertBefore(document.createRange().createContextualFragment(kanbanGroupByHtml + colPickerHtml + propVisHtml), newBtn);
+    }
+  }
 
   document.getElementById('new-task-btn').onclick = () => showNewTaskModal({});
 
@@ -2209,16 +2977,6 @@ async function renderTasks() {
     document.addEventListener('click', (e) => {
       if (!colPickerBtn.contains(e.target)) colPickerDrop.classList.add('hidden');
     }, { once: false, capture: false });
-    // Table cols handler
-    document.querySelectorAll('.col-picker-check').forEach(chk => {
-      chk.onchange = () => {
-        taskTableCols = [...document.querySelectorAll('.col-picker-check:checked')].map(c => c.dataset.col);
-        if (!taskTableCols.length) taskTableCols = ['title']; // always keep title
-        localStorage.setItem('taskTableCols', JSON.stringify(taskTableCols));
-        render();
-      };
-    });
-    // Kanban col visibility handler
     document.querySelectorAll('.kanban-col-check').forEach(chk => {
       chk.onchange = () => {
         const checked = [...document.querySelectorAll('.kanban-col-check')].map(c => ({ col: c.dataset.col, on: c.checked }));
@@ -2229,22 +2987,7 @@ async function renderTasks() {
     });
   }
 
-  // View toggle
-  document.querySelectorAll('#main-content .view-toggle-btn[data-mode]').forEach(btn => {
-    btn.onclick = () => {
-      tasksViewMode = btn.dataset.mode;
-      localStorage.setItem('tasksViewMode', tasksViewMode);
-      document.querySelectorAll('#main-content .view-toggle-btn[data-mode]').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      const gbWrap = document.getElementById('kanban-groupby-wrap');
-      if (gbWrap) gbWrap.style.display = tasksViewMode === 'kanban' ? '' : 'none';
-      const colWrap = document.getElementById('col-picker-wrap');
-      if (colWrap) colWrap.style.display = tasksViewMode === 'kanban' ? '' : 'none';
-      render();
-    };
-  });
-
-  // Property visibility panel (tasks — applies to list, table, kanban, dashboard)
+  // Property visibility panel
   const propVisBtn = document.getElementById('prop-vis-btn');
   const propVisWrap = document.getElementById('prop-vis-wrap');
   if (propVisBtn && propVisWrap) {
@@ -2279,15 +3022,54 @@ async function renderTasks() {
     });
   }
 
+  // Bind tab bar
+  bindViewTabBar('task', (newActiveId) => {
+    setActiveTabId('task', newActiveId);
+    tasksViewMode = (getEntityViews('task').find(v => v.id === newActiveId) || {}).viewType || 'list';
+    localStorage.setItem('tasksViewMode', tasksViewMode);
+    renderTasks();
+  }, () => renderTasks());
+
+  // Bind filter/sort panels
+  bindFilterSortChips('task', activeTaskView, (updatedView) => {
+    const vs = getEntityViews('task');
+    const idx = vs.findIndex(v => v.id === updatedView.id);
+    if (idx >= 0) vs[idx] = updatedView;
+    saveEntityViews('task', vs);
+    activeTaskView = updatedView;
+    render();
+  });
+
   function getFiltered() {
-    return applySortFilter(topLevel, taskFilterState, {
+    return applyViewFiltersAndSorts(topLevel, activeTaskView, {
+      title: t => t.title,
       status: t => t.status,
       priority: t => t.priority,
-      project: t => String(t.project_id || ''),
+      due_date: t => t.due_date || '',
+      story_points: t => t.story_points,
       _text: t => t.title + ' ' + (t.description || '') + ' ' + (t.project_title || ''),
-      title: t => t.title,
-      due: t => t.due_date || '',
     });
+  }
+
+  function buildCardsView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">✓</div><div class="empty-state-text">No tasks found</div></div>`;
+    const cards = list.map(t => {
+      const dueCls = isOverdue(t.due_date) ? 'overdue' : isToday(t.due_date) ? 'today' : '';
+      const dueLine = t.due_date ? `<span class="task-due ${dueCls}" style="font-size:11px">${fmtDate(t.due_date)}</span>` : '';
+      const projLine = t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${t.project_title}</div>` : '';
+      const tags = (t.tags||[]).slice(0,3).map(tg => tagHtml(tg)).join('');
+      const storyPts = t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
+      const meta = [statusBadge(t.status), priorityBadge(t.priority), dueLine, tags, storyPts].filter(Boolean);
+      return `<div class="task-card-item" data-task-id="${t.id}" style="cursor:pointer">
+        <div class="kanban-card-header">
+          <div class="kanban-card-title">${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div>
+          <span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span>
+        </div>
+        ${projLine}
+        ${meta.length ? `<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:6px">${meta.join('')}</div>` : ''}
+      </div>`;
+    }).join('');
+    return `<div class="task-cards-grid">${cards}</div>`;
   }
 
   function buildListView(list) {
@@ -2322,7 +3104,7 @@ async function renderTasks() {
         const toggleBtn = hasChildren
           ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${t.id}" title="Toggle subtasks">${chevronSvg}</span>`
           : `<span class="task-add-sub-btn" data-add-sub-id="${t.id}" title="Add subtask">${chevronSvg}</span>`;
-        const titleCell = `<td><div class="task-title-cell" style="padding-left:${depth*20}px">${toggleBtn}<span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span></div></td>`;
+        const titleCell = `<td><div class="task-title-cell" style="padding-left:${depth*20}px">${toggleBtn}<span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span><span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div></td>`;
         const customCols = getCustomPropDefs('task').map(def => customPropCell('task', t.id, def)).join('');
         html += `<tr class="task-table-row" data-task-id="${t.id}" style="position:relative">
           ${titleCell}${visibleCols.map(c => c.cell(t)).join('')}${customCols}
@@ -2421,7 +3203,7 @@ async function renderTasks() {
         const metaLine = [statusLine, dueLine, tagLine, storyPts].some(Boolean)
           ? `<div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">${statusLine}${dueLine}${tagLine}${storyPts}</div>` : '';
         return `<div class="kanban-card" data-task-id="${t.id}" style="cursor:grab">
-          <div class="kanban-card-header"><div class="kanban-card-title">${t.title}${recurBadge}</div><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></div>
+          <div class="kanban-card-header"><div class="kanban-card-title">${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></div>
           ${projLine}${metaLine}
         </div>`;
       }).join('');
@@ -2466,42 +3248,27 @@ async function renderTasks() {
     else if (tasksViewMode === 'table') content = buildTableView(filtered);
     else if (tasksViewMode === 'kanban') content = buildKanbanView(filtered);
     else if (tasksViewMode === 'dashboard') content = buildDashboardView(filtered);
+    else if (tasksViewMode === 'cards') content = buildCardsView(filtered);
     document.getElementById('tasks-content').innerHTML = content;
-    // Initialize filter bar once after content container is in DOM
-    if (!filterBarInitialized) {
-      filterBarInitialized = true;
-      const taskFilterDefs = [
-        { key: 'status', label: 'Status', multi: true, options: TASK_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })) },
-        { key: 'priority', label: 'Priority', multi: true, options: TASK_PRIORITIES.map(p => ({ value: p, label: p })) },
-        { key: 'project', label: 'Project', multi: false, options: [{ value: '', label: 'All' }, ...projects.map(p => ({ value: String(p.id), label: p.title }))] },
-      ];
-      const taskSortDefs = [
-        { key: 'title', label: 'Title' },
-        { key: 'due', label: 'Due Date' },
-        { key: 'priority', label: 'Priority' },
-        { key: 'status', label: 'Status' },
-      ];
-      const viewEl = document.querySelector('#main-content .view');
-      if (viewEl) {
-        const headerEl = viewEl.querySelector('.view-header');
-        const barDiv = document.createElement('div');
-        barDiv.id = 'tasks-filter-bar-container';
-        if (headerEl) headerEl.after(barDiv);
-        notionFilterBar('tasks-filter-bar-container', taskFilterDefs, taskSortDefs, taskFilterState, render);
-      }
-    }
     bindTasksContentEvents();
     if (tasksViewMode === 'table') {
       bindAddPropBtn('task', render);
       bindCustomPropCells();
     }
+    // Show/hide kanban-specific controls
+    const gbWrap = document.getElementById('kanban-groupby-wrap');
+    if (gbWrap) gbWrap.style.display = tasksViewMode === 'kanban' ? '' : 'none';
+    const colWrap = document.getElementById('col-picker-wrap');
+    if (colWrap) colWrap.style.display = tasksViewMode === 'kanban' ? '' : 'none';
     // Inject entity icons into task title slots — include subtask ids too
     injectListIcons('task', allTasksFull.map(t => t.id));
+    injectCommentBadges('task', allTasksFull.map(t => t.id));
   }
 
   render();
 
   function bindTasksContentEvents() {
+    bindCtxHandles();
     document.querySelectorAll('.task-toggle-arrow').forEach(arrow => {
       arrow.onclick = async (e) => {
         e.stopPropagation();
@@ -2534,6 +3301,7 @@ async function renderTasks() {
             e.target.closest('.task-check') ||
             e.target.closest('.add-subtask-inline-btn') ||
             e.target.closest('.inline-subtask-input-row') ||
+            e.target.closest('.ctx-handle') ||
             e.target.dataset.checkId) return;
         showTaskSlideover(row.dataset.taskId);
       };
@@ -2543,6 +3311,7 @@ async function renderTasks() {
       row.onclick = (e) => {
         if (e.target.closest('.task-toggle-arrow') ||
             e.target.closest('.task-add-sub-btn') ||
+            e.target.closest('.ctx-handle') ||
             e.target.tagName === 'SELECT' ||
             e.target.tagName === 'BUTTON' ||
             e.target.closest('button')) return;
@@ -2618,7 +3387,10 @@ async function renderTasks() {
 
     // Kanban card click → slideover
     document.querySelectorAll('.kanban-card[data-task-id]').forEach(card => {
-      card.onclick = () => showTaskSlideover(card.dataset.taskId);
+      card.onclick = (e) => {
+        if (e.target.closest('.ctx-handle')) return;
+        showTaskSlideover(card.dataset.taskId);
+      };
     });
 
     // Kanban "+ Add task" button
@@ -2654,8 +3426,6 @@ async function renderProjects() {
     return;
   }
 
-  const projFilterState = { filters: {}, sort: {}, searchText: '' };
-
   function buildProjectCard(p) {
     const prog = p.progress || {};
     const pct = prog.pct || 0;
@@ -2666,10 +3436,12 @@ async function renderProjects() {
     const tagChips = vis('tags') ? (p.tags || []).map(t => tagHtml(t)).join('') : '';
     return `<div class="card proj-slideover-card" data-proj-id="${p.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
-        <span class="card-title"><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${p.title}</span>
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span>
+          <span class="card-title"><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></span>
+        </div>
         <div class="flex gap-8" onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button>
-          <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span>
         </div>
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
@@ -2699,7 +3471,8 @@ async function renderProjects() {
       const pct = prog.pct || 0;
       const customCols = getCustomPropDefs('project').map(def => customPropCell('project', p.id, def)).join('');
       return `<tr>
-        <td><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-proj-id="${p.id}">${p.title}</span></td>
+        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span></td>
+        <td><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-proj-id="${p.id}">${p.title}</span><span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></td>
         ${vis('status')   ? `<td>${statusBadge(p.status)}</td>` : ''}
         ${vis('goal')     ? `<td>${p.goal_title || '—'}</td>` : ''}
         ${vis('area')     ? `<td>${p.macro_area ? p.macro_area.split('(')[0].trim() : '—'}</td>` : ''}
@@ -2708,12 +3481,12 @@ async function renderProjects() {
         ${customCols}
         <td onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button>
-          <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span>
         </td>
       </tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('project').map(d => `<th>${d.label}</th>`).join('');
     const headers = [
+      '<th class="ctx-handle-th"></th>',
       '<th>Title</th>',
       vis('status')   ? '<th>Status</th>'   : '',
       vis('goal')     ? '<th>Goal</th>'     : '',
@@ -2800,50 +3573,63 @@ async function renderProjects() {
     });
   }
 
-  const toggle = viewToggleHtml(
-    [{key:'cards',label:'Cards'},{key:'table',label:'Table'},{key:'kanban',label:'Kanban'}],
-    projectsViewMode
-  );
+  const projViews = getEntityViews('project');
+  const projActiveId = getActiveTabId('project');
+  let activeProjView = projViews.find(v => v.id === projActiveId) || projViews[0];
+  projectsViewMode = activeProjView.viewType;
+
   const projEyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+  const projPropVisHtml = `<div class="prop-vis-wrap" id="proj-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="proj-prop-vis-btn" title="Property visibility">${projEyeSvg}</button></div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header">
-      <h1 class="view-title">Projects</h1>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        ${toggle}
-        <div class="prop-vis-wrap" id="proj-prop-vis-wrap">
-          <button class="btn btn-sm btn-ghost" id="proj-prop-vis-btn" title="Property visibility">${projEyeSvg}</button>
-        </div>
-        <button class="btn btn-primary" id="new-proj-btn">+ New Project</button>
-      </div>
-    </div>
+    <div class="view-header"><h1 class="view-title">Projects</h1></div>
+    ${buildViewTabBar('project', projViews, activeProjView.id).replace('id="new-project-btn"', 'id="new-project-btn" style="display:none"')}
     <div id="proj-list"></div>
   </div>`;
 
-  const projFilterDefs = [
-    { key: 'status', label: 'Status', multi: true, options: ['todo','in_progress','blocked','done'].map(s => ({ value: s, label: s.replace('_',' ') })) },
-    { key: 'goal', label: 'Goal', multi: false, options: [{ value: '', label: 'All' }, ...goals.map(g => ({ value: String(g.id), label: g.title }))] },
-  ];
-  const projSortDefs = [
-    { key: 'title', label: 'Title' },
-    { key: 'status', label: 'Status' },
-    { key: 'progress', label: 'Progress' },
-  ];
-  const viewEl = document.querySelector('#main-content .view');
-  const headerEl = viewEl?.querySelector('.view-header');
-  if (headerEl) {
-    const barDiv = document.createElement('div');
-    barDiv.id = 'proj-filter-bar-container';
-    headerEl.after(barDiv);
-    notionFilterBar('proj-filter-bar-container', projFilterDefs, projSortDefs, projFilterState, () => render());
+  // Inject prop-vis into toolbar-right
+  const projToolbarRight = document.querySelector('#project-tab-bar .view-toolbar-right');
+  if (projToolbarRight) {
+    const newBtn = projToolbarRight.querySelector('#new-project-btn');
+    if (newBtn) { newBtn.style.display = ''; newBtn.textContent = '+ New Project'; projToolbarRight.insertBefore(document.createRange().createContextualFragment(projPropVisHtml), newBtn); }
   }
 
+  const projPropVisBtn = document.getElementById('proj-prop-vis-btn');
+  const projPropVisWrap = document.getElementById('proj-prop-vis-wrap');
+  if (projPropVisBtn && projPropVisWrap) {
+    projPropVisBtn.onclick = (e) => {
+      e.stopPropagation();
+      bindPropVisPanel(projPropVisWrap, ENTITY_PROPS.project, () => getEntityVisProps('project'), (keys) => setEntityVisProps('project', keys), render);
+    };
+  }
+
+  // Wire new project button
+  document.getElementById('new-project-btn').onclick = () => showProjectModal(null, goals);
+
+  // Bind tab bar
+  bindViewTabBar('project', (newActiveId) => {
+    setActiveTabId('project', newActiveId);
+    projectsViewMode = (getEntityViews('project').find(v => v.id === newActiveId) || {}).viewType || 'cards';
+    localStorage.setItem('projectsViewMode', projectsViewMode);
+    renderProjects();
+  }, () => renderProjects());
+
+  // Bind filter/sort panels
+  bindFilterSortChips('project', activeProjView, (updatedView) => {
+    const vs = getEntityViews('project');
+    const idx = vs.findIndex(v => v.id === updatedView.id);
+    if (idx >= 0) vs[idx] = updatedView;
+    saveEntityViews('project', vs);
+    activeProjView = updatedView;
+    render();
+  });
+
   function getFiltered() {
-    return applySortFilter(projects, projFilterState, {
-      status: p => p.status,
-      goal: p => String(p.goal_id || ''),
+    return applyViewFiltersAndSorts(projects, activeProjView, {
       title: p => p.title,
-      progress: p => String((p.progress && p.progress.pct) || 0),
+      status: p => p.status,
+      macro_area: p => p.macro_area || '',
+      goal_id: p => String(p.goal_id || ''),
       _text: p => p.title + ' ' + (p.description || '') + ' ' + (p.goal_title || ''),
     });
   }
@@ -2858,6 +3644,7 @@ async function renderProjects() {
     bindProjEvents();
     if (projectsViewMode === 'table') { bindAddPropBtn('project', render); bindCustomPropCells(); }
     injectListIcons('project', list.map(p => p.id));
+    injectCommentBadges('project', list.map(p => p.id));
     if (projectsViewMode === 'kanban') {
       document.getElementById('proj-gb-status')?.addEventListener('click', () => {
         projsKanbanGroupBy = 'status'; localStorage.setItem('projsKanbanGroupBy', 'status'); render();
@@ -2869,39 +3656,22 @@ async function renderProjects() {
         projsKanbanGroupBy = 'kanban_col'; localStorage.setItem('projsKanbanGroupBy', 'kanban_col'); render();
       });
       document.querySelectorAll('.proj-kanban-card').forEach(card => {
-        card.addEventListener('click', () => renderView('project-detail', card.dataset.projId));
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('.ctx-handle')) return;
+          renderView('project-detail', card.dataset.projId);
+        });
       });
+      bindCtxHandles();
       bindProjKanban();
     }
-  }
-
-  document.getElementById('new-proj-btn').onclick = () => showProjectModal(null, goals);
-  bindViewToggle([], null, (mode) => {
-    projectsViewMode = mode;
-    localStorage.setItem('projectsViewMode', mode);
-    render();
-  });
-
-  const projPropVisBtn = document.getElementById('proj-prop-vis-btn');
-  const projPropVisWrap = document.getElementById('proj-prop-vis-wrap');
-  if (projPropVisBtn && projPropVisWrap) {
-    projPropVisBtn.onclick = (e) => {
-      e.stopPropagation();
-      bindPropVisPanel(
-        projPropVisWrap,
-        ENTITY_PROPS.project,
-        () => getEntityVisProps('project'),
-        (keys) => setEntityVisProps('project', keys),
-        render
-      );
-    };
   }
   render();
 
   function bindProjEvents() {
+    bindCtxHandles();
     document.querySelectorAll('.proj-slideover-card').forEach(el => {
       el.onclick = (e) => {
-        if (e.target.closest('.proj-del-btn, .proj-export-btn')) return;
+        if (e.target.closest('.proj-del-btn, .proj-export-btn, .ctx-handle')) return;
         const p = projects.find(x => String(x.id) === el.dataset.projId);
         showProjectSlideover(p, goals, () => renderProjects());
       };
@@ -2936,7 +3706,95 @@ async function renderGoals() {
     return;
   }
 
-  const goalFilterState = { filters: {}, sort: {}, searchText: '' };
+  const goalViews = getEntityViews('goal');
+  const goalActiveId = getActiveTabId('goal');
+  let activeGoalView = goalViews.find(v => v.id === goalActiveId) || goalViews[0];
+  goalsViewMode = activeGoalView.viewType;
+
+  const goalEyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+  const goalPropVisHtml = `<div class="prop-vis-wrap" id="goal-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="goal-prop-vis-btn" title="Property visibility">${goalEyeSvg}</button></div>`;
+
+  document.getElementById('main-content').innerHTML = `<div class="view">
+    <div class="view-header"><h1 class="view-title">Goals</h1></div>
+    ${buildViewTabBar('goal', goalViews, activeGoalView.id).replace('id="new-goal-btn"', 'id="new-goal-btn" style="display:none"')}
+    <div id="goal-list"></div>
+  </div>`;
+
+  const goalToolbarRight = document.querySelector('#goal-tab-bar .view-toolbar-right');
+  if (goalToolbarRight) {
+    const newBtn = goalToolbarRight.querySelector('#new-goal-btn');
+    if (newBtn) { newBtn.style.display = ''; newBtn.textContent = '+ New Goal'; goalToolbarRight.insertBefore(document.createRange().createContextualFragment(goalPropVisHtml), newBtn); }
+  }
+
+  const goalPropVisBtn = document.getElementById('goal-prop-vis-btn');
+  const goalPropVisWrap = document.getElementById('goal-prop-vis-wrap');
+  if (goalPropVisBtn && goalPropVisWrap) {
+    goalPropVisBtn.onclick = (e) => {
+      e.stopPropagation();
+      bindPropVisPanel(goalPropVisWrap, ENTITY_PROPS.goal, () => getEntityVisProps('goal'), (keys) => setEntityVisProps('goal', keys), render);
+    };
+  }
+
+  document.getElementById('new-goal-btn').onclick = () => showGoalModal(null);
+
+  bindViewTabBar('goal', (newActiveId) => {
+    setActiveTabId('goal', newActiveId);
+    goalsViewMode = (getEntityViews('goal').find(v => v.id === newActiveId) || {}).viewType || 'cards';
+    localStorage.setItem('goalsViewMode', goalsViewMode);
+    renderGoals();
+  }, () => renderGoals());
+
+  bindFilterSortChips('goal', activeGoalView, (updatedView) => {
+    const vs = getEntityViews('goal');
+    const idx = vs.findIndex(v => v.id === updatedView.id);
+    if (idx >= 0) vs[idx] = updatedView;
+    saveEntityViews('goal', vs);
+    activeGoalView = updatedView;
+    render();
+  });
+
+  function getFiltered() {
+    return applyViewFiltersAndSorts(goals, activeGoalView, {
+      title: g => g.title,
+      status: g => g.status,
+      type: g => g.type || '',
+      year: g => g.year || '',
+      _text: g => g.title + ' ' + (g.description || ''),
+    });
+  }
+
+  function render() {
+    const list = getFiltered();
+    let html;
+    if (goalsViewMode === 'table') html = buildTableView(list);
+    else if (goalsViewMode === 'kanban') html = buildGoalKanbanView(list);
+    else html = buildCardsView(list);
+    document.getElementById('goal-list').innerHTML = html;
+    bindGoalEvents();
+    if (goalsViewMode === 'table') { bindAddPropBtn('goal', render); bindCustomPropCells(); }
+    injectListIcons('goal', list.map(g => g.id));
+    injectCommentBadges('goal', list.map(g => g.id));
+    if (goalsViewMode === 'kanban') {
+      document.getElementById('goal-gb-status')?.addEventListener('click', () => {
+        goalsKanbanGroupBy = 'status'; localStorage.setItem('goalsKanbanGroupBy', 'status'); render();
+      });
+      document.getElementById('goal-gb-type')?.addEventListener('click', () => {
+        goalsKanbanGroupBy = 'type'; localStorage.setItem('goalsKanbanGroupBy', 'type'); render();
+      });
+      document.getElementById('goal-gb-year')?.addEventListener('click', () => {
+        goalsKanbanGroupBy = 'year'; localStorage.setItem('goalsKanbanGroupBy', 'year'); render();
+      });
+      document.querySelectorAll('.goal-kanban-card').forEach(card => {
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('.ctx-handle')) return;
+          renderView('goal-detail', card.dataset.goalId);
+        });
+      });
+      bindCtxHandles();
+      bindGoalKanban();
+    }
+  }
+  render();
 
   function buildGoalCard(g) {
     const prog = g.progress || {};
@@ -2945,10 +3803,12 @@ async function renderGoals() {
     const tagChips = vis('tags') ? (g.tags || []).map(t => tagHtml(t)).join('') : '';
     return `<div class="card goal-slideover-card" data-goal-id="${g.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
-        <span class="card-title"><span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${g.title}</span>
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span>
+          <span class="card-title"><span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${g.title}<span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></span>
+        </div>
         <div class="flex gap-8" onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button>
-          <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span>
         </div>
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
@@ -2977,7 +3837,8 @@ async function renderGoals() {
       const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
       const customCols = getCustomPropDefs('goal').map(def => customPropCell('goal', g.id, def)).join('');
       return `<tr>
-        <td><span style="cursor:pointer;color:var(--accent)" class="goal-nav-link" data-goal-id="${g.id}">${g.title}</span></td>
+        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span></td>
+        <td><span style="cursor:pointer;color:var(--accent)" class="goal-nav-link" data-goal-id="${g.id}">${g.title}</span><span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></td>
         ${vis('status')   ? `<td>${statusBadge(g.status)}</td>` : ''}
         ${vis('type')     ? `<td>${g.type || '—'}</td>` : ''}
         ${vis('year')     ? `<td>${g.year || '—'}</td>` : ''}
@@ -2986,12 +3847,12 @@ async function renderGoals() {
         ${customCols}
         <td onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button>
-          <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span>
         </td>
       </tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('goal').map(d => `<th>${d.label}</th>`).join('');
     const headers = [
+      '<th class="ctx-handle-th"></th>',
       '<th>Title</th>',
       vis('status')   ? '<th>Status</th>'   : '',
       vis('type')     ? '<th>Type</th>'     : '',
@@ -3076,110 +3937,11 @@ async function renderGoals() {
     });
   }
 
-  const toggle = viewToggleHtml(
-    [{key:'cards',label:'Cards'},{key:'table',label:'Table'},{key:'kanban',label:'Kanban'}],
-    goalsViewMode
-  );
-  const goalEyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
-
-  document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header">
-      <h1 class="view-title">Goals</h1>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        ${toggle}
-        <div class="prop-vis-wrap" id="goal-prop-vis-wrap">
-          <button class="btn btn-sm btn-ghost" id="goal-prop-vis-btn" title="Property visibility">${goalEyeSvg}</button>
-        </div>
-        <button class="btn btn-primary" id="new-goal-btn">+ New Goal</button>
-      </div>
-    </div>
-    <div id="goal-list"></div>
-  </div>`;
-
-  const goalFilterDefs = [
-    { key: 'status', label: 'Status', multi: true, options: ['todo','in_progress','blocked','done'].map(s => ({ value: s, label: s.replace('_',' ') })) },
-    { key: 'type', label: 'Type', multi: true, options: GOAL_TYPES.map(t => ({ value: t, label: t })) },
-    { key: 'year', label: 'Year', multi: true, options: GOAL_YEARS.map(y => ({ value: y, label: y })) },
-  ];
-  const goalSortDefs = [
-    { key: 'title', label: 'Title' },
-    { key: 'status', label: 'Status' },
-    { key: 'type', label: 'Type' },
-    { key: 'year', label: 'Year' },
-  ];
-  const goalViewEl = document.querySelector('#main-content .view');
-  const goalHeaderEl = goalViewEl?.querySelector('.view-header');
-  if (goalHeaderEl) {
-    const barDiv = document.createElement('div');
-    barDiv.id = 'goal-filter-bar-container';
-    goalHeaderEl.after(barDiv);
-    notionFilterBar('goal-filter-bar-container', goalFilterDefs, goalSortDefs, goalFilterState, () => render());
-  }
-
-  function getFiltered() {
-    return applySortFilter(goals, goalFilterState, {
-      status: g => g.status,
-      type: g => g.type || '',
-      year: g => g.year || '',
-      title: g => g.title,
-      _text: g => g.title + ' ' + (g.description || ''),
-    });
-  }
-
-  function render() {
-    const list = getFiltered();
-    let html;
-    if (goalsViewMode === 'table') html = buildTableView(list);
-    else if (goalsViewMode === 'kanban') html = buildGoalKanbanView(list);
-    else html = buildCardsView(list);
-    document.getElementById('goal-list').innerHTML = html;
-    bindGoalEvents();
-    if (goalsViewMode === 'table') { bindAddPropBtn('goal', render); bindCustomPropCells(); }
-    injectListIcons('goal', list.map(g => g.id));
-    if (goalsViewMode === 'kanban') {
-      document.getElementById('goal-gb-status')?.addEventListener('click', () => {
-        goalsKanbanGroupBy = 'status'; localStorage.setItem('goalsKanbanGroupBy', 'status'); render();
-      });
-      document.getElementById('goal-gb-type')?.addEventListener('click', () => {
-        goalsKanbanGroupBy = 'type'; localStorage.setItem('goalsKanbanGroupBy', 'type'); render();
-      });
-      document.getElementById('goal-gb-year')?.addEventListener('click', () => {
-        goalsKanbanGroupBy = 'year'; localStorage.setItem('goalsKanbanGroupBy', 'year'); render();
-      });
-      document.querySelectorAll('.goal-kanban-card').forEach(card => {
-        card.addEventListener('click', () => renderView('goal-detail', card.dataset.goalId));
-      });
-      bindGoalKanban();
-    }
-  }
-
-  document.getElementById('new-goal-btn').onclick = () => showGoalModal(null);
-  bindViewToggle([], null, (mode) => {
-    goalsViewMode = mode;
-    localStorage.setItem('goalsViewMode', mode);
-    render();
-  });
-
-  const goalPropVisBtn = document.getElementById('goal-prop-vis-btn');
-  const goalPropVisWrap = document.getElementById('goal-prop-vis-wrap');
-  if (goalPropVisBtn && goalPropVisWrap) {
-    goalPropVisBtn.onclick = (e) => {
-      e.stopPropagation();
-      bindPropVisPanel(
-        goalPropVisWrap,
-        ENTITY_PROPS.goal,
-        () => getEntityVisProps('goal'),
-        (keys) => setEntityVisProps('goal', keys),
-        render
-      );
-    };
-  }
-  render();
-
   function bindGoalEvents() {
+    bindCtxHandles();
     document.querySelectorAll('.goal-slideover-card').forEach(el => {
       el.onclick = (e) => {
-        if (e.target.closest('.goal-del-btn, .goal-export-btn')) return;
+        if (e.target.closest('.goal-del-btn, .goal-export-btn, .ctx-handle')) return;
         const g = goals.find(x => String(x.id) === el.dataset.goalId);
         showGoalSlideover(g, () => renderGoals());
       };
@@ -3214,97 +3976,55 @@ async function renderNotes() {
     return;
   }
 
-  const noteFilterState = { filters: {}, sort: {}, searchText: '' };
+  const noteViews = getEntityViews('note');
+  const noteActiveId = getActiveTabId('note');
+  let activeNoteView = noteViews.find(v => v.id === noteActiveId) || noteViews[0];
+  notesViewMode = activeNoteView.viewType;
 
-  function buildNoteCard(n) {
-    const vis = (key) => entityPropVisible('note', key);
-    const tagChips = vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : '';
-    return `<div class="note-card" data-note-id="${n.id}">
-      <div class="flex-between gap-8">
-        <div class="note-title"><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="18" style="display:none;margin-right:5px;vertical-align:middle;font-size:18px"></span>${n.title || 'Untitled'}</div>
-        <div onclick="event.stopPropagation()">
-          <button class="btn btn-sm btn-ghost note-json-btn" data-note-id="${n.id}">Show JSON</button>
-          <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span>
-        </div>
-      </div>
-      <div class="note-body-preview">${n.body || ''}</div>
-      <div class="note-meta" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
-        ${vis('date') && fmtDate(n.note_date) ? `<span>${fmtDate(n.note_date)}</span>` : ''}
-        ${vis('category') && n.category_name ? `<span>· ${n.category_name}</span>` : ''}
-        ${tagChips}
-      </div>
-    </div>`;
-  }
-
-  function buildNoteTable(list) {
-    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
-    const vis = (key) => entityPropVisible('note', key);
-    const rows = list.map(n => {
-      const customCols = getCustomPropDefs('note').map(def => customPropCell('note', n.id, def)).join('');
-      return `<tr class="note-card" data-note-id="${n.id}" style="cursor:pointer">
-        <td><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${n.title || 'Untitled'}</td>
-        ${vis('date')     ? `<td>${fmtDate(n.note_date) || '—'}</td>` : ''}
-        ${vis('category') ? `<td>${n.category_name || '—'}</td>` : ''}
-        ${vis('tags')     ? `<td>${(n.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
-        ${customCols}
-        <td onclick="event.stopPropagation()"><span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span></td>
-      </tr>`;
-    }).join('');
-    const customHeaders = getCustomPropDefs('note').map(d => `<th>${d.label}</th>`).join('');
-    const headers = [
-      '<th>Title</th>',
-      vis('date')     ? '<th>Date</th>'     : '',
-      vis('category') ? '<th>Category</th>' : '',
-      vis('tags')     ? '<th>Tags</th>'     : '',
-      customHeaders,
-      '<th></th>',
-      addPropColumnHeader('note'),
-    ].join('');
-    return `<div class="notion-table-wrap"><table class="notion-table">
-      <thead><tr>${headers}</tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
-  }
-
-  const toggle = viewToggleHtml(
-    [{key:'cards',label:'Cards'},{key:'table',label:'Table'}],
-    notesViewMode
-  );
   const noteEyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+  const notePropVisHtml = `<div class="prop-vis-wrap" id="note-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="note-prop-vis-btn" title="Property visibility">${noteEyeSvg}</button></div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header">
-      <h1 class="view-title">Notes</h1>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        ${toggle}
-        <div class="prop-vis-wrap" id="note-prop-vis-wrap">
-          <button class="btn btn-sm btn-ghost" id="note-prop-vis-btn" title="Property visibility">${noteEyeSvg}</button>
-        </div>
-        <button class="btn btn-primary" id="new-note-btn">+ New Note</button>
-      </div>
-    </div>
+    <div class="view-header"><h1 class="view-title">Notes</h1></div>
+    ${buildViewTabBar('note', noteViews, activeNoteView.id).replace('id="new-note-btn"', 'id="new-note-btn" style="display:none"')}
     <div id="notes-list"></div>
   </div>`;
 
-  const noteFilterDefs = [
-    { key: 'category', label: 'Category', multi: false, options: [{ value: '', label: 'All' }, ...allCategories.map(c => ({ value: String(c.id), label: c.name }))] },
-  ];
-  const noteSortDefs = [
-    { key: 'title', label: 'Title' },
-    { key: 'note_date', label: 'Date' },
-    { key: 'category_name', label: 'Category' },
-  ];
-  const noteViewEl = document.querySelector('#main-content .view');
-  const noteHeaderEl = noteViewEl?.querySelector('.view-header');
-  if (noteHeaderEl) {
-    const barDiv = document.createElement('div');
-    barDiv.id = 'note-filter-bar-container';
-    noteHeaderEl.after(barDiv);
-    notionFilterBar('note-filter-bar-container', noteFilterDefs, noteSortDefs, noteFilterState, () => render());
+  const noteToolbarRight = document.querySelector('#note-tab-bar .view-toolbar-right');
+  if (noteToolbarRight) {
+    const newBtn = noteToolbarRight.querySelector('#new-note-btn');
+    if (newBtn) { newBtn.style.display = ''; newBtn.textContent = '+ New Note'; noteToolbarRight.insertBefore(document.createRange().createContextualFragment(notePropVisHtml), newBtn); }
   }
 
+  const notePropVisBtn = document.getElementById('note-prop-vis-btn');
+  const notePropVisWrap = document.getElementById('note-prop-vis-wrap');
+  if (notePropVisBtn && notePropVisWrap) {
+    notePropVisBtn.onclick = (e) => {
+      e.stopPropagation();
+      bindPropVisPanel(notePropVisWrap, ENTITY_PROPS.note, () => getEntityVisProps('note'), (keys) => setEntityVisProps('note', keys), render);
+    };
+  }
+
+  document.getElementById('new-note-btn').onclick = () => showNoteModal(null, () => renderNotes());
+
+  bindViewTabBar('note', (newActiveId) => {
+    setActiveTabId('note', newActiveId);
+    notesViewMode = (getEntityViews('note').find(v => v.id === newActiveId) || {}).viewType || 'cards';
+    localStorage.setItem('notesViewMode', notesViewMode);
+    renderNotes();
+  }, () => renderNotes());
+
+  bindFilterSortChips('note', activeNoteView, (updatedView) => {
+    const vs = getEntityViews('note');
+    const idx = vs.findIndex(v => v.id === updatedView.id);
+    if (idx >= 0) vs[idx] = updatedView;
+    saveEntityViews('note', vs);
+    activeNoteView = updatedView;
+    render();
+  });
+
   function getFiltered() {
-    return applySortFilter(notes, noteFilterState, {
-      category: n => String(n.category_id || ''),
+    return applyViewFiltersAndSorts(notes, activeNoteView, {
       title: n => n.title || '',
       note_date: n => n.note_date || '',
       category_name: n => n.category_name || '',
@@ -3325,32 +4045,65 @@ async function renderNotes() {
     bindNoteEvents();
     if (notesViewMode === 'table') { bindAddPropBtn('note', render); bindCustomPropCells(); }
     injectListIcons('note', list.map(n => n.id));
-  }
-
-  document.getElementById('new-note-btn').onclick = () => showNoteModal(null, () => renderNotes());
-  bindViewToggle([], null, (mode) => {
-    notesViewMode = mode;
-    localStorage.setItem('notesViewMode', mode);
-    render();
-  });
-
-  const notePropVisBtn = document.getElementById('note-prop-vis-btn');
-  const notePropVisWrap = document.getElementById('note-prop-vis-wrap');
-  if (notePropVisBtn && notePropVisWrap) {
-    notePropVisBtn.onclick = (e) => {
-      e.stopPropagation();
-      bindPropVisPanel(
-        notePropVisWrap,
-        ENTITY_PROPS.note,
-        () => getEntityVisProps('note'),
-        (keys) => setEntityVisProps('note', keys),
-        render
-      );
-    };
+    injectCommentBadges('note', list.map(n => n.id));
   }
   render();
 
+  function buildNoteCard(n) {
+    const vis = (key) => entityPropVisible('note', key);
+    const tagChips = vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : '';
+    return `<div class="note-card" data-note-id="${n.id}">
+      <div class="flex-between gap-8">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span>
+          <div class="note-title"><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="18" style="display:none;margin-right:5px;vertical-align:middle;font-size:18px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
+        </div>
+        <div onclick="event.stopPropagation()">
+          <button class="btn btn-sm btn-ghost note-json-btn" data-note-id="${n.id}">Show JSON</button>
+        </div>
+      </div>
+      <div class="note-body-preview">${n.body || ''}</div>
+      <div class="note-meta" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
+        ${vis('date') && fmtDate(n.note_date) ? `<span>${fmtDate(n.note_date)}</span>` : ''}
+        ${vis('category') && n.category_name ? `<span>· ${n.category_name}</span>` : ''}
+        ${tagChips}
+      </div>
+    </div>`;
+  }
+
+  function buildNoteTable(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
+    const vis = (key) => entityPropVisible('note', key);
+    const rows = list.map(n => {
+      const customCols = getCustomPropDefs('note').map(def => customPropCell('note', n.id, def)).join('');
+      return `<tr class="note-card" data-note-id="${n.id}" style="cursor:pointer">
+        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span></td>
+        <td><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></td>
+        ${vis('date')     ? `<td>${fmtDate(n.note_date) || '—'}</td>` : ''}
+        ${vis('category') ? `<td>${n.category_name || '—'}</td>` : ''}
+        ${vis('tags')     ? `<td>${(n.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
+        ${customCols}
+        <td onclick="event.stopPropagation()"></td>
+      </tr>`;
+    }).join('');
+    const customHeaders = getCustomPropDefs('note').map(d => `<th>${d.label}</th>`).join('');
+    const headers = [
+      '<th class="ctx-handle-th"></th>',
+      '<th>Title</th>',
+      vis('date')     ? '<th>Date</th>'     : '',
+      vis('category') ? '<th>Category</th>' : '',
+      vis('tags')     ? '<th>Tags</th>'     : '',
+      customHeaders,
+      '<th></th>',
+      addPropColumnHeader('note'),
+    ].join('');
+    return `<div class="notion-table-wrap"><table class="notion-table">
+      <thead><tr>${headers}</tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  }
+
   function bindNoteEvents() {
+    bindCtxHandles();
     document.querySelectorAll('.note-card').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.ctx-handle, .note-json-btn')) return;
@@ -3383,12 +4136,14 @@ async function renderSprints() {
     const prevLabel = s.status === 'active' ? '↩ Planned' : s.status === 'completed' ? '↩ Active' : null;
     return `<div class="card" data-sprint-id="${s.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
-        <span class="card-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)"><span class="list-icon-slot" data-icon-entity="sprint" data-icon-id="${s.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${s.title}</span>
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span>
+          <span class="card-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)"><span class="list-icon-slot" data-icon-entity="sprint" data-icon-id="${s.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${s.title}<span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></span>
+        </div>
         <div class="flex gap-8">
           ${prevStatus ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
           ${nextStatus ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="${nextStatus}">${nextLabel}</button>` : ''}
           <button class="btn btn-sm btn-ghost sprint-edit-btn" data-sprint-id="${s.id}">Edit</button>
-          <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span>
         </div>
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
@@ -3422,7 +4177,8 @@ async function renderSprints() {
       const pct = prog.pct || 0;
       const customCols = getCustomPropDefs('sprint').map(def => customPropCell('sprint', s.id, def)).join('');
       return `<tr class="sprint-row" data-sprint-id="${s.id}" style="cursor:pointer">
-        <td><span class="sprint-detail-link" data-sprint-id="${s.id}" style="color:var(--accent);cursor:pointer">${s.title}</span></td>
+        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span></td>
+        <td><span class="sprint-detail-link" data-sprint-id="${s.id}" style="color:var(--accent);cursor:pointer">${s.title}</span><span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></td>
         ${vis('status')   ? `<td>${statusBadge(s.status)}</td>` : ''}
         ${vis('project')  ? `<td>${s.project_title || '—'}</td>` : ''}
         ${vis('dates')    ? `<td>${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</td>` : ''}
@@ -3434,12 +4190,12 @@ async function renderSprints() {
           ${s.status === 'planned' ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="active">Start</button>` : ''}
           ${s.status === 'active' ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="completed">Complete</button>` : ''}
           <button class="btn btn-sm btn-ghost sprint-edit-btn" data-sprint-id="${s.id}">Edit</button>
-          <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span>
         </td>
       </tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('sprint').map(d => `<th>${d.label}</th>`).join('');
     const headers = [
+      '<th class="ctx-handle-th"></th>',
       '<th>Title</th>',
       vis('status')   ? '<th>Status</th>'   : '',
       vis('project')  ? '<th>Project</th>'  : '',
@@ -3454,50 +4210,58 @@ async function renderSprints() {
       <tbody>${rows}</tbody></table></div>`;
   }
 
-  const toggle = viewToggleHtml(
-    [{key:'cards',label:'Cards'},{key:'table',label:'Table'}],
-    sprintsViewMode
-  );
+  const sprintViews = getEntityViews('sprint');
+  const sprintActiveId = getActiveTabId('sprint');
+  let activeSprintView = sprintViews.find(v => v.id === sprintActiveId) || sprintViews[0];
+  sprintsViewMode = activeSprintView.viewType;
+
   const sprintEyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+  const sprintPropVisHtml = `<div class="prop-vis-wrap" id="sprint-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="sprint-prop-vis-btn" title="Property visibility">${sprintEyeSvg}</button></div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header">
-      <h1 class="view-title">Sprints</h1>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        ${toggle}
-        <div class="prop-vis-wrap" id="sprint-prop-vis-wrap">
-          <button class="btn btn-sm btn-ghost" id="sprint-prop-vis-btn" title="Property visibility">${sprintEyeSvg}</button>
-        </div>
-        <button class="btn btn-primary" id="new-sprint-btn">+ New Sprint</button>
-      </div>
-    </div>
+    <div class="view-header"><h1 class="view-title">Sprints</h1></div>
+    ${buildViewTabBar('sprint', sprintViews, activeSprintView.id).replace('id="new-sprint-btn"', 'id="new-sprint-btn" style="display:none"')}
     <div id="sprints-list"></div>
   </div>`;
 
-  const sprintFilterState = { filters: {}, sort: {}, searchText: '' };
-  const sprintFilterDefs = [
-    { key: 'status', label: 'Status', multi: true, options: ['planned','active','completed'].map(s => ({ value: s, label: s })) },
-    { key: 'project', label: 'Project', multi: false, options: [{ value: '', label: 'All' }, ...projects.map(p => ({ value: String(p.id), label: p.title }))] },
-  ];
-  const sprintSortDefs = [
-    { key: 'title', label: 'Title' },
-    { key: 'start_date', label: 'Start Date' },
-    { key: 'status', label: 'Status' },
-  ];
-  const sprintViewEl = document.querySelector('#main-content .view');
-  const sprintHeaderEl = sprintViewEl?.querySelector('.view-header');
-  if (sprintHeaderEl) {
-    const barDiv = document.createElement('div');
-    barDiv.id = 'sprint-filter-bar-container';
-    sprintHeaderEl.after(barDiv);
-    notionFilterBar('sprint-filter-bar-container', sprintFilterDefs, sprintSortDefs, sprintFilterState, () => render());
+  const sprintToolbarRight = document.querySelector('#sprint-tab-bar .view-toolbar-right');
+  if (sprintToolbarRight) {
+    const newBtn = sprintToolbarRight.querySelector('#new-sprint-btn');
+    if (newBtn) { newBtn.style.display = ''; newBtn.textContent = '+ New Sprint'; sprintToolbarRight.insertBefore(document.createRange().createContextualFragment(sprintPropVisHtml), newBtn); }
   }
 
+  const sprintPropVisBtn = document.getElementById('sprint-prop-vis-btn');
+  const sprintPropVisWrap = document.getElementById('sprint-prop-vis-wrap');
+  if (sprintPropVisBtn && sprintPropVisWrap) {
+    sprintPropVisBtn.onclick = (e) => {
+      e.stopPropagation();
+      bindPropVisPanel(sprintPropVisWrap, ENTITY_PROPS.sprint, () => getEntityVisProps('sprint'), (keys) => setEntityVisProps('sprint', keys), render);
+    };
+  }
+
+  document.getElementById('new-sprint-btn').onclick = () => showSprintModal(projects);
+
+  bindViewTabBar('sprint', (newActiveId) => {
+    setActiveTabId('sprint', newActiveId);
+    sprintsViewMode = (getEntityViews('sprint').find(v => v.id === newActiveId) || {}).viewType || 'cards';
+    localStorage.setItem('sprintsViewMode', sprintsViewMode);
+    renderSprints();
+  }, () => renderSprints());
+
+  bindFilterSortChips('sprint', activeSprintView, (updatedView) => {
+    const vs = getEntityViews('sprint');
+    const idx = vs.findIndex(v => v.id === updatedView.id);
+    if (idx >= 0) vs[idx] = updatedView;
+    saveEntityViews('sprint', vs);
+    activeSprintView = updatedView;
+    render();
+  });
+
   function getFiltered() {
-    return applySortFilter(sprints, sprintFilterState, {
-      status: s => s.status,
-      project: s => String(s.project_id || ''),
+    return applyViewFiltersAndSorts(sprints, activeSprintView, {
       title: s => s.title,
+      status: s => s.status,
+      project_id: s => String(s.project_id || ''),
       start_date: s => s.start_date || '',
       _text: s => s.title + ' ' + (s.project_title || ''),
     });
@@ -3510,47 +4274,27 @@ async function renderSprints() {
       (list.map(buildSprintCard).join('') || `<div class="empty-state"><div class="empty-state-icon">⚡</div><div class="empty-state-text">No sprints found</div></div>`);
     bindSprintEvents();
     injectListIcons('sprint', list.map(s => s.id));
+    injectCommentBadges('sprint', list.map(s => s.id));
     if (sprintsViewMode === 'table') { bindAddPropBtn('sprint', render); bindCustomPropCells(); }
-  }
-
-  document.getElementById('new-sprint-btn').onclick = () => showSprintModal(projects);
-  bindViewToggle([], null, (mode) => {
-    sprintsViewMode = mode;
-    localStorage.setItem('sprintsViewMode', mode);
-    render();
-  });
-
-  const sprintPropVisBtn = document.getElementById('sprint-prop-vis-btn');
-  const sprintPropVisWrap = document.getElementById('sprint-prop-vis-wrap');
-  if (sprintPropVisBtn && sprintPropVisWrap) {
-    sprintPropVisBtn.onclick = (e) => {
-      e.stopPropagation();
-      bindPropVisPanel(
-        sprintPropVisWrap,
-        ENTITY_PROPS.sprint,
-        () => getEntityVisProps('sprint'),
-        (keys) => setEntityVisProps('sprint', keys),
-        render
-      );
-    };
   }
   render();
 
   function bindSprintEvents() {
+    bindCtxHandles();
     document.querySelectorAll('.sprint-detail-link').forEach(el => {
       el.onclick = (e) => { e.stopPropagation(); renderView('sprint-detail', el.dataset.sprintId); };
     });
     // Whole card click → sprint detail (ignore clicks on buttons)
     document.querySelectorAll('.card[data-sprint-id]').forEach(card => {
       card.onclick = (e) => {
-        if (e.target.closest('button')) return;
+        if (e.target.closest('button') || e.target.closest('.ctx-handle')) return;
         renderView('sprint-detail', card.dataset.sprintId);
       };
     });
     // Table row click → sprint detail (ignore clicks on buttons)
     document.querySelectorAll('tr.sprint-row[data-sprint-id]').forEach(row => {
       row.onclick = (e) => {
-        if (e.target.closest('button')) return;
+        if (e.target.closest('button') || e.target.closest('.ctx-handle')) return;
         renderView('sprint-detail', row.dataset.sprintId);
       };
     });
@@ -4230,8 +4974,71 @@ async function renderResources() {
     return;
   }
 
-  const resFilterState = { filters: {}, sort: {}, searchText: '' };
-  const types = [...new Set(resources.map(r => r.resource_type).filter(Boolean))];
+  const resViews = getEntityViews('resource');
+  const resActiveId = getActiveTabId('resource');
+  let activeResView = resViews.find(v => v.id === resActiveId) || resViews[0];
+  resourcesViewMode = activeResView.viewType;
+
+  const resEyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+  const resPropVisHtml = `<div class="prop-vis-wrap" id="res-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="res-prop-vis-btn" title="Property visibility">${resEyeSvg}</button></div>`;
+
+  document.getElementById('main-content').innerHTML = `<div class="view">
+    <div class="view-header"><h1 class="view-title">Resources</h1></div>
+    ${buildViewTabBar('resource', resViews, activeResView.id).replace('id="new-resource-btn"', 'id="new-resource-btn" style="display:none"')}
+    <div id="res-table"></div>
+  </div>`;
+
+  const resToolbarRight = document.querySelector('#resource-tab-bar .view-toolbar-right');
+  if (resToolbarRight) {
+    const newBtn = resToolbarRight.querySelector('#new-resource-btn');
+    if (newBtn) { newBtn.style.display = ''; newBtn.textContent = '+ New Resource'; resToolbarRight.insertBefore(document.createRange().createContextualFragment(resPropVisHtml), newBtn); }
+  }
+
+  const resPropVisBtn = document.getElementById('res-prop-vis-btn');
+  const resPropVisWrap = document.getElementById('res-prop-vis-wrap');
+  if (resPropVisBtn && resPropVisWrap) {
+    resPropVisBtn.onclick = (e) => {
+      e.stopPropagation();
+      bindPropVisPanel(resPropVisWrap, ENTITY_PROPS.resource, () => getEntityVisProps('resource'), (keys) => setEntityVisProps('resource', keys), render);
+    };
+  }
+
+  document.getElementById('new-resource-btn').onclick = () => showResourceModal(null, () => renderResources());
+
+  bindViewTabBar('resource', (newActiveId) => {
+    setActiveTabId('resource', newActiveId);
+    resourcesViewMode = (getEntityViews('resource').find(v => v.id === newActiveId) || {}).viewType || 'table';
+    localStorage.setItem('resourcesViewMode', resourcesViewMode);
+    renderResources();
+  }, () => renderResources());
+
+  bindFilterSortChips('resource', activeResView, (updatedView) => {
+    const vs = getEntityViews('resource');
+    const idx = vs.findIndex(v => v.id === updatedView.id);
+    if (idx >= 0) vs[idx] = updatedView;
+    saveEntityViews('resource', vs);
+    activeResView = updatedView;
+    render();
+  });
+
+  function getFiltered() {
+    return applyViewFiltersAndSorts(resources, activeResView, {
+      title: r => r.title,
+      resource_type: r => r.resource_type || '',
+      _text: r => r.title + ' ' + (r.url || '') + ' ' + (r.body || ''),
+    });
+  }
+
+  function render() {
+    const list = getFiltered();
+    document.getElementById('res-table').innerHTML =
+      resourcesViewMode === 'cards' ? buildCards(list) : buildTable(list);
+    bindResEvents();
+    if (resourcesViewMode === 'table') { bindAddPropBtn('resource', render); bindCustomPropCells(); }
+    injectListIcons('resource', list.map(r => r.id));
+    injectCommentBadges('resource', list.map(r => r.id));
+  }
+  render();
 
   function buildTable(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">⬡</div><div class="empty-state-text">No resources yet</div></div>`;
@@ -4244,18 +5051,18 @@ async function renderResources() {
       const linked = r.goal_title || r.project_title || r.task_title || '—';
       const customCols = getCustomPropDefs('resource').map(def => customPropCell('resource', r.id, def)).join('');
       return `<tr class="res-row" data-res-id="${r.id}" style="cursor:pointer">
-        <td><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${r.title}</td>
+        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions">⠿</span></td>
+        <td><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${r.title}<span class="comment-badge" data-comment-for="${r.id}" data-comment-entity="resource" style="display:none"></span></td>
         ${vis('type')   ? `<td>${r.resource_type || '—'}</td>` : ''}
         ${vis('linked') ? `<td>${linked}</td>` : ''}
         ${vis('url')    ? `<td>${link}</td>` : ''}
         ${customCols}
-        <td onclick="event.stopPropagation()">
-          <span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions">⠿</span>
-        </td>
+        <td onclick="event.stopPropagation()"></td>
       </tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('resource').map(d => `<th>${d.label}</th>`).join('');
     const headers = [
+      '<th class="ctx-handle-th"></th>',
       '<th>Title</th>',
       vis('type')   ? '<th>Type</th>'           : '',
       vis('linked') ? '<th>Linked</th>'          : '',
@@ -4278,9 +5085,9 @@ async function renderResources() {
       const vis = (key) => entityPropVisible('resource', key);
       return `<div class="card res-row" data-res-id="${r.id}" style="cursor:pointer">
         <div class="flex-between gap-8" style="margin-bottom:6px">
-          <span class="card-title"><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="18" style="display:none;margin-right:6px;vertical-align:middle;font-size:18px"></span>${r.title}</span>
-          <div class="flex gap-8" onclick="event.stopPropagation()">
+          <div style="display:flex;align-items:center;gap:6px;min-width:0">
             <span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions">⠿</span>
+            <span class="card-title"><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="18" style="display:none;margin-right:6px;vertical-align:middle;font-size:18px"></span>${r.title}<span class="comment-badge" data-comment-for="${r.id}" data-comment-entity="resource" style="display:none"></span></span>
           </div>
         </div>
         ${vis('type') && r.resource_type ? `<span class="badge badge-todo">${r.resource_type}</span>` : ''}
@@ -4291,80 +5098,8 @@ async function renderResources() {
     }).join('')}</div>`;
   }
 
-  const toggle = viewToggleHtml([{key:'table',label:'Table'},{key:'cards',label:'Cards'}], resourcesViewMode);
-  const resEyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
-
-  document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header">
-      <h1 class="view-title">Resources</h1>
-      <div style="display:flex;gap:8px;align-items:center">
-        ${toggle}
-        <div class="prop-vis-wrap" id="res-prop-vis-wrap">
-          <button class="btn btn-sm btn-ghost" id="res-prop-vis-btn" title="Property visibility">${resEyeSvg}</button>
-        </div>
-        <button class="btn btn-primary" id="new-res-btn">+ New Resource</button>
-      </div>
-    </div>
-    <div id="res-table"></div>
-  </div>`;
-
-  const resFilterDefs = [
-    { key: 'resource_type', label: 'Type', multi: false, options: [{ value: '', label: 'All' }, ...types.map(t => ({ value: t, label: t }))] },
-  ];
-  const resSortDefs = [
-    { key: 'title', label: 'Title' },
-    { key: 'resource_type', label: 'Type' },
-  ];
-  const resViewEl = document.querySelector('#main-content .view');
-  const resHeaderEl = resViewEl?.querySelector('.view-header');
-  if (resHeaderEl) {
-    const barDiv = document.createElement('div');
-    barDiv.id = 'res-filter-bar-container';
-    resHeaderEl.after(barDiv);
-    notionFilterBar('res-filter-bar-container', resFilterDefs, resSortDefs, resFilterState, () => render());
-  }
-
-  function getFiltered() {
-    return applySortFilter(resources, resFilterState, {
-      resource_type: r => r.resource_type || '',
-      title: r => r.title,
-      _text: r => r.title + ' ' + (r.url || '') + ' ' + (r.body || ''),
-    });
-  }
-
-  function render() {
-    const list = getFiltered();
-    document.getElementById('res-table').innerHTML =
-      resourcesViewMode === 'cards' ? buildCards(list) : buildTable(list);
-    bindResEvents();
-    if (resourcesViewMode === 'table') { bindAddPropBtn('resource', render); bindCustomPropCells(); }
-    injectListIcons('resource', list.map(r => r.id));
-  }
-
-  document.getElementById('new-res-btn').onclick = () => showResourceModal(null, () => renderResources());
-  bindViewToggle([], null, (mode) => {
-    resourcesViewMode = mode;
-    localStorage.setItem('resourcesViewMode', mode);
-    render();
-  });
-
-  const resPropVisBtn = document.getElementById('res-prop-vis-btn');
-  const resPropVisWrap = document.getElementById('res-prop-vis-wrap');
-  if (resPropVisBtn && resPropVisWrap) {
-    resPropVisBtn.onclick = (e) => {
-      e.stopPropagation();
-      bindPropVisPanel(
-        resPropVisWrap,
-        ENTITY_PROPS.resource,
-        () => getEntityVisProps('resource'),
-        (keys) => setEntityVisProps('resource', keys),
-        render
-      );
-    };
-  }
-  render();
-
   function bindResEvents() {
+    bindCtxHandles();
     document.querySelectorAll('.res-row').forEach(el => {
       el.onclick = async (e) => {
         if (e.target.closest('.ctx-handle') || e.target.closest('a')) return;
@@ -7105,11 +7840,13 @@ async function renderPomodoro() {
 
 /* ─── Dashboard task list bindings ──────────────────────────────────── */
 function bindTaskListEvents() {
+  bindCtxHandles();
   document.querySelectorAll('.task-row').forEach(row => {
     row.onclick = (e) => {
       if (e.target.classList.contains('task-check') || e.target.dataset.checkId ||
           e.target.classList.contains('task-toggle-arrow') || e.target.closest('.task-toggle-arrow') ||
-          e.target.classList.contains('task-add-sub-btn') || e.target.closest('.task-add-sub-btn')) return;
+          e.target.classList.contains('task-add-sub-btn') || e.target.closest('.task-add-sub-btn') ||
+          e.target.closest('.ctx-handle')) return;
       showTaskSlideover(row.dataset.taskId);
     };
   });
@@ -8533,11 +9270,13 @@ function initAiPanel() {
   function openAiPanel() {
     panel.classList.add('open');
     fab.style.display = 'none';
+    document.getElementById('fab-group')?.classList.add('panel-open-ai');
   }
 
   function closeAiPanel() {
     panel.classList.remove('open');
     fab.style.display = '';
+    document.getElementById('fab-group')?.classList.remove('panel-open-ai');
   }
 
   fab.onclick = openAiPanel;
@@ -8676,10 +9415,6 @@ function aiAddThinking() {
   feed.appendChild(el);
   feed.scrollTop = feed.scrollHeight;
   return el;
-}
-
-function escHtml(str) {
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 /* ─── GSAP MutationObserver — auto-animate any view render ──────────── */

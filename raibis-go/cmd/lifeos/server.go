@@ -189,6 +189,9 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Comments
 	mux.HandleFunc("/api/comments", withCORS(commentsHandler(store)))
 
+	// Properties (icon + custom key-value pairs per entity)
+	mux.HandleFunc("/api/properties", withCORS(propertiesHandler(store)))
+
 	// Embedded Web GUI — self-contained, no external /public folder needed.
 	// Serves index.html + assets for all non-/api/ requests.
 	sub, err := gui.Sub()
@@ -2621,6 +2624,58 @@ func commentsHandler(store storage.Storage) http.HandlerFunc {
 			}
 			c.ID = id
 			writeJSON(w, 201, c)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func propertiesHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		entityType := q.Get("entity_type")
+		entityIDStr := q.Get("entity_id")
+		entityID, err := strconv.ParseInt(entityIDStr, 10, 64)
+		if err != nil || entityType == "" {
+			errJSON(w, 400, "entity_type and entity_id are required")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			props, err := store.ListProperties(entityType, entityID)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			if props == nil {
+				props = map[string]string{}
+			}
+			writeJSON(w, 200, props)
+		case http.MethodPost:
+			var body struct {
+				Key   string `json:"key"`
+				Value string `json:"value"`
+			}
+			if err := readJSON(r, &body); err != nil || body.Key == "" {
+				errJSON(w, 400, "key is required")
+				return
+			}
+			if err := store.SetProperty(entityType, entityID, body.Key, body.Value); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+		case http.MethodDelete:
+			key := q.Get("key")
+			if key == "" {
+				errJSON(w, 400, "key is required")
+				return
+			}
+			if err := store.DeleteProperty(entityType, entityID, key); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
