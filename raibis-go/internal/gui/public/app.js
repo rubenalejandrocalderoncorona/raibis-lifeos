@@ -9116,6 +9116,108 @@ function toggleTheme() {
   html.setAttribute('data-theme', current === 'light' ? 'dark' : 'light');
 }
 
+/* ─── Connected Apps Panel ───────────────────────────────────────────── */
+function openConnectedAppsPanel() {
+  document.getElementById('_apps-overlay')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = '_apps-overlay';
+  overlay.className = 'apps-overlay';
+  overlay.innerHTML = `
+    <div class="apps-panel" id="_apps-panel">
+      <div class="apps-panel-header">
+        <div class="apps-panel-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+          </svg>
+          Connected Apps
+        </div>
+        <button class="apps-close-btn" id="_apps-close-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="apps-grid" id="_apps-grid">
+        <div class="apps-loading">Checking app status…</div>
+      </div>
+      <div class="apps-panel-footer">
+        <span class="apps-footer-note">Configure apps via <code>~/.raibis/apps.json</code></span>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  document.getElementById('_apps-close-btn').onclick = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  document.addEventListener('keydown', function escHandler(e) {
+    if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler); }
+  });
+
+  loadAppsStatus();
+
+  async function loadAppsStatus() {
+    const grid = document.getElementById('_apps-grid');
+    try {
+      const apps = await api('GET', '/api/apps/status');
+      if (!apps.length) {
+        grid.innerHTML = `<div class="apps-empty">No apps configured. Add entries to <code>~/.raibis/apps.json</code></div>`;
+        return;
+      }
+      grid.innerHTML = apps.map(app => buildAppCard(app)).join('');
+      grid.querySelectorAll('.app-launch-btn').forEach(btn => {
+        btn.onclick = async () => {
+          const id = btn.dataset.appId;
+          btn.disabled = true;
+          btn.textContent = 'Launching…';
+          try {
+            await api('POST', '/api/apps/launch', { id });
+            setTimeout(loadAppsStatus, 2500);
+          } catch(e) {
+            btn.disabled = false;
+            btn.textContent = 'Launch';
+            const errEl = grid.querySelector(`.app-card[data-app-id="${id}"] .app-error`);
+            if (errEl) { errEl.textContent = e.message || 'Launch failed'; errEl.style.display = 'block'; }
+          }
+        };
+      });
+      grid.querySelectorAll('.app-open-btn').forEach(btn => {
+        btn.onclick = () => window.open(btn.dataset.appUrl, '_blank');
+      });
+    } catch(e) {
+      grid.innerHTML = `<div class="apps-empty">Could not reach server.</div>`;
+    }
+  }
+
+  function buildAppCard(app) {
+    const running = app.running;
+    const colorStyle = app.color ? `--app-color:${app.color}` : '';
+    return `
+      <div class="app-card" data-app-id="${app.id}" style="${colorStyle}">
+        <div class="app-card-top">
+          <div class="app-icon-wrap">
+            <span class="app-icon">${escHtml(app.icon || '⚙')}</span>
+            <span class="app-status-dot ${running ? 'online' : 'offline'}"></span>
+          </div>
+          <div class="app-info">
+            <div class="app-name">${escHtml(app.name)}</div>
+            <div class="app-desc">${escHtml(app.description || '')}</div>
+          </div>
+        </div>
+        <div class="app-card-bottom">
+          <span class="app-status-badge ${running ? 'online' : 'offline'}">${running ? 'Running' : 'Offline'}</span>
+          ${running
+            ? `<button class="app-open-btn btn btn-sm" data-app-url="${escHtml(app.url || '')}">Open ↗</button>`
+            : (app.launch_mode && app.launch_mode !== 'none'
+                ? `<button class="app-launch-btn btn btn-sm btn-primary" data-app-id="${app.id}">Launch</button>`
+                : `<span class="app-manual-note">Manual launch</span>`)
+          }
+        </div>
+        <div class="app-error" style="display:none"></div>
+      </div>
+    `;
+  }
+}
+
 /* ─── Init ───────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   // Nav click handlers
@@ -9154,6 +9256,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     btn.addEventListener('animationend', () => btn.classList.remove('spinning'), { once: true });
     renderView(currentView);
   };
+
+  // Connected apps panel
+  document.getElementById('connected-apps-btn').onclick = openConnectedAppsPanel;
 
   // Mobile menu toggle
   const mobMenuBtn = document.getElementById('mob-menu-btn');

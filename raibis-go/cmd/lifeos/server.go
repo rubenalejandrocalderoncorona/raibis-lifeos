@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
@@ -185,6 +186,13 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Search & Version
 	mux.HandleFunc("/api/search", withCORS(searchHandler(store, dbPath)))
 	mux.HandleFunc("/api/version", withCORS(versionHandler()))
+
+	// Vector sync feed — consumed by N8N / external embedding pipelines
+	mux.HandleFunc("/api/sync-feed", withCORS(syncFeedHandler(svc, store)))
+
+	// Connected apps — status probe + launch
+	mux.HandleFunc("/api/apps/status", withCORS(appsStatusHandler()))
+	mux.HandleFunc("/api/apps/launch", withCORS(appsLaunchHandler()))
 
 	// Comments
 	mux.HandleFunc("/api/comments", withCORS(commentsHandler(store)))
@@ -2679,5 +2687,376 @@ func propertiesHandler(store storage.Storage) http.HandlerFunc {
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
+	}
+}
+
+// ── Sync Feed ─────────────────────────────────────────────────────────────────
+//
+// GET /api/sync-feed?since=<unix_seconds>
+//
+// Returns all tasks, notes, goals and projects updated after the given Unix
+// timestamp.  If `since` is omitted the full dataset is returned.
+// Consumers (N8N, embedding pipelines) call this endpoint to page through
+// changes and upsert embeddings into the vector store.
+//
+// Each item carries a `_source` field ("lifeos") and `_entity` field so the
+// consumer knows which Qdrant collection to target without inspecting the payload.
+func syncFeedHandler(svc service.TaskService, store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var since time.Time
+		if s := r.URL.Query().Get("since"); s != "" {
+			if ts, err := strconv.ParseInt(s, 10, 64); err == nil {
+				since = time.Unix(ts, 0)
+			}
+		}
+
+		type feedItem struct {
+			Source    string `json:"_source"`
+			Entity    string `json:"_entity"`
+			ID        int64  `json:"id"`
+			UpdatedAt string `json:"updated_at"`
+			// Embedding text — concatenated searchable fields
+			Text      string `json:"text"`
+			// Full payload forwarded as-is for metadata storage
+			Payload   any    `json:"payload"`
+		}
+
+		var items []feedItem
+
+		// Tasks
+		tasks, err := svc.List(domain.TaskFilter{TopLevelOnly: false})
+		if err == nil {
+			for _, t := range tasks {
+				if !since.IsZero() && t.UpdatedAt.Before(since) {
+					continue
+				}
+				tags, _ := store.GetEntityTags("task", t.ID)
+				t.Tags = tags
+				tagNames := make([]string, len(tags))
+				for i, tg := range tags {
+					tagNames[i] = tg.Name
+				}
+				text := strings.Join([]string{
+					t.Title,
+					t.Description,
+					string(t.Status),
+					string(t.Priority),
+					strings.Join(tagNames, " "),
+				}, " ")
+				items = append(items, feedItem{
+					Source:    "lifeos",
+					Entity:    "task",
+					ID:        t.ID,
+					UpdatedAt: t.UpdatedAt.UTC().Format(time.RFC3339),
+					Text:      strings.TrimSpace(text),
+					Payload:   t,
+				})
+			}
+		}
+
+		// Goals
+		goals, err := store.ListGoals("")
+		if err == nil {
+			for _, g := range goals {
+				if !since.IsZero() && g.CreatedAt.Before(since) {
+					continue
+				}
+				text := strings.Join([]string{g.Title, g.Description, string(g.Status), g.Type, g.Year}, " ")
+				items = append(items, feedItem{
+					Source:    "lifeos",
+					Entity:    "goal",
+					ID:        g.ID,
+					UpdatedAt: g.CreatedAt.UTC().Format(time.RFC3339),
+					Text:      strings.TrimSpace(text),
+					Payload:   g,
+				})
+			}
+		}
+
+		// Projects
+		projects, err := svc.Projects()
+		if err == nil {
+			for _, p := range projects {
+				if !since.IsZero() && p.CreatedAt.Before(since) {
+					continue
+				}
+				text := strings.Join([]string{p.Title, p.Description, string(p.Status), p.MacroArea}, " ")
+				items = append(items, feedItem{
+					Source:    "lifeos",
+					Entity:    "project",
+					ID:        p.ID,
+					UpdatedAt: p.CreatedAt.UTC().Format(time.RFC3339),
+					Text:      strings.TrimSpace(text),
+					Payload:   p,
+				})
+			}
+		}
+
+		// Notes
+		notes, err := store.ListNotes(nil, nil, nil)
+		if err == nil {
+			for _, n := range notes {
+				if !since.IsZero() && n.UpdatedAt.Before(since) {
+					continue
+				}
+				text := strings.Join([]string{n.Title, n.Body, n.CategoryName}, " ")
+				items = append(items, feedItem{
+					Source:    "lifeos",
+					Entity:    "note",
+					ID:        n.ID,
+					UpdatedAt: n.UpdatedAt.UTC().Format(time.RFC3339),
+					Text:      strings.TrimSpace(text),
+					Payload:   n,
+				})
+			}
+		}
+
+		if items == nil {
+			items = []feedItem{}
+		}
+
+		writeJSON(w, 200, map[string]any{
+			"source":    "lifeos",
+			"since":     since.UTC().Format(time.RFC3339),
+			"count":     len(items),
+			"items":     items,
+		})
+	}
+}
+
+// ── Connected Apps ────────────────────────────────────────────────────────────
+//
+// appDef describes a connected application in the Raibis stack.
+// The URL and launch config come from ~/.raibis/apps.json (user-managed),
+// with safe defaults so it works out of the box for local dev.
+type appDef struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	URL         string `json:"url"`           // health-check base URL
+	HealthPath  string `json:"health_path"`   // appended to URL for probe
+	// Launch strategy: "local_make" | "docker_local" | "docker_remote" | "none"
+	LaunchMode  string `json:"launch_mode"`
+	LaunchDir   string `json:"launch_dir"`   // working dir for local launch
+	LaunchCmd   string `json:"launch_cmd"`   // command to run (make target, docker-compose up, etc.)
+	// Docker remote config (only when launch_mode == "docker_remote")
+	DockerHost  string `json:"docker_host,omitempty"`
+	DockerImage string `json:"docker_image,omitempty"`
+	Color       string `json:"color"`        // accent color for the UI card
+	Icon        string `json:"icon"`         // SVG path string
+}
+
+var defaultApps = []appDef{
+	{
+		ID:          "supergit",
+		Name:        "SuperGit",
+		Description: "Git repository visualizer & analytics",
+		URL:         "http://localhost:8765",
+		HealthPath:  "/api/health",
+		LaunchMode:  "local_make",
+		LaunchDir:   "/Users/i754080/Documents/PersonalRepos/ClaudeCodeProjects/SuperGit",
+		LaunchCmd:   "make web",
+		Color:       "#6366f1",
+		Icon:        "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z",
+	},
+	{
+		ID:          "studytrack",
+		Name:        "StudyTrack",
+		Description: "Study plan tracker with AI exam generation",
+		URL:         "http://localhost:3333",
+		HealthPath:  "/api/health",
+		LaunchMode:  "local_make",
+		LaunchDir:   "/Users/i754080/Documents/PersonalRepos/ClaudeCodeProjects/studytrack",
+		LaunchCmd:   "make web",
+		Color:       "#10b981",
+		Icon:        "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z",
+	},
+	{
+		ID:          "raibis-chat",
+		Name:        "Raibis Chat",
+		Description: "AI chat interface connected to the stack",
+		URL:         "http://localhost:8080",
+		HealthPath:  "/",
+		LaunchMode:  "none",
+		LaunchDir:   "/Users/i754080/Documents/PersonalRepos/ClaudeCodeProjects/raibis-chat",
+		LaunchCmd:   "",
+		Color:       "#f59e0b",
+		Icon:        "M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z",
+	},
+}
+
+// loadApps merges ~/.raibis/apps.json overrides over the defaults.
+// Unknown fields in the JSON file are ignored; missing fields keep their default.
+func loadApps() []appDef {
+	path := filepath.Join(os.Getenv("HOME"), ".raibis", "apps.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return defaultApps
+	}
+	var overrides []appDef
+	if err := json.Unmarshal(data, &overrides); err != nil {
+		return defaultApps
+	}
+	// Merge: user overrides replace defaults by ID; unknown IDs are appended
+	result := make([]appDef, len(defaultApps))
+	copy(result, defaultApps)
+	for _, ov := range overrides {
+		found := false
+		for i, def := range result {
+			if def.ID == ov.ID {
+				result[i] = ov
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, ov)
+		}
+	}
+	return result
+}
+
+// GET /api/apps/status
+// Probes each app's health endpoint with a 2-second timeout and returns
+// { id, name, url, running, status_code, color, icon, launch_mode } for each.
+func appsStatusHandler() http.HandlerFunc {
+	client := &http.Client{Timeout: 2 * time.Second}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		apps := loadApps()
+		type result struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			URL         string `json:"url"`
+			Running     bool   `json:"running"`
+			StatusCode  int    `json:"status_code"`
+			Color       string `json:"color"`
+			Icon        string `json:"icon"`
+			LaunchMode  string `json:"launch_mode"`
+			LaunchDir   string `json:"launch_dir"`
+		}
+		out := make([]result, len(apps))
+		for i, app := range apps {
+			res := result{
+				ID:          app.ID,
+				Name:        app.Name,
+				Description: app.Description,
+				URL:         app.URL,
+				Color:       app.Color,
+				Icon:        app.Icon,
+				LaunchMode:  app.LaunchMode,
+				LaunchDir:   app.LaunchDir,
+			}
+			probe := app.URL + app.HealthPath
+			resp, err := client.Get(probe)
+			if err == nil {
+				resp.Body.Close()
+				res.Running = resp.StatusCode < 500
+				res.StatusCode = resp.StatusCode
+			}
+			out[i] = res
+		}
+		writeJSON(w, 200, out)
+	}
+}
+
+// POST /api/apps/launch
+// Body: { "id": "supergit" }
+// Launch logic:
+//  1. Look up the app definition.
+//  2. If launch_mode == "docker_remote": shell out to docker -H <host> compose up -d
+//  3. If launch_mode == "docker_local":  shell out to docker compose up -d in LaunchDir
+//  4. If launch_mode == "local_make":    run `make <cmd>` in LaunchDir (detached)
+//  5. If launch_mode == "none":          return 409 – manual launch required
+func appsLaunchHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		if err := readJSON(r, &body); err != nil || body.ID == "" {
+			errJSON(w, 400, "id is required")
+			return
+		}
+		apps := loadApps()
+		var app *appDef
+		for i := range apps {
+			if apps[i].ID == body.ID {
+				app = &apps[i]
+				break
+			}
+		}
+		if app == nil {
+			errJSON(w, 404, "app not found: "+body.ID)
+			return
+		}
+
+		switch app.LaunchMode {
+		case "none":
+			errJSON(w, 409, "app requires manual launch — no launch_mode configured")
+			return
+
+		case "local_make":
+			// Split "make web" → ["make", "web"] or use shell for complex commands
+			parts := strings.Fields(app.LaunchCmd)
+			if len(parts) == 0 {
+				errJSON(w, 400, "empty launch_cmd")
+				return
+			}
+			cmd := exec.Command(parts[0], parts[1:]...) //nolint:gosec
+			cmd.Dir = app.LaunchDir
+			// Detach: stdout/stderr to /dev/null so the HTTP response returns immediately
+			cmd.Stdout = nil
+			cmd.Stderr = nil
+			if err := cmd.Start(); err != nil {
+				errJSON(w, 500, "failed to start: "+err.Error())
+				return
+			}
+			// Don't Wait() — let it run in background
+			go func() { _ = cmd.Wait() }()
+
+		case "docker_local":
+			cmd := exec.Command("docker", "compose", "up", "-d") //nolint:gosec
+			cmd.Dir = app.LaunchDir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				errJSON(w, 500, "docker compose failed: "+string(out))
+				return
+			}
+
+		case "docker_remote":
+			if app.DockerHost == "" {
+				errJSON(w, 400, "docker_host not configured for remote launch")
+				return
+			}
+			cmd := exec.Command("docker", "-H", app.DockerHost, "compose", "up", "-d") //nolint:gosec
+			cmd.Dir = app.LaunchDir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				errJSON(w, 500, "remote docker compose failed: "+string(out))
+				return
+			}
+
+		default:
+			errJSON(w, 400, "unknown launch_mode: "+app.LaunchMode)
+			return
+		}
+
+		writeJSON(w, 200, map[string]any{
+			"ok":          true,
+			"id":          app.ID,
+			"launch_mode": app.LaunchMode,
+			"message":     "launch initiated",
+		})
 	}
 }
