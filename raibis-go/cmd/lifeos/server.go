@@ -3073,11 +3073,12 @@ type integrationDef struct {
 	ID        string `json:"id"`
 	AppID     string `json:"app_id"`
 	Name      string `json:"name"`
-	Endpoint  string `json:"endpoint"`   // e.g. "/api/repos"
-	Method    string `json:"method"`     // "GET" | "POST"
-	FieldPath string `json:"field_path"` // dot-notation: "name" or "items.0.name"
-	FieldType string `json:"field_type"` // "text"|"number"|"date"|"url"|"checkbox"
-	Label     string `json:"label"`      // shown in property picker: "SuperGit: Repository"
+	Endpoint  string `json:"endpoint"`    // e.g. "/api/repos"
+	Method    string `json:"method"`      // "GET" | "POST"
+	FieldPath string `json:"field_path"`  // key to extract from each item (list) or dot-notation path (scalar)
+	FieldType string `json:"field_type"`  // "text"|"number"|"date"|"url"|"checkbox"
+	IsList    bool   `json:"is_list"`     // true = response is an array; field_path is key per item → becomes a dropdown
+	Label     string `json:"label"`       // shown in property picker: "SuperGit: Repository"
 }
 
 func raibisDir() string {
@@ -3222,9 +3223,35 @@ func integrationsProbeHandler() http.HandlerFunc {
 			return
 		}
 
-		// Walk field_path (dot-notation)
+		// Walk field_path (dot-notation).
+		// Special case: if the response root is an array AND field_path has no
+		// leading integer index, treat it as "extract this key from each item"
+		// (list-type integration). Show a sample of up to 3 values so the user
+		// can confirm the field is correct.
 		value := body
-		if req.FieldPath != "" {
+		isList := false
+		if arr, ok := body.([]any); ok && req.FieldPath != "" {
+			// Check whether path starts with an integer (explicit indexing)
+			firstPart := strings.SplitN(req.FieldPath, ".", 2)[0]
+			var tmp int
+			if _, err := fmt.Sscanf(firstPart, "%d", &tmp); err != nil {
+				// Not an index — list-type: extract field_path from each item
+				isList = true
+				var samples []any
+				for _, item := range arr {
+					if m, ok := item.(map[string]any); ok {
+						if v, exists := m[req.FieldPath]; exists {
+							samples = append(samples, v)
+							if len(samples) == 3 {
+								break
+							}
+						}
+					}
+				}
+				value = samples
+			}
+		}
+		if !isList && req.FieldPath != "" {
 			for _, part := range strings.Split(req.FieldPath, ".") {
 				switch v := value.(type) {
 				case map[string]any:
@@ -3246,15 +3273,22 @@ func integrationsProbeHandler() http.HandlerFunc {
 			}
 		}
 
-		// Infer type
+		// Infer type from first non-nil sample for list, or from scalar
 		inferred := "text"
-		switch value.(type) {
+		checkVal := value
+		if isList {
+			if samples, ok := value.([]any); ok && len(samples) > 0 {
+				checkVal = samples[0]
+				inferred = "text" // list items are always text unless overridden
+			}
+		}
+		switch checkVal.(type) {
 		case float64, int, int64:
 			inferred = "number"
 		case bool:
 			inferred = "checkbox"
 		}
-		if s, ok := value.(string); ok {
+		if s, ok := checkVal.(string); ok {
 			if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
 				inferred = "url"
 			}
@@ -3268,6 +3302,7 @@ func integrationsProbeHandler() http.HandlerFunc {
 		writeJSON(w, 200, map[string]any{
 			"value":         value,
 			"inferred_type": inferred,
+			"is_list":       isList,
 			"error":         errMsg,
 		})
 	}

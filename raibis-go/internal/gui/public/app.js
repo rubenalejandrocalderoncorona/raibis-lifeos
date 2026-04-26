@@ -9472,7 +9472,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
             <select id="_intg-method"><option>GET</option><option>POST</option></select>
           </div>
           <div class="add-intg-field"><label>Field Path</label>
-            <input id="_intg-field-path" placeholder="name or items.0.name">
+            <input id="_intg-field-path" placeholder="e.g. name  (key per item in array)">
           </div>
           <div class="add-intg-field"><label>Expected Type</label>
             <select id="_intg-field-type">
@@ -9556,7 +9556,12 @@ async function openRaibisSettings(defaultTab = 'apps') {
           box.textContent = '✕ ' + res.error + (res.value != null ? '\n  got: ' + JSON.stringify(res.value) : '');
         } else {
           box.className = 'test-result-box ok';
-          box.textContent = '✓ ' + JSON.stringify(res.value) + '  (type: ' + res.inferred_type + ')';
+          if (res.is_list) {
+            const samples = Array.isArray(res.value) ? res.value : [];
+            box.textContent = `✓ List of ${res.inferred_type} values. Samples: ${samples.map(v => JSON.stringify(v)).join(', ') || '(empty)'}`;
+          } else {
+            box.textContent = '✓ ' + JSON.stringify(res.value) + '  (type: ' + res.inferred_type + ')';
+          }
         }
       } catch(e) {
         box.className = 'test-result-box error';
@@ -9576,9 +9581,16 @@ async function openRaibisSettings(defaultTab = 'apps') {
       if (!name || !endpoint || !fieldPath) { alert('Name, endpoint, and field path are required.'); return; }
       const app = apps.find(a => a.id === appId);
       const autoLabel = label || (app ? `${app.name}: ${name}` : name);
+      // Probe once to detect is_list before saving
+      let isList = false;
+      try {
+        const probe = await api('POST', '/api/integrations/probe', { app_id: appId, endpoint, method, field_path: fieldPath, field_type: fieldType });
+        isList = !!probe.is_list;
+      } catch { /* offline — save anyway, is_list defaults to false */ }
       const newIntg = {
         id: appId + '_' + name.toLowerCase().replace(/\s+/g,'_') + '_' + Date.now(),
         app_id: appId, name, endpoint, method, field_path: fieldPath, field_type: fieldType,
+        is_list: isList,
         label: autoLabel,
       };
       try {
