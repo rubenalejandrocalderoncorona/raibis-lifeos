@@ -574,7 +574,7 @@ function matchFilterRule(item, rule, accessors) {
 
 // Build a view type icon for the tab
 function viewTypeIcon(viewType) {
-  const icons = { list:'≡', table:'⊞', cards:'⊟', kanban:'⊡', dashboard:'▦', calendar:'◫' };
+  const icons = { list:'≡', table:'⊞', cards:'⊟', kanban:'⊡', dashboard:'▦', calendar:'◫', gallery:'⊠' };
   return icons[viewType] || '≡';
 }
 
@@ -1032,7 +1032,7 @@ function bindViewTabBar(entity, onTabSwitch, onViewsChanged) {
       pop.id = 'add-tab-popover';
       pop.className = 'ctx-menu';
       pop.style.cssText = `position:fixed;top:${rect.bottom+4}px;left:${rect.left}px;z-index:9100;min-width:160px`;
-      const types = ['list','table','cards','kanban','dashboard'];
+      const types = ['list','table','cards','kanban','gallery','dashboard'];
       pop.innerHTML = types.map(t => `<div class="ctx-menu-item add-tab-type-btn" data-type="${t}" style="gap:8px"><span>${viewTypeIcon(t)}</span> ${t.charAt(0).toUpperCase()+t.slice(1)}</div>`).join('');
       document.body.appendChild(pop);
       const remove = () => pop.remove();
@@ -3380,6 +3380,75 @@ function buildUnifiedTableView({ entity, items, colDefs, titleCell, emptyIcon, e
   </table></div>`;
 }
 
+// Unified kanban board view.
+// columns: [{key, label, color?}] — the column definitions in display order
+// cardHtml: (item) => string — renders the card body for one item
+// getGroupKey: (item) => string — returns which column key the item belongs to
+// onDrop: async (itemId, newColKey) => void — called when a card is dragged to a new col
+// emptyLabel: string — shown in an empty column
+function buildUnifiedBoardView({ entity, items, columns, cardHtml, getGroupKey, emptyLabel = 'No items', emptyIcon = '◆', emptyMsg }) {
+  if (!items.length) return `<div class="empty-state">
+    <div class="empty-state-icon">${emptyIcon}</div>
+    <div class="empty-state-text">${emptyMsg || 'No items found'}</div>
+  </div>`;
+
+  const grouped = {};
+  columns.forEach(c => { grouped[c.key] = []; });
+  items.forEach(item => {
+    const key = getGroupKey(item) || columns[0]?.key || '';
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push(item);
+  });
+
+  const colsHtml = columns.map(col => {
+    const colItems = grouped[col.key] || [];
+    const cards = colItems.map(item => `<div class="kanban-card unified-kanban-card" data-entity="${entity}" data-id="${item.id}" style="cursor:grab">
+      <div class="kanban-card-header">
+        <div class="kanban-card-title">${cardHtml(item)}</div>
+        <span class="ctx-handle" data-entity="${entity}" data-id="${item.id}" title="Actions">⠿</span>
+      </div>
+    </div>`).join('');
+    return `<div class="kanban-col" data-col="${col.key}">
+      <div class="kanban-col-header" style="${col.color ? `color:${col.color}` : ''}">
+        <span>${col.label}</span>
+        <span class="kanban-count">${colItems.length}</span>
+      </div>
+      <div class="kanban-col-body">${cards || `<div style="color:var(--text-muted);font-size:12px;padding:8px 0">${emptyLabel}</div>`}</div>
+    </div>`;
+  }).join('');
+
+  const boardStyle = `display:grid;grid-template-columns:repeat(${columns.length},minmax(260px,1fr));gap:var(--space-4);align-items:start;padding-bottom:16px`;
+  return `<div style="overflow-x:auto;width:100%"><div class="kanban-board unified-kanban-board" data-entity="${entity}" style="${boardStyle}">${colsHtml}</div></div>`;
+}
+
+// Unified gallery grid view — a responsive card grid with icon, title, and up to 3 visible props.
+// propRows: (item) => [{label, value}] — up to 3 property rows to show on the card
+function buildUnifiedGalleryView({ entity, items, titleFn, propRows, emptyIcon = '◆', emptyMsg }) {
+  if (!items.length) return `<div class="empty-state">
+    <div class="empty-state-icon">${emptyIcon}</div>
+    <div class="empty-state-text">${emptyMsg || 'No items found'}</div>
+  </div>`;
+
+  const cards = items.map(item => {
+    const props = (propRows(item) || []).slice(0, 3);
+    const propsHtml = props.map(p => p.value ? `<div class="gallery-card-prop">
+      <span class="gallery-card-prop-label">${p.label}</span>
+      <span class="gallery-card-prop-value">${p.value}</span>
+    </div>` : '').filter(Boolean).join('');
+    return `<div class="gallery-card" data-entity="${entity}" data-id="${item.id}" style="cursor:pointer">
+      <div class="gallery-card-body">
+        <div class="gallery-card-icon-wrap">
+          <span class="list-icon-slot" data-icon-entity="${entity}" data-icon-id="${item.id}" data-icon-size="24" style="display:none;margin-right:8px;vertical-align:middle"></span>
+        </div>
+        <div class="gallery-card-title">${titleFn(item)}</div>
+        ${propsHtml}
+      </div>
+    </div>`;
+  }).join('');
+
+  return `<div class="gallery-grid">${cards}</div>`;
+}
+
 /* ─── Tasks View ─────────────────────────────────────────────────────── */
 async function renderTasks() {
   let tasks = [], projects = [], allTasksFull = [];
@@ -4135,6 +4204,18 @@ async function renderProjects() {
     if (projectsViewMode === 'table') html = buildTableView(list);
     else if (projectsViewMode === 'kanban') html = buildProjectKanbanView(list);
     else if (projectsViewMode === 'list') html = buildListView(list);
+    else if (projectsViewMode === 'gallery') html = buildUnifiedGalleryView({
+      entity: 'project', items: list, emptyIcon: '◆', emptyMsg: 'No projects found',
+      titleFn: (p) => p.title,
+      propRows: (p) => {
+        const prog = p.progress || {}; const pct = prog.pct || 0;
+        return [
+          { label: 'Status', value: p.status ? p.status.replace(/_/g,' ') : null },
+          { label: 'Goal', value: p.goal_title || null },
+          { label: 'Progress', value: prog.total > 0 ? `${pct}%` : null },
+        ];
+      },
+    });
     else html = buildCardsView(list);
     document.getElementById('proj-list').innerHTML = html;
     bindProjEvents();
@@ -4191,6 +4272,13 @@ async function renderProjects() {
     document.querySelectorAll('.notion-table-row[data-entity="project"]').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.ctx-handle,.task-title-link')) return;
+        const p = projects.find(x => String(x.id) === el.dataset.id);
+        if (p) showProjectSlideover(p, goals, () => renderProjects());
+      };
+    });
+    document.querySelectorAll('.gallery-card[data-entity="project"]').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.ctx-handle')) return;
         const p = projects.find(x => String(x.id) === el.dataset.id);
         if (p) showProjectSlideover(p, goals, () => renderProjects());
       };
@@ -4302,6 +4390,18 @@ async function renderGoals() {
     if (goalsViewMode === 'table') html = buildTableView(list);
     else if (goalsViewMode === 'kanban') html = buildGoalKanbanView(list);
     else if (goalsViewMode === 'list') html = buildListView(list);
+    else if (goalsViewMode === 'gallery') html = buildUnifiedGalleryView({
+      entity: 'goal', items: list, emptyIcon: '◈', emptyMsg: 'No goals found',
+      titleFn: (g) => g.title,
+      propRows: (g) => {
+        const prog = g.progress || {}; const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
+        return [
+          { label: 'Status', value: g.status ? g.status.replace(/_/g,' ') : null },
+          { label: 'Year', value: g.year || null },
+          { label: 'Progress', value: prog.total > 0 ? `${pct}%` : null },
+        ];
+      },
+    });
     else html = buildCardsView(list);
     document.getElementById('goal-list').innerHTML = html;
     bindGoalEvents();
@@ -4493,6 +4593,13 @@ async function renderGoals() {
         if (g) showGoalSlideover(g, () => renderGoals());
       };
     });
+    document.querySelectorAll('.gallery-card[data-entity="goal"]').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.ctx-handle')) return;
+        const g = goals.find(x => String(x.id) === el.dataset.id);
+        if (g) showGoalSlideover(g, () => renderGoals());
+      };
+    });
   }
 }
 
@@ -4594,6 +4701,14 @@ async function renderNotes() {
       document.getElementById('notes-list').innerHTML =
         notesViewMode === 'table' ? buildNoteTable(list) :
         notesViewMode === 'list' ? buildNoteListView(list) :
+        notesViewMode === 'gallery' ? buildUnifiedGalleryView({
+          entity: 'note', items: list, emptyIcon: '✎', emptyMsg: 'No notes found',
+          titleFn: (n) => n.title,
+          propRows: (n) => [
+            { label: 'Date', value: n.note_date || null },
+            { label: 'Project', value: n.project_title || null },
+          ],
+        }) :
         `<div style="display:grid;gap:12px">${list.map(buildNoteCard).join('')}</div>`;
     }
     bindNoteEvents();
@@ -4669,6 +4784,13 @@ async function renderNotes() {
         e.stopPropagation();
         const n = notes.find(x => String(x.id) === el.dataset.noteId);
         showJSONModal(`/api/export/note/${el.dataset.noteId}`, `note-${n?.title||el.dataset.noteId}.json`);
+      };
+    });
+    document.querySelectorAll('.gallery-card[data-entity="note"]').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.ctx-handle')) return;
+        const n = notes.find(x => String(x.id) === el.dataset.id);
+        if (n) showNoteSlideover(n, () => renderNotes());
       };
     });
   }
@@ -4831,6 +4953,14 @@ async function renderSprints() {
     document.getElementById('sprints-list').innerHTML =
       sprintsViewMode === 'table' ? buildSprintTable(list) :
       sprintsViewMode === 'list' ? buildSprintListView(list) :
+      sprintsViewMode === 'gallery' ? buildUnifiedGalleryView({
+        entity: 'sprint', items: list, emptyIcon: '⚡', emptyMsg: 'No sprints found',
+        titleFn: (s) => s.name || s.title || '',
+        propRows: (s) => [
+          { label: 'Status', value: s.status || null },
+          { label: 'Project', value: s.project_title || null },
+        ],
+      }) :
       (list.map(buildSprintCard).join('') || `<div class="empty-state"><div class="empty-state-icon">⚡</div><div class="empty-state-text">No sprints found</div></div>`);
     bindSprintEvents();
     injectListIcons('sprint', list.map(s => s.id));
@@ -4903,6 +5033,12 @@ async function renderSprints() {
         e.stopPropagation();
         const s = sprints.find(x => String(x.id) === el.dataset.sprintId);
         if (s) showSprintModal(projects, s);
+      };
+    });
+    document.querySelectorAll('.gallery-card[data-entity="sprint"]').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.ctx-handle')) return;
+        renderView('sprint-detail', el.dataset.id);
       };
     });
   }
@@ -5629,6 +5765,14 @@ async function renderResources() {
     document.getElementById('res-table').innerHTML =
       resourcesViewMode === 'table' ? buildTable(list) :
       resourcesViewMode === 'list' ? buildResourceListView(list) :
+      resourcesViewMode === 'gallery' ? buildUnifiedGalleryView({
+        entity: 'resource', items: list, emptyIcon: '🔗', emptyMsg: 'No resources found',
+        titleFn: (r) => r.title,
+        propRows: (r) => [
+          { label: 'Type', value: r.resource_type || null },
+          { label: 'Project', value: r.project_title || null },
+        ],
+      }) :
       buildCards(list);
     bindResEvents();
     if (resourcesViewMode === 'table') { bindAddPropBtn('resource', render); bindCustomPropCells(); }
@@ -5711,6 +5855,13 @@ async function renderResources() {
     document.querySelectorAll('.notion-table-row[data-entity="resource"]').forEach(el => {
       el.onclick = async (e) => {
         if (e.target.closest('.ctx-handle') || e.target.closest('a') || e.target.closest('.res-title-link')) return;
+        const r = resources.find(x => String(x.id) === el.dataset.id);
+        if (r) showResourceSlideover(r, () => renderResources());
+      };
+    });
+    document.querySelectorAll('.gallery-card[data-entity="resource"]').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.ctx-handle')) return;
         const r = resources.find(x => String(x.id) === el.dataset.id);
         if (r) showResourceSlideover(r, () => renderResources());
       };

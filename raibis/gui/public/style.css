@@ -4473,3 +4473,48 @@ tr:hover .ctx-handle,
 .ccp-row.drag-over { background: var(--accent-glow); }
 .ccp-empty { font-size: 12px; color: var(--text-dim); padding: 4px 12px; }
 
+
+/* ─── Gallery view ────────────────────────────────────────────────────── */
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  padding: 4px 0;
+}
+.gallery-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  overflow: hidden;
+  transition: box-shadow 0.15s, transform 0.1s;
+}
+.gallery-card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  transform: translateY(-1px);
+}
+.gallery-card-body {
+  padding: 12px 14px;
+}
+.gallery-card-title {
+  font-weight: 500;
+  font-size: 13px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.gallery-card-prop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.gallery-card-prop-label {
+  min-width: 60px;
+  color: var(--text-dim);
+}
+.gallery-card-prop-value {
+  color: var(--text);
+}
