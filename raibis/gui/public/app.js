@@ -2511,6 +2511,41 @@ function closeSlideover() {
   if (_slideoverOnClose) { const cb = _slideoverOnClose; _slideoverOnClose = null; cb(); }
 }
 
+/* ─── Shared slideover helpers ───────────────────────────────────────── */
+
+// Wire up the icon add button in any entity detail slideover.
+// btnEl, displayEl, labelEl: already-queried DOM elements for icon UI.
+function bindSlideoverIcon(btnEl, displayEl, labelEl, entity, recordId) {
+  loadEntityIcon(entity, recordId).then(icon => {
+    if (icon) { displayEl.innerHTML = renderEntityIcon(icon, 32); displayEl.dataset.icon = icon; labelEl.textContent = ''; }
+  });
+  btnEl.onclick = (e) => {
+    e.stopPropagation();
+    const cur = displayEl.dataset.icon || '';
+    showIconPicker(btnEl, entity, recordId, cur, (newIcon) => {
+      displayEl.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
+      displayEl.dataset.icon = newIcon;
+      labelEl.textContent = newIcon ? '' : 'Add icon';
+      saveEntityIcon(entity, recordId, newIcon).catch(() => {
+        displayEl.innerHTML = cur ? renderEntityIcon(cur, 32) : '';
+        displayEl.dataset.icon = cur;
+        labelEl.textContent = cur ? '' : 'Add icon';
+      });
+    });
+  };
+}
+
+// Wire up the auto-expanding title textarea.
+// onBlur: called with the new title string when the textarea loses focus.
+function bindSlideoverTitle(onBlur) {
+  const titleTA = document.getElementById('detail-title');
+  if (!titleTA) return;
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  titleTA.onblur = (e) => onBlur(e.target.value);
+}
+
 /* ─── Form Slideover (for create/edit forms) ─────────────────────────── */
 function openFormSlideover(title, bodyHTML) {
   document.getElementById('form-slideover-title').textContent = title;
@@ -6570,41 +6605,13 @@ async function showTaskSlideover(taskId) {
   }
 
   // ── Auto-resize title textarea ────────────────────────────────────────
-  const titleTA = document.getElementById('detail-title');
-  titleTA.style.height = 'auto';
-  titleTA.style.height = titleTA.scrollHeight + 'px';
-  titleTA.addEventListener('input', () => {
-    titleTA.style.height = 'auto';
-    titleTA.style.height = titleTA.scrollHeight + 'px';
-  });
-  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
-  titleTA.onblur = (e) => patchTask({ title: e.target.value });
+  bindSlideoverTitle((title) => patchTask({ title }));
 
   // ── Task icon add button (above title) ────────────────────────────────
   const taskIconAddBtn = document.getElementById('task-icon-add-btn');
   const taskIconDisplay = document.getElementById('task-icon-display');
   const taskIconAddLabel = document.getElementById('task-icon-add-label');
-  loadEntityIcon('task', taskId).then(icon => {
-    if (icon) {
-      taskIconDisplay.innerHTML = renderEntityIcon(icon, 32);
-      taskIconDisplay.dataset.icon = icon;
-      taskIconAddLabel.textContent = '';
-    }
-  });
-  taskIconAddBtn.onclick = (e) => {
-    e.stopPropagation();
-    const cur = taskIconDisplay.dataset.icon || '';
-    showIconPicker(taskIconAddBtn, 'task', taskId, cur, (newIcon) => {
-      taskIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
-      taskIconDisplay.dataset.icon = newIcon;
-      taskIconAddLabel.textContent = newIcon ? '' : 'Add icon';
-      saveEntityIcon('task', taskId, newIcon).catch(() => {
-        taskIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 32) : '';
-        taskIconDisplay.dataset.icon = cur;
-        taskIconAddLabel.textContent = cur ? '' : 'Add icon';
-      });
-    });
-  };
+  bindSlideoverIcon(taskIconAddBtn, taskIconDisplay, taskIconAddLabel, 'task', taskId);
 
 
   // openCombo(anchorEl, items, currentVal, onSelect, opts)
@@ -9284,30 +9291,14 @@ async function showProjectSlideover(project, goals, afterSave) {
   const projIconAddBtn = document.getElementById('proj-icon-add-btn');
   const projIconDisplay = document.getElementById('proj-icon-display');
   const projIconAddLabel = document.getElementById('proj-icon-add-label');
-  loadEntityIcon('project', v.id).then(icon => {
-    if (icon) { projIconDisplay.innerHTML = renderEntityIcon(icon, 32); projIconDisplay.dataset.icon = icon; projIconAddLabel.textContent = ''; }
-  });
-  projIconAddBtn.onclick = (e) => {
-    e.stopPropagation();
-    const cur = projIconDisplay.dataset.icon || '';
-    showIconPicker(projIconAddBtn, 'project', v.id, cur, (newIcon) => {
-      projIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
-      projIconDisplay.dataset.icon = newIcon;
-      projIconAddLabel.textContent = newIcon ? '' : 'Add icon';
-      saveEntityIcon('project', v.id, newIcon).catch(() => { projIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; projIconDisplay.dataset.icon = cur; projIconAddLabel.textContent = cur ? '' : 'Add icon'; });
-    });
-  };
+  bindSlideoverIcon(projIconAddBtn, projIconDisplay, projIconAddLabel, 'project', v.id);
 
   // ── Title auto-save ───────────────────────────────────────────────────
   async function patchProject(data) {
     try { await api('PATCH', `/api/projects/${v.id}`, data); } catch(e) { return; }
     Object.assign(v, data);
   }
-  const titleTA = document.getElementById('detail-title');
-  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
-  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
-  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
-  titleTA.onblur = (e) => patchProject({ title: e.target.value });
+  bindSlideoverTitle((title) => patchProject({ title }));
 
   // ── Description auto-save ─────────────────────────────────────────────
   let descTimer = null;
@@ -9571,17 +9562,7 @@ async function showGoalSlideover(goal, afterSave) {
   const goalIconAddBtn = document.getElementById('goal-icon-add-btn');
   const goalIconDisplay = document.getElementById('goal-icon-display');
   const goalIconAddLabel = document.getElementById('goal-icon-add-label');
-  loadEntityIcon('goal', v.id).then(icon => {
-    if (icon) { goalIconDisplay.innerHTML = renderEntityIcon(icon, 32); goalIconDisplay.dataset.icon = icon; goalIconAddLabel.textContent = ''; }
-  });
-  goalIconAddBtn.onclick = (e) => {
-    e.stopPropagation();
-    const cur = goalIconDisplay.dataset.icon || '';
-    showIconPicker(goalIconAddBtn, 'goal', v.id, cur, (newIcon) => {
-      goalIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : ''; goalIconDisplay.dataset.icon = newIcon; goalIconAddLabel.textContent = newIcon ? '' : 'Add icon';
-      saveEntityIcon('goal', v.id, newIcon).catch(() => { goalIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; goalIconDisplay.dataset.icon = cur; goalIconAddLabel.textContent = cur ? '' : 'Add icon'; });
-    });
-  };
+  bindSlideoverIcon(goalIconAddBtn, goalIconDisplay, goalIconAddLabel, 'goal', v.id);
 
   async function patchGoal(data) {
     try { await api('PATCH', `/api/goals/${v.id}`, data); } catch(e) { return; }
@@ -9589,11 +9570,7 @@ async function showGoalSlideover(goal, afterSave) {
   }
 
   // ── Title auto-save ───────────────────────────────────────────────────
-  const titleTA = document.getElementById('detail-title');
-  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
-  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
-  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
-  titleTA.onblur = (e) => patchGoal({ title: e.target.value });
+  bindSlideoverTitle((title) => patchGoal({ title }));
 
   // ── Description auto-save ─────────────────────────────────────────────
   let descTimer = null;
@@ -10318,17 +10295,7 @@ async function showNoteSlideover(note, afterSave) {
   const noteIconAddBtn = document.getElementById('note-icon-add-btn');
   const noteIconDisplayEl = document.getElementById('note-icon-display');
   const noteIconAddLabel = document.getElementById('note-icon-add-label');
-  loadEntityIcon('note', v.id).then(icon => {
-    if (icon) { noteIconDisplayEl.innerHTML = renderEntityIcon(icon, 32); noteIconDisplayEl.dataset.icon = icon; noteIconAddLabel.textContent = ''; }
-  });
-  noteIconAddBtn.onclick = (e) => {
-    e.stopPropagation();
-    const cur = noteIconDisplayEl.dataset.icon || '';
-    showIconPicker(noteIconAddBtn, 'note', v.id, cur, (newIcon) => {
-      noteIconDisplayEl.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : ''; noteIconDisplayEl.dataset.icon = newIcon; noteIconAddLabel.textContent = newIcon ? '' : 'Add icon';
-      saveEntityIcon('note', v.id, newIcon).catch(() => { noteIconDisplayEl.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; noteIconDisplayEl.dataset.icon = cur; noteIconAddLabel.textContent = cur ? '' : 'Add icon'; });
-    });
-  };
+  bindSlideoverIcon(noteIconAddBtn, noteIconDisplayEl, noteIconAddLabel, 'note', v.id);
 
   async function patchNote(data) {
     try { await api('PATCH', `/api/notes/${v.id}`, data); } catch(e) { return; }
@@ -10336,11 +10303,7 @@ async function showNoteSlideover(note, afterSave) {
   }
 
   // ── Title auto-save ───────────────────────────────────────────────────
-  const titleTA = document.getElementById('detail-title');
-  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
-  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
-  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
-  titleTA.onblur = (e) => patchNote({ title: e.target.value });
+  bindSlideoverTitle((title) => patchNote({ title }));
 
   // ── Body auto-save ────────────────────────────────────────────────────
   let bodyTimer = null;
@@ -10771,17 +10734,7 @@ async function showSprintSlideover(projects, sprint) {
   const sprintIconAddBtn = document.getElementById('sprint-icon-add-btn');
   const sprintIconDisplayEl = document.getElementById('sprint-icon-display');
   const sprintIconAddLabel = document.getElementById('sprint-icon-add-label');
-  loadEntityIcon('sprint', s.id).then(icon => {
-    if (icon) { sprintIconDisplayEl.innerHTML = renderEntityIcon(icon, 32); sprintIconDisplayEl.dataset.icon = icon; sprintIconAddLabel.textContent = ''; }
-  });
-  sprintIconAddBtn.onclick = (e) => {
-    e.stopPropagation();
-    const cur = sprintIconDisplayEl.dataset.icon || '';
-    showIconPicker(sprintIconAddBtn, 'sprint', s.id, cur, (newIcon) => {
-      sprintIconDisplayEl.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : ''; sprintIconDisplayEl.dataset.icon = newIcon; sprintIconAddLabel.textContent = newIcon ? '' : 'Add icon';
-      saveEntityIcon('sprint', s.id, newIcon).catch(() => { sprintIconDisplayEl.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; sprintIconDisplayEl.dataset.icon = cur; sprintIconAddLabel.textContent = cur ? '' : 'Add icon'; });
-    });
-  };
+  bindSlideoverIcon(sprintIconAddBtn, sprintIconDisplayEl, sprintIconAddLabel, 'sprint', s.id);
 
   async function patchSprint(data) {
     try { await api('PATCH', `/api/sprints/${s.id}`, data); } catch(e) { return; }
@@ -10789,11 +10742,7 @@ async function showSprintSlideover(projects, sprint) {
   }
 
   // ── Title auto-save ───────────────────────────────────────────────────
-  const titleTA = document.getElementById('detail-title');
-  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
-  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
-  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
-  titleTA.onblur = (e) => patchSprint({ title: e.target.value });
+  bindSlideoverTitle((title) => patchSprint({ title }));
 
   // ── Combo/date helpers ────────────────────────────────────────────────
   let _comboEl = null;
@@ -10993,17 +10942,7 @@ async function showResourceSlideover(resource, afterSave) {
   const rsIconAddBtn = document.getElementById('rs-icon-add-btn');
   const rsIconDisplay = document.getElementById('rs-icon-display');
   const rsIconAddLabel = document.getElementById('rs-icon-add-label');
-  loadEntityIcon('resource', v.id).then(icon => {
-    if (icon) { rsIconDisplay.innerHTML = renderEntityIcon(icon, 32); rsIconDisplay.dataset.icon = icon; rsIconAddLabel.textContent = ''; }
-  });
-  rsIconAddBtn.onclick = (e) => {
-    e.stopPropagation();
-    const cur = rsIconDisplay.dataset.icon || '';
-    showIconPicker(rsIconAddBtn, 'resource', v.id, cur, (newIcon) => {
-      rsIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : ''; rsIconDisplay.dataset.icon = newIcon; rsIconAddLabel.textContent = newIcon ? '' : 'Add icon';
-      saveEntityIcon('resource', v.id, newIcon).catch(() => { rsIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; rsIconDisplay.dataset.icon = cur; rsIconAddLabel.textContent = cur ? '' : 'Add icon'; });
-    });
-  };
+  bindSlideoverIcon(rsIconAddBtn, rsIconDisplay, rsIconAddLabel, 'resource', v.id);
 
   async function patchResource(data) {
     try { await api('PATCH', `/api/resources/${v.id}`, data); } catch(e) { return; }
@@ -11011,11 +10950,7 @@ async function showResourceSlideover(resource, afterSave) {
   }
 
   // ── Title auto-save ───────────────────────────────────────────────────
-  const titleTA = document.getElementById('detail-title');
-  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
-  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
-  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
-  titleTA.onblur = (e) => patchResource({ title: e.target.value || v.title });
+  bindSlideoverTitle((title) => patchResource({ title: title || v.title }));
 
   // ── Body auto-save ────────────────────────────────────────────────────
   let bodyTimer = null;
