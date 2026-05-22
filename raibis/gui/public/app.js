@@ -12073,6 +12073,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
+  // Sidebar "+ New" hover buttons
+  document.querySelectorAll('.nav-item-new-btn[data-new-entity]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const entity = btn.dataset.newEntity;
+      const afterSave = () => renderView(entity === 'task' ? 'tasks' : entity + 's');
+      if (entity === 'task') showNewTaskModal({}, afterSave);
+      else if (entity === 'goal') showGoalModal(null, afterSave);
+      else if (entity === 'project') showProjectModal(null, null, afterSave);
+      else if (entity === 'note') showNoteModal(null, afterSave);
+      else if (entity === 'resource') showResourceModal({}, afterSave);
+    });
+  });
+
   // Modal close
   document.getElementById('modal-close').onclick = closeModal;
   document.getElementById('modal-backdrop').onclick = () => {
