@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -209,6 +210,47 @@ func applyMigrations(db *sql.DB) error {
 			key   TEXT PRIMARY KEY,
 			value TEXT
 		)`,
+
+		// ── prop_schema / prop_values / prop_relations ─────────────────────────
+		`CREATE TABLE IF NOT EXISTS prop_schema (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity     TEXT    NOT NULL,
+			key        TEXT    NOT NULL,
+			label      TEXT    NOT NULL,
+			type       TEXT    NOT NULL DEFAULT 'text',
+			options    TEXT    NOT NULL DEFAULT '[]',
+			position   INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			UNIQUE(entity, key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_prop_schema_entity ON prop_schema(entity)`,
+		`CREATE TABLE IF NOT EXISTS prop_values (
+			entity    TEXT    NOT NULL,
+			record_id INTEGER NOT NULL,
+			key       TEXT    NOT NULL,
+			value     TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (entity, record_id, key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_prop_values_record ON prop_values(entity, record_id)`,
+		`CREATE TABLE IF NOT EXISTS prop_relations (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			from_entity TEXT NOT NULL,
+			from_key    TEXT NOT NULL,
+			to_entity   TEXT NOT NULL,
+			to_key      TEXT,
+			created_at  DATETIME NOT NULL DEFAULT (datetime('now')),
+			UNIQUE(from_entity, from_key)
+		)`,
+		`CREATE TABLE IF NOT EXISTS prop_relation_links (
+			from_entity TEXT    NOT NULL,
+			from_id     INTEGER NOT NULL,
+			from_key    TEXT    NOT NULL,
+			to_entity   TEXT    NOT NULL,
+			to_id       INTEGER NOT NULL,
+			PRIMARY KEY (from_entity, from_id, from_key, to_entity, to_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_prl_from ON prop_relation_links(from_entity, from_id, from_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_prl_to   ON prop_relation_links(to_entity, to_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -1119,6 +1161,14 @@ func emptyToNil(s string) any {
 	return s
 }
 
+func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
+func jsonUnmarshal(s string, v any) error {
+	if s == "" || s == "null" {
+		return nil
+	}
+	return json.Unmarshal([]byte(s), v)
+}
+
 // ── Comments ──────────────────────────────────────────────────────────────────
 
 func (s *sqliteStorage) CreateComment(c *domain.Comment) (int64, error) {
@@ -1179,4 +1229,227 @@ func (s *sqliteStorage) CountComments(entityType string, entityID int64) (int, e
 		entityType, entityID,
 	).Scan(&n)
 	return n, err
+}
+
+// ── Prop schema ────────────────────────────────────────────────────────────────
+
+func (s *sqliteStorage) ListPropSchema(entity string) ([]domain.PropDef, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT id, entity, key, label, type, options, position, created_at
+		 FROM prop_schema WHERE entity=? ORDER BY position, id`, entity)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var defs []domain.PropDef
+	for rows.Next() {
+		var d domain.PropDef
+		var optsJSON string
+		var createdAt string
+		if err := rows.Scan(&d.ID, &d.Entity, &d.Key, &d.Label, &d.Type, &optsJSON, &d.Position, &createdAt); err != nil {
+			return nil, err
+		}
+		d.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+		if optsJSON == "" || optsJSON == "null" {
+			d.Options = json.RawMessage("[]")
+		} else {
+			d.Options = json.RawMessage(optsJSON)
+		}
+		defs = append(defs, d)
+	}
+	return defs, rows.Err()
+}
+
+func (s *sqliteStorage) CreatePropDef(d *domain.PropDef) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	opts := string(d.Options)
+	if opts == "" || opts == "null" {
+		opts = "[]"
+	}
+	res, err := s.db.Exec(
+		`INSERT INTO prop_schema (entity, key, label, type, options, position)
+		 VALUES (?,?,?,?,?,?)
+		 ON CONFLICT(entity,key) DO UPDATE SET label=excluded.label, type=excluded.type, options=excluded.options, position=excluded.position`,
+		d.Entity, d.Key, d.Label, d.Type, opts, d.Position,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *sqliteStorage) UpdatePropDef(d *domain.PropDef) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	opts := string(d.Options)
+	if opts == "" || opts == "null" {
+		opts = "[]"
+	}
+	_, err := s.db.Exec(
+		`UPDATE prop_schema SET label=?, type=?, options=?, position=? WHERE id=?`,
+		d.Label, d.Type, opts, d.Position, d.ID,
+	)
+	return err
+}
+
+func (s *sqliteStorage) DeletePropDef(id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM prop_schema WHERE id=?`, id)
+	return err
+}
+
+// ── Prop values ────────────────────────────────────────────────────────────────
+
+func (s *sqliteStorage) GetPropValues(entity string, recordID int64) (map[string]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT key, value FROM prop_values WHERE entity=? AND record_id=?`, entity, recordID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		m[k] = v
+	}
+	return m, rows.Err()
+}
+
+func (s *sqliteStorage) SetPropValue(entity string, recordID int64, key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO prop_values (entity, record_id, key, value) VALUES (?,?,?,?)
+		 ON CONFLICT(entity, record_id, key) DO UPDATE SET value=excluded.value`,
+		entity, recordID, key, value,
+	)
+	return err
+}
+
+func (s *sqliteStorage) DeletePropValues(entity string, recordID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM prop_values WHERE entity=? AND record_id=?`, entity, recordID)
+	return err
+}
+
+// ── Prop relations ─────────────────────────────────────────────────────────────
+
+func (s *sqliteStorage) ListPropRelations(entity string) ([]domain.PropRelation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT id, from_entity, from_key, to_entity, to_key FROM prop_relations WHERE from_entity=? OR to_entity=?`,
+		entity, entity)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var rels []domain.PropRelation
+	for rows.Next() {
+		var r domain.PropRelation
+		var toKey sql.NullString
+		if err := rows.Scan(&r.ID, &r.FromEntity, &r.FromKey, &r.ToEntity, &toKey); err != nil {
+			return nil, err
+		}
+		if toKey.Valid {
+			r.ToKey = &toKey.String
+		}
+		rels = append(rels, r)
+	}
+	return rels, rows.Err()
+}
+
+func (s *sqliteStorage) CreatePropRelation(r *domain.PropRelation) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var toKey interface{}
+	if r.ToKey != nil {
+		toKey = *r.ToKey
+	}
+	res, err := s.db.Exec(
+		`INSERT INTO prop_relations (from_entity, from_key, to_entity, to_key) VALUES (?,?,?,?)
+		 ON CONFLICT(from_entity, from_key) DO UPDATE SET to_entity=excluded.to_entity, to_key=excluded.to_key`,
+		r.FromEntity, r.FromKey, r.ToEntity, toKey,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *sqliteStorage) DeletePropRelation(id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM prop_relations WHERE id=?`, id)
+	return err
+}
+
+func (s *sqliteStorage) GetRelationLinks(fromEntity string, fromID int64, fromKey string) ([]domain.RelationLink, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT from_entity, from_id, from_key, to_entity, to_id FROM prop_relation_links
+		 WHERE from_entity=? AND from_id=? AND from_key=?`, fromEntity, fromID, fromKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanRelLinks(rows)
+}
+
+func (s *sqliteStorage) GetBackRelationLinks(toEntity string, toID int64, fromKey string) ([]domain.RelationLink, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT from_entity, from_id, from_key, to_entity, to_id FROM prop_relation_links
+		 WHERE to_entity=? AND to_id=?`, toEntity, toID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanRelLinks(rows)
+}
+
+func (s *sqliteStorage) AddRelationLink(link domain.RelationLink) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO prop_relation_links (from_entity, from_id, from_key, to_entity, to_id)
+		 VALUES (?,?,?,?,?)`,
+		link.FromEntity, link.FromID, link.FromKey, link.ToEntity, link.ToID,
+	)
+	return err
+}
+
+func (s *sqliteStorage) RemoveRelationLink(link domain.RelationLink) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`DELETE FROM prop_relation_links WHERE from_entity=? AND from_id=? AND from_key=? AND to_entity=? AND to_id=?`,
+		link.FromEntity, link.FromID, link.FromKey, link.ToEntity, link.ToID,
+	)
+	return err
+}
+
+func scanRelLinks(rows *sql.Rows) ([]domain.RelationLink, error) {
+	defer rows.Close()
+	var links []domain.RelationLink
+	for rows.Next() {
+		var l domain.RelationLink
+		if err := rows.Scan(&l.FromEntity, &l.FromID, &l.FromKey, &l.ToEntity, &l.ToID); err != nil {
+			return nil, err
+		}
+		links = append(links, l)
+	}
+	return links, rows.Err()
 }

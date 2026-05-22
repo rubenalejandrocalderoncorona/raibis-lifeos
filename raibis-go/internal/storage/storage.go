@@ -107,6 +107,26 @@ type Storage interface {
 	ListVaults() ([]*domain.ObsidianVault, error)
 	UpdateVault(v *domain.ObsidianVault) error
 	DeleteVault(id int64) error
+
+	// ── Prop schema (typed column definitions per entity type) ────────────────
+	ListPropSchema(entity string) ([]domain.PropDef, error)
+	CreatePropDef(d *domain.PropDef) (int64, error)
+	UpdatePropDef(d *domain.PropDef) error
+	DeletePropDef(id int64) error
+
+	// ── Prop values (per-record typed values) ─────────────────────────────────
+	GetPropValues(entity string, recordID int64) (map[string]string, error)
+	SetPropValue(entity string, recordID int64, key, value string) error
+	DeletePropValues(entity string, recordID int64) error
+
+	// ── Prop relations ────────────────────────────────────────────────────────
+	ListPropRelations(entity string) ([]domain.PropRelation, error)
+	CreatePropRelation(r *domain.PropRelation) (int64, error)
+	DeletePropRelation(id int64) error
+	GetRelationLinks(fromEntity string, fromID int64, fromKey string) ([]domain.RelationLink, error)
+	GetBackRelationLinks(toEntity string, toID int64, fromKey string) ([]domain.RelationLink, error)
+	AddRelationLink(link domain.RelationLink) error
+	RemoveRelationLink(link domain.RelationLink) error
 	TouchVaultSync(id int64) error
 
 	// ── Settings ──────────────────────────────────────────────────────────────

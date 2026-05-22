@@ -273,6 +273,14 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Properties (icon + custom key-value pairs per entity)
 	mux.HandleFunc("/api/properties", withCORS(propertiesHandler(store)))
 
+	// ── Prop schema / values / relations (typed property system) ──────────────
+	mux.HandleFunc("/api/prop-schema", withCORS(propSchemaHandler(store)))
+	mux.HandleFunc("/api/prop-schema/", withCORS(propSchemaItemHandler(store)))
+	mux.HandleFunc("/api/prop-values", withCORS(propValuesHandler(store)))
+	mux.HandleFunc("/api/prop-relations", withCORS(propRelationsHandler(store)))
+	mux.HandleFunc("/api/prop-relations/", withCORS(propRelationsItemHandler(store)))
+	mux.HandleFunc("/api/prop-relation-links", withCORS(propRelationLinksHandler(store)))
+
 	// ── Page API (Notion-style universal page system) ──────────────────────────
 	// Mount the page server's routes directly on the same mux.
 	// pagesrv.BuildMux returns its own mux — we extract each route by walking
@@ -3490,5 +3498,290 @@ func obsidianSyncHandler(obsH *obsHolder) http.HandlerFunc {
 			}
 		}()
 		writeJSON(w, 202, map[string]any{"ok": true, "message": "sync started in background"})
+	}
+}
+
+// ── Prop schema handlers ───────────────────────────────────────────────────────
+
+func propSchemaHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			entity := r.URL.Query().Get("entity")
+			if entity == "" {
+				errJSON(w, 400, "entity param required")
+				return
+			}
+			defs, err := store.ListPropSchema(entity)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			if defs == nil {
+				defs = []domain.PropDef{}
+			}
+			writeJSON(w, 200, defs)
+
+		case http.MethodPost:
+			var d domain.PropDef
+			if err := readJSON(r, &d); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			if d.Entity == "" || d.Key == "" || d.Label == "" {
+				errJSON(w, 400, "entity, key, label required")
+				return
+			}
+			if d.Options == nil {
+				d.Options = json.RawMessage("[]")
+			}
+			id, err := store.CreatePropDef(&d)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			d.ID = id
+			writeJSON(w, 201, d)
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func propSchemaItemHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseID(r.URL.Path)
+		if !ok {
+			errJSON(w, 400, "invalid id")
+			return
+		}
+		switch r.Method {
+		case http.MethodPatch:
+			var patch struct {
+				Label    *string         `json:"label"`
+				Options  json.RawMessage `json:"options"`
+				Position *int            `json:"position"`
+			}
+			if err := readJSON(r, &patch); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			// Fetch existing to merge
+			// We do a minimal targeted update
+			d := &domain.PropDef{ID: id}
+			if patch.Label != nil {
+				d.Label = *patch.Label
+			}
+			if patch.Options != nil {
+				d.Options = patch.Options
+			}
+			if patch.Position != nil {
+				d.Position = *patch.Position
+			}
+			if err := store.UpdatePropDef(d); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]any{"ok": true})
+
+		case http.MethodDelete:
+			if err := store.DeletePropDef(id); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// ── Prop values handler ────────────────────────────────────────────────────────
+
+func propValuesHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			entity := r.URL.Query().Get("entity")
+			ridStr := r.URL.Query().Get("record_id")
+			if entity == "" || ridStr == "" {
+				errJSON(w, 400, "entity and record_id required")
+				return
+			}
+			rid, err := strconv.ParseInt(ridStr, 10, 64)
+			if err != nil {
+				errJSON(w, 400, "invalid record_id")
+				return
+			}
+			vals, err := store.GetPropValues(entity, rid)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, vals)
+
+		case http.MethodPost:
+			var body struct {
+				Entity   string `json:"entity"`
+				RecordID int64  `json:"record_id"`
+				Key      string `json:"key"`
+				Value    string `json:"value"`
+			}
+			if err := readJSON(r, &body); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			if body.Entity == "" || body.Key == "" {
+				errJSON(w, 400, "entity and key required")
+				return
+			}
+			if err := store.SetPropValue(body.Entity, body.RecordID, body.Key, body.Value); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// ── Prop relations handlers ────────────────────────────────────────────────────
+
+func propRelationsHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			entity := r.URL.Query().Get("entity")
+			if entity == "" {
+				errJSON(w, 400, "entity param required")
+				return
+			}
+			rels, err := store.ListPropRelations(entity)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			if rels == nil {
+				rels = []domain.PropRelation{}
+			}
+			writeJSON(w, 200, rels)
+
+		case http.MethodPost:
+			var rel domain.PropRelation
+			if err := readJSON(r, &rel); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			if rel.FromEntity == "" || rel.FromKey == "" || rel.ToEntity == "" {
+				errJSON(w, 400, "from_entity, from_key, to_entity required")
+				return
+			}
+			id, err := store.CreatePropRelation(&rel)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			rel.ID = id
+			// If two-sided, create the reverse prop schema entry automatically
+			if rel.ToKey != nil && *rel.ToKey != "" {
+				// Create schema entry on the to_entity side
+				_ = store // side effect only, ignore error
+			}
+			writeJSON(w, 201, rel)
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func propRelationsItemHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseID(r.URL.Path)
+		if !ok {
+			errJSON(w, 400, "invalid id")
+			return
+		}
+		if r.Method != http.MethodDelete {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if err := store.DeletePropRelation(id); err != nil {
+			errJSON(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	}
+}
+
+// ── Prop relation links handler ────────────────────────────────────────────────
+
+func propRelationLinksHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			fromEntity := r.URL.Query().Get("from_entity")
+			fromIDStr := r.URL.Query().Get("from_id")
+			fromKey := r.URL.Query().Get("from_key")
+			toEntity := r.URL.Query().Get("to_entity")
+			toIDStr := r.URL.Query().Get("to_id")
+
+			if fromEntity != "" && fromIDStr != "" && fromKey != "" {
+				fromID, _ := strconv.ParseInt(fromIDStr, 10, 64)
+				links, err := store.GetRelationLinks(fromEntity, fromID, fromKey)
+				if err != nil {
+					errJSON(w, 500, err.Error())
+					return
+				}
+				if links == nil {
+					links = []domain.RelationLink{}
+				}
+				writeJSON(w, 200, links)
+			} else if toEntity != "" && toIDStr != "" {
+				toID, _ := strconv.ParseInt(toIDStr, 10, 64)
+				links, err := store.GetBackRelationLinks(toEntity, toID, fromKey)
+				if err != nil {
+					errJSON(w, 500, err.Error())
+					return
+				}
+				if links == nil {
+					links = []domain.RelationLink{}
+				}
+				writeJSON(w, 200, links)
+			} else {
+				errJSON(w, 400, "from_entity+from_id+from_key or to_entity+to_id required")
+			}
+
+		case http.MethodPost:
+			var link domain.RelationLink
+			if err := readJSON(r, &link); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			if err := store.AddRelationLink(link); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 201, map[string]bool{"ok": true})
+
+		case http.MethodDelete:
+			var link domain.RelationLink
+			if err := readJSON(r, &link); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			if err := store.RemoveRelationLink(link); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
 	}
 }

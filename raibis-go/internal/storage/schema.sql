@@ -289,3 +289,60 @@ CREATE TABLE IF NOT EXISTS settings (
 -- page_id column on comments (for page-based comments)
 -- Added as ALTER TABLE here so existing DBs get it via applyMigrations
 -- The column is NOT NULL-safe via COALESCE in queries
+
+-- ─────────────────────────────────────────
+-- prop_schema — typed column definitions per entity type
+-- Replaces localStorage customPropDefs_* — now durable in SQLite
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS prop_schema (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity     TEXT    NOT NULL,
+    key        TEXT    NOT NULL,
+    label      TEXT    NOT NULL,
+    type       TEXT    NOT NULL DEFAULT 'text',
+    options    TEXT    NOT NULL DEFAULT '[]',
+    position   INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(entity, key)
+);
+CREATE INDEX IF NOT EXISTS idx_prop_schema_entity ON prop_schema(entity);
+
+-- ─────────────────────────────────────────
+-- prop_values — per-record typed property values
+-- Replaces localStorage customPropVals_*_* — now durable in SQLite
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS prop_values (
+    entity    TEXT    NOT NULL,
+    record_id INTEGER NOT NULL,
+    key       TEXT    NOT NULL,
+    value     TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (entity, record_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_prop_values_record ON prop_values(entity, record_id);
+
+-- ─────────────────────────────────────────
+-- prop_relations — typed relation definitions between entity types
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS prop_relations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_entity TEXT NOT NULL,
+    from_key    TEXT NOT NULL,
+    to_entity   TEXT NOT NULL,
+    to_key      TEXT,
+    created_at  DATETIME NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(from_entity, from_key)
+);
+
+-- ─────────────────────────────────────────
+-- prop_relation_links — actual many-to-many relation records
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS prop_relation_links (
+    from_entity TEXT    NOT NULL,
+    from_id     INTEGER NOT NULL,
+    from_key    TEXT    NOT NULL,
+    to_entity   TEXT    NOT NULL,
+    to_id       INTEGER NOT NULL,
+    PRIMARY KEY (from_entity, from_id, from_key, to_entity, to_id)
+);
+CREATE INDEX IF NOT EXISTS idx_prl_from ON prop_relation_links(from_entity, from_id, from_key);
+CREATE INDEX IF NOT EXISTS idx_prl_to   ON prop_relation_links(to_entity, to_id);

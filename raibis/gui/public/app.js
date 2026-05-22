@@ -1163,39 +1163,149 @@ async function getConnectedPropTypes() {
   } catch { return []; }
 }
 
+// ── Prop schema cache (entity → PropDef[]) ───────────────────────────────
+// Populated by refreshPropSchema(entity); read synchronously by render code.
+const _propSchemaCache = {};   // entity → PropDef[]
+const _propValCache = {};      // `${entity}_${recordId}` → {key:value}
+
+// Fetch schema from backend and store in cache. Returns the defs array.
+async function refreshPropSchema(entity) {
+  try {
+    const res = await fetch(`/api/prop-schema?entity=${entity}`);
+    const defs = res.ok ? await res.json() : [];
+    _propSchemaCache[entity] = Array.isArray(defs) ? defs : [];
+  } catch { _propSchemaCache[entity] = []; }
+  return _propSchemaCache[entity];
+}
+
+// Synchronous read — returns cached defs (empty array if not yet loaded).
 function getCustomPropDefs(entity) {
-  const stored = localStorage.getItem(`customPropDefs_${entity}`);
-  return stored ? JSON.parse(stored) : [];
+  return _propSchemaCache[entity] ?? [];
 }
 
-function setCustomPropDefs(entity, defs) {
-  localStorage.setItem(`customPropDefs_${entity}`, JSON.stringify(defs));
+// Persist a full defs array to the backend (replaces all for the entity).
+// Used by legacy callers that set the whole array at once.
+async function setCustomPropDefs(entity, defs) {
+  // Determine which keys to delete (no longer in defs)
+  const existing = getCustomPropDefs(entity);
+  const newKeys = new Set(defs.map(d => d.key));
+  for (const d of existing) {
+    if (!newKeys.has(d.key)) {
+      await fetch(`/api/prop-schema/${d.id}`, { method: 'DELETE' });
+    }
+  }
+  // Upsert each def
+  for (let i = 0; i < defs.length; i++) {
+    const d = defs[i];
+    if (d.id) {
+      await fetch(`/api/prop-schema/${d.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: d.label, type: d.type, options: d.options || [], position: i }),
+      });
+    } else {
+      await fetch('/api/prop-schema', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entity, key: d.key, label: d.label, type: d.type, options: d.options || [], position: i }),
+      });
+    }
+  }
+  await refreshPropSchema(entity);
 }
 
+// Fetch prop values for a record and store in cache.
+async function refreshPropValues(entity, recordId) {
+  const cacheKey = `${entity}_${recordId}`;
+  try {
+    const res = await fetch(`/api/prop-values?entity=${entity}&record_id=${recordId}`);
+    _propValCache[cacheKey] = res.ok ? await res.json() : {};
+  } catch { _propValCache[cacheKey] = {}; }
+  return _propValCache[cacheKey];
+}
+
+// Synchronous read — returns cached values.
 function getCustomPropValues(entity, recordId) {
-  const stored = localStorage.getItem(`customPropVals_${entity}_${recordId}`);
-  return stored ? JSON.parse(stored) : {};
+  return _propValCache[`${entity}_${recordId}`] ?? {};
 }
 
-function setCustomPropValue(entity, recordId, key, value) {
-  const vals = getCustomPropValues(entity, recordId);
-  vals[key] = value;
-  localStorage.setItem(`customPropVals_${entity}_${recordId}`, JSON.stringify(vals));
+// Persist a single prop value to backend and update cache.
+async function setCustomPropValue(entity, recordId, key, value) {
+  const cacheKey = `${entity}_${recordId}`;
+  if (!_propValCache[cacheKey]) _propValCache[cacheKey] = {};
+  _propValCache[cacheKey][key] = value;
+  try {
+    await fetch('/api/prop-values', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entity, record_id: recordId, key, value: String(value) }),
+    });
+  } catch (err) { console.warn('setCustomPropValue failed', err); }
 }
 
+// Options are stored as [{value, color}] JSON in prop_schema.options field.
+// These helpers read/write the options array in the cached schema.
+function _getPropDef(entity, key) {
+  return getCustomPropDefs(entity).find(d => d.key === key) || null;
+}
 function getSelectOptions(entity, key) {
-  const stored = localStorage.getItem(`selectOpts_${entity}_${key}`);
-  return stored ? JSON.parse(stored) : [];
+  const def = _getPropDef(entity, key);
+  if (!def || !Array.isArray(def.options)) return [];
+  return def.options.map(o => (typeof o === 'string' ? o : o.value)).filter(Boolean);
 }
-function setSelectOptions(entity, key, opts) {
-  localStorage.setItem(`selectOpts_${entity}_${key}`, JSON.stringify(opts));
+async function setSelectOptions(entity, key, opts) {
+  const def = _getPropDef(entity, key);
+  if (!def) return;
+  // Preserve existing colors
+  const existingOpts = Array.isArray(def.options) ? def.options.map(o => typeof o === 'string' ? { value: o, color: null } : o) : [];
+  const colorMap = {};
+  existingOpts.forEach(o => { if (o.color) colorMap[o.value] = o.color; });
+  const newOptions = opts.map(v => ({ value: v, color: colorMap[v] || null }));
+  def.options = newOptions;
+  await fetch(`/api/prop-schema/${def.id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ options: newOptions }),
+  });
+  await refreshPropSchema(entity);
 }
 function getSelectOptionColor(entity, key, val) {
-  const stored = localStorage.getItem(`selectColor_${entity}_${key}_${val}`);
-  return stored || null;
+  const def = _getPropDef(entity, key);
+  if (!def || !Array.isArray(def.options)) return null;
+  const opt = def.options.find(o => (typeof o === 'string' ? o : o.value) === val);
+  return (opt && typeof opt === 'object' && opt.color) ? opt.color : null;
 }
-function setSelectOptionColor(entity, key, val, color) {
-  localStorage.setItem(`selectColor_${entity}_${key}_${val}`, color || '');
+async function setSelectOptionColor(entity, key, val, color) {
+  const def = _getPropDef(entity, key);
+  if (!def) return;
+  const opts = Array.isArray(def.options) ? def.options.map(o => typeof o === 'string' ? { value: o, color: null } : { ...o }) : [];
+  const idx = opts.findIndex(o => o.value === val);
+  if (idx >= 0) opts[idx].color = color || null; else opts.push({ value: val, color: color || null });
+  def.options = opts;
+  await fetch(`/api/prop-schema/${def.id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ options: opts }),
+  });
+  await refreshPropSchema(entity);
+}
+
+// Direct API helpers for single-prop CRUD (preferred over setCustomPropDefs)
+async function createPropDef(entity, key, label, type, opts) {
+  const res = await fetch('/api/prop-schema', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity, key, label, type, options: opts || [], position: getCustomPropDefs(entity).length }),
+  });
+  if (!res.ok) { const t = await res.text(); throw new Error(t); }
+  await refreshPropSchema(entity);
+}
+
+async function deletePropDef(entity, key) {
+  const def = _getPropDef(entity, key);
+  if (!def) return;
+  await fetch(`/api/prop-schema/${def.id}`, { method: 'DELETE' });
+  await refreshPropSchema(entity);
 }
 
 function customPropCell(entity, recordId, def) {
@@ -1251,7 +1361,7 @@ function bindAddPropBtn(entity, onAdd) {
         if (cr.bottom > window.innerHeight - 8) picker.style.top = (btnRect.top - cr.height - 4) + 'px';
       });
       picker.querySelectorAll('.prop-type-row').forEach(row => {
-        row.onclick = (ev) => {
+        row.onclick = async (ev) => {
           ev.stopPropagation();
           picker.remove();
           const rawType = row.dataset.type;
@@ -1264,12 +1374,9 @@ function bindAddPropBtn(entity, onAdd) {
           const key = name.trim().toLowerCase().replace(/\s+/g, '_');
           const defs = getCustomPropDefs(entity);
           if (defs.some(d => d.key === key)) { alert('A property with that name already exists.'); return; }
-          if (isConnected) {
-            defs.push({ key, label: name.trim(), type: 'connected', integrationId: pt.integrationId });
-          } else {
-            defs.push({ key, label: name.trim(), type: rawType });
-          }
-          setCustomPropDefs(entity, defs);
+          try {
+            await createPropDef(entity, key, name.trim(), isConnected ? 'text' : rawType);
+          } catch (err) { alert('Failed to create property: ' + err.message); return; }
           onAdd();
           document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
         };
@@ -1429,12 +1536,11 @@ function showChipConfigPanel(entity, anchorEl, builtinChips, onClose) {
 
     // Delete custom prop buttons
     panel.querySelectorAll('.ccp-delete-btn').forEach(btn => {
-      btn.onclick = (e) => {
+      btn.onclick = async (e) => {
         e.stopPropagation();
         const key = btn.dataset.key;
         if (!confirm(`Delete property "${allChips.find(c => c.key === key)?.label || key}"?`)) return;
-        const defs = getCustomPropDefs(entity).filter(d => d.key !== key);
-        setCustomPropDefs(entity, defs);
+        await deletePropDef(entity, key);
         pinned = pinned.filter(k => k !== key);
         setPinnedChips(entity, pinned);
         panel.remove();
@@ -1586,9 +1692,9 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
         let colorPickerVal = null;
         const closeSelectCombo = () => { _selectCombo.remove(); };
 
-        function save(newSelected) {
+        async function save(newSelected) {
           const newVal = isMulti ? newSelected.join(',') : (newSelected[0] || '');
-          setCustomPropValue(entity, recordId, key, newVal);
+          await setCustomPropValue(entity, recordId, key, newVal);
           onRerender();
         }
 
@@ -1640,12 +1746,12 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
             dot.onclick = (ev) => { ev.stopPropagation(); colorPickerVal = colorPickerVal === dot.dataset.cp ? null : dot.dataset.cp; render(); };
           });
           _selectCombo.querySelectorAll('.ccs').forEach(sw => {
-            sw.onclick = (ev) => { ev.stopPropagation(); setSelectOptionColor(entity, key, sw.dataset.v, sw.dataset.c); colorPickerVal = null; onRerender(); render(); };
+            sw.onclick = async (ev) => { ev.stopPropagation(); await setSelectOptionColor(entity, key, sw.dataset.v, sw.dataset.c); colorPickerVal = null; onRerender(); render(); };
           });
           _selectCombo.querySelectorAll('.create-new').forEach(el => {
-            el.onclick = () => {
+            el.onclick = async () => {
               const newOpt = el.dataset.create;
-              opts.push(newOpt); setSelectOptions(entity, key, opts);
+              opts.push(newOpt); await setSelectOptions(entity, key, opts);
               if (isMulti) selected.push(newOpt); else selected.splice(0, selected.length, newOpt);
               save(selected); filter = ''; render();
               if (!isMulti) closeSelectCombo();
@@ -1683,8 +1789,8 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
       valEl.innerHTML = '';
       valEl.appendChild(inp);
       inp.focus();
-      const save = () => {
-        setCustomPropValue(entity, recordId, key, inp.value);
+      const save = async () => {
+        await setCustomPropValue(entity, recordId, key, inp.value);
         onRerender();
       };
       inp.onblur = save;
@@ -1699,12 +1805,11 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
 
   // Wire delete buttons (remove custom prop def + values)
   panel.querySelectorAll('.icp-del-btn').forEach(btn => {
-    btn.onclick = (e) => {
+    btn.onclick = async (e) => {
       e.stopPropagation();
       const key = btn.dataset.propKey;
       if (!confirm(`Remove property "${key}"?`)) return;
-      const defs = getCustomPropDefs(entity).filter(d => d.key !== key);
-      setCustomPropDefs(entity, defs);
+      await deletePropDef(entity, key);
       // Remove from order
       const ord = getEntityPropOrder(entity);
       if (ord) setEntityPropOrder(entity, ord.filter(k => k !== key));
@@ -3212,6 +3317,7 @@ async function renderTasks() {
       api('GET', '/api/projects'),
       api('GET', '/api/tasks?all=1'),
     ]);
+    await refreshPropSchema('task');
     allTasksCache = allTasksFull;
   } catch(e) { apiError = e.message || String(e); }
 
@@ -3730,7 +3836,10 @@ async function renderTasks() {
 async function renderProjects() {
   let projects = [], goals = [];
   let apiError = null;
-  try { [projects, goals] = await Promise.all([api('GET', '/api/projects'), api('GET', '/api/goals')]); } catch(e) { apiError = e.message || String(e); }
+  try {
+    [projects, goals] = await Promise.all([api('GET', '/api/projects'), api('GET', '/api/goals')]);
+    await refreshPropSchema('project');
+  } catch(e) { apiError = e.message || String(e); }
 
   if (apiError) {
     document.getElementById('main-content').innerHTML = `<div class="view">
@@ -4041,7 +4150,10 @@ async function renderProjects() {
 async function renderGoals() {
   let goals = [];
   let apiError = null;
-  try { goals = await api('GET', '/api/goals'); } catch(e) { apiError = e.message || String(e); }
+  try {
+    goals = await api('GET', '/api/goals');
+    await refreshPropSchema('goal');
+  } catch(e) { apiError = e.message || String(e); }
 
   if (apiError) {
     document.getElementById('main-content').innerHTML = `<div class="view">
@@ -4304,7 +4416,10 @@ async function renderGoals() {
 async function renderNotes() {
   let notes = [];
   let apiError = null;
-  try { notes = await api('GET', '/api/notes'); } catch(e) { apiError = e.message || String(e); }
+  try {
+    notes = await api('GET', '/api/notes');
+    await refreshPropSchema('note');
+  } catch(e) { apiError = e.message || String(e); }
 
   if (apiError) {
     document.getElementById('main-content').innerHTML = `<div class="view">
@@ -4479,7 +4594,10 @@ async function renderNotes() {
 /* ─── Sprints View ───────────────────────────────────────────────────── */
 async function renderSprints() {
   let sprints = [], projects = [];
-  try { [sprints, projects] = await Promise.all([api('GET', '/api/sprints'), api('GET', '/api/projects')]); } catch(e) {}
+  try {
+    [sprints, projects] = await Promise.all([api('GET', '/api/sprints'), api('GET', '/api/projects')]);
+    await refreshPropSchema('sprint');
+  } catch(e) {}
 
   function buildSprintCard(s) {
     const prog = s.progress || {};
@@ -5349,7 +5467,10 @@ function showHabitModal(habit) {
 async function renderResources() {
   let resources = [];
   let apiError = null;
-  try { resources = await api('GET', '/api/resources'); } catch(e) { apiError = e.message || String(e); }
+  try {
+    resources = await api('GET', '/api/resources');
+    await refreshPropSchema('resource');
+  } catch(e) { apiError = e.message || String(e); }
 
   if (apiError) {
     document.getElementById('main-content').innerHTML = `<div class="view">
@@ -6060,6 +6181,7 @@ async function showTaskSlideover(taskId) {
     [allProjects, allGoals] = results;
     allTasksCache = results[2];
     allTasksFull = allTasksCache;
+    await Promise.all([refreshPropSchema('task'), refreshPropValues('task', taskId)]);
   } catch(e) {}
 
   const pomPlanned = task.pomodoros_planned || 0;
@@ -8776,12 +8898,13 @@ async function showEditTaskModal(task) {
     if (!data.title) { alert('Title is required'); return; }
     await api('PATCH', `/api/tasks/${task.id}`, data);
     // Save custom prop values
-    getCustomPropDefs('task').forEach(def => {
+    const saveProms = getCustomPropDefs('task').map(def => {
       const el = document.getElementById(`t-cp-${def.key}`);
-      if (!el) return;
+      if (!el) return null;
       const val = def.type === 'checkbox' ? el.checked : el.value;
-      setCustomPropValue('task', task.id, def.key, val);
-    });
+      return setCustomPropValue('task', task.id, def.key, val);
+    }).filter(Boolean);
+    await Promise.all(saveProms);
     closeFormSlideover();
     renderView(currentView);
   };
@@ -9049,6 +9172,7 @@ async function showProjectSlideover(project, goals, afterSave) {
     ]);
     allGoals = results[0] || [];
     existingTags = results[1] || [];
+    await refreshPropValues('project', v.id);
   } catch(e) {}
   if (allCategories) allCats = allCategories;
 
@@ -9316,7 +9440,10 @@ async function showGoalSlideover(goal, afterSave) {
   const v = goal;
 
   let existingTags = [], allCats = [];
-  try { existingTags = await api('GET', `/api/goals/${v.id}/tags`) || []; } catch(e) {}
+  try {
+    existingTags = await api('GET', `/api/goals/${v.id}/tags`) || [];
+    await refreshPropValues('goal', v.id);
+  } catch(e) {}
   if (allCategories) allCats = allCategories;
 
   const tags = existingTags;
@@ -10090,6 +10217,7 @@ async function showNoteSlideover(note, afterSave) {
     [projects, tasks, goals] = await Promise.all([
       api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
     ]);
+    if (v.id) await refreshPropValues('note', v.id);
   } catch(e) {}
   if (allCategories) allCats = allCategories;
   const tags = (v.tags || []).slice();
@@ -10530,7 +10658,11 @@ async function showSprintSlideover(projects, sprint) {
   const s = sprint;
 
   // Refresh sprint data from server for latest state
-  try { const fresh = await api('GET', `/api/sprints/${s.id}`); if (fresh) Object.assign(s, fresh); } catch(e) {}
+  try {
+    const fresh = await api('GET', `/api/sprints/${s.id}`);
+    if (fresh) Object.assign(s, fresh);
+    await refreshPropValues('sprint', s.id);
+  } catch(e) {}
 
   const projName = (projects||[]).find(p => String(p.id) === String(s.project_id))?.title || null;
   const prog = s.progress || {};
@@ -10748,9 +10880,12 @@ async function showResourceSlideover(resource, afterSave) {
   if (!v.id) { return showResourceModal(v, afterSave); }
 
   let projects = [], tasks = [], goals = [];
-  try { [projects, tasks, goals] = await Promise.all([
-    api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
-  ]); } catch(e) {}
+  try {
+    [projects, tasks, goals] = await Promise.all([
+      api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
+    ]);
+    await refreshPropValues('resource', v.id);
+  } catch(e) {}
 
   const rawUrl = v.url || '';
   const fileName = v.file_path ? v.file_path.split('/').pop() : '';
