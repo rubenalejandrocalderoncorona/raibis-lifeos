@@ -3307,6 +3307,44 @@ async function renderDashboard() {
   injectCommentBadges('task', allTasks.map(t => t.id));
 }
 
+/* ─── Shared Table View Builder ─────────────────────────────────────── */
+// colDefs: [{key, header, cell(item)}] — visible columns (pre-filtered by caller)
+// titleCell: (item) => td html for the first title column
+// onRowClick: (item) => void — called when a row is clicked (opens slideover)
+// entity: string for custom prop columns
+// emptyIcon + emptyMsg: empty state display
+function buildUnifiedTableView({ entity, items, colDefs, titleCell, emptyIcon, emptyMsg, addPropBtn = true }) {
+  if (!items.length) return `<div class="empty-state">
+    <div class="empty-state-icon">${emptyIcon || '◆'}</div>
+    <div class="empty-state-text">${emptyMsg || 'No items found'}</div>
+  </div>`;
+
+  const customDefs = getCustomPropDefs(entity);
+  const customHeaders = customDefs.map(d => `<th>${d.label}</th>`).join('');
+  const headers = [
+    '<th class="ctx-handle-th"></th>',
+    '<th>Title</th>',
+    ...colDefs.map(c => `<th>${c.header}</th>`),
+    customHeaders,
+    addPropBtn ? addPropColumnHeader(entity) : '',
+  ].join('');
+
+  const rows = items.map(item => {
+    const customCols = customDefs.map(def => customPropCell(entity, item.id, def)).join('');
+    return `<tr class="notion-table-row" data-entity="${entity}" data-id="${item.id}">
+      <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="${entity}" data-id="${item.id}" title="Actions">⠿</span></td>
+      ${titleCell(item)}
+      ${colDefs.map(c => c.cell(item)).join('')}
+      ${customCols}
+    </tr>`;
+  }).join('');
+
+  return `<div class="notion-table-wrap"><table class="notion-table">
+    <thead><tr>${headers}</tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
 /* ─── Tasks View ─────────────────────────────────────────────────────── */
 async function renderTasks() {
   let tasks = [], projects = [], allTasksFull = [];
@@ -3907,42 +3945,21 @@ async function renderProjects() {
   }
 
   function buildTableView(list) {
-    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◆</div><div class="empty-state-text">No projects found</div></div>`;
     const vis = (key) => entityPropVisible('project', key);
-    const rows = list.map(p => {
-      const prog = p.progress || {};
-      const pct = prog.pct || 0;
-      const customCols = getCustomPropDefs('project').map(def => customPropCell('project', p.id, def)).join('');
-      return `<tr>
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span></td>
-        <td><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-proj-id="${p.id}">${p.title}</span><span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></td>
-        ${vis('status')   ? `<td>${statusBadge(p.status)}</td>` : ''}
-        ${vis('goal')     ? `<td>${p.goal_title || '—'}</td>` : ''}
-        ${vis('area')     ? `<td>${p.macro_area ? p.macro_area.split('(')[0].trim() : '—'}</td>` : ''}
-        ${vis('progress') ? `<td>${pct}% (${prog.done||0}/${prog.total||0})</td>` : ''}
-        ${vis('tags')     ? `<td>${(p.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
-        ${customCols}
-        <td onclick="event.stopPropagation()">
-          <button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button>
-        </td>
-      </tr>`;
-    }).join('');
-    const customHeaders = getCustomPropDefs('project').map(d => `<th>${d.label}</th>`).join('');
-    const headers = [
-      '<th class="ctx-handle-th"></th>',
-      '<th>Title</th>',
-      vis('status')   ? '<th>Status</th>'   : '',
-      vis('goal')     ? '<th>Goal</th>'     : '',
-      vis('area')     ? '<th>Area</th>'     : '',
-      vis('progress') ? '<th>Progress</th>' : '',
-      vis('tags')     ? '<th>Tags</th>'     : '',
-      customHeaders,
-      '<th></th>',
-      addPropColumnHeader('project'),
-    ].join('');
-    return `<div class="notion-table-wrap"><table class="notion-table">
-      <thead><tr>${headers}</tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+    return buildUnifiedTableView({
+      entity: 'project',
+      items: list,
+      emptyIcon: '◆',
+      emptyMsg: 'No projects found',
+      titleCell: (p) => `<td><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-proj-id="${p.id}"><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle"></span>${p.title}</span><span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></td>`,
+      colDefs: [
+        vis('status')   ? { key: 'status',   header: 'Status',   cell: (p) => `<td>${statusBadge(p.status)}</td>` } : null,
+        vis('goal')     ? { key: 'goal',     header: 'Goal',     cell: (p) => `<td>${p.goal_title || '—'}</td>` } : null,
+        vis('area')     ? { key: 'area',     header: 'Area',     cell: (p) => `<td>${p.macro_area ? p.macro_area.split('(')[0].trim() : '—'}</td>` } : null,
+        vis('progress') ? { key: 'progress', header: 'Progress', cell: (p) => { const prog = p.progress || {}; const pct = prog.pct || 0; return `<td>${pct}% (${prog.done||0}/${prog.total||0})</td>`; } } : null,
+        vis('tags')     ? { key: 'tags',     header: 'Tags',     cell: (p) => `<td>${(p.tags||[]).map(t=>tagHtml(t)).join('')}</td>` } : null,
+      ].filter(Boolean),
+    });
   }
 
   function buildProjectKanbanView(list) {
@@ -4136,6 +4153,13 @@ async function renderProjects() {
         showProjectSlideover(p, goals, () => renderProjects());
       };
     });
+    document.querySelectorAll('.notion-table-row[data-entity="project"]').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.ctx-handle,.task-title-link')) return;
+        const p = projects.find(x => String(x.id) === el.dataset.id);
+        if (p) showProjectSlideover(p, goals, () => renderProjects());
+      };
+    });
     document.querySelectorAll('.proj-export-btn').forEach(el => {
       el.onclick = (e) => {
         e.stopPropagation();
@@ -4216,6 +4240,24 @@ async function renderGoals() {
       type: g => g.type || '',
       year: g => g.year || '',
       _text: g => g.title + ' ' + (g.description || ''),
+    });
+  }
+
+  function buildTableView(list) {
+    const vis = (key) => entityPropVisible('goal', key);
+    return buildUnifiedTableView({
+      entity: 'goal',
+      items: list,
+      emptyIcon: '◈',
+      emptyMsg: 'No goals found',
+      titleCell: (g) => `<td><span class="task-title-link goal-nav-link" style="cursor:pointer;color:var(--accent)" data-goal-id="${g.id}"><span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle"></span>${g.title}</span><span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></td>`,
+      colDefs: [
+        vis('status')   ? { key: 'status',   header: 'Status',   cell: (g) => `<td>${statusBadge(g.status)}</td>` } : null,
+        vis('type')     ? { key: 'type',     header: 'Type',     cell: (g) => `<td>${g.type ? `<span class="badge badge-progress">${g.type}</span>` : '—'}</td>` } : null,
+        vis('year')     ? { key: 'year',     header: 'Year',     cell: (g) => `<td>${g.year ? `<span class="badge badge-todo">${g.year}</span>` : '—'}</td>` } : null,
+        vis('progress') ? { key: 'progress', header: 'Progress', cell: (g) => { const prog = g.progress || {}; const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0; return `<td>${pct}% (${prog.done||0}/${prog.total||0})</td>`; } } : null,
+        vis('tags')     ? { key: 'tags',     header: 'Tags',     cell: (g) => `<td>${(g.tags||[]).map(t=>tagHtml(t)).join('')}</td>` } : null,
+      ].filter(Boolean),
     });
   }
 
@@ -4409,6 +4451,13 @@ async function renderGoals() {
         showJSONModal(`/api/export/goal/${el.dataset.goalId}`, `goal-${g?.title||el.dataset.goalId}.json`);
       };
     });
+    document.querySelectorAll('.notion-table-row[data-entity="goal"]').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.ctx-handle,.task-title-link')) return;
+        const g = goals.find(x => String(x.id) === el.dataset.id);
+        if (g) showGoalSlideover(g, () => renderGoals());
+      };
+    });
   }
 }
 
@@ -4542,34 +4591,19 @@ async function renderNotes() {
   }
 
   function buildNoteTable(list) {
-    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
     const vis = (key) => entityPropVisible('note', key);
-    const rows = list.map(n => {
-      const customCols = getCustomPropDefs('note').map(def => customPropCell('note', n.id, def)).join('');
-      return `<tr class="note-card" data-note-id="${n.id}" style="cursor:pointer">
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span></td>
-        <td><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></td>
-        ${vis('date')     ? `<td>${fmtDate(n.note_date) || '—'}</td>` : ''}
-        ${vis('category') ? `<td>${n.category_name || '—'}</td>` : ''}
-        ${vis('tags')     ? `<td>${(n.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
-        ${customCols}
-        <td onclick="event.stopPropagation()"></td>
-      </tr>`;
-    }).join('');
-    const customHeaders = getCustomPropDefs('note').map(d => `<th>${d.label}</th>`).join('');
-    const headers = [
-      '<th class="ctx-handle-th"></th>',
-      '<th>Title</th>',
-      vis('date')     ? '<th>Date</th>'     : '',
-      vis('category') ? '<th>Category</th>' : '',
-      vis('tags')     ? '<th>Tags</th>'     : '',
-      customHeaders,
-      '<th></th>',
-      addPropColumnHeader('note'),
-    ].join('');
-    return `<div class="notion-table-wrap"><table class="notion-table">
-      <thead><tr>${headers}</tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+    return buildUnifiedTableView({
+      entity: 'note',
+      items: list,
+      emptyIcon: '◎',
+      emptyMsg: 'No notes found',
+      titleCell: (n) => `<td><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span><span class="note-title-link" style="cursor:pointer;color:var(--accent)" data-note-id="${n.id}">${n.title || 'Untitled'}</span><span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></td>`,
+      colDefs: [
+        vis('date')     ? { key: 'date',     header: 'Date',     cell: (n) => `<td>${fmtDate(n.note_date) || '—'}</td>` } : null,
+        vis('category') ? { key: 'category', header: 'Category', cell: (n) => `<td>${n.category_name || '—'}</td>` } : null,
+        vis('tags')     ? { key: 'tags',     header: 'Tags',     cell: (n) => `<td>${(n.tags||[]).map(t=>tagHtml(t)).join('')}</td>` } : null,
+      ].filter(Boolean),
+    });
   }
 
   function bindNoteEvents() {
@@ -4579,6 +4613,20 @@ async function renderNotes() {
         if (e.target.closest('.ctx-handle, .note-json-btn')) return;
         const n = notes.find(x => String(x.id) === el.dataset.noteId);
         if (n) showNoteModal(n, () => renderNotes());
+      };
+    });
+    document.querySelectorAll('.note-title-link').forEach(el => {
+      el.onclick = (e) => {
+        e.stopPropagation();
+        const n = notes.find(x => String(x.id) === el.dataset.noteId);
+        if (n) showNoteSlideover(n, () => renderNotes());
+      };
+    });
+    document.querySelectorAll('.notion-table-row[data-entity="note"]').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.ctx-handle,.note-title-link')) return;
+        const n = notes.find(x => String(x.id) === el.dataset.id);
+        if (n) showNoteSlideover(n, () => renderNotes());
       };
     });
     document.querySelectorAll('.note-json-btn').forEach(el => {
@@ -4643,44 +4691,27 @@ async function renderSprints() {
   }
 
   function buildSprintTable(list) {
-    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">⚡</div><div class="empty-state-text">No sprints found</div></div>`;
     const vis = (key) => entityPropVisible('sprint', key);
-    const rows = list.map(s => {
-      const prog = s.progress || {};
-      const pct = prog.pct || 0;
-      const customCols = getCustomPropDefs('sprint').map(def => customPropCell('sprint', s.id, def)).join('');
-      return `<tr class="sprint-row" data-sprint-id="${s.id}" style="cursor:pointer">
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span></td>
-        <td><span class="sprint-detail-link" data-sprint-id="${s.id}" style="color:var(--accent);cursor:pointer">${s.title}</span><span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></td>
-        ${vis('status')   ? `<td>${statusBadge(s.status)}</td>` : ''}
-        ${vis('project')  ? `<td>${s.project_title || '—'}</td>` : ''}
-        ${vis('dates')    ? `<td>${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</td>` : ''}
-        ${vis('progress') ? `<td>${pct}%</td>` : ''}
-        ${customCols}
-        <td>
+    return buildUnifiedTableView({
+      entity: 'sprint',
+      items: list,
+      emptyIcon: '⚡',
+      emptyMsg: 'No sprints found',
+      titleCell: (s) => `<td><span class="sprint-detail-link" data-sprint-id="${s.id}" style="color:var(--accent);cursor:pointer">${s.title}</span><span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></td>`,
+      colDefs: [
+        vis('status')   ? { key: 'status',   header: 'Status',   cell: (s) => `<td>${statusBadge(s.status)}</td>` } : null,
+        vis('project')  ? { key: 'project',  header: 'Project',  cell: (s) => `<td>${s.project_title || '—'}</td>` } : null,
+        vis('dates')    ? { key: 'dates',    header: 'Dates',    cell: (s) => `<td>${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</td>` } : null,
+        vis('progress') ? { key: 'progress', header: 'Progress', cell: (s) => { const prog = s.progress || {}; return `<td>${prog.pct || 0}%</td>`; } } : null,
+        { key: 'actions', header: '', cell: (s) => `<td>
           ${s.status === 'active' ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="planned">↩ Planned</button>` : ''}
           ${s.status === 'completed' ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="active">↩ Active</button>` : ''}
           ${s.status === 'planned' ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="active">Start</button>` : ''}
           ${s.status === 'active' ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="completed">Complete</button>` : ''}
           <button class="btn btn-sm btn-ghost sprint-edit-btn" data-sprint-id="${s.id}">Edit</button>
-        </td>
-      </tr>`;
-    }).join('');
-    const customHeaders = getCustomPropDefs('sprint').map(d => `<th>${d.label}</th>`).join('');
-    const headers = [
-      '<th class="ctx-handle-th"></th>',
-      '<th>Title</th>',
-      vis('status')   ? '<th>Status</th>'   : '',
-      vis('project')  ? '<th>Project</th>'  : '',
-      vis('dates')    ? '<th>Dates</th>'    : '',
-      vis('progress') ? '<th>Progress</th>' : '',
-      customHeaders,
-      '<th></th>',
-      addPropColumnHeader('sprint'),
-    ].join('');
-    return `<div class="notion-table-wrap"><table class="notion-table">
-      <thead><tr>${headers}</tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+        </td>` },
+      ].filter(Boolean),
+    });
   }
 
   const sprintViews = getEntityViews('sprint');
@@ -4798,6 +4829,12 @@ async function renderSprints() {
       row.onclick = (e) => {
         if (e.target.closest('button') || e.target.closest('.ctx-handle')) return;
         renderView('sprint-detail', row.dataset.sprintId);
+      };
+    });
+    document.querySelectorAll('.notion-table-row[data-entity="sprint"]').forEach(row => {
+      row.onclick = (e) => {
+        if (e.target.closest('button') || e.target.closest('.ctx-handle') || e.target.closest('.sprint-detail-link')) return;
+        renderView('sprint-detail', row.dataset.id);
       };
     });
     document.querySelectorAll('.sprint-status-btn').forEach(el => {
@@ -5575,40 +5612,25 @@ async function renderResources() {
   render();
 
   function buildTable(list) {
-    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">⬡</div><div class="empty-state-text">No resources yet</div></div>`;
     const vis = (key) => entityPropVisible('resource', key);
-    const rows = list.map(r => {
-      const rawUrl = r.url || '';
-      const link = rawUrl
-        ? `<a href="${rawUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${rawUrl.length > 40 ? rawUrl.slice(0,40) + '…' : rawUrl}</a>`
-        : (r.body ? r.body.slice(0,60) + '…' : '—');
-      const linked = r.goal_title || r.project_title || r.task_title || '—';
-      const customCols = getCustomPropDefs('resource').map(def => customPropCell('resource', r.id, def)).join('');
-      return `<tr class="res-row" data-res-id="${r.id}" style="cursor:pointer">
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions">⠿</span></td>
-        <td><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${r.title}<span class="comment-badge" data-comment-for="${r.id}" data-comment-entity="resource" style="display:none"></span></td>
-        ${vis('type')   ? `<td>${r.resource_type || '—'}</td>` : ''}
-        ${vis('linked') ? `<td>${linked}</td>` : ''}
-        ${vis('url')    ? `<td>${link}</td>` : ''}
-        ${customCols}
-        <td onclick="event.stopPropagation()"></td>
-      </tr>`;
-    }).join('');
-    const customHeaders = getCustomPropDefs('resource').map(d => `<th>${d.label}</th>`).join('');
-    const headers = [
-      '<th class="ctx-handle-th"></th>',
-      '<th>Title</th>',
-      vis('type')   ? '<th>Type</th>'           : '',
-      vis('linked') ? '<th>Linked</th>'          : '',
-      vis('url')    ? '<th>URL / Preview</th>'   : '',
-      customHeaders,
-      '<th></th>',
-      addPropColumnHeader('resource'),
-    ].join('');
-    return `<div class="notion-table-wrap"><table class="notion-table">
-      <thead><tr>${headers}</tr></thead>
-      <tbody>${rows}</tbody>
-    </table></div>`;
+    return buildUnifiedTableView({
+      entity: 'resource',
+      items: list,
+      emptyIcon: '⬡',
+      emptyMsg: 'No resources yet',
+      titleCell: (r) => `<td><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span><span class="res-title-link" style="cursor:pointer;color:var(--accent)" data-res-id="${r.id}">${r.title}</span><span class="comment-badge" data-comment-for="${r.id}" data-comment-entity="resource" style="display:none"></span></td>`,
+      colDefs: [
+        vis('type')   ? { key: 'type',   header: 'Type',        cell: (r) => `<td>${r.resource_type || '—'}</td>` } : null,
+        vis('linked') ? { key: 'linked', header: 'Linked',      cell: (r) => `<td>${r.goal_title || r.project_title || r.task_title || '—'}</td>` } : null,
+        vis('url')    ? { key: 'url',    header: 'URL / Preview', cell: (r) => {
+          const rawUrl = r.url || '';
+          const link = rawUrl
+            ? `<a href="${rawUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${rawUrl.length > 40 ? rawUrl.slice(0,40) + '…' : rawUrl}</a>`
+            : (r.body ? r.body.slice(0,60) + '…' : '—');
+          return `<td>${link}</td>`;
+        }} : null,
+      ].filter(Boolean),
+    });
   }
 
   function buildCards(list) {
@@ -5634,10 +5656,27 @@ async function renderResources() {
 
   function bindResEvents() {
     bindCtxHandles();
+    // Card/list view rows
     document.querySelectorAll('.res-row').forEach(el => {
       el.onclick = async (e) => {
         if (e.target.closest('.ctx-handle') || e.target.closest('a')) return;
         const r = resources.find(x => String(x.id) === el.dataset.resId);
+        if (r) showResourceSlideover(r, () => renderResources());
+      };
+    });
+    // Table view title links
+    document.querySelectorAll('.res-title-link').forEach(el => {
+      el.onclick = async (e) => {
+        e.stopPropagation();
+        const r = resources.find(x => String(x.id) === el.dataset.resId);
+        if (r) showResourceSlideover(r, () => renderResources());
+      };
+    });
+    // Table view rows
+    document.querySelectorAll('.notion-table-row[data-entity="resource"]').forEach(el => {
+      el.onclick = async (e) => {
+        if (e.target.closest('.ctx-handle') || e.target.closest('a') || e.target.closest('.res-title-link')) return;
+        const r = resources.find(x => String(x.id) === el.dataset.id);
         if (r) showResourceSlideover(r, () => renderResources());
       };
     });
