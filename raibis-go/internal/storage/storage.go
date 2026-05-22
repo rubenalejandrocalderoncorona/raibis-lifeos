@@ -64,9 +64,6 @@ type Storage interface {
 	// ListProperties returns all properties for an entity as a map.
 	ListProperties(entityType string, entityID int64) (map[string]string, error)
 
-	// Close releases the database connection.
-	Close() error
-
 	// ── Habits ───────────────────────────────────────────────────────────────
 	CreateHabit(h *domain.Habit) (int64, error)
 	GetHabit(id int64) (*domain.Habit, error)
@@ -78,4 +75,47 @@ type Storage interface {
 	CreateComment(c *domain.Comment) (int64, error)
 	ListComments(entityType string, entityID int64) ([]*domain.Comment, error)
 	CountComments(entityType string, entityID int64) (int, error)
+
+	// ── Pages (universal content unit) ───────────────────────────────────────
+	CreatePage(p *domain.Page) (string, error)
+	GetPage(id string) (*domain.Page, error)
+	ListPages(f domain.PageFilter) ([]*domain.Page, error)
+	UpdatePage(p *domain.Page) error
+	DeletePage(id string) error
+
+	// ── Page properties ───────────────────────────────────────────────────────
+	GetProperties(pageID string) (map[string]string, error)
+	SetProperties(pageID string, props map[string]string) error
+	PatchProperties(pageID string, patch map[string]string) error
+
+	// ── Database schema ───────────────────────────────────────────────────────
+	GetSchema(dbID string) ([]domain.SchemaColumn, error)
+	SetSchema(dbID string, cols []domain.SchemaColumn) error
+	AddSchemaColumn(dbID string, col domain.SchemaColumn) error
+	UpdateSchemaColumn(dbID string, col domain.SchemaColumn) error
+	DeleteSchemaColumn(dbID string, key string) error
+
+	// ── Page relations ────────────────────────────────────────────────────────
+	AddRelation(rel domain.Relation) error
+	RemoveRelation(rel domain.Relation) error
+	GetRelations(fromID string, key string) ([]domain.Relation, error)
+	GetBackRelations(toID string, key string) ([]domain.Relation, error)
+
+	// ── Obsidian vaults ───────────────────────────────────────────────────────
+	AddVault(v *domain.ObsidianVault) (int64, error)
+	GetVault(id int64) (*domain.ObsidianVault, error)
+	ListVaults() ([]*domain.ObsidianVault, error)
+	UpdateVault(v *domain.ObsidianVault) error
+	DeleteVault(id int64) error
+	TouchVaultSync(id int64) error
+
+	// ── Settings ──────────────────────────────────────────────────────────────
+	GetSetting(key string) (string, error)
+	SetSetting(key, value string) error
+
+	// ── Page comments ─────────────────────────────────────────────────────────
+	ListPageComments(pageID string) ([]*domain.Comment, error)
+
+	// Close releases the database connection.
+	Close() error
 }

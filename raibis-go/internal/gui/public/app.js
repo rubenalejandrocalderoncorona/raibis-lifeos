@@ -224,6 +224,7 @@ let _connectedPropTypesCache = null;
 let currentParams = null;
 let navHistory = []; // [{view, params, label}]
 let allTags = [];
+let _slideoverOnClose = null;
 let allCategories = [];
 let allTasksCache = [];
 let expandedTasks = new Set();
@@ -231,11 +232,11 @@ let tasksViewMode = localStorage.getItem('tasksViewMode') || 'list';
 let tasksKanbanGroupBy = localStorage.getItem('tasksKanbanGroupBy') || 'status';
 // Hidden kanban columns per groupBy key — stored as { status: ['cancelled'], priority: [] }
 let kanbanHiddenCols = JSON.parse(localStorage.getItem('kanbanHiddenCols') || '{}');
-let projectsViewMode = localStorage.getItem('projectsViewMode') || 'cards';
+let projectsViewMode = localStorage.getItem('projectsViewMode') || 'list';
 let projsKanbanGroupBy = localStorage.getItem('projsKanbanGroupBy') || 'status';
-let goalsViewMode = localStorage.getItem('goalsViewMode') || 'cards';
+let goalsViewMode = localStorage.getItem('goalsViewMode') || 'list';
 let goalsKanbanGroupBy = localStorage.getItem('goalsKanbanGroupBy') || 'status';
-let notesViewMode = localStorage.getItem('notesViewMode') || 'cards';
+let notesViewMode = localStorage.getItem('notesViewMode') || 'list';
 
 // Shared kanban drag state (mouse-based — WKWebView doesn't support HTML5 drag API)
 let _kanbanDrag = { id: null, type: null, el: null, ghost: null, startX: 0, startY: 0, moved: false };
@@ -322,8 +323,8 @@ function bindKanbanDrag(board, cardSelector, idAttr, onDrop) {
   });
   observer.observe(document.body, { childList: true, subtree: true });
 }
-let resourcesViewMode = localStorage.getItem('resourcesViewMode') || 'table';
-let sprintsViewMode = localStorage.getItem('sprintsViewMode') || 'cards';
+let resourcesViewMode = localStorage.getItem('resourcesViewMode') || 'list';
+let sprintsViewMode = localStorage.getItem('sprintsViewMode') || 'list';
 let habitsViewMode  = localStorage.getItem('habitsViewMode')  || 'table';
 let pomTimer = null;
 let pomState = { running: false, seconds: 25*60, mode: 'work', taskId: null, taskTitle: '', finished: [] };
@@ -470,11 +471,11 @@ function getFilterFieldOptions(entity, fieldKey) {
 function getDefaultViews(entity) {
   const defaults = {
     task:     [{id:'_list',  name:'List',  viewType:'list',  filters:[], sorts:[]}],
-    project:  [{id:'_cards', name:'Cards', viewType:'cards', filters:[], sorts:[]}],
-    goal:     [{id:'_cards', name:'Cards', viewType:'cards', filters:[], sorts:[]}],
-    note:     [{id:'_cards', name:'Cards', viewType:'cards', filters:[], sorts:[]}],
-    sprint:   [{id:'_cards', name:'Cards', viewType:'cards', filters:[], sorts:[]}],
-    resource: [{id:'_table', name:'Table', viewType:'table', filters:[], sorts:[]}],
+    project:  [{id:'_list',  name:'List',  viewType:'list',  filters:[], sorts:[]}],
+    goal:     [{id:'_list',  name:'List',  viewType:'list',  filters:[], sorts:[]}],
+    note:     [{id:'_list',  name:'List',  viewType:'list',  filters:[], sorts:[]}],
+    sprint:   [{id:'_list',  name:'List',  viewType:'list',  filters:[], sorts:[]}],
+    resource: [{id:'_list',  name:'List',  viewType:'list',  filters:[], sorts:[]}],
   };
   return defaults[entity] || [{id:'_list',name:'List',viewType:'list',filters:[],sorts:[]}];
 }
@@ -1182,6 +1183,21 @@ function setCustomPropValue(entity, recordId, key, value) {
   localStorage.setItem(`customPropVals_${entity}_${recordId}`, JSON.stringify(vals));
 }
 
+function getSelectOptions(entity, key) {
+  const stored = localStorage.getItem(`selectOpts_${entity}_${key}`);
+  return stored ? JSON.parse(stored) : [];
+}
+function setSelectOptions(entity, key, opts) {
+  localStorage.setItem(`selectOpts_${entity}_${key}`, JSON.stringify(opts));
+}
+function getSelectOptionColor(entity, key, val) {
+  const stored = localStorage.getItem(`selectColor_${entity}_${key}_${val}`);
+  return stored || null;
+}
+function setSelectOptionColor(entity, key, val, color) {
+  localStorage.setItem(`selectColor_${entity}_${key}_${val}`, color || '');
+}
+
 function customPropCell(entity, recordId, def) {
   const vals = getCustomPropValues(entity, recordId);
   const val = vals[def.key] ?? '';
@@ -1209,7 +1225,7 @@ function bindAddPropBtn(entity, onAdd) {
       const picker = document.createElement('div');
       picker.id = 'add-prop-picker';
       picker.className = 'prop-vis-panel';
-      picker.style.cssText = 'position:absolute;z-index:300;min-width:280px;padding:8px 6px 6px';
+      picker.style.cssText = 'position:fixed;z-index:500;min-width:280px;padding:8px 6px 6px';
       const typeSvg = (iconPath) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconPath}</svg>`;
 
       const connectedTypes = await getConnectedPropTypes();
@@ -1224,10 +1240,16 @@ function bindAddPropBtn(entity, onAdd) {
         buildSection(CUSTOM_PROP_TYPES) +
         (connectedTypes.length ? `<div class="prop-type-section-header">Connected Apps</div>` + buildSection(connectedTypes) : '');
 
-      // Anchor: use closest th (table header), or the btn's parent as relative anchor
-      const anchor = btn.closest('th') || btn.parentElement;
-      anchor.style.position = 'relative';
-      anchor.appendChild(picker);
+      // Position picker below button using fixed coords
+      const btnRect = btn.getBoundingClientRect();
+      document.body.appendChild(picker);
+      picker.style.top = (btnRect.bottom + 4) + 'px';
+      picker.style.left = btnRect.left + 'px';
+      requestAnimationFrame(() => {
+        const cr = picker.getBoundingClientRect();
+        if (cr.right > window.innerWidth - 8) picker.style.left = (window.innerWidth - cr.width - 8) + 'px';
+        if (cr.bottom > window.innerHeight - 8) picker.style.top = (btnRect.top - cr.height - 4) + 'px';
+      });
       picker.querySelectorAll('.prop-type-row').forEach(row => {
         row.onclick = (ev) => {
           ev.stopPropagation();
@@ -1284,6 +1306,156 @@ function setEntityPropOrder(entity, order) {
   localStorage.setItem(`propOrder_${entity}`, JSON.stringify(order));
 }
 
+// ── Pinned chips ──────────────────────────────────────────────────────────────
+function getPinnedChips(entity) {
+  const s = localStorage.getItem(`pinnedChips_${entity}`);
+  return s ? JSON.parse(s) : null;
+}
+function setPinnedChips(entity, keys) {
+  localStorage.setItem(`pinnedChips_${entity}`, JSON.stringify(keys));
+}
+
+// ── Chip config panel ─────────────────────────────────────────────────────────
+// anchorEl: the ··· button. builtinChips: [{key, label}]. onClose: called after save.
+function showChipConfigPanel(entity, anchorEl, builtinChips, onClose) {
+  // Remove any existing chip config panel
+  document.querySelector('.chip-config-popover')?.remove();
+  document.removeEventListener('mousedown', _chipConfigOut);
+
+  const customDefs = getCustomPropDefs(entity);
+  const allChips = [
+    ...builtinChips,
+    ...customDefs.map(d => ({ key: d.key, label: d.label, custom: true })),
+  ];
+
+  const defaultPinned = builtinChips.slice(0, 3).map(c => c.key);
+  let pinned = getPinnedChips(entity) || defaultPinned;
+  // Clean up stale pinned keys
+  pinned = pinned.filter(k => allChips.some(c => c.key === k));
+
+  let dragSrcIdx = null;
+
+  function renderPanel() {
+    const existing = document.querySelector('.chip-config-popover');
+    const panel = existing || document.createElement('div');
+    panel.className = 'chip-config-popover';
+
+    const pinnedItems = pinned.map((k, i) => {
+      const chip = allChips.find(c => c.key === k);
+      if (!chip) return '';
+      return `<div class="ccp-row pinned-chip-row" draggable="true" data-idx="${i}" data-key="${k}">
+        <span class="ccp-drag-handle">⠿</span>
+        <span class="ccp-label">${chip.label}</span>
+        <button class="ccp-unpin-btn" data-key="${k}" title="Remove from top">×</button>
+      </div>`;
+    }).join('');
+
+    const unpinnedItems = allChips
+      .filter(c => !pinned.includes(c.key))
+      .map(c => `<div class="ccp-row" data-key="${c.key}">
+        <span class="ccp-label">${c.label}</span>
+        <button class="ccp-pin-btn" data-key="${c.key}" title="Add to top chips"${pinned.length >= 5 ? ' disabled' : ''}>+ Pin</button>
+        ${c.custom ? `<button class="ccp-delete-btn" data-key="${c.key}" title="Delete property">🗑</button>` : ''}
+      </div>`).join('');
+
+    panel.innerHTML = `
+      <div class="ccp-header">
+        <span class="ccp-title">Chip config</span>
+        <button class="ccp-done-btn btn btn-sm btn-primary" style="margin-left:auto;font-size:11px;padding:2px 10px">Done</button>
+      </div>
+      <div class="ccp-hint" style="padding:0 10px 6px;font-size:11px;color:var(--color-text-tertiary)">Drag to reorder · max 5 pinned</div>
+      <div class="ccp-section-label">Pinned chips (${pinned.length}/5)</div>
+      <div class="ccp-pinned-list" id="ccp-pinned-list">${pinnedItems || '<div class="ccp-empty">No chips pinned</div>'}</div>
+      ${unpinnedItems ? `<div class="ccp-section-label" style="margin-top:8px">Available</div><div class="ccp-unpinned-list">${unpinnedItems}</div>` : ''}
+    `;
+    panel.querySelector('.ccp-done-btn').onclick = (e) => {
+      e.stopPropagation();
+      panel.remove();
+      document.removeEventListener('mousedown', _chipConfigOut);
+      if (onClose) onClose();
+    };
+
+    if (!existing) {
+      document.body.appendChild(panel);
+      const rect = anchorEl.getBoundingClientRect();
+      panel.style.top = (rect.bottom + 4) + 'px';
+      panel.style.left = rect.left + 'px';
+      requestAnimationFrame(() => {
+        const cr = panel.getBoundingClientRect();
+        if (cr.right > window.innerWidth - 8) panel.style.left = (window.innerWidth - cr.width - 8) + 'px';
+        if (cr.bottom > window.innerHeight - 8) panel.style.top = (rect.top - cr.height - 4) + 'px';
+      });
+    }
+
+    // Drag-to-reorder pinned list
+    panel.querySelectorAll('.pinned-chip-row[draggable]').forEach(row => {
+      row.addEventListener('dragstart', () => { dragSrcIdx = parseInt(row.dataset.idx); row.classList.add('dragging'); });
+      row.addEventListener('dragend', () => row.classList.remove('dragging'));
+      row.addEventListener('dragover', (e) => { e.preventDefault(); row.classList.add('drag-over'); });
+      row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        row.classList.remove('drag-over');
+        const targetIdx = parseInt(row.dataset.idx);
+        if (dragSrcIdx === null || dragSrcIdx === targetIdx) return;
+        const moved = pinned.splice(dragSrcIdx, 1)[0];
+        pinned.splice(targetIdx, 0, moved);
+        dragSrcIdx = null;
+        setPinnedChips(entity, pinned);
+        renderPanel();
+      });
+    });
+
+    // Unpin buttons
+    panel.querySelectorAll('.ccp-unpin-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        pinned = pinned.filter(k => k !== btn.dataset.key);
+        setPinnedChips(entity, pinned);
+        renderPanel();
+      };
+    });
+
+    // Pin buttons
+    panel.querySelectorAll('.ccp-pin-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        if (pinned.length >= 5) return;
+        pinned = [...pinned, btn.dataset.key];
+        setPinnedChips(entity, pinned);
+        renderPanel();
+      };
+    });
+
+    // Delete custom prop buttons
+    panel.querySelectorAll('.ccp-delete-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const key = btn.dataset.key;
+        if (!confirm(`Delete property "${allChips.find(c => c.key === key)?.label || key}"?`)) return;
+        const defs = getCustomPropDefs(entity).filter(d => d.key !== key);
+        setCustomPropDefs(entity, defs);
+        pinned = pinned.filter(k => k !== key);
+        setPinnedChips(entity, pinned);
+        panel.remove();
+        document.removeEventListener('mousedown', _chipConfigOut);
+        if (onClose) onClose();
+      };
+    });
+  }
+
+  renderPanel();
+
+  function _chipConfigOut(e) {
+    const panel = document.querySelector('.chip-config-popover');
+    if (panel && !panel.contains(e.target) && e.target !== anchorEl) {
+      panel.remove();
+      document.removeEventListener('mousedown', _chipConfigOut);
+    }
+  }
+  setTimeout(() => document.addEventListener('mousedown', _chipConfigOut), 0);
+}
+
 // ── buildInlinePropPanel ──────────────────────────────────────────────────
 // Renders a .inline-prop-panel div with built-in + custom prop rows, each
 // with a drag handle for reordering. builtinDefs is an array of:
@@ -1331,6 +1503,14 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
           if (custom.type === 'checkbox') {
             return `<input type="checkbox" class="icp-check" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" ${val?'checked':''}
               style="cursor:pointer;accent-color:var(--accent)" onclick="event.stopPropagation()">`;
+          }
+          if (custom.type === 'select' || custom.type === 'multi_select') {
+            if (!val) return `<span class="empty">—</span>`;
+            const vals = custom.type === 'multi_select' ? String(val).split(',').filter(Boolean) : [String(val)];
+            return vals.map(v => {
+              const color = getSelectOptionColor(entity, key, v.trim());
+              return `<span class="prop-tag" style="background:${color||'var(--color-bg-elevated)'};color:${color?'#fff':'var(--color-text)'};border-radius:4px;padding:1px 6px;font-size:11px;margin-right:3px">${v.trim()}</span>`;
+            }).join('');
           }
           return val
             ? `<span>${String(val).replace(/</g,'&lt;')}</span>`
@@ -1388,6 +1568,107 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
     const def = defs.find(d => d.key === key);
     if (!def) return;
     if (def.type === 'checkbox') return; // handled by input directly
+    if (def.type === 'select' || def.type === 'multi_select') {
+      valEl.onclick = (e) => {
+        e.stopPropagation();
+        const isMulti = def.type === 'multi_select';
+        const storKey = `selectOpts_${entity}_${key}`;
+        const opts = getSelectOptions(entity, key);
+        const currentVals = getCustomPropValues(entity, recordId);
+        const cur = String(currentVals[key] ?? '');
+        const selected = isMulti ? cur.split(',').filter(Boolean).map(s => s.trim()) : (cur ? [cur] : []);
+        const COLOR_SWATCHES = ['#e07070','#fb923c','#d4a84b','#6dcc8a','#378ADD','#a78bfa','#f472b6','#22d3ee','#94a3b8'];
+
+        let _selectCombo = document.createElement('div');
+        _selectCombo.className = 'combo-popover';
+        _selectCombo.style.minWidth = '220px';
+        let filter = '';
+        let colorPickerVal = null;
+        const closeSelectCombo = () => { _selectCombo.remove(); };
+
+        function save(newSelected) {
+          const newVal = isMulti ? newSelected.join(',') : (newSelected[0] || '');
+          setCustomPropValue(entity, recordId, key, newVal);
+          onRerender();
+        }
+
+        function render() {
+          const filtered = filter ? opts.filter(o => o.toLowerCase().includes(filter.toLowerCase())) : opts;
+          const showCreate = filter.trim() && !opts.some(o => o.toLowerCase() === filter.trim().toLowerCase());
+          const items = filtered.map(v => {
+            const isSel = selected.includes(v);
+            const color = getSelectOptionColor(entity, key, v);
+            const dot = `<span class="combo-color-dot" data-cp="${v}" title="Set color"
+              style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color||'var(--color-border)'};border:1px solid ${color||'var(--color-border-strong)'};cursor:pointer;flex-shrink:0"></span>`;
+            const cpHtml = colorPickerVal === v ? `<div class="combo-color-picker" style="display:flex;flex-wrap:wrap;gap:4px;padding:6px;border-top:1px solid var(--color-border)">
+              ${COLOR_SWATCHES.map(c => `<span class="ccs" data-c="${c}" data-v="${v}" style="display:inline-block;width:16px;height:16px;border-radius:3px;background:${c};cursor:pointer;border:2px solid ${color===c?'var(--color-text)':'transparent'}"></span>`).join('')}
+              <span class="ccs" data-c="" data-v="${v}" title="Clear" style="display:inline-block;width:16px;height:16px;border-radius:3px;background:var(--color-border);cursor:pointer;border:2px solid transparent;font-size:9px;line-height:16px;text-align:center">✕</span>
+            </div>` : '';
+            return `<div class="combo-item${isSel?' selected':''}" data-val="${v}" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+              ${isMulti ? `<input type="checkbox" ${isSel?'checked':''} style="pointer-events:none;accent-color:var(--color-accent)">` : ''}
+              ${dot}
+              <span style="color:${color||'inherit'};flex:1">${v}</span>
+              ${cpHtml}
+            </div>`;
+          }).join('');
+          _selectCombo.innerHTML = `<div class="combo-search-wrap">
+            <input class="combo-search" placeholder="Search or add…" value="${filter.replace(/"/g,'&quot;')}" />
+          </div><div class="combo-list">${items || '<div class="combo-empty">No options</div>'}
+            ${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim()}">+ Add "${filter.trim()}"</div>` : ''}
+          </div>`;
+          const inp = _selectCombo.querySelector('.combo-search');
+          inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+          inp.oninput = (ev) => { filter = ev.target.value; render(); };
+          inp.onkeydown = (ev) => { if (ev.key === 'Escape') closeSelectCombo(); };
+
+          _selectCombo.querySelectorAll('.combo-item[data-val]').forEach(el => {
+            el.onclick = (ev) => {
+              if (ev.target.closest('.combo-color-dot,[data-cp],[data-c]')) return;
+              const v = el.dataset.val;
+              if (isMulti) {
+                const idx = selected.indexOf(v);
+                if (idx >= 0) selected.splice(idx, 1); else selected.push(v);
+                save(selected);
+                render();
+              } else {
+                save([v]);
+                closeSelectCombo();
+              }
+            };
+          });
+          _selectCombo.querySelectorAll('[data-cp]').forEach(dot => {
+            dot.onclick = (ev) => { ev.stopPropagation(); colorPickerVal = colorPickerVal === dot.dataset.cp ? null : dot.dataset.cp; render(); };
+          });
+          _selectCombo.querySelectorAll('.ccs').forEach(sw => {
+            sw.onclick = (ev) => { ev.stopPropagation(); setSelectOptionColor(entity, key, sw.dataset.v, sw.dataset.c); colorPickerVal = null; onRerender(); render(); };
+          });
+          _selectCombo.querySelectorAll('.create-new').forEach(el => {
+            el.onclick = () => {
+              const newOpt = el.dataset.create;
+              opts.push(newOpt); setSelectOptions(entity, key, opts);
+              if (isMulti) selected.push(newOpt); else selected.splice(0, selected.length, newOpt);
+              save(selected); filter = ''; render();
+              if (!isMulti) closeSelectCombo();
+            };
+          });
+        }
+
+        render();
+        document.body.appendChild(_selectCombo);
+        const _rect = valEl.getBoundingClientRect();
+        _selectCombo.style.position = 'fixed';
+        _selectCombo.style.top = (_rect.bottom + 4) + 'px';
+        _selectCombo.style.left = _rect.left + 'px';
+        requestAnimationFrame(() => {
+          const cr = _selectCombo.getBoundingClientRect();
+          if (cr.right > window.innerWidth - 8) _selectCombo.style.left = (window.innerWidth - cr.width - 8) + 'px';
+          if (cr.bottom > window.innerHeight - 8) _selectCombo.style.top = (_rect.top - cr.height - 4) + 'px';
+        });
+        const _outside = (ev) => { if (!_selectCombo.contains(ev.target)) { closeSelectCombo(); document.removeEventListener('mousedown', _outside); } };
+        setTimeout(() => document.addEventListener('mousedown', _outside), 0);
+      };
+      return;
+    }
     valEl.onclick = (e) => {
       e.stopPropagation();
       if (valEl.querySelector('input,textarea')) return;
@@ -2097,9 +2378,10 @@ function closeModal() {
 }
 
 /* ─── Slideover ──────────────────────────────────────────────────────── */
-function openSlideover(title, bodyHTML) {
+function openSlideover(title, bodyHTML, onClose) {
   document.getElementById('slideover-title').textContent = title;
   document.getElementById('slideover-body').innerHTML = bodyHTML;
+  _slideoverOnClose = onClose || null;
   const panel = document.getElementById('slideover');
   panel.classList.add('open');
   document.getElementById('modal-backdrop').classList.add('open');
@@ -2121,6 +2403,7 @@ function closeSlideover() {
     document.getElementById('fab-group')?.classList.remove('panel-open-main');
     document.getElementById('fab-group')?.classList.remove('panel-open-form');
   }
+  if (_slideoverOnClose) { const cb = _slideoverOnClose; _slideoverOnClose = null; cb(); }
 }
 
 /* ─── Form Slideover (for create/edit forms) ─────────────────────────── */
@@ -3493,6 +3776,27 @@ async function renderProjects() {
       `<div class="empty-state"><div class="empty-state-icon">◆</div><div class="empty-state-text">No projects found</div></div>`;
   }
 
+  function buildListView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◆</div><div class="empty-state-text">No projects found</div></div>`;
+    const fmtDate = (v) => { if (!v) return null; const d = new Date(v.split('T')[0]+'T00:00:00'); return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}); };
+    const rows = list.map(p => {
+      const prog = p.progress || {};
+      const pct = prog.pct || 0;
+      const dueBadge = p.due_date ? `<span class="task-due-badge${isOverdue(p.due_date)?' overdue':isToday(p.due_date)?' today':''}">${fmtDate(p.due_date)}</span>` : '';
+      const statusChip = p.status ? `<span class="task-status-chip chip-status-${p.status}">${p.status.replace(/_/g,' ')}</span>` : '';
+      const tagChips = (p.tags||[]).map(t => tagHtml(t)).join('');
+      const progBadge = prog.total > 0 ? `<span style="font-size:11px;color:var(--text-muted)">${pct}%</span>` : '';
+      return `<li class="task-row" data-proj-id="${p.id}" style="cursor:pointer">
+        <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span>
+        <div class="task-content">
+          <div class="task-title"><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle"></span>${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></div>
+          <div class="task-meta-row">${dueBadge}${statusChip}${tagChips}${progBadge}</div>
+        </div>
+      </li>`;
+    }).join('');
+    return `<ul class="task-list">${rows}</ul>`;
+  }
+
   function buildTableView(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◆</div><div class="empty-state-text">No projects found</div></div>`;
     const vis = (key) => entityPropVisible('project', key);
@@ -3639,7 +3943,7 @@ async function renderProjects() {
   // Bind tab bar
   bindViewTabBar('project', (newActiveId) => {
     setActiveTabId('project', newActiveId);
-    projectsViewMode = (getEntityViews('project').find(v => v.id === newActiveId) || {}).viewType || 'cards';
+    projectsViewMode = (getEntityViews('project').find(v => v.id === newActiveId) || {}).viewType || 'list';
     localStorage.setItem('projectsViewMode', projectsViewMode);
     renderProjects();
   }, () => renderProjects());
@@ -3669,12 +3973,22 @@ async function renderProjects() {
     let html;
     if (projectsViewMode === 'table') html = buildTableView(list);
     else if (projectsViewMode === 'kanban') html = buildProjectKanbanView(list);
+    else if (projectsViewMode === 'list') html = buildListView(list);
     else html = buildCardsView(list);
     document.getElementById('proj-list').innerHTML = html;
     bindProjEvents();
     if (projectsViewMode === 'table') { bindAddPropBtn('project', render); bindCustomPropCells(); }
     injectListIcons('project', list.map(p => p.id));
     injectCommentBadges('project', list.map(p => p.id));
+    if (projectsViewMode === 'list') {
+      document.querySelectorAll('#proj-list .task-row').forEach(row => {
+        row.addEventListener('click', (e) => {
+          if (e.target.closest('.ctx-handle')) return;
+          const p = projects.find(x => String(x.id) === row.dataset.projId);
+          if (p) showProjectSlideover(p, goals, () => renderProjects());
+        });
+      });
+    }
     if (projectsViewMode === 'kanban') {
       document.getElementById('proj-gb-status')?.addEventListener('click', () => {
         projsKanbanGroupBy = 'status'; localStorage.setItem('projsKanbanGroupBy', 'status'); render();
@@ -3769,7 +4083,7 @@ async function renderGoals() {
 
   bindViewTabBar('goal', (newActiveId) => {
     setActiveTabId('goal', newActiveId);
-    goalsViewMode = (getEntityViews('goal').find(v => v.id === newActiveId) || {}).viewType || 'cards';
+    goalsViewMode = (getEntityViews('goal').find(v => v.id === newActiveId) || {}).viewType || 'list';
     localStorage.setItem('goalsViewMode', goalsViewMode);
     renderGoals();
   }, () => renderGoals());
@@ -3798,12 +4112,22 @@ async function renderGoals() {
     let html;
     if (goalsViewMode === 'table') html = buildTableView(list);
     else if (goalsViewMode === 'kanban') html = buildGoalKanbanView(list);
+    else if (goalsViewMode === 'list') html = buildListView(list);
     else html = buildCardsView(list);
     document.getElementById('goal-list').innerHTML = html;
     bindGoalEvents();
     if (goalsViewMode === 'table') { bindAddPropBtn('goal', render); bindCustomPropCells(); }
     injectListIcons('goal', list.map(g => g.id));
     injectCommentBadges('goal', list.map(g => g.id));
+    if (goalsViewMode === 'list') {
+      document.querySelectorAll('#goal-list .goal-slideover-row').forEach(row => {
+        row.addEventListener('click', (e) => {
+          if (e.target.closest('.ctx-handle')) return;
+          const g = goals.find(x => String(x.id) === row.dataset.goalId);
+          if (g) showGoalSlideover(g, () => renderGoals());
+        });
+      });
+    }
     if (goalsViewMode === 'kanban') {
       document.getElementById('goal-gb-status')?.addEventListener('click', () => {
         goalsKanbanGroupBy = 'status'; localStorage.setItem('goalsKanbanGroupBy', 'status'); render();
@@ -3859,47 +4183,30 @@ async function renderGoals() {
       `<div class="empty-state"><div class="empty-state-icon">◈</div><div class="empty-state-text">No goals found</div></div>`;
   }
 
-  function buildTableView(list) {
+  function buildListView(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◈</div><div class="empty-state-text">No goals found</div></div>`;
-    const vis = (key) => entityPropVisible('goal', key);
+    const fmtDate = (v) => { if (!v) return null; const d = new Date(v.split('T')[0]+'T00:00:00'); return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}); };
     const rows = list.map(g => {
       const prog = g.progress || {};
       const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
-      const customCols = getCustomPropDefs('goal').map(def => customPropCell('goal', g.id, def)).join('');
-      return `<tr>
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span></td>
-        <td><span style="cursor:pointer;color:var(--accent)" class="goal-nav-link" data-goal-id="${g.id}">${g.title}</span><span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></td>
-        ${vis('status')   ? `<td>${statusBadge(g.status)}</td>` : ''}
-        ${vis('type')     ? `<td>${g.type || '—'}</td>` : ''}
-        ${vis('year')     ? `<td>${g.year || '—'}</td>` : ''}
-        ${vis('progress') ? `<td>${pct}%</td>` : ''}
-        ${vis('tags')     ? `<td>${(g.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
-        ${customCols}
-        <td onclick="event.stopPropagation()">
-          <button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button>
-        </td>
-      </tr>`;
+      const dueBadge = g.due_date ? `<span class="task-due-badge${isOverdue(g.due_date)?' overdue':isToday(g.due_date)?' today':''}">${fmtDate(g.due_date)}</span>` : '';
+      const typeBadge = g.type ? `<span class="badge badge-progress" style="font-size:11px">${g.type}</span>` : '';
+      const yearBadge = g.year ? `<span class="badge badge-todo" style="font-size:11px">${g.year}</span>` : '';
+      const statusChip = g.status ? `<span class="task-status-chip chip-status-${g.status}">${g.status.replace(/_/g,' ')}</span>` : '';
+      const tagChips = (g.tags||[]).map(t => tagHtml(t)).join('');
+      const progBadge = prog.total > 0 ? `<span style="font-size:11px;color:var(--text-muted)">${pct}%</span>` : '';
+      return `<li class="task-row goal-slideover-row" data-goal-id="${g.id}" style="cursor:pointer">
+        <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span>
+        <div class="task-content">
+          <div class="task-title"><span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle"></span>${g.title}<span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></div>
+          <div class="task-meta-row">${dueBadge}${typeBadge}${yearBadge}${statusChip}${tagChips}${progBadge}</div>
+        </div>
+      </li>`;
     }).join('');
-    const customHeaders = getCustomPropDefs('goal').map(d => `<th>${d.label}</th>`).join('');
-    const headers = [
-      '<th class="ctx-handle-th"></th>',
-      '<th>Title</th>',
-      vis('status')   ? '<th>Status</th>'   : '',
-      vis('type')     ? '<th>Type</th>'     : '',
-      vis('year')     ? '<th>Year</th>'     : '',
-      vis('progress') ? '<th>Progress</th>' : '',
-      vis('tags')     ? '<th>Tags</th>'     : '',
-      customHeaders,
-      '<th></th>',
-      addPropColumnHeader('goal'),
-    ].join('');
-    return `<div class="notion-table-wrap"><table class="notion-table">
-      <thead><tr>${headers}</tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+    return `<ul class="task-list">${rows}</ul>`;
   }
 
   function buildGoalKanbanView(list) {
-    const groupBy = goalsKanbanGroupBy; // 'status' | 'type' | 'year'
     const allVals = groupBy === 'status'
       ? GOAL_STATUSES
       : groupBy === 'type'
@@ -4039,7 +4346,7 @@ async function renderNotes() {
 
   bindViewTabBar('note', (newActiveId) => {
     setActiveTabId('note', newActiveId);
-    notesViewMode = (getEntityViews('note').find(v => v.id === newActiveId) || {}).viewType || 'cards';
+    notesViewMode = (getEntityViews('note').find(v => v.id === newActiveId) || {}).viewType || 'list';
     localStorage.setItem('notesViewMode', notesViewMode);
     renderNotes();
   }, () => renderNotes());
@@ -4062,6 +4369,23 @@ async function renderNotes() {
     });
   }
 
+  function buildNoteListView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
+    const rows = list.map(n => {
+      const dateBadge = n.note_date ? `<span class="task-due-badge">${fmtDate(n.note_date)}</span>` : '';
+      const catChip = n.category_name ? `<span class="task-category-chip">${n.category_name}</span>` : '';
+      const tagChips = (n.tags||[]).map(t => tagHtml(t)).join('');
+      return `<li class="task-row note-card" data-note-id="${n.id}" style="cursor:pointer">
+        <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span>
+        <div class="task-content">
+          <div class="task-title"><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
+          <div class="task-meta-row">${dateBadge}${catChip}${tagChips}</div>
+        </div>
+      </li>`;
+    }).join('');
+    return `<ul class="task-list">${rows}</ul>`;
+  }
+
   function render() {
     const list = getFiltered();
     if (!list.length) {
@@ -4070,6 +4394,7 @@ async function renderNotes() {
     } else {
       document.getElementById('notes-list').innerHTML =
         notesViewMode === 'table' ? buildNoteTable(list) :
+        notesViewMode === 'list' ? buildNoteListView(list) :
         `<div style="display:grid;gap:12px">${list.map(buildNoteCard).join('')}</div>`;
     }
     bindNoteEvents();
@@ -4273,7 +4598,7 @@ async function renderSprints() {
 
   bindViewTabBar('sprint', (newActiveId) => {
     setActiveTabId('sprint', newActiveId);
-    sprintsViewMode = (getEntityViews('sprint').find(v => v.id === newActiveId) || {}).viewType || 'cards';
+    sprintsViewMode = (getEntityViews('sprint').find(v => v.id === newActiveId) || {}).viewType || 'list';
     localStorage.setItem('sprintsViewMode', sprintsViewMode);
     renderSprints();
   }, () => renderSprints());
@@ -4297,15 +4622,44 @@ async function renderSprints() {
     });
   }
 
+  function buildSprintListView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">⚡</div><div class="empty-state-text">No sprints found</div></div>`;
+    const rows = list.map(s => {
+      const prog = s.progress || {};
+      const pct = prog.pct || 0;
+      const datesBadge = (s.start_date || s.end_date) ? `<span class="task-due-badge">${fmtDate(s.start_date)||'?'} → ${fmtDate(s.end_date)||'?'}</span>` : '';
+      const statusChip = s.status ? `<span class="task-status-chip chip-status-${s.status}">${s.status.replace(/_/g,' ')}</span>` : '';
+      const projBadge = s.project_title ? `<span class="badge badge-todo" style="font-size:11px">${s.project_title}</span>` : '';
+      const progBadge = prog.total > 0 ? `<span style="font-size:11px;color:var(--text-muted)">${pct}%</span>` : '';
+      return `<li class="task-row" data-sprint-id="${s.id}" style="cursor:pointer">
+        <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span>
+        <div class="task-content">
+          <div class="task-title"><span class="list-icon-slot" data-icon-entity="sprint" data-icon-id="${s.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle"></span>${s.title}<span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></div>
+          <div class="task-meta-row">${datesBadge}${projBadge}${statusChip}${progBadge}</div>
+        </div>
+      </li>`;
+    }).join('');
+    return `<ul class="task-list">${rows}</ul>`;
+  }
+
   function render() {
     const list = getFiltered();
     document.getElementById('sprints-list').innerHTML =
       sprintsViewMode === 'table' ? buildSprintTable(list) :
+      sprintsViewMode === 'list' ? buildSprintListView(list) :
       (list.map(buildSprintCard).join('') || `<div class="empty-state"><div class="empty-state-icon">⚡</div><div class="empty-state-text">No sprints found</div></div>`);
     bindSprintEvents();
     injectListIcons('sprint', list.map(s => s.id));
     injectCommentBadges('sprint', list.map(s => s.id));
     if (sprintsViewMode === 'table') { bindAddPropBtn('sprint', render); bindCustomPropCells(); }
+    if (sprintsViewMode === 'list') {
+      document.querySelectorAll('#sprints-list .task-row[data-sprint-id]').forEach(row => {
+        row.addEventListener('click', (e) => {
+          if (e.target.closest('.ctx-handle')) return;
+          renderView('sprint-detail', row.dataset.sprintId);
+        });
+      });
+    }
   }
   render();
 
@@ -5037,7 +5391,7 @@ async function renderResources() {
 
   bindViewTabBar('resource', (newActiveId) => {
     setActiveTabId('resource', newActiveId);
-    resourcesViewMode = (getEntityViews('resource').find(v => v.id === newActiveId) || {}).viewType || 'table';
+    resourcesViewMode = (getEntityViews('resource').find(v => v.id === newActiveId) || {}).viewType || 'list';
     localStorage.setItem('resourcesViewMode', resourcesViewMode);
     renderResources();
   }, () => renderResources());
@@ -5059,12 +5413,41 @@ async function renderResources() {
     });
   }
 
+  function buildResourceListView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">⬡</div><div class="empty-state-text">No resources yet</div></div>`;
+    const rows = list.map(r => {
+      const typeBadge = r.resource_type ? `<span class="task-category-chip">${r.resource_type}</span>` : '';
+      const linkBadge = r.url ? `<span class="task-due-badge" style="font-family:monospace">${r.url.replace(/https?:\/\//,'').slice(0,32)}${r.url.length>40?'…':''}</span>` : '';
+      const linkedBadge = (r.goal_title || r.project_title || r.task_title)
+        ? `<span style="font-size:11px;color:var(--text-muted)">${r.goal_title || r.project_title || r.task_title}</span>` : '';
+      return `<li class="task-row resource-list-row" data-res-id="${r.id}" style="cursor:pointer">
+        <span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions">⠿</span>
+        <div class="task-content">
+          <div class="task-title"><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle"></span>${r.title}<span class="comment-badge" data-comment-for="${r.id}" data-comment-entity="resource" style="display:none"></span></div>
+          <div class="task-meta-row">${typeBadge}${linkBadge}${linkedBadge}</div>
+        </div>
+      </li>`;
+    }).join('');
+    return `<ul class="task-list">${rows}</ul>`;
+  }
+
   function render() {
     const list = getFiltered();
     document.getElementById('res-table').innerHTML =
-      resourcesViewMode === 'cards' ? buildCards(list) : buildTable(list);
+      resourcesViewMode === 'table' ? buildTable(list) :
+      resourcesViewMode === 'list' ? buildResourceListView(list) :
+      buildCards(list);
     bindResEvents();
     if (resourcesViewMode === 'table') { bindAddPropBtn('resource', render); bindCustomPropCells(); }
+    if (resourcesViewMode === 'list') {
+      document.querySelectorAll('#res-table .resource-list-row').forEach(row => {
+        row.addEventListener('click', (e) => {
+          if (e.target.closest('.ctx-handle')) return;
+          const r = resources.find(x => String(x.id) === row.dataset.resId);
+          if (r) showResourceSlideover(r, () => renderResources());
+        });
+      });
+    }
     injectListIcons('resource', list.map(r => r.id));
     injectCommentBadges('resource', list.map(r => r.id));
   }
@@ -5955,12 +6338,14 @@ async function showTaskSlideover(taskId) {
     </div>
     <div class="subtask-section" style="margin-top:20px">
       <div class="subtask-section-title"><span>Notes (${(task.notes||[]).length})</span>
-        <button class="btn btn-sm btn-ghost" id="add-note-to-task-btn">+ Add</button>
+        <button class="btn btn-sm btn-ghost" id="add-note-to-task-btn">+ Link</button>
       </div>
       <div>${notesHtml}</div>
     </div>
     <div class="subtask-section" style="margin-top:20px">
-      <div class="subtask-section-title"><span>Resources (${(task.resources||[]).length})</span></div>
+      <div class="subtask-section-title"><span>Resources (${(task.resources||[]).length})</span>
+        <button class="btn btn-sm btn-ghost" id="add-resource-to-task-btn">+ Link</button>
+      </div>
       <div>${resourcesHtml}</div>
     </div>
     <div class="subtask-section" style="margin-top:20px" id="props-section">
@@ -5976,7 +6361,14 @@ async function showTaskSlideover(taskId) {
     </div>
   `;
 
-  openSlideover(task.title, body);
+  openSlideover(task.title, body, () => {
+    const v = currentView;
+    if (v === 'tasks') renderTasks();
+    else if (v === 'dashboard') renderDashboard();
+    else if (v === 'project-detail' && currentParams) renderProjectDetail(currentParams);
+    else if (v === 'goal-detail' && currentParams) renderGoalDetail(currentParams);
+    else if (v === 'sprint-detail' && currentParams) renderSprintDetail(currentParams);
+  });
 
   // Render interactive subtask table now that DOM is present
   renderSubtaskTable();
@@ -5984,12 +6376,7 @@ async function showTaskSlideover(taskId) {
   // ── patchTask + handleStatusChange ───────────────────────────────────
   async function patchTask(data) {
     try { await api('PATCH', `/api/tasks/${taskId}`, data); } catch(e) { return; }
-    const v = currentView;
-    if (v === 'tasks') renderTasks();
-    else if (v === 'dashboard') renderDashboard();
-    else if (v === 'project-detail' && currentParams) renderProjectDetail(currentParams);
-    else if (v === 'goal-detail' && currentParams) renderGoalDetail(currentParams);
-    else if (v === 'sprint-detail' && currentParams) renderSprintDetail(currentParams);
+    Object.assign(task, data);
     showTaskSlideover(taskId);
   }
 
@@ -6227,8 +6614,51 @@ async function showTaskSlideover(taskId) {
       inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); };
     },
     recur: (valEl) => {
-      // Open the full more-panel for recurring (reuse existing ··· click)
-      document.getElementById('prop-chips-more')?.click();
+      if (valEl.querySelector('input,select')) return;
+      const pop = document.createElement('div');
+      pop.className = 'combo-popover';
+      pop.style.cssText = 'min-width:200px;padding:10px 12px;display:flex;flex-direction:column;gap:8px';
+      const interval = task.recur_interval || 1;
+      const unit = task.recur_unit || 'days';
+      pop.innerHTML = `
+        <div style="font-size:12px;font-weight:600;color:var(--color-text-secondary);margin-bottom:2px">Recurring schedule</div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <label style="font-size:12px;color:var(--color-text-secondary)">Every</label>
+          <input id="recur-interval-inp" type="number" min="1" value="${interval}"
+            style="width:56px;border:1px solid var(--color-border-strong);border-radius:6px;padding:4px 6px;font-size:13px;background:var(--color-surface);color:var(--color-text)" />
+          <select id="recur-unit-sel" style="border:1px solid var(--color-border-strong);border-radius:6px;padding:4px 6px;font-size:13px;background:var(--color-surface);color:var(--color-text)">
+            <option value="days"${unit==='days'?' selected':''}>Days</option>
+            <option value="weeks"${unit==='weeks'?' selected':''}>Weeks</option>
+            <option value="months"${unit==='months'?' selected':''}>Months</option>
+            <option value="years"${unit==='years'?' selected':''}>Years</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:6px;justify-content:flex-end">
+          <button id="recur-clear-btn" class="btn btn-sm btn-ghost" style="font-size:11px">Clear</button>
+          <button id="recur-save-btn" class="btn btn-sm btn-primary" style="font-size:11px">Save</button>
+        </div>`;
+      document.body.appendChild(pop);
+      const rect = valEl.getBoundingClientRect();
+      pop.style.position = 'fixed';
+      pop.style.top = (rect.bottom + 4) + 'px';
+      pop.style.left = rect.left + 'px';
+      requestAnimationFrame(() => {
+        const cr = pop.getBoundingClientRect();
+        if (cr.right > window.innerWidth - 8) pop.style.left = (window.innerWidth - cr.width - 8) + 'px';
+      });
+      pop.querySelector('#recur-interval-inp').focus();
+      pop.querySelector('#recur-save-btn').onclick = async () => {
+        const n = parseInt(pop.querySelector('#recur-interval-inp').value) || 1;
+        const u = pop.querySelector('#recur-unit-sel').value;
+        pop.remove();
+        await patchTask({ recur_interval: n, recur_unit: u });
+      };
+      pop.querySelector('#recur-clear-btn').onclick = async () => {
+        pop.remove();
+        await patchTask({ recur_interval: 0, recur_unit: '' });
+      };
+      const outsideClick = (e) => { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener('mousedown', outsideClick); } };
+      setTimeout(() => document.addEventListener('mousedown', outsideClick), 0);
     },
   };
   bindInlinePropPanel('task', taskId, taskInlinePropEditFns, () => showTaskSlideover(taskId));
@@ -6643,128 +7073,17 @@ async function showTaskSlideover(taskId) {
     }, { multiSelect: true, allowCreate: true, selectedIds: curIds });
   };
 
-  // ── ··· More properties panel ─────────────────────────────────────────
+  // ── ··· Chip config panel ─────────────────────────────────────────────
   document.getElementById('prop-chips-more').onclick = (e) => {
     e.stopPropagation();
-
-    const pIco = (path) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
-
-    const panelBody = `<div class="prop-panel" id="all-props-panel">
-      <div class="prop-panel-row">
-        <div class="prop-panel-label">${pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>')} Category</div>
-        <div class="prop-panel-value" id="pp-category">${catName || '—'}</div>
-      </div>
-      <div class="prop-panel-row">
-        <div class="prop-panel-label">${pIco('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>')} Focus Block</div>
-        <div class="prop-panel-value" id="pp-focus">${fmtDateRange(task.focus_block_start, task.focus_block) || '—'}</div>
-      </div>
-      <div class="prop-panel-row">
-        <div class="prop-panel-label">${pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>')} Story Points</div>
-        <div class="prop-panel-value" id="pp-points">${task.story_points != null ? task.story_points : '—'}</div>
-      </div>
-      <div class="prop-panel-row">
-        <div class="prop-panel-label">${pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>')} Goal</div>
-        <div class="prop-panel-value" id="pp-goal">${goalName || '—'}</div>
-      </div>
-      <div class="prop-panel-row">
-        <div class="prop-panel-label">${pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>')} Project</div>
-        <div class="prop-panel-value" id="pp-project">${projName || '—'}</div>
-      </div>
-      <div class="prop-panel-row" style="align-items:center">
-        <div class="prop-panel-label">${pIco('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>')} Recurring</div>
-        <div id="pp-recur" style="display:flex;align-items:center;gap:8px">
-          <label class="toggle-switch toggle-switch-sm">
-            <input type="checkbox" id="pp-recur-toggle" ${(task.recur_interval||0)>0?'checked':''} />
-            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-          </label>
-          <div id="pp-recur-fields" style="display:${(task.recur_interval||0)>0?'flex':'none'};gap:6px;align-items:center">
-            <span style="font-size:12px;color:var(--text-muted)">Every</span>
-            <input type="number" id="pp-recur-interval" value="${task.recur_interval||1}" min="1" style="width:50px;font-size:12px" />
-            <select id="pp-recur-unit" style="font-size:12px">
-              ${['days','weeks','months','years'].map(u => `<option value="${u}" ${(task.recur_unit||'').toLowerCase()===u?'selected':''}>${u}</option>`).join('')}
-            </select>
-          </div>
-        </div>
-      </div>
-    </div>`;
-
-    openFormSlideover('All Properties', panelBody);
-
-    // Bind click-to-edit on each prop-panel-value
-    document.getElementById('pp-category').onclick = (ev) => {
-      const cats = (allCategories||TASK_CATEGORIES.map((n,i)=>({id:i+1,name:n}))).map(c => ({ value: c.id, label: c.name }));
-      openCombo(ev.currentTarget, cats, task.category_id, async ({ value, label, create }) => {
-        if (create) {
-          try {
-            const nc = await api('POST', '/api/categories', { name: create });
-            await patchTask({ category_id: nc.id });
-          } catch(err) {}
-        } else {
-          document.getElementById('pp-category').textContent = label;
-          await patchTask({ category_id: value ? parseInt(value) : null });
-        }
-      }, { allowCreate: true });
-    };
-
-    document.getElementById('pp-focus').onclick = (ev) => {
-      openDateRangePicker(ev.currentTarget, null, stripDate(task.focus_block), async (start, end) => {
-        const val = end || start;
-        document.getElementById('pp-focus').textContent = val ? new Date(val+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '—';
-        await patchTask({ focus_block: val || null });
-      });
-    };
-
-    document.getElementById('pp-points').onclick = (ev) => {
-      const el = ev.currentTarget;
-      const inp = document.createElement('input');
-      inp.type = 'number'; inp.min = '0'; inp.style.cssText = 'width:80px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
-      inp.value = task.story_points || '';
-      el.innerHTML = '';
-      el.appendChild(inp);
-      inp.focus();
-      inp.onblur = async () => {
-        const v = parseInt(inp.value) || 0;
-        el.textContent = v || '—';
-        await patchTask({ story_points: v });
-      };
-      inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); };
-    };
-
-    document.getElementById('pp-goal').onclick = (ev) => {
-      const items = [{ value: '', label: '— none —' }, ...allGoals.map(g => ({ value: g.id, label: g.title }))];
-      openCombo(ev.currentTarget, items, task.goal_id, async ({ value, label }) => {
-        document.getElementById('pp-goal').textContent = value ? label : '—';
-        await patchTask({ goal_id: value ? parseInt(value) : null });
-      });
-    };
-
-    document.getElementById('pp-project').onclick = (ev) => {
-      const items = [{ value: '', label: '— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))];
-      openCombo(ev.currentTarget, items, task.project_id, async ({ value, label }) => {
-        document.getElementById('pp-project').textContent = value ? label : '—';
-        await patchTask({ project_id: value ? parseInt(value) : null });
-      });
-    };
-
-    const recurToggle = document.getElementById('pp-recur-toggle');
-    const recurFields = document.getElementById('pp-recur-fields');
-    recurToggle.onchange = async () => {
-      recurFields.style.display = recurToggle.checked ? 'flex' : 'none';
-      if (!recurToggle.checked) {
-        task.recur_interval = 0; task.recur_unit = '';
-        await patchTask({ recur_interval: 0, recur_unit: '' });
-      }
-    };
-    const saveRecur = async () => {
-      if (!recurToggle.checked) return;
-      const interval = parseInt(document.getElementById('pp-recur-interval').value) || 1;
-      const unit = document.getElementById('pp-recur-unit').value || 'days';
-      task.recur_interval = interval; task.recur_unit = unit;
-      await patchTask({ recur_interval: interval, recur_unit: unit });
-    };
-    document.getElementById('pp-recur-interval').onblur = saveRecur;
-    document.getElementById('pp-recur-interval').onkeydown = e => { if (e.key === 'Enter') saveRecur(); };
-    document.getElementById('pp-recur-unit').onchange = saveRecur;
+    const taskBuiltinChips = [
+      { key: 'status',   label: 'Status' },
+      { key: 'priority', label: 'Priority' },
+      { key: 'due',      label: 'Due' },
+      { key: 'focus',    label: 'Focus' },
+      { key: 'tags',     label: 'Tags' },
+    ];
+    showChipConfigPanel('task', e.currentTarget, taskBuiltinChips, () => showTaskSlideover(taskId));
   };
 
   // ── Other existing bindings ──────────────────────────────────────────
@@ -6783,9 +7102,30 @@ async function showTaskSlideover(taskId) {
     showTaskSlideover(taskId);
   };
 
-  document.getElementById('add-note-to-task-btn').onclick = () => {
-    closeSlideover();
-    showNoteModal({ task_id: parseInt(taskId) });
+  document.getElementById('add-note-to-task-btn').onclick = async (e) => {
+    const allNotes = await api('GET', '/api/notes');
+    const linked = new Set((task.notes || []).map(n => n.id));
+    const unlinked = allNotes.filter(n => !linked.has(n.id) && !n.archived);
+    if (!unlinked.length) { alert('No unlinked notes available.'); return; }
+    openCombo(e.currentTarget, unlinked.map(n => n.title || `Note #${n.id}`), null, async (sel) => {
+      const note = unlinked.find(n => (n.title || `Note #${n.id}`) === sel);
+      if (!note) return;
+      await api('PATCH', `/api/notes/${note.id}`, { task_id: parseInt(taskId) });
+      showTaskSlideover(taskId);
+    });
+  };
+
+  document.getElementById('add-resource-to-task-btn').onclick = async (e) => {
+    const allRes = await api('GET', '/api/resources');
+    const linked = new Set((task.resources || []).map(r => r.id));
+    const unlinked = allRes.filter(r => !linked.has(r.id));
+    if (!unlinked.length) { alert('No unlinked resources available.'); return; }
+    openCombo(e.currentTarget, unlinked.map(r => r.title || `Resource #${r.id}`), null, async (sel) => {
+      const res = unlinked.find(r => (r.title || `Resource #${r.id}`) === sel);
+      if (!res) return;
+      await api('PATCH', `/api/resources/${res.id}`, { task_id: parseInt(taskId) });
+      showTaskSlideover(taskId);
+    });
   };
 
   document.getElementById('task-export-btn').onclick = () =>
@@ -8156,29 +8496,270 @@ function bindDateModeToggle(dueWrapId, rangeWrapId) {
 }
 
 async function showNewTaskModal(presets, afterSave) {
-  const resources = await getTaskModalResources();
-  const fake = { status: 'todo', priority: 'medium', ...presets };
-  openFormSlideover('New Task', taskModalBody(fake, resources));
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  bindDateModeToggle('t-date-due-wrap', 't-date-range-wrap');
-  document.getElementById('t-is-recurring')?.addEventListener('change', (e) => {
-    document.getElementById('recur-fields').style.display = e.target.checked ? 'flex' : 'none';
-  });
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const data = collectTaskForm();
-    if (!data.title) { alert('Title is required'); return; }
-    const newTask = await api('POST', '/api/tasks', data);
-    // Save custom prop values if any were filled
-    if (newTask && newTask.id) {
-      getCustomPropDefs('task').forEach(def => {
-        const el = document.getElementById(`t-cp-${def.key}`);
-        if (!el) return;
-        const val = def.type === 'checkbox' ? el.checked : el.value;
-        if (val !== '' && val !== false) setCustomPropValue('task', newTask.id, def.key, val);
-      });
+  let allGoals = [], allProjects = [], allCategories = [], allSprints = [];
+  try { [allGoals, allProjects, allCategories, allSprints] = await Promise.all([
+    api('GET', '/api/goals'), api('GET', '/api/projects'),
+    api('GET', '/api/categories'), api('GET', '/api/sprints'),
+  ]); } catch(e) {}
+
+  const d = {
+    title: '', status: 'todo', priority: 'medium',
+    due_date: null, start_date: null, focus_block: null,
+    goal_id: null, project_id: null, sprint_id: null,
+    category_id: null, story_points: null,
+    tags: [],
+    ...(presets || {}),
+  };
+
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const taskNewBuiltinDefs = [
+    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => { const c = allCategories.find(x => String(x.id) === String(d.category_id)); return c ? `<span>${c.name}</span>` : ''; } },
+    { key: 'goal', label: 'Goal', icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => { const g = allGoals.find(x => String(x.id) === String(d.goal_id)); return g ? `<span>${g.title}</span>` : ''; } },
+    { key: 'project', label: 'Project', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+      renderValue: () => { const p = allProjects.find(x => String(x.id) === String(d.project_id)); return p ? `<span>${p.title}</span>` : ''; } },
+    { key: 'story_points', label: 'Story Points', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
+      renderValue: () => d.story_points != null ? `<span>${d.story_points}</span>` : '' },
+    { key: 'recurring', label: 'Recurring', icon: pIco('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>'),
+      renderValue: () => '' },
+  ];
+
+  const fmtDateRange = (s, e) => {
+    const fmt = (v) => { if (!v) return null; const dt = new Date(stripDate(v)+'T00:00:00'); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric'}); };
+    const sv = fmt(s), ev = fmt(e);
+    if (sv && ev && sv !== ev) return `${sv} → ${ev}`;
+    return sv || ev || '—';
+  };
+
+  const body = `
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="tnew-title" rows="1" placeholder="Task title…"></textarea>
+    </div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip chip-status-${d.status}" id="chip-tnew-status" data-key="status">
+        <span class="chip-label">Status</span>
+        <span class="chip-value">${d.status.replace(/_/g,' ')}</span>
+      </button>
+      <button class="prop-chip chip-priority-${d.priority}" id="chip-tnew-priority" data-key="priority">
+        <span class="chip-label">Priority</span>
+        <span class="chip-value">${d.priority}</span>
+      </button>
+      <button class="prop-chip chip-empty" id="chip-tnew-due" data-key="due">
+        <span class="chip-label">Due</span>
+        <span class="chip-value" id="chip-tnew-due-val">—</span>
+      </button>
+      <button class="prop-chip chip-empty" id="chip-tnew-tags" data-key="tags">
+        <span class="chip-label">Tags</span>
+        <span class="chip-value" id="chip-tnew-tags-val">—</span>
+      </button>
+      <button class="prop-chips-more" id="tnew-chips-more" title="More properties">···</button>
+    </div>
+
+    <div id="tnew-prop-panel-wrap">${buildInlinePropPanel('task', null, taskNewBuiltinDefs)}</div>
+
+    <div class="form-group" style="margin-top:12px">
+      <label class="form-label">Description</label>
+      <textarea id="tnew-desc" style="width:100%;min-height:80px"></textarea>
+    </div>
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost btn-sm" id="tnew-cancel-btn">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="tnew-create-btn">Create Task</button>
+    </div>
+  `;
+
+  openSlideover('New Task', body);
+
+  const titleTA = document.getElementById('tnew-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  setTimeout(() => titleTA.focus(), 60);
+
+  // ── Local combo + date picker helpers ────────────────────────────────
+  let _comboEl = null;
+  function closeCombo() { if (_comboEl) { _comboEl.remove(); _comboEl = null; } document.removeEventListener('mousedown', _comboOut); }
+  function _comboOut(e) { if (_comboEl && !_comboEl.contains(e.target)) closeCombo(); }
+  function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
+    closeCombo();
+    const { allowCreate = false, multiSelect = false, selectedIds = [] } = opts;
+    let filter = '', focusIdx = -1, localSelected = new Set((selectedIds||[]).map(String));
+    _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover';
+    function renderC() {
+      const filtered = filter ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase())) : items;
+      const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+      _comboEl.innerHTML = `<div class="combo-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" /></div><div class="combo-list">${filtered.length ? filtered.map((it, i) => { const isSel = multiSelect ? localSelected.has(String(it.value)) : String(it.value) === String(currentVal); return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${it.label}${isSel && multiSelect ? '<span class="combo-item-check">✓</span>' : ''}</div>`; }).join('') : '<div class="combo-empty">No results</div>'}${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Create "${filter.trim()}"</div>` : ''}</div>`;
+      const inp = _comboEl.querySelector('.combo-search'); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+      inp.oninput = (e2) => { filter = e2.target.value; focusIdx = -1; renderC(); };
+      inp.onkeydown = (e2) => { const ci = _comboEl.querySelectorAll('.combo-item'); if (e2.key === 'ArrowDown') { e2.preventDefault(); focusIdx = Math.min(focusIdx+1, ci.length-1); renderC(); } else if (e2.key === 'ArrowUp') { e2.preventDefault(); focusIdx = Math.max(focusIdx-1, 0); renderC(); } else if (e2.key === 'Enter') { e2.preventDefault(); if (focusIdx >= 0 && ci[focusIdx]) ci[focusIdx].click(); } else if (e2.key === 'Escape') closeCombo(); };
+      _comboEl.querySelectorAll('.combo-item').forEach(el => { el.onclick = (e2) => { e2.stopPropagation(); if (el.dataset.create) { onSelect({ create: el.dataset.create }); closeCombo(); } else if (multiSelect) { const v2 = el.dataset.val; if (localSelected.has(v2)) localSelected.delete(v2); else localSelected.add(v2); onSelect({ multiIds: [...localSelected] }); renderC(); } else { onSelect({ value: el.dataset.val, label: el.dataset.label }); closeCombo(); } }; });
     }
-    closeFormSlideover();
-    if (afterSave) afterSave(); else renderView(currentView);
+    renderC();
+    const rect = anchorEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+    requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
+  }
+
+  let _dpEl = null;
+  function closeDatePicker() { if (_dpEl) { _dpEl.remove(); _dpEl = null; } document.removeEventListener('mousedown', _dpOut); }
+  function _dpOut(e) { if (_dpEl && !_dpEl.contains(e.target)) closeDatePicker(); }
+  function openDateRangePicker(anchorEl, startVal, endVal, onChange) {
+    closeDatePicker();
+    const today = new Date(); today.setHours(0,0,0,0);
+    let viewYear = today.getFullYear(), viewMonth = today.getMonth();
+    let rangeStart = startVal ? new Date(startVal+'T00:00:00') : null;
+    let rangeEnd = endVal ? new Date(endVal+'T00:00:00') : null;
+    let pickingEnd = !!rangeStart;
+    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+    function toISO(dt) { return dt ? dt.toISOString().split('T')[0] : null; }
+    _dpEl = document.createElement('div'); _dpEl.className = 'datepicker-popover';
+    function renderPicker() {
+      const firstDay = new Date(viewYear, viewMonth, 1); let startDow = firstDay.getDay(); startDow = startDow === 0 ? 6 : startDow - 1;
+      const daysInMonth = new Date(viewYear, viewMonth+1, 0).getDate(); let dayGrid = ''; let dayNum = 1 - startDow;
+      for (let r = 0; r < 6; r++) { for (let c = 0; c < 7; c++, dayNum++) { if (dayNum < 1 || dayNum > daysInMonth) { dayGrid += `<div class="dp-day other-month"></div>`; } else { const dd = new Date(viewYear, viewMonth, dayNum); dd.setHours(0,0,0,0); const iso = toISO(dd); let cls = 'dp-day'; if (dd.getTime() === today.getTime()) cls += ' today'; if (rangeStart && rangeEnd) { if (dd.getTime() === rangeStart.getTime()) cls += ' range-start'; else if (dd.getTime() === rangeEnd.getTime()) cls += ' range-end'; else if (dd > rangeStart && dd < rangeEnd) cls += ' in-range'; } else if (rangeStart && dd.getTime() === rangeStart.getTime()) cls += ' selected'; dayGrid += `<div class="${cls}" data-iso="${iso}">${dayNum}</div>`; } } }
+      const rangeLabel = rangeStart && rangeEnd ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → ${rangeEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'})}` : rangeStart ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → pick end` : 'Pick start date';
+      _dpEl.innerHTML = `<div class="dp-header"><button class="dp-nav-btn" id="dp-prev">‹</button><span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span><button class="dp-nav-btn" id="dp-next">›</button></div><div class="dp-grid">${DAYS.map(dd=>`<div class="dp-day-head">${dd}</div>`).join('')}${dayGrid}</div><div class="dp-footer"><span class="dp-footer-hint">${rangeLabel}</span><button class="dp-clear-btn" id="dp-clear">Clear</button></div>`;
+      _dpEl.querySelector('#dp-prev').onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderPicker(); };
+      _dpEl.querySelector('#dp-next').onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderPicker(); };
+      _dpEl.querySelector('#dp-clear').onclick = () => { rangeStart = null; rangeEnd = null; pickingEnd = false; onChange(null, null); renderPicker(); };
+      _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => { el.onclick = () => { const clicked = new Date(el.dataset.iso+'T00:00:00'); if (!rangeStart || (!pickingEnd && rangeEnd)) { rangeStart = clicked; rangeEnd = null; pickingEnd = true; } else if (pickingEnd) { if (clicked < rangeStart) { rangeEnd = rangeStart; rangeStart = clicked; } else { rangeEnd = clicked; } pickingEnd = false; onChange(toISO(rangeStart), toISO(rangeEnd)); } renderPicker(); }; });
+    }
+    renderPicker();
+    const rect = anchorEl.getBoundingClientRect(); _dpEl.style.top = (rect.bottom+4)+'px'; _dpEl.style.left = rect.left+'px'; document.body.appendChild(_dpEl);
+    requestAnimationFrame(() => { if (!_dpEl) return; const cr = _dpEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _dpEl.style.left = (window.innerWidth-cr.width-8)+'px'; if (cr.bottom > window.innerHeight-8) _dpEl.style.top = (rect.top-cr.height-4)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _dpOut), 0);
+  }
+
+  // ── Chip handlers ─────────────────────────────────────────────────────
+  document.getElementById('chip-tnew-status').onclick = (e) => {
+    e.stopPropagation();
+    const items = TASK_STATUSES.map(s => ({ value: s, label: s.replace(/_/g,' ') }));
+    openCombo(e.currentTarget, items, d.status, ({ value }) => {
+      d.status = value;
+      const el = document.getElementById('chip-tnew-status');
+      if (el) { el.className = `prop-chip chip-status-${value}`; el.querySelector('.chip-value').textContent = value.replace(/_/g,' '); }
+    });
+  };
+
+  document.getElementById('chip-tnew-priority').onclick = (e) => {
+    e.stopPropagation();
+    const items = TASK_PRIORITIES.map(p => ({ value: p, label: p }));
+    openCombo(e.currentTarget, items, d.priority, ({ value }) => {
+      d.priority = value;
+      const el = document.getElementById('chip-tnew-priority');
+      if (el) { el.className = `prop-chip chip-priority-${value}`; el.querySelector('.chip-value').textContent = value; }
+    });
+  };
+
+  document.getElementById('chip-tnew-due').onclick = (e) => {
+    e.stopPropagation();
+    openDateRangePicker(e.currentTarget, d.start_date, d.due_date, (start, end) => {
+      d.start_date = start; d.due_date = end || start;
+      const chipVal = document.getElementById('chip-tnew-due-val');
+      const chipEl = document.getElementById('chip-tnew-due');
+      if (chipVal) chipVal.textContent = fmtDateRange(start, end) || '—';
+      if (chipEl) chipEl.classList.toggle('chip-empty', !start && !end);
+    });
+  };
+
+  document.getElementById('chip-tnew-tags').onclick = (e) => {
+    e.stopPropagation();
+    const items = (allTags||[]).map(t => ({ value: t.id, label: t.name, color: t.color }));
+    openCombo(e.currentTarget, items, null, ({ multiIds, create }) => {
+      if (create) return;
+      d.tags = multiIds ? multiIds.map(id => (allTags||[]).find(t => String(t.id) === String(id)) || { id, name: String(id), color: 'blue' }) : d.tags;
+      const chipVal = document.getElementById('chip-tnew-tags-val');
+      const chipEl = document.getElementById('chip-tnew-tags');
+      if (chipVal) chipVal.innerHTML = d.tags.length ? d.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      if (chipEl) chipEl.classList.toggle('chip-empty', !d.tags.length);
+    }, { multiSelect: true, allowCreate: false, selectedIds: d.tags.map(t => t.id) });
+  };
+
+  // ── Inline prop panel ─────────────────────────────────────────────────
+  document.getElementById('tnew-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    showChipConfigPanel('task', e.currentTarget, [
+      { key: 'status',   label: 'Status' },
+      { key: 'priority', label: 'Priority' },
+      { key: 'due',      label: 'Due' },
+      { key: 'tags',     label: 'Tags' },
+    ]);
+  };
+
+  const tnewRerender = () => {
+    const wrap = document.getElementById('tnew-prop-panel-wrap');
+    if (!wrap) return;
+    wrap.innerHTML = buildInlinePropPanel('task', null, taskNewBuiltinDefs);
+    bindInlinePropPanel('task', null, tnewBuiltinEditFns, tnewRerender);
+  };
+  const tnewBuiltinEditFns = {
+    category: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...allCategories.map(c => ({ value: c.id, label: c.name }))];
+      openCombo(valEl, items, d.category_id, ({ value }) => { d.category_id = value ? parseInt(value) : null; tnewRerender(); }, { allowCreate: true });
+    },
+    goal: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...allGoals.map(g => ({ value: g.id, label: g.title }))];
+      openCombo(valEl, items, d.goal_id, ({ value }) => { d.goal_id = value ? parseInt(value) : null; tnewRerender(); });
+    },
+    project: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))];
+      openCombo(valEl, items, d.project_id, ({ value }) => { d.project_id = value ? parseInt(value) : null; tnewRerender(); });
+    },
+    story_points: (valEl) => {
+      closeCombo();
+      _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover'; _comboEl.style.minWidth = '200px';
+      _comboEl.innerHTML = `<div style="padding:8px"><label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px">Story Points</label><input type="number" id="tnew-sp-input" value="${d.story_points||''}" min="0" style="width:100%;box-sizing:border-box" /><div style="display:flex;gap:6px;margin-top:6px;justify-content:flex-end"><button class="btn btn-sm btn-ghost" id="tnew-sp-cancel">Cancel</button><button class="btn btn-sm btn-primary" id="tnew-sp-save">Set</button></div></div>`;
+      const rect = valEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+      requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; const inp = _comboEl.querySelector('#tnew-sp-input'); if (inp) inp.focus(); });
+      _comboEl.querySelector('#tnew-sp-cancel').onclick = closeCombo;
+      _comboEl.querySelector('#tnew-sp-save').onclick = () => { const v2 = _comboEl.querySelector('#tnew-sp-input').value.trim(); d.story_points = v2 !== '' ? parseInt(v2) : null; closeCombo(); tnewRerender(); };
+      setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
+    },
+    recurring: (valEl) => {
+      // Toggle recurring inline
+      closeCombo();
+      _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover'; _comboEl.style.minWidth = '240px';
+      _comboEl.innerHTML = `<div style="padding:8px"><label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px">Recurring</label><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="font-size:12px">Every</span><input type="number" id="tnew-ri" value="${d.recur_interval||1}" min="1" style="width:50px;font-size:12px" /><select id="tnew-ru" style="font-size:12px">${['days','weeks','months','years'].map(u=>`<option value="${u}" ${(d.recur_unit||'days')===u?'selected':''}>${u}</option>`).join('')}</select></div><div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end"><button class="btn btn-sm btn-ghost" id="tnew-rec-cancel">Cancel</button><button class="btn btn-sm btn-primary" id="tnew-rec-save">Set</button></div></div>`;
+      const rect = valEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+      requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; _comboEl.querySelector('#tnew-ri')?.focus(); });
+      _comboEl.querySelector('#tnew-rec-cancel').onclick = closeCombo;
+      _comboEl.querySelector('#tnew-rec-save').onclick = () => { d.recur_interval = parseInt(_comboEl.querySelector('#tnew-ri').value)||1; d.recur_unit = _comboEl.querySelector('#tnew-ru').value||'days'; closeCombo(); tnewRerender(); };
+      setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
+    },
+  };
+  bindInlinePropPanel('task', null, tnewBuiltinEditFns, tnewRerender);
+
+  // ── Create / Cancel ───────────────────────────────────────────────────
+  document.getElementById('tnew-cancel-btn').onclick = () => closeSlideover();
+  document.getElementById('tnew-create-btn').onclick = async () => {
+    const title = document.getElementById('tnew-title').value.trim();
+    if (!title) { alert('Title is required'); return; }
+    const data = {
+      title,
+      description: document.getElementById('tnew-desc').value,
+      status: d.status,
+      priority: d.priority,
+      due_date: d.due_date || null,
+      start_date: d.start_date || null,
+      goal_id: d.goal_id || null,
+      project_id: d.project_id || null,
+      sprint_id: d.sprint_id || null,
+      category_id: d.category_id || null,
+      story_points: d.story_points || 0,
+      recur_interval: d.recur_interval || 0,
+      recur_unit: d.recur_unit || '',
+      parent_task_id: presets?.parent_task_id || null,
+    };
+    try {
+      const newTask = await api('POST', '/api/tasks', data);
+      if (newTask?.id && d.tags.length) {
+        await api('PUT', `/api/tasks/${newTask.id}/tags`, { tag_ids: d.tags.map(t => t.id) });
+      }
+      closeSlideover();
+      if (afterSave) afterSave(); else renderView(currentView);
+    } catch(err) { alert('Error creating task: ' + (err.message || String(err))); }
   };
 }
 
@@ -8212,855 +8793,2357 @@ async function showEditTaskModal(task) {
   };
 }
 
-/* ─── Goal Modal ─────────────────────────────────────────────────────── */
+/* ─── Goal Create Slideover (prop-chip style) ────────────────────────── */
 async function showGoalModal(goal, afterSave) {
-  const v = goal || {};
-  const typeOpts = GOAL_TYPES.map(t => `<option value="${t}" ${v.type===t?'selected':''}>${t}</option>`).join('');
-  const yearOpts = GOAL_YEARS.map(y => `<option value="${y}" ${v.year===y?'selected':''}>${y}</option>`).join('');
-  const statusOpts = GOAL_STATUSES.map(s =>
-    `<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
-  const catOpts = categoryOptions(v.category_id, true);
+  const allCats = allCategories || [];
+  const d = {
+    status: 'not_started', type: '', year: '', category_id: null,
+    start_date: null, due_date: null,
+    start_value: 0, current_value: 0, target: 0,
+    tags: [],
+    ...goal,
+  };
 
-  let existingTagIds = [];
-  if (v.id) {
-    try { existingTagIds = (await api('GET', `/api/goals/${v.id}/tags`) || []).map(t => t.id); } catch(e) {}
+  function fmtDateRange(start, end) {
+    const fmt = (v2) => { if (!v2) return null; const dt = new Date(stripDate(v2)+'T00:00:00'); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric'}); };
+    const s = fmt(start), e = fmt(end);
+    if (s && e && s !== e) return `${s} → ${e}`;
+    return s || e || '—';
   }
+
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const goalNewBuiltinDefs = [
+    { key: 'type',     label: 'Type',     icon: pIco('<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>'),
+      renderValue: () => d.type ? `<span>${d.type}</span>` : '' },
+    { key: 'year',     label: 'Year',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+      renderValue: () => d.year ? `<span>${d.year}</span>` : '' },
+    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => { const c = allCats.find(x => String(x.id) === String(d.category_id)); return c ? `<span>${c.name}</span>` : ''; } },
+  ];
 
   const body = `
-    <div class="form-group"><label class="form-label">Title *</label>
-      <input type="text" id="g-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
-    <div class="form-group"><label class="form-label">Description</label>
-      <textarea id="g-desc">${v.description||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Type</label><select id="g-type">${typeOpts}</select></div>
-      <div class="form-group"><label class="form-label">Year</label><select id="g-year">${yearOpts}</select></div>
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="goal-new-title" rows="1" placeholder="Goal name…"></textarea>
     </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Status</label><select id="g-status">${statusOpts}</select></div>
-      <div class="form-group"><label class="form-label">Category</label><select id="g-category">${catOpts}</select></div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip chip-status-${d.status}" id="chip-gnew-status" data-key="status">
+        <span class="chip-label">Status</span>
+        <span class="chip-value">${d.status.replace(/_/g,' ')}</span>
+      </button>
+      <button class="prop-chip chip-empty" id="chip-gnew-due" data-key="due">
+        <span class="chip-label">Due</span>
+        <span class="chip-value" id="chip-gnew-due-val">—</span>
+      </button>
+      <button class="prop-chip chip-empty" id="chip-gnew-tags" data-key="tags">
+        <span class="chip-label">Tags</span>
+        <span class="chip-value" id="chip-gnew-tags-val">—</span>
+      </button>
+      <button class="prop-chips-more" id="gnew-chips-more" title="More properties">···</button>
+    </div>
+
+    <div id="gnew-prop-panel-wrap">
+      ${buildInlinePropPanel('goal', null, goalNewBuiltinDefs)}
+    </div>
+
+    <div class="form-group" style="margin-top:12px">
+      <label class="form-label">Description</label>
+      <textarea id="goal-new-desc" style="width:100%;min-height:80px"></textarea>
     </div>
     <div class="form-group">
-      <label class="form-label">Date</label>
-      <div class="date-mode-toggle">
-        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
-        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
-      </div>
-      <div id="g-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        <input type="date" id="g-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
-      </div>
-      <div id="g-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        <input type="date" id="g-start" value="${stripDate(v.start_date)}" />
-        <span class="date-range-arrow">→</span>
-        <input type="date" id="g-due-range" value="${stripDate(v.due_date)}" />
+      <label class="form-label" style="font-size:11px">Progress values</label>
+      <div class="grid-2" style="gap:8px">
+        <div><label class="form-label" style="font-size:11px">Start</label><input type="number" id="gnew-sv" value="0" style="width:100%" /></div>
+        <div><label class="form-label" style="font-size:11px">Target</label><input type="number" id="gnew-target" value="0" style="width:100%" /></div>
       </div>
     </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Start Value</label><input type="number" id="g-sv" value="${v.start_value||''}" /></div>
-      <div class="form-group"><label class="form-label">Current Value</label><input type="number" id="g-cv" value="${v.current_value||''}" /></div>
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost btn-sm" id="gnew-cancel-btn">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="gnew-create-btn">Create Goal</button>
     </div>
-    <div class="form-group"><label class="form-label">Target Value</label>
-      <input type="number" id="g-target" value="${v.target||''}" /></div>
-    <div class="form-group"><label class="form-label">Tags</label>
-      ${tagPickerHtml(existingTagIds)}</div>
-    <div class="form-actions">
-      ${v.id ? `<button class="btn btn-danger" id="modal-delete-btn">Delete</button>` : ''}
-      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">Save</button>
-    </div>`;
+  `;
 
-  openFormSlideover(v.id ? 'Edit Goal' : 'New Goal', body);
-  bindTagPicker();
-  bindDateModeToggle('g-date-due-wrap', 'g-date-range-wrap');
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const isRange = document.getElementById('g-date-range-wrap')?.style.display !== 'none';
-    const data = {
-      title: document.getElementById('g-title').value.trim(),
-      description: document.getElementById('g-desc').value,
-      type: document.getElementById('g-type').value,
-      year: document.getElementById('g-year').value,
-      status: document.getElementById('g-status').value,
-      category_id: document.getElementById('g-category').value ? parseInt(document.getElementById('g-category').value) : null,
-      start_date: isRange ? (document.getElementById('g-start')?.value || null) : null,
-      due_date: isRange ? (document.getElementById('g-due-range')?.value || null) : (document.getElementById('g-due')?.value || null),
-      start_value: parseFloat(document.getElementById('g-sv').value) || 0,
-      current_value: parseFloat(document.getElementById('g-cv').value) || 0,
-      target: parseFloat(document.getElementById('g-target').value) || 0,
-    };
-    if (!data.title) { alert('Title is required'); return; }
-    let savedId = v.id;
-    if (v.id) await api('PATCH', `/api/goals/${v.id}`, data);
-    else { const r = await api('POST', '/api/goals', data); savedId = r?.id; }
-    if (savedId) {
-      const tagIds = getSelectedTagIds();
-      try { await api('PUT', `/api/goals/${savedId}/tags`, { tag_ids: tagIds }); } catch(e) {}
-    }
-    closeFormSlideover();
-    if (afterSave) afterSave();
-    else renderGoals();
+  openSlideover('New Goal', body);
+
+  const titleTA = document.getElementById('goal-new-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  setTimeout(() => titleTA.focus(), 60);
+
+  // ── Inline prop panel + chip config ──────────────────────────────────
+  const gnewPropPanel = document.querySelector('#gnew-prop-panel-wrap .inline-prop-panel');
+  document.getElementById('gnew-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    showChipConfigPanel('goal', e.currentTarget, [
+      { key: 'status', label: 'Status' },
+      { key: 'due',    label: 'Due' },
+      { key: 'tags',   label: 'Tags' },
+    ]);
   };
-  if (v.id) {
-    document.getElementById('modal-delete-btn').onclick = async () => {
-      if (!confirm('Delete this goal?')) return;
-      await api('DELETE', `/api/goals/${v.id}`);
-      closeFormSlideover();
-      renderGoals();
-    };
+  // inline prop panel always visible (matches edit slideover style)
+
+  // ── Bind inline prop panel ────────────────────────────────────────────
+  const gnewRerender = () => {
+    const wrap = document.getElementById('gnew-prop-panel-wrap');
+    if (!wrap) return;
+    const wasVisible = wrap.querySelector('.inline-prop-panel')?.style.display !== 'none';
+    wrap.innerHTML = buildInlinePropPanel('goal', null, goalNewBuiltinDefs);
+    if (!wasVisible) wrap.querySelector('.inline-prop-panel').style.display = 'none';
+    bindInlinePropPanel('goal', null, gnewBuiltinEditFns, gnewRerender);
+  };
+  const gnewBuiltinEditFns = {
+    type: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...GOAL_TYPES.map(t => ({ value: t, label: t }))];
+      openCombo(valEl, items, d.type, ({ value }) => { d.type = value || ''; gnewRerender(); }, { allowCreate: true });
+    },
+    year: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...GOAL_YEARS.map(y => ({ value: y, label: String(y) }))];
+      openCombo(valEl, items, d.year, ({ value }) => { d.year = value || ''; gnewRerender(); }, { allowCreate: true });
+    },
+    category: (valEl) => {
+      const cats = [{ value: '', label: '— none —' }, ...(allCats||[]).map(c => ({ value: c.id, label: c.name }))];
+      openCombo(valEl, cats, d.category_id, ({ value, create }) => {
+        if (create) { d.category_id = null; } else { d.category_id = value ? parseInt(value) : null; }
+        gnewRerender();
+      }, { allowCreate: true });
+    },
+  };
+  bindInlinePropPanel('goal', null, gnewBuiltinEditFns, gnewRerender);
+
+  // ── Combo/date helpers ────────────────────────────────────────────────
+  let _comboEl = null;
+  function closeCombo() { if (_comboEl) { _comboEl.remove(); _comboEl = null; } document.removeEventListener('mousedown', _comboOut); }
+  function _comboOut(e) { if (_comboEl && !_comboEl.contains(e.target)) closeCombo(); }
+  function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
+    closeCombo();
+    const { allowCreate = false, multiSelect = false, selectedIds = [] } = opts;
+    let filter = '', focusIdx = -1, localSelected = new Set(selectedIds.map(String));
+    _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover';
+    function renderC() {
+      const filtered = filter ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase())) : items;
+      const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+      const selectedChips = multiSelect && localSelected.size > 0 ? `<div class="combo-selected-row">${[...localSelected].map(v2 => { const it = items.find(x => String(x.value) === v2); if (!it) return ''; const colorDot = it.color ? `<span style="width:6px;height:6px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0;margin-right:3px"></span>` : ''; return `<span class="combo-sel-chip" data-remove="${v2.replace(/"/g,'&quot;')}">${colorDot}${it.label}<span class="combo-sel-chip-x">×</span></span>`; }).join('')}</div>` : '';
+      _comboEl.innerHTML = `${selectedChips}<div class="combo-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" /></div><div class="combo-list">${filtered.length ? filtered.map((it, i) => { const isSel = multiSelect ? localSelected.has(String(it.value)) : String(it.value) === String(currentVal); const colorDot = it.color ? `<span style="width:8px;height:8px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0"></span>` : ''; return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${colorDot}${it.label}${isSel && multiSelect ? '<span class="combo-item-check">✓</span>' : ''}</div>`; }).join('') : '<div class="combo-empty">No results</div>'}${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Create "${filter.trim()}"</div>` : ''}</div>`;
+      const inp = _comboEl.querySelector('.combo-search'); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+      inp.oninput = (e2) => { filter = e2.target.value; focusIdx = -1; renderC(); };
+      inp.onkeydown = (e2) => { const ci = _comboEl.querySelectorAll('.combo-item'); if (e2.key === 'ArrowDown') { e2.preventDefault(); focusIdx = Math.min(focusIdx+1, ci.length-1); renderC(); } else if (e2.key === 'ArrowUp') { e2.preventDefault(); focusIdx = Math.max(focusIdx-1, 0); renderC(); } else if (e2.key === 'Enter') { e2.preventDefault(); if (focusIdx >= 0 && ci[focusIdx]) ci[focusIdx].click(); } else if (e2.key === 'Escape') closeCombo(); };
+      _comboEl.querySelectorAll('.combo-sel-chip').forEach(chip => { chip.onclick = (e2) => { e2.stopPropagation(); localSelected.delete(chip.dataset.remove); onSelect({ multiIds: [...localSelected] }); renderC(); }; });
+      _comboEl.querySelectorAll('.combo-item').forEach(el => { el.onclick = async (e2) => { e2.stopPropagation(); if (el.dataset.create) { await onSelect({ create: el.dataset.create }); closeCombo(); } else if (multiSelect) { const v2 = el.dataset.val; if (localSelected.has(v2)) localSelected.delete(v2); else localSelected.add(v2); onSelect({ multiIds: [...localSelected] }); renderC(); } else { onSelect({ value: el.dataset.val, label: el.dataset.label }); closeCombo(); } }; });
+    }
+    renderC();
+    const rect = anchorEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+    requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
   }
+
+  let _dpEl = null;
+  function closeDatePicker() { if (_dpEl) { _dpEl.remove(); _dpEl = null; } document.removeEventListener('mousedown', _dpOut); }
+  function _dpOut(e) { if (_dpEl && !_dpEl.contains(e.target)) closeDatePicker(); }
+  function openDateRangePicker(anchorEl, startVal, endVal, onChange) {
+    closeDatePicker();
+    const today = new Date(); today.setHours(0,0,0,0);
+    let viewYear = today.getFullYear(), viewMonth = today.getMonth();
+    let rangeStart = startVal ? new Date(startVal+'T00:00:00') : null;
+    let rangeEnd = endVal ? new Date(endVal+'T00:00:00') : null;
+    let pickingEnd = !!rangeStart;
+    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+    function toISO(dt) { return dt ? dt.toISOString().split('T')[0] : null; }
+    _dpEl = document.createElement('div'); _dpEl.className = 'datepicker-popover';
+    function renderPicker() {
+      const firstDay = new Date(viewYear, viewMonth, 1); let startDow = firstDay.getDay(); startDow = startDow === 0 ? 6 : startDow - 1;
+      const daysInMonth = new Date(viewYear, viewMonth+1, 0).getDate(); let dayGrid = ''; let dayNum = 1 - startDow;
+      for (let r = 0; r < 6; r++) { for (let c = 0; c < 7; c++, dayNum++) { if (dayNum < 1 || dayNum > daysInMonth) { dayGrid += `<div class="dp-day other-month"></div>`; } else { const dd = new Date(viewYear, viewMonth, dayNum); dd.setHours(0,0,0,0); const iso = toISO(dd); let cls = 'dp-day'; if (dd.getTime() === today.getTime()) cls += ' today'; if (rangeStart && rangeEnd) { if (dd.getTime() === rangeStart.getTime()) cls += ' range-start'; else if (dd.getTime() === rangeEnd.getTime()) cls += ' range-end'; else if (dd > rangeStart && dd < rangeEnd) cls += ' in-range'; } else if (rangeStart && dd.getTime() === rangeStart.getTime()) cls += ' selected'; dayGrid += `<div class="${cls}" data-iso="${iso}">${dayNum}</div>`; } } }
+      const rangeLabel = rangeStart && rangeEnd ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → ${rangeEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'})}` : rangeStart ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → pick end` : 'Pick start date';
+      _dpEl.innerHTML = `<div class="dp-header"><button class="dp-nav-btn" id="dp-prev">‹</button><span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span><button class="dp-nav-btn" id="dp-next">›</button></div><div class="dp-grid">${DAYS.map(dd=>`<div class="dp-day-head">${dd}</div>`).join('')}${dayGrid}</div><div class="dp-footer"><span class="dp-footer-hint">${rangeLabel}</span><button class="dp-clear-btn" id="dp-clear">Clear</button></div>`;
+      _dpEl.querySelector('#dp-prev').onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderPicker(); };
+      _dpEl.querySelector('#dp-next').onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderPicker(); };
+      _dpEl.querySelector('#dp-clear').onclick = () => { rangeStart = null; rangeEnd = null; pickingEnd = false; onChange(null, null); renderPicker(); };
+      _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => { el.onclick = () => { const clicked = new Date(el.dataset.iso+'T00:00:00'); if (!rangeStart || (!pickingEnd && rangeEnd)) { rangeStart = clicked; rangeEnd = null; pickingEnd = true; } else if (pickingEnd) { if (clicked < rangeStart) { rangeEnd = rangeStart; rangeStart = clicked; } else { rangeEnd = clicked; } pickingEnd = false; onChange(toISO(rangeStart), toISO(rangeEnd)); } renderPicker(); }; });
+    }
+    renderPicker();
+    const rect = anchorEl.getBoundingClientRect(); _dpEl.style.top = (rect.bottom+4)+'px'; _dpEl.style.left = rect.left+'px'; document.body.appendChild(_dpEl);
+    requestAnimationFrame(() => { if (!_dpEl) return; const cr = _dpEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _dpEl.style.left = (window.innerWidth-cr.width-8)+'px'; if (cr.bottom > window.innerHeight-8) _dpEl.style.top = (rect.top-cr.height-4)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _dpOut), 0);
+  }
+
+  // ── Chip handlers ─────────────────────────────────────────────────────
+  document.getElementById('chip-gnew-status').onclick = (e) => {
+    e.stopPropagation();
+    const items = GOAL_STATUSES.map(s => ({ value: s, label: s.replace(/_/g,' ') }));
+    openCombo(e.currentTarget, items, d.status, ({ value }) => {
+      const chipEl = document.getElementById('chip-gnew-status');
+      if (chipEl) { chipEl.className = `prop-chip chip-status-${value}`; chipEl.querySelector('.chip-value').textContent = value.replace(/_/g,' '); }
+      d.status = value;
+    });
+  };
+
+  document.getElementById('chip-gnew-due').onclick = (e) => {
+    e.stopPropagation();
+    openDateRangePicker(e.currentTarget, d.start_date, d.due_date, (start, end) => {
+      d.start_date = start; d.due_date = end || start;
+      const chipVal = document.getElementById('chip-gnew-due-val');
+      const chipEl = document.getElementById('chip-gnew-due');
+      if (chipVal) chipVal.textContent = fmtDateRange(start, end) || '—';
+      if (chipEl) chipEl.classList.toggle('chip-empty', !start && !end);
+    });
+  };
+
+  document.getElementById('chip-gnew-tags').onclick = (e) => {
+    e.stopPropagation();
+    const items = (allTags||[]).map(t => ({ value: t.id, label: t.name, color: t.color }));
+    openCombo(e.currentTarget, items, null, async ({ multiIds, create }) => {
+      let ids = (multiIds || d.tags.map(t => t.id));
+      if (create) {
+        try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); if (allTags) allTags.push(nt); ids = [...ids, nt.id]; } catch(err) {}
+      }
+      d.tags = ids.map(id => (allTags||[]).find(t => String(t.id) === String(id)) || { id, name: String(id), color: 'blue' });
+      const chipVal = document.getElementById('chip-gnew-tags-val');
+      if (chipVal) chipVal.innerHTML = d.tags.length ? d.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      const chipEl = document.getElementById('chip-gnew-tags');
+      if (chipEl) chipEl.classList.toggle('chip-empty', !d.tags.length);
+    }, { multiSelect: true, allowCreate: true, selectedIds: d.tags.map(t => t.id) });
+  };
+
+  // ── Create / Cancel ───────────────────────────────────────────────────
+  document.getElementById('gnew-cancel-btn').onclick = () => closeSlideover();
+  document.getElementById('gnew-create-btn').onclick = async () => {
+    const title = document.getElementById('goal-new-title').value.trim();
+    if (!title) { alert('Title is required'); return; }
+    const data = {
+      title,
+      description: document.getElementById('goal-new-desc').value,
+      status: d.status,
+      type: d.type || null,
+      year: d.year || null,
+      category_id: d.category_id || null,
+      start_date: d.start_date || null,
+      due_date: d.due_date || null,
+      start_value: parseFloat(document.getElementById('gnew-sv').value) || 0,
+      current_value: 0,
+      target: parseFloat(document.getElementById('gnew-target').value) || 0,
+    };
+    try {
+      const created = await api('POST', '/api/goals', data);
+      if (created?.id && d.tags.length) {
+        try { await api('PUT', `/api/goals/${created.id}/tags`, { tag_ids: d.tags.map(t => t.id).map(Number) }); } catch(e2) {}
+      }
+      closeSlideover();
+      if (afterSave) afterSave(); else renderGoals();
+    } catch(err) { alert('Error creating goal: ' + (err.message || String(err))); }
+  };
 }
 
 /* ─── Project Slideover (auto-save, expand to detail) ───────────────── */
 async function showProjectSlideover(project, goals, afterSave) {
   if (!project?.id) { showProjectModal(project, goals, afterSave); return; }
   const v = project;
-  const goalOpts = '<option value="">— none —</option>' + (goals||[]).map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(v.goal_id)?'selected':''}>${g.title}</option>`).join('');
-  const statusOpts = PROJECT_STATUSES.map(s =>
-    `<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
-  const macroOpts = '<option value="">— none —</option>' + MACRO_AREAS.map(m =>
-    `<option value="${m}" ${v.macro_area===m?'selected':''}>${m}</option>`).join('');
-  const kanbanOpts = '<option value="">— none —</option>' + KANBAN_COLS.map(k =>
-    `<option value="${k}" ${v.kanban_col===k?'selected':''}>${k}</option>`).join('');
-  const catOpts = categoryOptions(v.category_id, true);
-  let existingTagIds = [];
-  try { existingTagIds = (await api('GET', `/api/projects/${v.id}/tags`) || []).map(t => t.id); } catch(e) {}
+
+  // Fetch related data
+  let allGoals = goals || [], existingTags = [], allCats = [];
+  try {
+    const results = await Promise.all([
+      goals ? Promise.resolve(goals) : api('GET', '/api/goals'),
+      api('GET', `/api/projects/${v.id}/tags`),
+    ]);
+    allGoals = results[0] || [];
+    existingTags = results[1] || [];
+  } catch(e) {}
+  if (allCategories) allCats = allCategories;
+
+  const tags = existingTags;
+  const goalName = allGoals.find(g => String(g.id) === String(v.goal_id))?.title || null;
+  const catName = allCats.find(c => String(c.id) === String(v.category_id))?.name || null;
+
+  function fmtDateRange(start, end) {
+    const fmt = (d) => { if (!d) return null; const dt = new Date(stripDate(d)+'T00:00:00'); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric'}); };
+    const s = fmt(start), e = fmt(end);
+    if (s && e && s !== e) return `${s} → ${e}`;
+    return s || e || '—';
+  }
+
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const projBuiltinDefs = [
+    { key: 'goal',      label: 'Goal',      icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
+    { key: 'category',  label: 'Category',  icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+    { key: 'macro',     label: 'Macro Area', icon: pIco('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>'),
+      renderValue: () => v.macro_area ? `<span>${v.macro_area}</span>` : '' },
+    { key: 'kanban',    label: 'Kanban Col', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
+      renderValue: () => v.kanban_col ? `<span>${v.kanban_col}</span>` : '' },
+    { key: 'archived',  label: 'Archived',  icon: pIco('<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>'),
+      renderValue: () => v.archived ? `<span>Yes</span>` : '' },
+  ];
 
   const body = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <span style="font-size:11px;color:var(--text-muted)">Auto-saved</span>
-      <button id="proj-sl-expand" title="Open full detail view" style="background:none;border:none;cursor:pointer;padding:4px;color:var(--text-muted);font-size:16px">⤢</button>
+    <button class="entity-icon-add-btn" id="proj-icon-add-btn">
+      <span id="proj-icon-display"></span>
+      <span id="proj-icon-add-label">Add icon</span>
+    </button>
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="detail-title" rows="1">${(v.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
     </div>
-    <div class="form-group"><label class="form-label">Title</label>
-      <input type="text" id="psl-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
-    <div class="form-group"><label class="form-label">Description</label>
-      <textarea id="psl-desc">${v.description||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Goal</label><select id="psl-goal">${goalOpts}</select></div>
-      <div class="form-group"><label class="form-label">Status</label><select id="psl-status">${statusOpts}</select></div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip chip-status-${v.status}" id="chip-proj-status" data-key="status">
+        <span class="chip-label">Status</span>
+        <span class="chip-value">${(v.status||'').replace(/_/g,' ')}</span>
+      </button>
+      <button class="prop-chip" id="chip-proj-due" data-key="due">
+        <span class="chip-label">Due</span>
+        <span class="chip-value" id="chip-proj-due-val">${fmtDateRange(v.start_date, v.due_date)}</span>
+      </button>
+      <button class="prop-chip" id="chip-proj-tags" data-key="tags">
+        <span class="chip-label">Tags</span>
+        <span class="chip-value" id="chip-proj-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span>
+      </button>
+      <button class="prop-chips-more" id="proj-chips-more" title="More properties">···</button>
     </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Macro Area</label><select id="psl-macro">${macroOpts}</select></div>
-      <div class="form-group"><label class="form-label">Kanban Column</label><select id="psl-kanban">${kanbanOpts}</select></div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Category</label><select id="psl-category">${catOpts}</select></div>
-      <div class="form-group"><label class="form-label" style="margin-top:20px;display:flex;align-items:center;gap:8px">
-        <input type="checkbox" id="psl-archived" ${v.archived?'checked':''} style="width:auto" /> Archived
-      </label></div>
-    </div>
+
+    ${buildInlinePropPanel('project', v.id, projBuiltinDefs)}
+
     <div class="form-group">
-      <label class="form-label">Date</label>
-      <div class="date-mode-toggle">
-        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
-        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
-      </div>
-      <div id="psl-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        <input type="date" id="psl-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
-      </div>
-      <div id="psl-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        <input type="date" id="psl-start" value="${stripDate(v.start_date)}" />
-        <span class="date-range-arrow">→</span>
-        <input type="date" id="psl-due-range" value="${stripDate(v.due_date)}" />
-      </div>
+      <label class="form-label">Description</label>
+      <textarea id="detail-desc" style="width:100%;min-height:80px">${v.description||''}</textarea>
     </div>
-    <div class="form-group"><label class="form-label">Tags</label>${tagPickerHtml(existingTagIds)}</div>
-    <div class="form-actions">
-      <button class="btn btn-danger" id="psl-delete-btn">Delete</button>
-    </div>`;
+    ${buildCommentSection('project', v.id)}
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px">
+      <button class="btn btn-ghost btn-sm" id="proj-expand-btn">⤢ Full view</button>
+      <button class="btn btn-ghost btn-sm" id="proj-delete-btn" style="color:var(--color-danger)">Delete</button>
+    </div>
+  `;
 
-  openFormSlideover('Edit Project', body);
-  bindTagPicker();
-  bindDateModeToggle('psl-date-due-wrap', 'psl-date-range-wrap');
+  openSlideover(v.title, body, afterSave || null);
 
-  document.getElementById('proj-sl-expand').onclick = () => {
-    closeFormSlideover();
-    renderView('project-detail', v.id);
+  // ── Icon ──────────────────────────────────────────────────────────────
+  const projIconAddBtn = document.getElementById('proj-icon-add-btn');
+  const projIconDisplay = document.getElementById('proj-icon-display');
+  const projIconAddLabel = document.getElementById('proj-icon-add-label');
+  loadEntityIcon('project', v.id).then(icon => {
+    if (icon) { projIconDisplay.innerHTML = renderEntityIcon(icon, 32); projIconDisplay.dataset.icon = icon; projIconAddLabel.textContent = ''; }
+  });
+  projIconAddBtn.onclick = (e) => {
+    e.stopPropagation();
+    const cur = projIconDisplay.dataset.icon || '';
+    showIconPicker(projIconAddBtn, 'project', v.id, cur, (newIcon) => {
+      projIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
+      projIconDisplay.dataset.icon = newIcon;
+      projIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      saveEntityIcon('project', v.id, newIcon).catch(() => { projIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; projIconDisplay.dataset.icon = cur; projIconAddLabel.textContent = cur ? '' : 'Add icon'; });
+    });
   };
 
-  let saveTimer = null;
-  async function autoSave() {
-    const isRange = document.getElementById('psl-date-range-wrap')?.style.display !== 'none';
-    const data = {
-      title: document.getElementById('psl-title').value.trim(),
-      description: document.getElementById('psl-desc').value,
-      goal_id: document.getElementById('psl-goal').value ? parseInt(document.getElementById('psl-goal').value) : null,
-      status: document.getElementById('psl-status').value,
-      macro_area: document.getElementById('psl-macro').value || null,
-      kanban_col: document.getElementById('psl-kanban').value || null,
-      category_id: document.getElementById('psl-category').value ? parseInt(document.getElementById('psl-category').value) : null,
-      archived: document.getElementById('psl-archived').checked,
-      start_date: isRange ? (document.getElementById('psl-start')?.value || null) : null,
-      due_date: isRange ? (document.getElementById('psl-due-range')?.value || null) : (document.getElementById('psl-due')?.value || null),
-    };
-    if (!data.title) return;
-    await api('PATCH', `/api/projects/${v.id}`, data);
-    const tagIds = getSelectedTagIds();
-    try { await api('PUT', `/api/projects/${v.id}/tags`, { tag_ids: tagIds }); } catch(e) {}
-    if (afterSave) afterSave();
+  // ── Title auto-save ───────────────────────────────────────────────────
+  async function patchProject(data) {
+    try { await api('PATCH', `/api/projects/${v.id}`, data); } catch(e) { return; }
+    Object.assign(v, data);
   }
-  function scheduleAutoSave() { clearTimeout(saveTimer); saveTimer = setTimeout(autoSave, 600); }
+  const titleTA = document.getElementById('detail-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  titleTA.onblur = (e) => patchProject({ title: e.target.value });
 
-  ['psl-title','psl-desc','psl-due','psl-start','psl-due-range'].forEach(id =>
-    document.getElementById(id)?.addEventListener('input', scheduleAutoSave));
-  ['psl-goal','psl-status','psl-macro','psl-kanban','psl-category'].forEach(id =>
-    document.getElementById(id)?.addEventListener('change', () => { clearTimeout(saveTimer); autoSave(); }));
-  document.getElementById('psl-archived')?.addEventListener('change', () => { clearTimeout(saveTimer); autoSave(); });
+  // ── Description auto-save ─────────────────────────────────────────────
+  let descTimer = null;
+  document.getElementById('detail-desc').addEventListener('input', () => {
+    clearTimeout(descTimer); descTimer = setTimeout(() => patchProject({ description: document.getElementById('detail-desc').value }), 700);
+  });
 
-  document.getElementById('psl-delete-btn').onclick = async () => {
+  // ── Combo/date helpers (scoped to this slideover) ──────────────────────
+  let _comboEl = null;
+  function closeCombo() { if (_comboEl) { _comboEl.remove(); _comboEl = null; } document.removeEventListener('mousedown', _comboOutside); }
+  function _comboOutside(e) { if (_comboEl && !_comboEl.contains(e.target)) closeCombo(); }
+  function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
+    closeCombo();
+    const { allowCreate = false, multiSelect = false, selectedIds = [] } = opts;
+    let filter = '', focusIdx = -1, localSelected = new Set(selectedIds.map(String));
+    _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover';
+    function render() {
+      const filtered = filter ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase())) : items;
+      const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+      const selectedChips = multiSelect && localSelected.size > 0 ? `<div class="combo-selected-row">${[...localSelected].map(v2 => { const it = items.find(x => String(x.value) === v2); if (!it) return ''; const colorDot = it.color ? `<span style="width:6px;height:6px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0;margin-right:3px"></span>` : ''; return `<span class="combo-sel-chip" data-remove="${v2.replace(/"/g,'&quot;')}">${colorDot}${it.label}<span class="combo-sel-chip-x">×</span></span>`; }).join('')}</div>` : '';
+      _comboEl.innerHTML = `${selectedChips}<div class="combo-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" /></div><div class="combo-list">${filtered.length ? filtered.map((it, i) => { const isSel = multiSelect ? localSelected.has(String(it.value)) : String(it.value) === String(currentVal); const colorDot = it.color ? `<span style="width:8px;height:8px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0"></span>` : ''; return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${colorDot}${it.label}${isSel && multiSelect ? '<span class="combo-item-check">✓</span>' : ''}</div>`; }).join('') : '<div class="combo-empty">No results</div>'}${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Create "${filter.trim()}"</div>` : ''}</div>`;
+      const inp = _comboEl.querySelector('.combo-search'); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+      inp.oninput = (e) => { filter = e.target.value; focusIdx = -1; render(); };
+      inp.onkeydown = (e) => { const comboItems = _comboEl.querySelectorAll('.combo-item'); if (e.key === 'ArrowDown') { e.preventDefault(); focusIdx = Math.min(focusIdx+1, comboItems.length-1); render(); } else if (e.key === 'ArrowUp') { e.preventDefault(); focusIdx = Math.max(focusIdx-1, 0); render(); } else if (e.key === 'Enter') { e.preventDefault(); if (focusIdx >= 0 && comboItems[focusIdx]) comboItems[focusIdx].click(); } else if (e.key === 'Escape') closeCombo(); };
+      _comboEl.querySelectorAll('.combo-sel-chip').forEach(chip => { chip.onclick = (e) => { e.stopPropagation(); localSelected.delete(chip.dataset.remove); onSelect({ multiIds: [...localSelected] }); render(); }; });
+      _comboEl.querySelectorAll('.combo-item').forEach(el => { el.onclick = async (e) => { e.stopPropagation(); if (el.dataset.create) { await onSelect({ create: el.dataset.create }); closeCombo(); } else if (multiSelect) { const v2 = el.dataset.val; if (localSelected.has(v2)) localSelected.delete(v2); else localSelected.add(v2); onSelect({ multiIds: [...localSelected] }); render(); } else { onSelect({ value: el.dataset.val, label: el.dataset.label }); closeCombo(); } }; });
+    }
+    render();
+    const rect = anchorEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+    requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _comboOutside), 0);
+  }
+
+  let _dpEl = null;
+  function closeDatePicker() { if (_dpEl) { _dpEl.remove(); _dpEl = null; } document.removeEventListener('mousedown', _dpOutside); }
+  function _dpOutside(e) { if (_dpEl && !_dpEl.contains(e.target)) closeDatePicker(); }
+  function openDateRangePicker(anchorEl, startVal, endVal, onChange) {
+    closeDatePicker();
+    const today = new Date(); today.setHours(0,0,0,0);
+    let viewYear = today.getFullYear(), viewMonth = today.getMonth();
+    let rangeStart = startVal ? new Date(startVal+'T00:00:00') : null;
+    let rangeEnd = endVal ? new Date(endVal+'T00:00:00') : null;
+    let pickingEnd = !!rangeStart;
+    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+    function toISO(d) { return d ? d.toISOString().split('T')[0] : null; }
+    _dpEl = document.createElement('div'); _dpEl.className = 'datepicker-popover';
+    function renderPicker() {
+      const firstDay = new Date(viewYear, viewMonth, 1); let startDow = firstDay.getDay(); startDow = startDow === 0 ? 6 : startDow - 1;
+      const daysInMonth = new Date(viewYear, viewMonth+1, 0).getDate(); let dayGrid = ''; let dayNum = 1 - startDow;
+      for (let r = 0; r < 6; r++) { for (let c = 0; c < 7; c++, dayNum++) { if (dayNum < 1 || dayNum > daysInMonth) { dayGrid += `<div class="dp-day other-month"></div>`; } else { const d = new Date(viewYear, viewMonth, dayNum); d.setHours(0,0,0,0); const iso = toISO(d); let cls = 'dp-day'; if (d.getTime() === today.getTime()) cls += ' today'; if (rangeStart && rangeEnd) { if (d.getTime() === rangeStart.getTime()) cls += ' range-start'; else if (d.getTime() === rangeEnd.getTime()) cls += ' range-end'; else if (d > rangeStart && d < rangeEnd) cls += ' in-range'; } else if (rangeStart && d.getTime() === rangeStart.getTime()) cls += ' selected'; dayGrid += `<div class="${cls}" data-iso="${iso}">${dayNum}</div>`; } } }
+      const rangeLabel = rangeStart && rangeEnd ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → ${rangeEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'})}` : rangeStart ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → pick end` : 'Pick start date';
+      _dpEl.innerHTML = `<div class="dp-header"><button class="dp-nav-btn" id="dp-prev">‹</button><span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span><button class="dp-nav-btn" id="dp-next">›</button></div><div class="dp-grid">${DAYS.map(d=>`<div class="dp-day-head">${d}</div>`).join('')}${dayGrid}</div><div class="dp-footer"><span class="dp-footer-hint">${rangeLabel}</span><button class="dp-clear-btn" id="dp-clear">Clear</button></div>`;
+      _dpEl.querySelector('#dp-prev').onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderPicker(); };
+      _dpEl.querySelector('#dp-next').onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderPicker(); };
+      _dpEl.querySelector('#dp-clear').onclick = () => { rangeStart = null; rangeEnd = null; pickingEnd = false; onChange(null, null); renderPicker(); };
+      _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => { el.onclick = () => { const clicked = new Date(el.dataset.iso+'T00:00:00'); if (!rangeStart || (!pickingEnd && rangeEnd)) { rangeStart = clicked; rangeEnd = null; pickingEnd = true; } else if (pickingEnd) { if (clicked < rangeStart) { rangeEnd = rangeStart; rangeStart = clicked; } else { rangeEnd = clicked; } pickingEnd = false; onChange(toISO(rangeStart), toISO(rangeEnd)); } renderPicker(); }; });
+    }
+    renderPicker();
+    const rect = anchorEl.getBoundingClientRect(); _dpEl.style.top = (rect.bottom+4)+'px'; _dpEl.style.left = rect.left+'px'; document.body.appendChild(_dpEl);
+    requestAnimationFrame(() => { if (!_dpEl) return; const cr = _dpEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _dpEl.style.left = (window.innerWidth-cr.width-8)+'px'; if (cr.bottom > window.innerHeight-8) _dpEl.style.top = (rect.top-cr.height-4)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _dpOutside), 0);
+  }
+
+  // ── Chip handlers ─────────────────────────────────────────────────────
+  document.getElementById('chip-proj-status').onclick = (e) => {
+    e.stopPropagation();
+    const items = PROJECT_STATUSES.map(s => ({ value: s, label: s.replace(/_/g,' ') }));
+    openCombo(e.currentTarget, items, v.status, async ({ value }) => {
+      const chipEl = document.getElementById('chip-proj-status');
+      if (chipEl) { chipEl.className = `prop-chip chip-status-${value}`; chipEl.querySelector('.chip-value').textContent = value.replace(/_/g,' '); }
+      v.status = value;
+      await patchProject({ status: value });
+    });
+  };
+
+  document.getElementById('chip-proj-due').onclick = (e) => {
+    e.stopPropagation();
+    openDateRangePicker(e.currentTarget, stripDate(v.start_date), stripDate(v.due_date), async (start, end) => {
+      const chipVal = document.getElementById('chip-proj-due-val');
+      if (chipVal) chipVal.textContent = fmtDateRange(start, end) || '—';
+      v.start_date = start; v.due_date = end || start;
+      await patchProject({ start_date: start || null, due_date: end || start || null });
+    });
+  };
+
+  document.getElementById('chip-proj-tags').onclick = (e) => {
+    e.stopPropagation();
+    const items = (allTags||[]).map(t => ({ value: t.id, label: t.name, color: t.color }));
+    const curIds = tags.map(t => t.id);
+    openCombo(e.currentTarget, items, null, async ({ multiIds, create }) => {
+      let ids = multiIds || curIds;
+      if (create) {
+        try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); if (allTags) allTags.push(nt); ids = [...curIds, nt.id]; } catch(err) {}
+      }
+      await api('PUT', `/api/projects/${v.id}/tags`, { tag_ids: ids.map(Number) });
+      tags.splice(0, tags.length, ...(ids.map(id => (allTags||[]).find(t => String(t.id) === String(id)) || { id, name: String(id), color: 'blue' })));
+      const chipVal = document.getElementById('chip-proj-tags-val');
+      if (chipVal) chipVal.innerHTML = tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      if (afterSave) afterSave();
+    }, { multiSelect: true, allowCreate: true, selectedIds: curIds });
+  };
+
+  // ── Inline prop panel (extra builtins + custom props) ─────────────────
+  const projInlinePropEditFns = {
+    goal: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...allGoals.map(g => ({ value: g.id, label: g.title }))];
+      openCombo(valEl, items, v.goal_id, async ({ value }) => {
+        const g = allGoals.find(x => String(x.id) === String(value));
+        valEl.innerHTML = g ? `<span>${g.title}</span>` : '';
+        v.goal_id = value ? parseInt(value) : null;
+        await patchProject({ goal_id: v.goal_id });
+      });
+    },
+    category: (valEl) => {
+      const cats = (allCats||[]).map(c => ({ value: c.id, label: c.name }));
+      openCombo(valEl, cats, v.category_id, async ({ value }) => {
+        const c = allCats.find(x => String(x.id) === String(value));
+        valEl.innerHTML = c ? `<span>${c.name}</span>` : '';
+        v.category_id = value ? parseInt(value) : null;
+        await patchProject({ category_id: v.category_id });
+      }, { allowCreate: true });
+    },
+    macro: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m }))];
+      openCombo(valEl, items, v.macro_area, async ({ value }) => {
+        valEl.innerHTML = value ? `<span>${value}</span>` : '';
+        v.macro_area = value || null;
+        await patchProject({ macro_area: v.macro_area });
+      });
+    },
+    kanban: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...KANBAN_COLS.map(k => ({ value: k, label: k }))];
+      openCombo(valEl, items, v.kanban_col, async ({ value }) => {
+        valEl.innerHTML = value ? `<span>${value}</span>` : '';
+        v.kanban_col = value || null;
+        await patchProject({ kanban_col: v.kanban_col });
+      });
+    },
+    archived: (valEl) => {
+      v.archived = !v.archived;
+      valEl.innerHTML = v.archived ? `<span>Yes</span>` : '';
+      patchProject({ archived: v.archived });
+    },
+  };
+  bindInlinePropPanel('project', v.id, projInlinePropEditFns, () => showProjectSlideover(v, allGoals, afterSave));
+  document.getElementById('proj-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    showChipConfigPanel('project', e.currentTarget, [
+      { key: 'status', label: 'Status' },
+      { key: 'due',    label: 'Due' },
+      { key: 'tags',   label: 'Tags' },
+    ], () => showProjectSlideover(v, allGoals, afterSave));
+  };
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
+
+  document.getElementById('proj-expand-btn').onclick = () => { closeSlideover(); renderView('project-detail', v.id); };
+  document.getElementById('proj-delete-btn').onclick = async () => {
     if (!confirm('Delete this project?')) return;
     await api('DELETE', `/api/projects/${v.id}`);
-    closeFormSlideover();
+    closeSlideover();
     renderProjects();
   };
 }
 
-/* ─── Goal Slideover (auto-save, expand to detail) ──────────────────── */
+/* ─── Goal Slideover (prop-chip style matching task slideover) ───────── */
 async function showGoalSlideover(goal, afterSave) {
   if (!goal?.id) { showGoalModal(goal, afterSave); return; }
   const v = goal;
-  const typeOpts = GOAL_TYPES.map(t => `<option value="${t}" ${v.type===t?'selected':''}>${t}</option>`).join('');
-  const yearOpts = GOAL_YEARS.map(y => `<option value="${y}" ${v.year===y?'selected':''}>${y}</option>`).join('');
-  const statusOpts = GOAL_STATUSES.map(s =>
-    `<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
-  const catOpts = categoryOptions(v.category_id, true);
-  let existingTagIds = [];
-  try { existingTagIds = (await api('GET', `/api/goals/${v.id}/tags`) || []).map(t => t.id); } catch(e) {}
 
-  const body = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <span style="font-size:11px;color:var(--text-muted)">Auto-saved</span>
-      <button id="goal-sl-expand" title="Open full detail view" style="background:none;border:none;cursor:pointer;padding:4px;color:var(--text-muted);font-size:16px">⤢</button>
-    </div>
-    <div class="form-group"><label class="form-label">Title</label>
-      <input type="text" id="gsl-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
-    <div class="form-group"><label class="form-label">Description</label>
-      <textarea id="gsl-desc">${v.description||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Type</label><select id="gsl-type">${typeOpts}</select></div>
-      <div class="form-group"><label class="form-label">Year</label><select id="gsl-year">${yearOpts}</select></div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Status</label><select id="gsl-status">${statusOpts}</select></div>
-      <div class="form-group"><label class="form-label">Category</label><select id="gsl-category">${catOpts}</select></div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Date</label>
-      <div class="date-mode-toggle">
-        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
-        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
+  let existingTags = [], allCats = [];
+  try { existingTags = await api('GET', `/api/goals/${v.id}/tags`) || []; } catch(e) {}
+  if (allCategories) allCats = allCategories;
+
+  const tags = existingTags;
+  const catName = allCats.find(c => String(c.id) === String(v.category_id))?.name || null;
+
+  function fmtDateRange(start, end) {
+    const fmt = (d) => { if (!d) return null; const dt = new Date(stripDate(d)+'T00:00:00'); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric'}); };
+    const s = fmt(start), e = fmt(end);
+    if (s && e && s !== e) return `${s} → ${e}`;
+    return s || e || '—';
+  }
+
+  // Progress bar HTML
+  const pct = v.target > 0 ? Math.min(100, Math.round(((v.current_value||0) - (v.start_value||0)) / (v.target - (v.start_value||0)) * 100)) : 0;
+  const progressSection = `
+    <div class="subtask-section" style="margin-top:16px">
+      <div class="subtask-section-title"><span>Progress</span></div>
+      <div style="margin-top:8px">
+        <div class="progress-wrap">
+          <div class="progress-label"><span>${pct}%</span><span>${v.current_value||0} / ${v.target||0}</span></div>
+          <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+        </div>
+        <div class="grid-2" style="margin-top:10px;gap:8px">
+          <div class="form-group" style="margin:0"><label class="form-label" style="font-size:11px">Start</label>
+            <input type="number" id="goal-sv" value="${v.start_value||''}" style="width:100%" /></div>
+          <div class="form-group" style="margin:0"><label class="form-label" style="font-size:11px">Current</label>
+            <input type="number" id="goal-cv" value="${v.current_value||''}" style="width:100%" /></div>
+        </div>
+        <div class="form-group" style="margin-top:8px;margin-bottom:0"><label class="form-label" style="font-size:11px">Target</label>
+          <input type="number" id="goal-target" value="${v.target||''}" style="width:100%" /></div>
       </div>
-      <div id="gsl-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        <input type="date" id="gsl-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
-      </div>
-      <div id="gsl-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        <input type="date" id="gsl-start" value="${stripDate(v.start_date)}" />
-        <span class="date-range-arrow">→</span>
-        <input type="date" id="gsl-due-range" value="${stripDate(v.due_date)}" />
-      </div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Start Value</label><input type="number" id="gsl-sv" value="${v.start_value||''}" /></div>
-      <div class="form-group"><label class="form-label">Current Value</label><input type="number" id="gsl-cv" value="${v.current_value||''}" /></div>
-    </div>
-    <div class="form-group"><label class="form-label">Target Value</label>
-      <input type="number" id="gsl-target" value="${v.target||''}" /></div>
-    <div class="form-group"><label class="form-label">Tags</label>${tagPickerHtml(existingTagIds)}</div>
-    <div class="form-actions">
-      <button class="btn btn-danger" id="gsl-delete-btn">Delete</button>
     </div>`;
 
-  openFormSlideover('Edit Goal', body);
-  bindTagPicker();
-  bindDateModeToggle('gsl-date-due-wrap', 'gsl-date-range-wrap');
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const goalBuiltinDefs = [
+    { key: 'type',     label: 'Type',     icon: pIco('<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>'),
+      renderValue: () => v.type ? `<span>${v.type}</span>` : '' },
+    { key: 'year',     label: 'Year',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+      renderValue: () => v.year ? `<span>${v.year}</span>` : '' },
+    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+  ];
 
-  document.getElementById('goal-sl-expand').onclick = () => {
-    closeFormSlideover();
-    renderView('goal-detail', v.id);
+  const body = `
+    <button class="entity-icon-add-btn" id="goal-icon-add-btn">
+      <span id="goal-icon-display"></span>
+      <span id="goal-icon-add-label">Add icon</span>
+    </button>
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="detail-title" rows="1">${(v.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+    </div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip chip-status-${v.status}" id="chip-goal-status" data-key="status">
+        <span class="chip-label">Status</span>
+        <span class="chip-value">${(v.status||'').replace(/_/g,' ')}</span>
+      </button>
+      <button class="prop-chip" id="chip-goal-due" data-key="due">
+        <span class="chip-label">Due</span>
+        <span class="chip-value" id="chip-goal-due-val">${fmtDateRange(v.start_date, v.due_date)}</span>
+      </button>
+      <button class="prop-chip" id="chip-goal-tags" data-key="tags">
+        <span class="chip-label">Tags</span>
+        <span class="chip-value" id="chip-goal-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span>
+      </button>
+      <button class="prop-chips-more" id="goal-chips-more" title="More properties">···</button>
+    </div>
+
+    ${buildInlinePropPanel('goal', v.id, goalBuiltinDefs)}
+
+    <div class="form-group">
+      <label class="form-label">Description</label>
+      <textarea id="detail-desc" style="width:100%;min-height:80px">${v.description||''}</textarea>
+    </div>
+    ${progressSection}
+    ${buildCommentSection('goal', v.id)}
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px">
+      <button class="btn btn-ghost btn-sm" id="goal-expand-btn">⤢ Full view</button>
+      <button class="btn btn-ghost btn-sm" id="goal-delete-btn" style="color:var(--color-danger)">Delete</button>
+    </div>
+  `;
+
+  openSlideover(v.title, body, afterSave || null);
+
+  // ── Icon ──────────────────────────────────────────────────────────────
+  const goalIconAddBtn = document.getElementById('goal-icon-add-btn');
+  const goalIconDisplay = document.getElementById('goal-icon-display');
+  const goalIconAddLabel = document.getElementById('goal-icon-add-label');
+  loadEntityIcon('goal', v.id).then(icon => {
+    if (icon) { goalIconDisplay.innerHTML = renderEntityIcon(icon, 32); goalIconDisplay.dataset.icon = icon; goalIconAddLabel.textContent = ''; }
+  });
+  goalIconAddBtn.onclick = (e) => {
+    e.stopPropagation();
+    const cur = goalIconDisplay.dataset.icon || '';
+    showIconPicker(goalIconAddBtn, 'goal', v.id, cur, (newIcon) => {
+      goalIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : ''; goalIconDisplay.dataset.icon = newIcon; goalIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      saveEntityIcon('goal', v.id, newIcon).catch(() => { goalIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; goalIconDisplay.dataset.icon = cur; goalIconAddLabel.textContent = cur ? '' : 'Add icon'; });
+    });
   };
 
-  let saveTimer = null;
-  async function autoSave() {
-    const isRange = document.getElementById('gsl-date-range-wrap')?.style.display !== 'none';
-    const data = {
-      title: document.getElementById('gsl-title').value.trim(),
-      description: document.getElementById('gsl-desc').value,
-      type: document.getElementById('gsl-type').value,
-      year: document.getElementById('gsl-year').value,
-      status: document.getElementById('gsl-status').value,
-      category_id: document.getElementById('gsl-category').value ? parseInt(document.getElementById('gsl-category').value) : null,
-      start_date: isRange ? (document.getElementById('gsl-start')?.value || null) : null,
-      due_date: isRange ? (document.getElementById('gsl-due-range')?.value || null) : (document.getElementById('gsl-due')?.value || null),
-      start_value: parseFloat(document.getElementById('gsl-sv').value) || 0,
-      current_value: parseFloat(document.getElementById('gsl-cv').value) || 0,
-      target: parseFloat(document.getElementById('gsl-target').value) || 0,
-    };
-    if (!data.title) return;
-    await api('PATCH', `/api/goals/${v.id}`, data);
-    const tagIds = getSelectedTagIds();
-    try { await api('PUT', `/api/goals/${v.id}/tags`, { tag_ids: tagIds }); } catch(e) {}
-    if (afterSave) afterSave();
+  async function patchGoal(data) {
+    try { await api('PATCH', `/api/goals/${v.id}`, data); } catch(e) { return; }
+    Object.assign(v, data);
   }
-  function scheduleAutoSave() { clearTimeout(saveTimer); saveTimer = setTimeout(autoSave, 600); }
 
-  ['gsl-title','gsl-desc','gsl-due','gsl-start','gsl-due-range','gsl-sv','gsl-cv','gsl-target'].forEach(id =>
-    document.getElementById(id)?.addEventListener('input', scheduleAutoSave));
-  ['gsl-type','gsl-year','gsl-status','gsl-category'].forEach(id =>
-    document.getElementById(id)?.addEventListener('change', () => { clearTimeout(saveTimer); autoSave(); }));
+  // ── Title auto-save ───────────────────────────────────────────────────
+  const titleTA = document.getElementById('detail-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  titleTA.onblur = (e) => patchGoal({ title: e.target.value });
 
-  document.getElementById('gsl-delete-btn').onclick = async () => {
+  // ── Description auto-save ─────────────────────────────────────────────
+  let descTimer = null;
+  document.getElementById('detail-desc').addEventListener('input', () => {
+    clearTimeout(descTimer); descTimer = setTimeout(() => patchGoal({ description: document.getElementById('detail-desc').value }), 700);
+  });
+
+  // ── Progress value auto-save ──────────────────────────────────────────
+  let progTimer = null;
+  function scheduleProgressSave() {
+    clearTimeout(progTimer); progTimer = setTimeout(() => {
+      const sv = parseFloat(document.getElementById('goal-sv')?.value) || 0;
+      const cv = parseFloat(document.getElementById('goal-cv')?.value) || 0;
+      const target = parseFloat(document.getElementById('goal-target')?.value) || 0;
+      patchGoal({ start_value: sv, current_value: cv, target });
+    }, 700);
+  }
+  ['goal-sv','goal-cv','goal-target'].forEach(id => document.getElementById(id)?.addEventListener('input', scheduleProgressSave));
+
+  // ── Combo/date helpers ────────────────────────────────────────────────
+  let _comboEl = null;
+  function closeCombo() { if (_comboEl) { _comboEl.remove(); _comboEl = null; } document.removeEventListener('mousedown', _comboOutside); }
+  function _comboOutside(e) { if (_comboEl && !_comboEl.contains(e.target)) closeCombo(); }
+  function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
+    closeCombo();
+    const { allowCreate = false, multiSelect = false, selectedIds = [] } = opts;
+    let filter = '', focusIdx = -1, localSelected = new Set(selectedIds.map(String));
+    _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover';
+    function render() {
+      const filtered = filter ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase())) : items;
+      const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+      const selectedChips = multiSelect && localSelected.size > 0 ? `<div class="combo-selected-row">${[...localSelected].map(v2 => { const it = items.find(x => String(x.value) === v2); if (!it) return ''; const colorDot = it.color ? `<span style="width:6px;height:6px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0;margin-right:3px"></span>` : ''; return `<span class="combo-sel-chip" data-remove="${v2.replace(/"/g,'&quot;')}">${colorDot}${it.label}<span class="combo-sel-chip-x">×</span></span>`; }).join('')}</div>` : '';
+      _comboEl.innerHTML = `${selectedChips}<div class="combo-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" /></div><div class="combo-list">${filtered.length ? filtered.map((it, i) => { const isSel = multiSelect ? localSelected.has(String(it.value)) : String(it.value) === String(currentVal); const colorDot = it.color ? `<span style="width:8px;height:8px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0"></span>` : ''; return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${colorDot}${it.label}${isSel && multiSelect ? '<span class="combo-item-check">✓</span>' : ''}</div>`; }).join('') : '<div class="combo-empty">No results</div>'}${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Create "${filter.trim()}"</div>` : ''}</div>`;
+      const inp = _comboEl.querySelector('.combo-search'); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+      inp.oninput = (e) => { filter = e.target.value; focusIdx = -1; render(); };
+      inp.onkeydown = (e) => { const comboItems = _comboEl.querySelectorAll('.combo-item'); if (e.key === 'ArrowDown') { e.preventDefault(); focusIdx = Math.min(focusIdx+1, comboItems.length-1); render(); } else if (e.key === 'ArrowUp') { e.preventDefault(); focusIdx = Math.max(focusIdx-1, 0); render(); } else if (e.key === 'Enter') { e.preventDefault(); if (focusIdx >= 0 && comboItems[focusIdx]) comboItems[focusIdx].click(); } else if (e.key === 'Escape') closeCombo(); };
+      _comboEl.querySelectorAll('.combo-sel-chip').forEach(chip => { chip.onclick = (e) => { e.stopPropagation(); localSelected.delete(chip.dataset.remove); onSelect({ multiIds: [...localSelected] }); render(); }; });
+      _comboEl.querySelectorAll('.combo-item').forEach(el => { el.onclick = async (e) => { e.stopPropagation(); if (el.dataset.create) { await onSelect({ create: el.dataset.create }); closeCombo(); } else if (multiSelect) { const v2 = el.dataset.val; if (localSelected.has(v2)) localSelected.delete(v2); else localSelected.add(v2); onSelect({ multiIds: [...localSelected] }); render(); } else { onSelect({ value: el.dataset.val, label: el.dataset.label }); closeCombo(); } }; });
+    }
+    render();
+    const rect = anchorEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+    requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _comboOutside), 0);
+  }
+
+  let _dpEl = null;
+  function closeDatePicker() { if (_dpEl) { _dpEl.remove(); _dpEl = null; } document.removeEventListener('mousedown', _dpOutside); }
+  function _dpOutside(e) { if (_dpEl && !_dpEl.contains(e.target)) closeDatePicker(); }
+  function openDateRangePicker(anchorEl, startVal, endVal, onChange) {
+    closeDatePicker();
+    const today = new Date(); today.setHours(0,0,0,0);
+    let viewYear = today.getFullYear(), viewMonth = today.getMonth();
+    let rangeStart = startVal ? new Date(startVal+'T00:00:00') : null;
+    let rangeEnd = endVal ? new Date(endVal+'T00:00:00') : null;
+    let pickingEnd = !!rangeStart;
+    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+    function toISO(d) { return d ? d.toISOString().split('T')[0] : null; }
+    _dpEl = document.createElement('div'); _dpEl.className = 'datepicker-popover';
+    function renderPicker() {
+      const firstDay = new Date(viewYear, viewMonth, 1); let startDow = firstDay.getDay(); startDow = startDow === 0 ? 6 : startDow - 1;
+      const daysInMonth = new Date(viewYear, viewMonth+1, 0).getDate(); let dayGrid = ''; let dayNum = 1 - startDow;
+      for (let r = 0; r < 6; r++) { for (let c = 0; c < 7; c++, dayNum++) { if (dayNum < 1 || dayNum > daysInMonth) { dayGrid += `<div class="dp-day other-month"></div>`; } else { const d = new Date(viewYear, viewMonth, dayNum); d.setHours(0,0,0,0); const iso = toISO(d); let cls = 'dp-day'; if (d.getTime() === today.getTime()) cls += ' today'; if (rangeStart && rangeEnd) { if (d.getTime() === rangeStart.getTime()) cls += ' range-start'; else if (d.getTime() === rangeEnd.getTime()) cls += ' range-end'; else if (d > rangeStart && d < rangeEnd) cls += ' in-range'; } else if (rangeStart && d.getTime() === rangeStart.getTime()) cls += ' selected'; dayGrid += `<div class="${cls}" data-iso="${iso}">${dayNum}</div>`; } } }
+      const rangeLabel = rangeStart && rangeEnd ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → ${rangeEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'})}` : rangeStart ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → pick end` : 'Pick start date';
+      _dpEl.innerHTML = `<div class="dp-header"><button class="dp-nav-btn" id="dp-prev">‹</button><span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span><button class="dp-nav-btn" id="dp-next">›</button></div><div class="dp-grid">${DAYS.map(d=>`<div class="dp-day-head">${d}</div>`).join('')}${dayGrid}</div><div class="dp-footer"><span class="dp-footer-hint">${rangeLabel}</span><button class="dp-clear-btn" id="dp-clear">Clear</button></div>`;
+      _dpEl.querySelector('#dp-prev').onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderPicker(); };
+      _dpEl.querySelector('#dp-next').onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderPicker(); };
+      _dpEl.querySelector('#dp-clear').onclick = () => { rangeStart = null; rangeEnd = null; pickingEnd = false; onChange(null, null); renderPicker(); };
+      _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => { el.onclick = () => { const clicked = new Date(el.dataset.iso+'T00:00:00'); if (!rangeStart || (!pickingEnd && rangeEnd)) { rangeStart = clicked; rangeEnd = null; pickingEnd = true; } else if (pickingEnd) { if (clicked < rangeStart) { rangeEnd = rangeStart; rangeStart = clicked; } else { rangeEnd = clicked; } pickingEnd = false; onChange(toISO(rangeStart), toISO(rangeEnd)); } renderPicker(); }; });
+    }
+    renderPicker();
+    const rect = anchorEl.getBoundingClientRect(); _dpEl.style.top = (rect.bottom+4)+'px'; _dpEl.style.left = rect.left+'px'; document.body.appendChild(_dpEl);
+    requestAnimationFrame(() => { if (!_dpEl) return; const cr = _dpEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _dpEl.style.left = (window.innerWidth-cr.width-8)+'px'; if (cr.bottom > window.innerHeight-8) _dpEl.style.top = (rect.top-cr.height-4)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _dpOutside), 0);
+  }
+
+  // ── Chip handlers ─────────────────────────────────────────────────────
+  document.getElementById('chip-goal-status').onclick = (e) => {
+    e.stopPropagation();
+    const items = GOAL_STATUSES.map(s => ({ value: s, label: s.replace(/_/g,' ') }));
+    openCombo(e.currentTarget, items, v.status, async ({ value }) => {
+      const chipEl = document.getElementById('chip-goal-status');
+      if (chipEl) { chipEl.className = `prop-chip chip-status-${value}`; chipEl.querySelector('.chip-value').textContent = value.replace(/_/g,' '); }
+      v.status = value;
+      await patchGoal({ status: value });
+    });
+  };
+
+  document.getElementById('chip-goal-due').onclick = (e) => {
+    e.stopPropagation();
+    openDateRangePicker(e.currentTarget, stripDate(v.start_date), stripDate(v.due_date), async (start, end) => {
+      const chipVal = document.getElementById('chip-goal-due-val');
+      if (chipVal) chipVal.textContent = fmtDateRange(start, end) || '—';
+      v.start_date = start; v.due_date = end || start;
+      await patchGoal({ start_date: start || null, due_date: end || start || null });
+    });
+  };
+
+  document.getElementById('chip-goal-tags').onclick = (e) => {
+    e.stopPropagation();
+    const items = (allTags||[]).map(t => ({ value: t.id, label: t.name, color: t.color }));
+    const curIds = tags.map(t => t.id);
+    openCombo(e.currentTarget, items, null, async ({ multiIds, create }) => {
+      let ids = multiIds || curIds;
+      if (create) {
+        try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); if (allTags) allTags.push(nt); ids = [...curIds, nt.id]; } catch(err) {}
+      }
+      await api('PUT', `/api/goals/${v.id}/tags`, { tag_ids: ids.map(Number) });
+      tags.splice(0, tags.length, ...(ids.map(id => (allTags||[]).find(t => String(t.id) === String(id)) || { id, name: String(id), color: 'blue' })));
+      const chipVal = document.getElementById('chip-goal-tags-val');
+      if (chipVal) chipVal.innerHTML = tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      if (afterSave) afterSave();
+    }, { multiSelect: true, allowCreate: true, selectedIds: curIds });
+  };
+
+  // ── Inline prop panel ─────────────────────────────────────────────────
+  const goalInlinePropEditFns = {
+    type: (valEl) => {
+      const items = GOAL_TYPES.map(t => ({ value: t, label: t }));
+      openCombo(valEl, items, v.type, async ({ value }) => { valEl.innerHTML = value ? `<span>${value}</span>` : ''; v.type = value; await patchGoal({ type: value }); });
+    },
+    year: (valEl) => {
+      const items = GOAL_YEARS.map(y => ({ value: y, label: String(y) }));
+      openCombo(valEl, items, v.year, async ({ value }) => { valEl.innerHTML = value ? `<span>${value}</span>` : ''; v.year = value; await patchGoal({ year: value }); });
+    },
+    category: (valEl) => {
+      const cats = (allCats||[]).map(c => ({ value: c.id, label: c.name }));
+      openCombo(valEl, cats, v.category_id, async ({ value }) => { const c = allCats.find(x => String(x.id) === String(value)); valEl.innerHTML = c ? `<span>${c.name}</span>` : ''; v.category_id = value ? parseInt(value) : null; await patchGoal({ category_id: v.category_id }); }, { allowCreate: true });
+    },
+  };
+  bindInlinePropPanel('goal', v.id, goalInlinePropEditFns, () => showGoalSlideover(v, afterSave));
+  document.getElementById('goal-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    showChipConfigPanel('goal', e.currentTarget, [
+      { key: 'status', label: 'Status' },
+      { key: 'due',    label: 'Due' },
+      { key: 'tags',   label: 'Tags' },
+    ], () => showGoalSlideover(v, afterSave));
+  };
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="goal"]'));
+
+  document.getElementById('goal-expand-btn').onclick = () => { closeSlideover(); renderView('goal-detail', v.id); };
+  document.getElementById('goal-delete-btn').onclick = async () => {
     if (!confirm('Delete this goal?')) return;
     await api('DELETE', `/api/goals/${v.id}`);
-    closeFormSlideover();
+    closeSlideover();
     renderGoals();
   };
 }
 
 /* ─── Project Modal ──────────────────────────────────────────────────── */
+/* ─── Project Create Slideover (prop-chip style) ─────────────────────── */
 async function showProjectModal(project, goals, afterSave) {
-  const v = project || {};
-  const goalOpts = '<option value="">— none —</option>' + (goals||[]).map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(v.goal_id)?'selected':''}>${g.title}</option>`).join('');
-  const statusOpts = ['active','on_hold','completed','archived'].map(s =>
-    `<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
-  const macroOpts = '<option value="">— none —</option>' + MACRO_AREAS.map(m =>
-    `<option value="${m}" ${v.macro_area===m?'selected':''}>${m}</option>`).join('');
-  const kanbanOpts = '<option value="">— none —</option>' + KANBAN_COLS.map(k =>
-    `<option value="${k}" ${v.kanban_col===k?'selected':''}>${k}</option>`).join('');
-  const catOpts = categoryOptions(v.category_id, true);
-
-  let existingTagIds = [];
-  if (v.id) {
-    try { existingTagIds = (await api('GET', `/api/projects/${v.id}/tags`) || []).map(t => t.id); } catch(e) {}
+  let allGoals = goals || [];
+  if (!allGoals.length) {
+    try { allGoals = await api('GET', '/api/goals') || []; } catch(e) {}
   }
+  const allCats = allCategories || [];
+  const d = {
+    status: 'active', goal_id: null, category_id: null, macro_area: null,
+    kanban_col: null, archived: false, start_date: null, due_date: null,
+    tags: [],
+    ...project,
+  };
+
+  function fmtDateRange(start, end) {
+    const fmt = (v2) => { if (!v2) return null; const dt = new Date(stripDate(v2)+'T00:00:00'); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric'}); };
+    const s = fmt(start), e = fmt(end);
+    if (s && e && s !== e) return `${s} → ${e}`;
+    return s || e || '—';
+  }
+
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const projNewBuiltinDefs = [
+    { key: 'goal',      label: 'Goal',      icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => { const g = allGoals.find(x => String(x.id) === String(d.goal_id)); return g ? `<span>${g.title}</span>` : ''; } },
+    { key: 'category',  label: 'Category',  icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => { const c = allCats.find(x => String(x.id) === String(d.category_id)); return c ? `<span>${c.name}</span>` : ''; } },
+    { key: 'macro',     label: 'Macro Area', icon: pIco('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>'),
+      renderValue: () => d.macro_area ? `<span>${d.macro_area}</span>` : '' },
+    { key: 'kanban',    label: 'Kanban Col', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
+      renderValue: () => d.kanban_col ? `<span>${d.kanban_col}</span>` : '' },
+  ];
 
   const body = `
-    <div class="form-group"><label class="form-label">Title *</label>
-      <input type="text" id="p-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
-    <div class="form-group"><label class="form-label">Description</label>
-      <textarea id="p-desc">${v.description||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Goal</label><select id="p-goal">${goalOpts}</select></div>
-      <div class="form-group"><label class="form-label">Status</label><select id="p-status">${statusOpts}</select></div>
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="proj-new-title" rows="1" placeholder="Project name…"></textarea>
     </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Macro Area</label><select id="p-macro">${macroOpts}</select></div>
-      <div class="form-group"><label class="form-label">Kanban Column</label><select id="p-kanban">${kanbanOpts}</select></div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Category</label><select id="p-category">${catOpts}</select></div>
-      <div class="form-group"><label class="form-label" style="margin-top:20px;display:flex;align-items:center;gap:8px">
-        <input type="checkbox" id="p-archived" ${v.archived?'checked':''} style="width:auto" /> Archived
-      </label></div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Date</label>
-      <div class="date-mode-toggle">
-        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
-        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
-      </div>
-      <div id="p-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        <input type="date" id="p-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
-      </div>
-      <div id="p-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        <input type="date" id="p-start" value="${stripDate(v.start_date)}" />
-        <span class="date-range-arrow">→</span>
-        <input type="date" id="p-due-range" value="${stripDate(v.due_date)}" />
-      </div>
-    </div>
-    <div class="form-group"><label class="form-label">Tags</label>
-      ${tagPickerHtml(existingTagIds)}</div>
-    <div class="form-actions">
-      ${v.id ? `<button class="btn btn-danger" id="modal-delete-btn">Delete</button>` : ''}
-      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">Save</button>
-    </div>`;
 
-  openFormSlideover(v.id ? 'Edit Project' : 'New Project', body);
-  bindTagPicker();
-  bindDateModeToggle('p-date-due-wrap', 'p-date-range-wrap');
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const isRange = document.getElementById('p-date-range-wrap')?.style.display !== 'none';
-    const data = {
-      title: document.getElementById('p-title').value.trim(),
-      description: document.getElementById('p-desc').value,
-      goal_id: document.getElementById('p-goal').value ? parseInt(document.getElementById('p-goal').value) : null,
-      status: document.getElementById('p-status').value,
-      macro_area: document.getElementById('p-macro').value || null,
-      kanban_col: document.getElementById('p-kanban').value || null,
-      category_id: document.getElementById('p-category').value ? parseInt(document.getElementById('p-category').value) : null,
-      archived: document.getElementById('p-archived').checked,
-      start_date: isRange ? (document.getElementById('p-start')?.value || null) : null,
-      due_date: isRange ? (document.getElementById('p-due-range')?.value || null) : (document.getElementById('p-due')?.value || null),
-    };
-    if (!data.title) { alert('Title is required'); return; }
-    let savedId = v.id;
-    if (v.id) await api('PATCH', `/api/projects/${v.id}`, data);
-    else { const r = await api('POST', '/api/projects', data); savedId = r?.id; }
-    if (savedId) {
-      const tagIds = getSelectedTagIds();
-      try { await api('PUT', `/api/projects/${savedId}/tags`, { tag_ids: tagIds }); } catch(e) {}
-    }
-    closeFormSlideover();
-    if (afterSave) afterSave();
-    else renderProjects();
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip chip-status-${d.status}" id="chip-pnew-status" data-key="status">
+        <span class="chip-label">Status</span>
+        <span class="chip-value">${d.status.replace(/_/g,' ')}</span>
+      </button>
+      <button class="prop-chip chip-empty" id="chip-pnew-due" data-key="due">
+        <span class="chip-label">Due</span>
+        <span class="chip-value" id="chip-pnew-due-val">—</span>
+      </button>
+      <button class="prop-chip chip-empty" id="chip-pnew-tags" data-key="tags">
+        <span class="chip-label">Tags</span>
+        <span class="chip-value" id="chip-pnew-tags-val">—</span>
+      </button>
+      <button class="prop-chips-more" id="pnew-chips-more" title="More properties">···</button>
+    </div>
+
+    <div id="pnew-prop-panel-wrap">
+      ${buildInlinePropPanel('project', null, projNewBuiltinDefs)}
+    </div>
+
+    <div class="form-group" style="margin-top:12px">
+      <label class="form-label">Description</label>
+      <textarea id="proj-new-desc" style="width:100%;min-height:80px"></textarea>
+    </div>
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost btn-sm" id="pnew-cancel-btn">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="pnew-create-btn">Create Project</button>
+    </div>
+  `;
+
+  openSlideover('New Project', body);
+
+  const titleTA = document.getElementById('proj-new-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  setTimeout(() => titleTA.focus(), 60);
+
+  // ── Inline prop panel + chip config ──────────────────────────────────
+  const pnewPropPanel = document.querySelector('#pnew-prop-panel-wrap .inline-prop-panel');
+  document.getElementById('pnew-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    showChipConfigPanel('project', e.currentTarget, [
+      { key: 'status', label: 'Status' },
+      { key: 'due',    label: 'Due' },
+      { key: 'tags',   label: 'Tags' },
+    ]);
   };
-  if (v.id) {
-    document.getElementById('modal-delete-btn').onclick = async () => {
-      if (!confirm('Delete this project?')) return;
-      await api('DELETE', `/api/projects/${v.id}`);
-      closeFormSlideover();
-      renderProjects();
-    };
+  // inline prop panel always visible (matches edit slideover style)
+
+  // ── Bind inline prop panel ────────────────────────────────────────────
+  const pnewRerender = () => {
+    const wrap = document.getElementById('pnew-prop-panel-wrap');
+    if (!wrap) return;
+    const wasVisible = wrap.querySelector('.inline-prop-panel')?.style.display !== 'none';
+    wrap.innerHTML = buildInlinePropPanel('project', null, projNewBuiltinDefs);
+    if (!wasVisible) wrap.querySelector('.inline-prop-panel').style.display = 'none';
+    bindInlinePropPanel('project', null, pnewBuiltinEditFns, pnewRerender);
+  };
+  const pnewBuiltinEditFns = {
+    goal: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...allGoals.map(g => ({ value: g.id, label: g.title }))];
+      openCombo(valEl, items, d.goal_id, ({ value }) => { d.goal_id = value ? parseInt(value) : null; pnewRerender(); });
+    },
+    category: (valEl) => {
+      const cats = [{ value: '', label: '— none —' }, ...(allCats||[]).map(c => ({ value: c.id, label: c.name }))];
+      openCombo(valEl, cats, d.category_id, ({ value }) => { d.category_id = value ? parseInt(value) : null; pnewRerender(); }, { allowCreate: true });
+    },
+    macro: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m }))];
+      openCombo(valEl, items, d.macro_area, ({ value }) => { d.macro_area = value || null; pnewRerender(); });
+    },
+    kanban: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...KANBAN_COLS.map(k => ({ value: k, label: k }))];
+      openCombo(valEl, items, d.kanban_col, ({ value }) => { d.kanban_col = value || null; pnewRerender(); });
+    },
+  };
+  bindInlinePropPanel('project', null, pnewBuiltinEditFns, pnewRerender);
+
+  // ── Combo/date helpers ────────────────────────────────────────────────
+  let _comboEl = null;
+  function closeCombo() { if (_comboEl) { _comboEl.remove(); _comboEl = null; } document.removeEventListener('mousedown', _comboOut); }
+  function _comboOut(e) { if (_comboEl && !_comboEl.contains(e.target)) closeCombo(); }
+  function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
+    closeCombo();
+    const { allowCreate = false, multiSelect = false, selectedIds = [] } = opts;
+    let filter = '', focusIdx = -1, localSelected = new Set(selectedIds.map(String));
+    _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover';
+    function renderC() {
+      const filtered = filter ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase())) : items;
+      const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+      const selectedChips = multiSelect && localSelected.size > 0 ? `<div class="combo-selected-row">${[...localSelected].map(v2 => { const it = items.find(x => String(x.value) === v2); if (!it) return ''; const colorDot = it.color ? `<span style="width:6px;height:6px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0;margin-right:3px"></span>` : ''; return `<span class="combo-sel-chip" data-remove="${v2.replace(/"/g,'&quot;')}">${colorDot}${it.label}<span class="combo-sel-chip-x">×</span></span>`; }).join('')}</div>` : '';
+      _comboEl.innerHTML = `${selectedChips}<div class="combo-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" /></div><div class="combo-list">${filtered.length ? filtered.map((it, i) => { const isSel = multiSelect ? localSelected.has(String(it.value)) : String(it.value) === String(currentVal); const colorDot = it.color ? `<span style="width:8px;height:8px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0"></span>` : ''; return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${colorDot}${it.label}${isSel && multiSelect ? '<span class="combo-item-check">✓</span>' : ''}</div>`; }).join('') : '<div class="combo-empty">No results</div>'}${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Create "${filter.trim()}"</div>` : ''}</div>`;
+      const inp = _comboEl.querySelector('.combo-search'); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+      inp.oninput = (e2) => { filter = e2.target.value; focusIdx = -1; renderC(); };
+      inp.onkeydown = (e2) => { const ci = _comboEl.querySelectorAll('.combo-item'); if (e2.key === 'ArrowDown') { e2.preventDefault(); focusIdx = Math.min(focusIdx+1, ci.length-1); renderC(); } else if (e2.key === 'ArrowUp') { e2.preventDefault(); focusIdx = Math.max(focusIdx-1, 0); renderC(); } else if (e2.key === 'Enter') { e2.preventDefault(); if (focusIdx >= 0 && ci[focusIdx]) ci[focusIdx].click(); } else if (e2.key === 'Escape') closeCombo(); };
+      _comboEl.querySelectorAll('.combo-sel-chip').forEach(chip => { chip.onclick = (e2) => { e2.stopPropagation(); localSelected.delete(chip.dataset.remove); onSelect({ multiIds: [...localSelected] }); renderC(); }; });
+      _comboEl.querySelectorAll('.combo-item').forEach(el => { el.onclick = async (e2) => { e2.stopPropagation(); if (el.dataset.create) { await onSelect({ create: el.dataset.create }); closeCombo(); } else if (multiSelect) { const v2 = el.dataset.val; if (localSelected.has(v2)) localSelected.delete(v2); else localSelected.add(v2); onSelect({ multiIds: [...localSelected] }); renderC(); } else { onSelect({ value: el.dataset.val, label: el.dataset.label }); closeCombo(); } }; });
+    }
+    renderC();
+    const rect = anchorEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+    requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
   }
+
+  let _dpEl = null;
+  function closeDatePicker() { if (_dpEl) { _dpEl.remove(); _dpEl = null; } document.removeEventListener('mousedown', _dpOut); }
+  function _dpOut(e) { if (_dpEl && !_dpEl.contains(e.target)) closeDatePicker(); }
+  function openDateRangePicker(anchorEl, startVal, endVal, onChange) {
+    closeDatePicker();
+    const today = new Date(); today.setHours(0,0,0,0);
+    let viewYear = today.getFullYear(), viewMonth = today.getMonth();
+    let rangeStart = startVal ? new Date(startVal+'T00:00:00') : null;
+    let rangeEnd = endVal ? new Date(endVal+'T00:00:00') : null;
+    let pickingEnd = !!rangeStart;
+    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+    function toISO(dt) { return dt ? dt.toISOString().split('T')[0] : null; }
+    _dpEl = document.createElement('div'); _dpEl.className = 'datepicker-popover';
+    function renderPicker() {
+      const firstDay = new Date(viewYear, viewMonth, 1); let startDow = firstDay.getDay(); startDow = startDow === 0 ? 6 : startDow - 1;
+      const daysInMonth = new Date(viewYear, viewMonth+1, 0).getDate(); let dayGrid = ''; let dayNum = 1 - startDow;
+      for (let r = 0; r < 6; r++) { for (let c = 0; c < 7; c++, dayNum++) { if (dayNum < 1 || dayNum > daysInMonth) { dayGrid += `<div class="dp-day other-month"></div>`; } else { const dd = new Date(viewYear, viewMonth, dayNum); dd.setHours(0,0,0,0); const iso = toISO(dd); let cls = 'dp-day'; if (dd.getTime() === today.getTime()) cls += ' today'; if (rangeStart && rangeEnd) { if (dd.getTime() === rangeStart.getTime()) cls += ' range-start'; else if (dd.getTime() === rangeEnd.getTime()) cls += ' range-end'; else if (dd > rangeStart && dd < rangeEnd) cls += ' in-range'; } else if (rangeStart && dd.getTime() === rangeStart.getTime()) cls += ' selected'; dayGrid += `<div class="${cls}" data-iso="${iso}">${dayNum}</div>`; } } }
+      const rangeLabel = rangeStart && rangeEnd ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → ${rangeEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'})}` : rangeStart ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → pick end` : 'Pick start date';
+      _dpEl.innerHTML = `<div class="dp-header"><button class="dp-nav-btn" id="dp-prev">‹</button><span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span><button class="dp-nav-btn" id="dp-next">›</button></div><div class="dp-grid">${DAYS.map(dd=>`<div class="dp-day-head">${dd}</div>`).join('')}${dayGrid}</div><div class="dp-footer"><span class="dp-footer-hint">${rangeLabel}</span><button class="dp-clear-btn" id="dp-clear">Clear</button></div>`;
+      _dpEl.querySelector('#dp-prev').onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderPicker(); };
+      _dpEl.querySelector('#dp-next').onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderPicker(); };
+      _dpEl.querySelector('#dp-clear').onclick = () => { rangeStart = null; rangeEnd = null; pickingEnd = false; onChange(null, null); renderPicker(); };
+      _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => { el.onclick = () => { const clicked = new Date(el.dataset.iso+'T00:00:00'); if (!rangeStart || (!pickingEnd && rangeEnd)) { rangeStart = clicked; rangeEnd = null; pickingEnd = true; } else if (pickingEnd) { if (clicked < rangeStart) { rangeEnd = rangeStart; rangeStart = clicked; } else { rangeEnd = clicked; } pickingEnd = false; onChange(toISO(rangeStart), toISO(rangeEnd)); } renderPicker(); }; });
+    }
+    renderPicker();
+    const rect = anchorEl.getBoundingClientRect(); _dpEl.style.top = (rect.bottom+4)+'px'; _dpEl.style.left = rect.left+'px'; document.body.appendChild(_dpEl);
+    requestAnimationFrame(() => { if (!_dpEl) return; const cr = _dpEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _dpEl.style.left = (window.innerWidth-cr.width-8)+'px'; if (cr.bottom > window.innerHeight-8) _dpEl.style.top = (rect.top-cr.height-4)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _dpOut), 0);
+  }
+
+  // ── Chip handlers ─────────────────────────────────────────────────────
+  document.getElementById('chip-pnew-status').onclick = (e) => {
+    e.stopPropagation();
+    const items = ['active','on_hold','completed','archived'].map(s => ({ value: s, label: s.replace(/_/g,' ') }));
+    openCombo(e.currentTarget, items, d.status, ({ value }) => {
+      const chipEl = document.getElementById('chip-pnew-status');
+      if (chipEl) { chipEl.className = `prop-chip chip-status-${value}`; chipEl.querySelector('.chip-value').textContent = value.replace(/_/g,' '); }
+      d.status = value;
+    });
+  };
+
+  document.getElementById('chip-pnew-due').onclick = (e) => {
+    e.stopPropagation();
+    openDateRangePicker(e.currentTarget, d.start_date, d.due_date, (start, end) => {
+      d.start_date = start; d.due_date = end || start;
+      const chipVal = document.getElementById('chip-pnew-due-val');
+      const chipEl = document.getElementById('chip-pnew-due');
+      if (chipVal) chipVal.textContent = fmtDateRange(start, end) || '—';
+      if (chipEl) chipEl.classList.toggle('chip-empty', !start && !end);
+    });
+  };
+
+  document.getElementById('chip-pnew-tags').onclick = (e) => {
+    e.stopPropagation();
+    const items = (allTags||[]).map(t => ({ value: t.id, label: t.name, color: t.color }));
+    openCombo(e.currentTarget, items, null, async ({ multiIds, create }) => {
+      let ids = (multiIds || d.tags.map(t => t.id));
+      if (create) {
+        try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); if (allTags) allTags.push(nt); ids = [...ids, nt.id]; } catch(err) {}
+      }
+      d.tags = ids.map(id => (allTags||[]).find(t => String(t.id) === String(id)) || { id, name: String(id), color: 'blue' });
+      const chipVal = document.getElementById('chip-pnew-tags-val');
+      if (chipVal) chipVal.innerHTML = d.tags.length ? d.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      const chipEl = document.getElementById('chip-pnew-tags');
+      if (chipEl) chipEl.classList.toggle('chip-empty', !d.tags.length);
+    }, { multiSelect: true, allowCreate: true, selectedIds: d.tags.map(t => t.id) });
+  };
+
+  // ── Create / Cancel ───────────────────────────────────────────────────
+  document.getElementById('pnew-cancel-btn').onclick = () => closeSlideover();
+  document.getElementById('pnew-create-btn').onclick = async () => {
+    const title = document.getElementById('proj-new-title').value.trim();
+    if (!title) { alert('Title is required'); return; }
+    const data = {
+      title,
+      description: document.getElementById('proj-new-desc').value,
+      status: d.status,
+      goal_id: d.goal_id || null,
+      category_id: d.category_id || null,
+      macro_area: d.macro_area || null,
+      kanban_col: d.kanban_col || null,
+      archived: false,
+      start_date: d.start_date || null,
+      due_date: d.due_date || null,
+    };
+    try {
+      const created = await api('POST', '/api/projects', data);
+      if (created?.id && d.tags.length) {
+        try { await api('PUT', `/api/projects/${created.id}/tags`, { tag_ids: d.tags.map(t => t.id).map(Number) }); } catch(e2) {}
+      }
+      closeSlideover();
+      if (afterSave) afterSave(); else renderProjects();
+    } catch(err) { alert('Error creating project: ' + (err.message || String(err))); }
+  };
 }
 
-/* ─── Note Modal ─────────────────────────────────────────────────────── */
+/* ─── Note Create Slideover (prop-chip style) / Note edit → showNoteSlideover */
 async function showNoteModal(note, afterSave) {
   const v = note || {};
+  const isNew = !v.id;
+
+  // For existing notes — use the full prop-chip slideover
+  if (!isNew) { return showNoteSlideover(v, afterSave); }
+
+  // ── New note: prop-chip create slideover ──────────────────────────────
   let projects = [], tasks = [], goals = [];
   try { [projects, tasks, goals] = await Promise.all([
     api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
   ]); } catch(e) {}
 
-  const catOpts = categoryOptions(v.category_id, true);
-  const goalOpts = '<option value="">— none —</option>' + goals.map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(v.goal_id)?'selected':''}>${g.title}</option>`).join('');
-  const projOpts = '<option value="">— none —</option>' + projects.map(p =>
-    `<option value="${p.id}" ${String(p.id)===String(v.project_id)?'selected':''}>${p.title}</option>`).join('');
-  const taskOpts = '<option value="">— none —</option>' + tasks.map(t =>
-    `<option value="${t.id}" ${String(t.id)===String(v.task_id)?'selected':''}>${t.title}</option>`).join('');
-  const selectedTagIds = (v.tags || []).map(t => t.id);
+  const allCats = allCategories || [];
+  const d = { note_date: null, category_id: null, goal_id: null, project_id: null, task_id: null, tags: [] };
 
-  const isNew = !v.id;
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const noteNewBuiltinDefs = [
+    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => { const c = allCats.find(x => String(x.id) === String(d.category_id)); return c ? `<span>${c.name}</span>` : ''; } },
+    { key: 'goal',     label: 'Goal',     icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => { const g = goals.find(x => String(x.id) === String(d.goal_id)); return g ? `<span>${g.title}</span>` : ''; } },
+    { key: 'project',  label: 'Project',  icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+      renderValue: () => { const p = projects.find(x => String(x.id) === String(d.project_id)); return p ? `<span>${p.title}</span>` : ''; } },
+    { key: 'task',     label: 'Task',     icon: pIco('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>'),
+      renderValue: () => { const t = tasks.find(x => String(x.id) === String(d.task_id)); return t ? `<span>${t.title}</span>` : ''; } },
+  ];
+
   const body = `
-    ${!isNew ? `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <span style="font-size:11px;color:var(--text-muted)" id="note-save-indicator">Auto-saved</span>
-      <button class="btn btn-ghost btn-sm" id="note-json-inline-btn">Show JSON</button>
-    </div>` : ''}
-    <div class="form-group"><label class="form-label">Title</label>
-      <div style="display:flex;align-items:center;gap:8px">
-        <button type="button" class="entity-icon-btn" id="note-icon-btn" title="Set icon"><span id="note-icon-display">☐</span></button>
-        <input type="text" id="n-title" value="${(v.title||'').replace(/"/g,'&quot;')}" style="flex:1" />
-      </div>
+    <button class="entity-icon-add-btn" id="note-new-icon-btn">
+      <span id="note-new-icon-display"></span>
+      <span id="note-new-icon-label">Add icon</span>
+    </button>
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="note-new-title" rows="1" placeholder="Note title…"></textarea>
     </div>
-    <div class="form-group"><label class="form-label">Body</label>
-      <textarea id="n-body" style="min-height:160px">${v.body||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Category</label><select id="n-category">${catOpts}</select></div>
-      <div class="form-group"><label class="form-label">Note Date</label><input type="date" id="n-date" value="${v.note_date||''}" /></div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Goal</label><select id="n-goal">${goalOpts}</select></div>
-      <div class="form-group"><label class="form-label">Project</label><select id="n-project">${projOpts}</select></div>
-    </div>
-    <div class="form-group"><label class="form-label">Task</label><select id="n-task">${taskOpts}</select></div>
-    <div class="form-group"><label class="form-label">Tags</label>
-      <div class="tag-picker" id="note-tag-picker">${tagPickerHtml(selectedTagIds)}</div>
-    </div>
-    ${v.id ? `<div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
-      <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Custom Properties</div>
-      ${buildInlinePropPanel('note', v.id, [])}
-    </div>` : ''}
-    ${v.id ? buildCommentSection('note', v.id) : ''}
-    <div class="form-actions">
-      ${v.id ? `<button class="btn btn-danger" id="modal-delete-btn">Delete</button>` : ''}
-      ${isNew ? `<button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">Save</button>` : ''}
-    </div>`;
 
-  openFormSlideover(v.id ? 'Edit Note' : 'New Note', body);
-  const cancelBtn = document.getElementById('modal-cancel-btn');
-  if (cancelBtn) cancelBtn.onclick = closeFormSlideover;
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip chip-empty" id="chip-nnew-date" data-key="date">
+        <span class="chip-label">Date</span>
+        <span class="chip-value" id="chip-nnew-date-val">—</span>
+      </button>
+      <button class="prop-chip chip-empty" id="chip-nnew-tags" data-key="tags">
+        <span class="chip-label">Tags</span>
+        <span class="chip-value" id="chip-nnew-tags-val">—</span>
+      </button>
+      <button class="prop-chips-more" id="nnew-chips-more" title="More properties">···</button>
+    </div>
 
-  // ── Note icon picker ──────────────────────────────────────────────────
-  const noteIconBtn = document.getElementById('note-icon-btn');
-  const noteIconDisplay = document.getElementById('note-icon-display');
-  if (v.id) {
-    loadEntityIcon('note', v.id).then(icon => {
-      if (noteIconDisplay) { noteIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 20) : '☐'; noteIconDisplay.dataset.icon = icon || ''; }
+    <div id="nnew-prop-panel-wrap">
+      ${buildInlinePropPanel('note', null, noteNewBuiltinDefs)}
+    </div>
+
+    <div class="form-group" style="margin-top:12px">
+      <label class="form-label">Body</label>
+      <textarea id="note-new-body" style="width:100%;min-height:140px"></textarea>
+    </div>
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost btn-sm" id="nnew-cancel-btn">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="nnew-create-btn">Create Note</button>
+    </div>
+  `;
+
+  openSlideover('New Note', body);
+
+  const titleTA = document.getElementById('note-new-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  setTimeout(() => titleTA.focus(), 60);
+
+  // ── Icon ──────────────────────────────────────────────────────────────
+  let _pendingIcon = '';
+  const noteIconBtn = document.getElementById('note-new-icon-btn');
+  const noteIconDisplayEl = document.getElementById('note-new-icon-display');
+  const noteIconLabel = document.getElementById('note-new-icon-label');
+  noteIconBtn.onclick = (e) => {
+    e.stopPropagation();
+    showIconPicker(noteIconBtn, 'note', null, _pendingIcon, (newIcon) => {
+      _pendingIcon = newIcon || '';
+      noteIconDisplayEl.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
+      noteIconLabel.textContent = newIcon ? '' : 'Add icon';
     });
+  };
+
+  // ── Inline prop panel + chip config ──────────────────────────────────
+  const nnewPropPanel = document.querySelector('#nnew-prop-panel-wrap .inline-prop-panel');
+  document.getElementById('nnew-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    showChipConfigPanel('note', e.currentTarget, [
+      { key: 'date', label: 'Date' },
+      { key: 'tags', label: 'Tags' },
+    ]);
+  };
+  // inline prop panel always visible (matches edit slideover style)
+
+  // ── Bind inline prop panel ────────────────────────────────────────────
+  const nnewRerender = () => {
+    const wrap = document.getElementById('nnew-prop-panel-wrap');
+    if (!wrap) return;
+    const wasVisible = wrap.querySelector('.inline-prop-panel')?.style.display !== 'none';
+    wrap.innerHTML = buildInlinePropPanel('note', null, noteNewBuiltinDefs);
+    if (!wasVisible) wrap.querySelector('.inline-prop-panel').style.display = 'none';
+    bindInlinePropPanel('note', null, nnewBuiltinEditFns, nnewRerender);
+  };
+  const nnewBuiltinEditFns = {
+    category: (valEl) => {
+      const cats = [{ value: '', label: '— none —' }, ...(allCats||[]).map(c => ({ value: c.id, label: c.name }))];
+      openCombo(valEl, cats, d.category_id, ({ value }) => { d.category_id = value ? parseInt(value) : null; nnewRerender(); }, { allowCreate: true });
+    },
+    goal: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))];
+      openCombo(valEl, items, d.goal_id, ({ value }) => { d.goal_id = value ? parseInt(value) : null; nnewRerender(); });
+    },
+    project: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))];
+      openCombo(valEl, items, d.project_id, ({ value }) => { d.project_id = value ? parseInt(value) : null; nnewRerender(); });
+    },
+    task: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...tasks.map(t => ({ value: t.id, label: t.title }))];
+      openCombo(valEl, items, d.task_id, ({ value }) => { d.task_id = value ? parseInt(value) : null; nnewRerender(); });
+    },
+  };
+  bindInlinePropPanel('note', null, nnewBuiltinEditFns, nnewRerender);
+
+  // ── Combo/date helpers ────────────────────────────────────────────────
+  let _comboEl = null;
+  function closeCombo() { if (_comboEl) { _comboEl.remove(); _comboEl = null; } document.removeEventListener('mousedown', _comboOut); }
+  function _comboOut(e) { if (_comboEl && !_comboEl.contains(e.target)) closeCombo(); }
+  function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
+    closeCombo();
+    const { allowCreate = false, multiSelect = false, selectedIds = [] } = opts;
+    let filter = '', focusIdx = -1, localSelected = new Set(selectedIds.map(String));
+    _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover';
+    function renderC() {
+      const filtered = filter ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase())) : items;
+      const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+      const selectedChips = multiSelect && localSelected.size > 0 ? `<div class="combo-selected-row">${[...localSelected].map(v2 => { const it = items.find(x => String(x.value) === v2); if (!it) return ''; const colorDot = it.color ? `<span style="width:6px;height:6px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0;margin-right:3px"></span>` : ''; return `<span class="combo-sel-chip" data-remove="${v2.replace(/"/g,'&quot;')}">${colorDot}${it.label}<span class="combo-sel-chip-x">×</span></span>`; }).join('')}</div>` : '';
+      _comboEl.innerHTML = `${selectedChips}<div class="combo-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" /></div><div class="combo-list">${filtered.length ? filtered.map((it, i) => { const isSel = multiSelect ? localSelected.has(String(it.value)) : String(it.value) === String(currentVal); const colorDot = it.color ? `<span style="width:8px;height:8px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0"></span>` : ''; return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${colorDot}${it.label}${isSel && multiSelect ? '<span class="combo-item-check">✓</span>' : ''}</div>`; }).join('') : '<div class="combo-empty">No results</div>'}${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Create "${filter.trim()}"</div>` : ''}</div>`;
+      const inp = _comboEl.querySelector('.combo-search'); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+      inp.oninput = (e2) => { filter = e2.target.value; focusIdx = -1; renderC(); };
+      inp.onkeydown = (e2) => { const ci = _comboEl.querySelectorAll('.combo-item'); if (e2.key === 'ArrowDown') { e2.preventDefault(); focusIdx = Math.min(focusIdx+1, ci.length-1); renderC(); } else if (e2.key === 'ArrowUp') { e2.preventDefault(); focusIdx = Math.max(focusIdx-1, 0); renderC(); } else if (e2.key === 'Enter') { e2.preventDefault(); if (focusIdx >= 0 && ci[focusIdx]) ci[focusIdx].click(); } else if (e2.key === 'Escape') closeCombo(); };
+      _comboEl.querySelectorAll('.combo-sel-chip').forEach(chip => { chip.onclick = (e2) => { e2.stopPropagation(); localSelected.delete(chip.dataset.remove); onSelect({ multiIds: [...localSelected] }); renderC(); }; });
+      _comboEl.querySelectorAll('.combo-item').forEach(el => { el.onclick = async (e2) => { e2.stopPropagation(); if (el.dataset.create) { await onSelect({ create: el.dataset.create }); closeCombo(); } else if (multiSelect) { const v2 = el.dataset.val; if (localSelected.has(v2)) localSelected.delete(v2); else localSelected.add(v2); onSelect({ multiIds: [...localSelected] }); renderC(); } else { onSelect({ value: el.dataset.val, label: el.dataset.label }); closeCombo(); } }; });
+    }
+    renderC();
+    const rect = anchorEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+    requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
   }
-  if (noteIconBtn) {
-    noteIconBtn.onclick = (e) => {
+
+  let _dpEl = null;
+  function closeDatePicker() { if (_dpEl) { _dpEl.remove(); _dpEl = null; } document.removeEventListener('mousedown', _dpOut); }
+  function _dpOut(e) { if (_dpEl && !_dpEl.contains(e.target)) closeDatePicker(); }
+  function openSingleDatePicker(anchorEl, currentVal, onChange) {
+    closeDatePicker();
+    const today = new Date(); today.setHours(0,0,0,0);
+    let viewYear = currentVal ? new Date(currentVal+'T00:00:00').getFullYear() : today.getFullYear();
+    let viewMonth = currentVal ? new Date(currentVal+'T00:00:00').getMonth() : today.getMonth();
+    let selected = currentVal ? new Date(currentVal+'T00:00:00') : null;
+    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+    function toISO(dt) { return dt ? dt.toISOString().split('T')[0] : null; }
+    _dpEl = document.createElement('div'); _dpEl.className = 'datepicker-popover';
+    function renderPicker() {
+      const firstDay = new Date(viewYear, viewMonth, 1); let startDow = firstDay.getDay(); startDow = startDow === 0 ? 6 : startDow - 1;
+      const daysInMonth = new Date(viewYear, viewMonth+1, 0).getDate(); let dayGrid = ''; let dayNum = 1 - startDow;
+      for (let r = 0; r < 6; r++) { for (let c = 0; c < 7; c++, dayNum++) { if (dayNum < 1 || dayNum > daysInMonth) { dayGrid += `<div class="dp-day other-month"></div>`; } else { const dd = new Date(viewYear, viewMonth, dayNum); dd.setHours(0,0,0,0); const iso = toISO(dd); let cls = 'dp-day'; if (dd.getTime() === today.getTime()) cls += ' today'; if (selected && dd.getTime() === selected.getTime()) cls += ' selected'; dayGrid += `<div class="${cls}" data-iso="${iso}">${dayNum}</div>`; } } }
+      _dpEl.innerHTML = `<div class="dp-header"><button class="dp-nav-btn" id="dp-prev">‹</button><span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span><button class="dp-nav-btn" id="dp-next">›</button></div><div class="dp-grid">${DAYS.map(dd=>`<div class="dp-day-head">${dd}</div>`).join('')}${dayGrid}</div><div class="dp-footer"><span class="dp-footer-hint">${selected ? selected.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : 'Pick a date'}</span><button class="dp-clear-btn" id="dp-clear">Clear</button></div>`;
+      _dpEl.querySelector('#dp-prev').onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderPicker(); };
+      _dpEl.querySelector('#dp-next').onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderPicker(); };
+      _dpEl.querySelector('#dp-clear').onclick = () => { selected = null; onChange(null); closeDatePicker(); };
+      _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => { el.onclick = () => { selected = new Date(el.dataset.iso+'T00:00:00'); onChange(toISO(selected)); closeDatePicker(); }; });
+    }
+    renderPicker();
+    const rect = anchorEl.getBoundingClientRect(); _dpEl.style.top = (rect.bottom+4)+'px'; _dpEl.style.left = rect.left+'px'; document.body.appendChild(_dpEl);
+    requestAnimationFrame(() => { if (!_dpEl) return; const cr = _dpEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _dpEl.style.left = (window.innerWidth-cr.width-8)+'px'; if (cr.bottom > window.innerHeight-8) _dpEl.style.top = (rect.top-cr.height-4)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _dpOut), 0);
+  }
+
+  // ── Chip handlers ─────────────────────────────────────────────────────
+  document.getElementById('chip-nnew-date').onclick = (e) => {
+    e.stopPropagation();
+    openSingleDatePicker(e.currentTarget, d.note_date, (iso) => {
+      d.note_date = iso;
+      const chipVal = document.getElementById('chip-nnew-date-val');
+      const chipEl = document.getElementById('chip-nnew-date');
+      if (iso) {
+        const dt = new Date(iso+'T00:00:00');
+        if (chipVal) chipVal.textContent = dt.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+        if (chipEl) chipEl.classList.remove('chip-empty');
+      } else {
+        if (chipVal) chipVal.textContent = '—';
+        if (chipEl) chipEl.classList.add('chip-empty');
+      }
+    });
+  };
+
+  document.getElementById('chip-nnew-tags').onclick = (e) => {
+    e.stopPropagation();
+    const items = (allTags||[]).map(t => ({ value: t.id, label: t.name, color: t.color }));
+    openCombo(e.currentTarget, items, null, async ({ multiIds, create }) => {
+      let ids = (multiIds || d.tags.map(t => t.id));
+      if (create) {
+        try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); if (allTags) allTags.push(nt); ids = [...ids, nt.id]; } catch(err) {}
+      }
+      d.tags = ids.map(id => (allTags||[]).find(t => String(t.id) === String(id)) || { id, name: String(id), color: 'blue' });
+      const chipVal = document.getElementById('chip-nnew-tags-val');
+      if (chipVal) chipVal.innerHTML = d.tags.length ? d.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      const chipEl = document.getElementById('chip-nnew-tags');
+      if (chipEl) chipEl.classList.toggle('chip-empty', !d.tags.length);
+    }, { multiSelect: true, allowCreate: true, selectedIds: d.tags.map(t => t.id) });
+  };
+
+  // ── Inline prop panel row handlers ────────────────────────────────────
+  document.querySelectorAll('#nnew-inline-prop-panel .prop-row').forEach(row => {
+    row.onclick = (e) => {
       e.stopPropagation();
-      const cur = noteIconDisplay ? noteIconDisplay.dataset.icon || '' : '';
-      showIconPicker(noteIconBtn, 'note', v.id || null, cur, (newIcon) => {
-        if (noteIconDisplay) { noteIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 20) : '☐'; noteIconDisplay.dataset.icon = newIcon; }
-        if (v.id) {
-          saveEntityIcon('note', v.id, newIcon).catch(() => {
-            if (noteIconDisplay) { noteIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 20) : '☐'; noteIconDisplay.dataset.icon = cur; }
-          });
-        }
-      });
+      const key = row.dataset.propKey;
+      const valEl = document.getElementById(`nnew-prop-val-${key}`);
+      if (key === 'category') {
+        const cats = (allCats||[]).map(c => ({ value: c.id, label: c.name }));
+        openCombo(valEl, cats, d.category_id, ({ value }) => { const c = allCats.find(x => String(x.id) === String(value)); valEl.innerHTML = c ? `<span>${c.name}</span>` : ''; d.category_id = value ? parseInt(value) : null; }, { allowCreate: true });
+      } else if (key === 'goal') {
+        const items = [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))];
+        openCombo(valEl, items, d.goal_id, ({ value }) => { const g = goals.find(x => String(x.id) === String(value)); valEl.innerHTML = g ? `<span>${g.title}</span>` : ''; d.goal_id = value ? parseInt(value) : null; });
+      } else if (key === 'project') {
+        const items = [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))];
+        openCombo(valEl, items, d.project_id, ({ value }) => { const p = projects.find(x => String(x.id) === String(value)); valEl.innerHTML = p ? `<span>${p.title}</span>` : ''; d.project_id = value ? parseInt(value) : null; });
+      } else if (key === 'task') {
+        const items = [{ value: '', label: '— none —' }, ...tasks.map(t => ({ value: t.id, label: t.title }))];
+        openCombo(valEl, items, d.task_id, ({ value }) => { const t = tasks.find(x => String(x.id) === String(value)); valEl.innerHTML = t ? `<span>${t.title}</span>` : ''; d.task_id = value ? parseInt(value) : null; });
+      }
     };
-  }
-
-  // Bind inline custom props panel (for existing notes only)
-  if (v.id) bindInlinePropPanel('note', v.id, {}, () => showNoteModal(note, afterSave));
-  if (v.id) bindCommentSection(document.querySelector('.comment-section[data-entity-type="note"]'));
-
-  // Tag picker toggle
-  document.querySelectorAll('#note-tag-picker .tag-chip').forEach(chip => {
-    chip.onclick = () => chip.classList.toggle('selected');
   });
 
-  async function saveNote(isCreate) {
+  // ── Create / Cancel ───────────────────────────────────────────────────
+  document.getElementById('nnew-cancel-btn').onclick = () => closeSlideover();
+  document.getElementById('nnew-create-btn').onclick = async () => {
+    const title = document.getElementById('note-new-title').value.trim();
+    if (!title) { alert('Title is required'); return; }
     const data = {
-      title: document.getElementById('n-title').value.trim(),
-      body: document.getElementById('n-body').value,
-      category_id: document.getElementById('n-category').value ? parseInt(document.getElementById('n-category').value) : null,
-      note_date: document.getElementById('n-date').value || null,
-      goal_id: document.getElementById('n-goal').value ? parseInt(document.getElementById('n-goal').value) : null,
-      project_id: document.getElementById('n-project').value ? parseInt(document.getElementById('n-project').value) : null,
-      task_id: document.getElementById('n-task').value ? parseInt(document.getElementById('n-task').value) : null,
+      title,
+      body: document.getElementById('note-new-body').value,
+      note_date: d.note_date || null,
+      category_id: d.category_id || null,
+      goal_id: d.goal_id || null,
+      project_id: d.project_id || null,
+      task_id: d.task_id || null,
     };
-    if (!data.title) { if (isCreate) alert('Title is required'); return; }
-    const indicator = document.getElementById('note-save-indicator');
-    if (indicator) indicator.textContent = 'Saving…';
     try {
-      let savedId = v.id;
-      if (v.id) {
-        await api('PATCH', `/api/notes/${v.id}`, data);
-      } else {
-        const created = await api('POST', '/api/notes', data);
-        if (created) savedId = created.id;
+      const created = await api('POST', '/api/notes', data);
+      if (created?.id) {
+        if (d.tags.length) { try { await api('PUT', `/api/notes/${created.id}/tags`, { tag_ids: d.tags.map(t => t.id).map(Number) }); } catch(e2) {} }
+        if (_pendingIcon) { try { await saveEntityIcon('note', created.id, _pendingIcon); } catch(e2) {} }
       }
-      const pickedIds = [...document.querySelectorAll('#note-tag-picker .tag-chip.selected')].map(c => parseInt(c.dataset.tagId));
-      if (savedId) {
-        try { await api('PUT', `/api/notes/${savedId}/tags`, { tag_ids: pickedIds }); } catch(e) {}
-      }
-      if (indicator) indicator.textContent = 'Saved';
-      if (isCreate) { closeFormSlideover(); if (afterSave) afterSave(); else renderNotes(); }
-      else if (afterSave) afterSave();
-    } catch(err) {
-      if (indicator) indicator.textContent = 'Save failed';
-      if (isCreate) alert('Error saving note: ' + (err.message || String(err)));
-    }
-  }
-
-  if (isNew) {
-    document.getElementById('modal-save-btn').onclick = () => saveNote(true);
-  } else {
-    let saveTimer = null;
-    function scheduleAutoSave() { clearTimeout(saveTimer); saveTimer = setTimeout(() => saveNote(false), 600); }
-    ['n-title','n-body','n-date'].forEach(id => document.getElementById(id)?.addEventListener('input', scheduleAutoSave));
-    ['n-category','n-goal','n-project','n-task'].forEach(id => document.getElementById(id)?.addEventListener('change', () => { clearTimeout(saveTimer); saveNote(false); }));
-    document.querySelectorAll('#note-tag-picker .tag-chip').forEach(chip => {
-      chip.addEventListener('click', () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => saveNote(false), 300); });
-    });
-    document.getElementById('note-json-inline-btn')?.addEventListener('click', () =>
-      showJSONModal(`/api/export/note/${v.id}`, `note-${v.title||v.id}.json`));
-  }
-  if (v.id) {
-    document.getElementById('modal-delete-btn').onclick = async () => {
-      if (!confirm('Delete this note?')) return;
-      await api('DELETE', `/api/notes/${v.id}`);
-      closeFormSlideover();
+      closeSlideover();
       if (afterSave) afterSave(); else renderNotes();
-    };
-  }
+    } catch(err) { alert('Error saving note: ' + (err.message || String(err))); }
+  };
 }
 
-/* ─── Sprint Modal ───────────────────────────────────────────────────── */
-function showSprintModal(projects, sprint) {
-  const s = sprint || {};
-  const projOpts = '<option value="">— none —</option>' + (projects||[]).map(p =>
-    `<option value="${p.id}" ${String(p.id)===String(s.project_id)?'selected':''}>${p.title}</option>`).join('');
+/* ─── Note Slideover (existing note, prop-chip style) ───────────────── */
+async function showNoteSlideover(note, afterSave) {
+  const v = note;
+  let projects = [], tasks = [], goals = [], existingTags = [], allCats = [];
+  try {
+    [projects, tasks, goals] = await Promise.all([
+      api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
+    ]);
+  } catch(e) {}
+  if (allCategories) allCats = allCategories;
+  const tags = (v.tags || []).slice();
+  const catName = allCats.find(c => String(c.id) === String(v.category_id))?.name || null;
+  const projName = projects.find(p => String(p.id) === String(v.project_id))?.title || null;
+  const goalName = goals.find(g => String(g.id) === String(v.goal_id))?.title || null;
+
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const noteBuiltinDefs = [
+    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+    { key: 'goal',     label: 'Goal',     icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
+    { key: 'project',  label: 'Project',  icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+      renderValue: () => projName ? `<span>${projName}</span>` : '' },
+    { key: 'task',     label: 'Task',     icon: pIco('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>'),
+      renderValue: () => { const t = tasks.find(t => String(t.id) === String(v.task_id)); return t ? `<span>${t.title}</span>` : ''; } },
+  ];
+
+  const noteDateDisplay = v.note_date ? (() => { const d = new Date(v.note_date+'T00:00:00'); return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); })() : '—';
 
   const body = `
-    <div class="form-group"><label class="form-label">Title *</label>
-      <div style="display:flex;align-items:center;gap:8px">
-        <button type="button" class="entity-icon-btn" id="sprint-icon-btn" title="Set icon"><span id="sprint-icon-display">☐</span></button>
-        <input type="text" id="sp-title" placeholder="Sprint name" value="${(s.title||'').replace(/"/g,'&quot;')}" style="flex:1" />
+    <button class="entity-icon-add-btn" id="note-icon-add-btn">
+      <span id="note-icon-display"></span>
+      <span id="note-icon-add-label">Add icon</span>
+    </button>
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="detail-title" rows="1">${(v.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+    </div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip${v.note_date ? '' : ' chip-empty'}" id="chip-note-date" data-key="date">
+        <span class="chip-label">Date</span>
+        <span class="chip-value" id="chip-note-date-val">${noteDateDisplay}</span>
+      </button>
+      <button class="prop-chip" id="chip-note-tags" data-key="tags">
+        <span class="chip-label">Tags</span>
+        <span class="chip-value" id="chip-note-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span>
+      </button>
+      <button class="prop-chips-more" id="note-chips-more" title="More properties">···</button>
+    </div>
+
+    ${buildInlinePropPanel('note', v.id, noteBuiltinDefs)}
+
+    <div class="form-group">
+      <label class="form-label">Body</label>
+      <textarea id="detail-body" style="width:100%;min-height:140px">${v.body||''}</textarea>
+    </div>
+    ${buildCommentSection('note', v.id)}
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px">
+      <button class="btn btn-ghost btn-sm" id="note-json-btn">Export JSON</button>
+      <button class="btn btn-ghost btn-sm" id="note-delete-btn" style="color:var(--color-danger)">Delete</button>
+    </div>
+  `;
+
+  openSlideover(v.title, body, afterSave || null);
+
+  // ── Icon ──────────────────────────────────────────────────────────────
+  const noteIconAddBtn = document.getElementById('note-icon-add-btn');
+  const noteIconDisplayEl = document.getElementById('note-icon-display');
+  const noteIconAddLabel = document.getElementById('note-icon-add-label');
+  loadEntityIcon('note', v.id).then(icon => {
+    if (icon) { noteIconDisplayEl.innerHTML = renderEntityIcon(icon, 32); noteIconDisplayEl.dataset.icon = icon; noteIconAddLabel.textContent = ''; }
+  });
+  noteIconAddBtn.onclick = (e) => {
+    e.stopPropagation();
+    const cur = noteIconDisplayEl.dataset.icon || '';
+    showIconPicker(noteIconAddBtn, 'note', v.id, cur, (newIcon) => {
+      noteIconDisplayEl.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : ''; noteIconDisplayEl.dataset.icon = newIcon; noteIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      saveEntityIcon('note', v.id, newIcon).catch(() => { noteIconDisplayEl.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; noteIconDisplayEl.dataset.icon = cur; noteIconAddLabel.textContent = cur ? '' : 'Add icon'; });
+    });
+  };
+
+  async function patchNote(data) {
+    try { await api('PATCH', `/api/notes/${v.id}`, data); } catch(e) { return; }
+    Object.assign(v, data);
+  }
+
+  // ── Title auto-save ───────────────────────────────────────────────────
+  const titleTA = document.getElementById('detail-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  titleTA.onblur = (e) => patchNote({ title: e.target.value });
+
+  // ── Body auto-save ────────────────────────────────────────────────────
+  let bodyTimer = null;
+  document.getElementById('detail-body').addEventListener('input', () => {
+    clearTimeout(bodyTimer); bodyTimer = setTimeout(() => patchNote({ body: document.getElementById('detail-body').value }), 700);
+  });
+
+  // ── Combo/date helpers ────────────────────────────────────────────────
+  let _comboEl = null;
+  function closeCombo() { if (_comboEl) { _comboEl.remove(); _comboEl = null; } document.removeEventListener('mousedown', _comboOutside); }
+  function _comboOutside(e) { if (_comboEl && !_comboEl.contains(e.target)) closeCombo(); }
+  function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
+    closeCombo();
+    const { allowCreate = false, multiSelect = false, selectedIds = [] } = opts;
+    let filter = '', focusIdx = -1, localSelected = new Set(selectedIds.map(String));
+    _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover';
+    function render() {
+      const filtered = filter ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase())) : items;
+      const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+      const selectedChips = multiSelect && localSelected.size > 0 ? `<div class="combo-selected-row">${[...localSelected].map(v2 => { const it = items.find(x => String(x.value) === v2); if (!it) return ''; const colorDot = it.color ? `<span style="width:6px;height:6px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0;margin-right:3px"></span>` : ''; return `<span class="combo-sel-chip" data-remove="${v2.replace(/"/g,'&quot;')}">${colorDot}${it.label}<span class="combo-sel-chip-x">×</span></span>`; }).join('')}</div>` : '';
+      _comboEl.innerHTML = `${selectedChips}<div class="combo-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" /></div><div class="combo-list">${filtered.length ? filtered.map((it, i) => { const isSel = multiSelect ? localSelected.has(String(it.value)) : String(it.value) === String(currentVal); const colorDot = it.color ? `<span style="width:8px;height:8px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0"></span>` : ''; return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${colorDot}${it.label}${isSel && multiSelect ? '<span class="combo-item-check">✓</span>' : ''}</div>`; }).join('') : '<div class="combo-empty">No results</div>'}${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Create "${filter.trim()}"</div>` : ''}</div>`;
+      const inp = _comboEl.querySelector('.combo-search'); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+      inp.oninput = (e) => { filter = e.target.value; focusIdx = -1; render(); };
+      inp.onkeydown = (e) => { const comboItems = _comboEl.querySelectorAll('.combo-item'); if (e.key === 'ArrowDown') { e.preventDefault(); focusIdx = Math.min(focusIdx+1, comboItems.length-1); render(); } else if (e.key === 'ArrowUp') { e.preventDefault(); focusIdx = Math.max(focusIdx-1, 0); render(); } else if (e.key === 'Enter') { e.preventDefault(); if (focusIdx >= 0 && comboItems[focusIdx]) comboItems[focusIdx].click(); } else if (e.key === 'Escape') closeCombo(); };
+      _comboEl.querySelectorAll('.combo-sel-chip').forEach(chip => { chip.onclick = (e) => { e.stopPropagation(); localSelected.delete(chip.dataset.remove); onSelect({ multiIds: [...localSelected] }); render(); }; });
+      _comboEl.querySelectorAll('.combo-item').forEach(el => { el.onclick = async (e) => { e.stopPropagation(); if (el.dataset.create) { await onSelect({ create: el.dataset.create }); closeCombo(); } else if (multiSelect) { const v2 = el.dataset.val; if (localSelected.has(v2)) localSelected.delete(v2); else localSelected.add(v2); onSelect({ multiIds: [...localSelected] }); render(); } else { onSelect({ value: el.dataset.val, label: el.dataset.label }); closeCombo(); } }; });
+    }
+    render();
+    const rect = anchorEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+    requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _comboOutside), 0);
+  }
+
+  // Single-date picker for note date
+  let _dpEl = null;
+  function closeDatePicker() { if (_dpEl) { _dpEl.remove(); _dpEl = null; } document.removeEventListener('mousedown', _dpOut); }
+  function _dpOut(e) { if (_dpEl && !_dpEl.contains(e.target)) closeDatePicker(); }
+  function openSingleDatePicker(anchorEl, currentVal, onChange) {
+    closeDatePicker();
+    const today = new Date(); today.setHours(0,0,0,0);
+    let viewYear = currentVal ? new Date(currentVal+'T00:00:00').getFullYear() : today.getFullYear();
+    let viewMonth = currentVal ? new Date(currentVal+'T00:00:00').getMonth() : today.getMonth();
+    let selected = currentVal ? new Date(currentVal+'T00:00:00') : null;
+    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+    function toISO(d) { return d ? d.toISOString().split('T')[0] : null; }
+    _dpEl = document.createElement('div'); _dpEl.className = 'datepicker-popover';
+    function renderPicker() {
+      const firstDay = new Date(viewYear, viewMonth, 1); let startDow = firstDay.getDay(); startDow = startDow === 0 ? 6 : startDow - 1;
+      const daysInMonth = new Date(viewYear, viewMonth+1, 0).getDate(); let dayGrid = ''; let dayNum = 1 - startDow;
+      for (let r = 0; r < 6; r++) { for (let c = 0; c < 7; c++, dayNum++) { if (dayNum < 1 || dayNum > daysInMonth) { dayGrid += `<div class="dp-day other-month"></div>`; } else { const d = new Date(viewYear, viewMonth, dayNum); d.setHours(0,0,0,0); const iso = toISO(d); let cls = 'dp-day'; if (d.getTime() === today.getTime()) cls += ' today'; if (selected && d.getTime() === selected.getTime()) cls += ' selected'; dayGrid += `<div class="${cls}" data-iso="${iso}">${dayNum}</div>`; } } }
+      _dpEl.innerHTML = `<div class="dp-header"><button class="dp-nav-btn" id="dp-prev">‹</button><span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span><button class="dp-nav-btn" id="dp-next">›</button></div><div class="dp-grid">${DAYS.map(d=>`<div class="dp-day-head">${d}</div>`).join('')}${dayGrid}</div><div class="dp-footer"><span class="dp-footer-hint">${selected ? selected.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : 'Pick a date'}</span><button class="dp-clear-btn" id="dp-clear">Clear</button></div>`;
+      _dpEl.querySelector('#dp-prev').onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderPicker(); };
+      _dpEl.querySelector('#dp-next').onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderPicker(); };
+      _dpEl.querySelector('#dp-clear').onclick = () => { selected = null; onChange(null); closeDatePicker(); };
+      _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => { el.onclick = () => { selected = new Date(el.dataset.iso+'T00:00:00'); onChange(toISO(selected)); closeDatePicker(); }; });
+    }
+    renderPicker();
+    const rect = anchorEl.getBoundingClientRect(); _dpEl.style.top = (rect.bottom+4)+'px'; _dpEl.style.left = rect.left+'px'; document.body.appendChild(_dpEl);
+    requestAnimationFrame(() => { if (!_dpEl) return; const cr = _dpEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _dpEl.style.left = (window.innerWidth-cr.width-8)+'px'; if (cr.bottom > window.innerHeight-8) _dpEl.style.top = (rect.top-cr.height-4)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _dpOut), 0);
+  }
+
+  // ── Chip handlers ─────────────────────────────────────────────────────
+  document.getElementById('chip-note-date').onclick = (e) => {
+    e.stopPropagation();
+    openSingleDatePicker(e.currentTarget, v.note_date || null, async (iso) => {
+      v.note_date = iso;
+      const chipEl = document.getElementById('chip-note-date');
+      const chipVal = document.getElementById('chip-note-date-val');
+      if (iso) {
+        const d = new Date(iso+'T00:00:00');
+        if (chipVal) chipVal.textContent = d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+        if (chipEl) chipEl.classList.remove('chip-empty');
+      } else {
+        if (chipVal) chipVal.textContent = '—';
+        if (chipEl) chipEl.classList.add('chip-empty');
+      }
+      await patchNote({ note_date: iso || null });
+    });
+  };
+
+  document.getElementById('chip-note-tags').onclick = (e) => {
+    e.stopPropagation();
+    const items = (allTags||[]).map(t => ({ value: t.id, label: t.name, color: t.color }));
+    const curIds = tags.map(t => t.id);
+    openCombo(e.currentTarget, items, null, async ({ multiIds, create }) => {
+      let ids = multiIds || curIds;
+      if (create) {
+        try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); if (allTags) allTags.push(nt); ids = [...curIds, nt.id]; } catch(err) {}
+      }
+      await api('PUT', `/api/notes/${v.id}/tags`, { tag_ids: ids.map(Number) });
+      tags.splice(0, tags.length, ...(ids.map(id => (allTags||[]).find(t => String(t.id) === String(id)) || { id, name: String(id), color: 'blue' })));
+      const chipVal = document.getElementById('chip-note-tags-val');
+      if (chipVal) chipVal.innerHTML = tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      if (afterSave) afterSave();
+    }, { multiSelect: true, allowCreate: true, selectedIds: curIds });
+  };
+
+  // ── Inline prop panel ─────────────────────────────────────────────────
+  const noteInlinePropEditFns = {
+    category: (valEl) => {
+      const cats = (allCats||[]).map(c => ({ value: c.id, label: c.name }));
+      openCombo(valEl, cats, v.category_id, async ({ value }) => { const c = allCats.find(x => String(x.id) === String(value)); valEl.innerHTML = c ? `<span>${c.name}</span>` : ''; v.category_id = value ? parseInt(value) : null; await patchNote({ category_id: v.category_id }); }, { allowCreate: true });
+    },
+    goal: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))];
+      openCombo(valEl, items, v.goal_id, async ({ value }) => { const g = goals.find(x => String(x.id) === String(value)); valEl.innerHTML = g ? `<span>${g.title}</span>` : ''; v.goal_id = value ? parseInt(value) : null; await patchNote({ goal_id: v.goal_id }); });
+    },
+    project: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))];
+      openCombo(valEl, items, v.project_id, async ({ value }) => { const p = projects.find(x => String(x.id) === String(value)); valEl.innerHTML = p ? `<span>${p.title}</span>` : ''; v.project_id = value ? parseInt(value) : null; await patchNote({ project_id: v.project_id }); });
+    },
+    task: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...tasks.map(t => ({ value: t.id, label: t.title }))];
+      openCombo(valEl, items, v.task_id, async ({ value }) => { const t = tasks.find(x => String(x.id) === String(value)); valEl.innerHTML = t ? `<span>${t.title}</span>` : ''; v.task_id = value ? parseInt(value) : null; await patchNote({ task_id: v.task_id }); });
+    },
+  };
+  bindInlinePropPanel('note', v.id, noteInlinePropEditFns, () => showNoteSlideover(v, afterSave));
+  document.getElementById('note-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    showChipConfigPanel('note', e.currentTarget, [
+      { key: 'date', label: 'Date' },
+      { key: 'tags', label: 'Tags' },
+    ], () => showNoteSlideover(v, afterSave));
+  };
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="note"]'));
+
+  document.getElementById('note-json-btn').onclick = () =>
+    showJSONModal(`/api/export/note/${v.id}`, `note-${(v.title||v.id).replace(/\s+/g,'-')}.json`);
+  document.getElementById('note-delete-btn').onclick = async () => {
+    if (!confirm('Delete this note?')) return;
+    await api('DELETE', `/api/notes/${v.id}`);
+    closeSlideover();
+    if (afterSave) afterSave(); else renderNotes();
+  };
+}
+
+/* ─── Sprint Create Slideover (prop-chip style) / Sprint edit → showSprintSlideover */
+function showSprintModal(projects, sprint) {
+  const s = sprint || {};
+  if (s.id) { return showSprintSlideover(projects, s); }
+
+  // ── New sprint: prop-chip create slideover ────────────────────────────
+  const d = { project_id: null, start_date: null, end_date: null, story_points: null, goal: null };
+
+  function fmtDateRange(start, end) {
+    const fmt = (v2) => { if (!v2) return null; const dt = new Date(stripDate(v2)+'T00:00:00'); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric'}); };
+    const sv = fmt(start), ev = fmt(end);
+    if (sv && ev && sv !== ev) return `${sv} → ${ev}`;
+    return sv || ev || '—';
+  }
+
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const sprintNewBuiltinDefs = [
+    { key: 'project', label: 'Project', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+      renderValue: () => { const p = (projects||[]).find(x => String(x.id) === String(d.project_id)); return p ? `<span>${p.title}</span>` : ''; } },
+    { key: 'capacity', label: 'Capacity (SP)', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
+      renderValue: () => d.story_points != null ? `<span>${d.story_points}</span>` : '' },
+    { key: 'goal_text', label: 'Sprint Goal', icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => d.goal ? `<span>${d.goal}</span>` : '' },
+  ];
+
+  const body = `
+    <button class="entity-icon-add-btn" id="sprint-new-icon-btn">
+      <span id="sprint-new-icon-display"></span>
+      <span id="sprint-new-icon-label">Add icon</span>
+    </button>
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="sprint-new-title" rows="1" placeholder="Sprint name…"></textarea>
+    </div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip chip-status-planned" id="chip-snew-status">
+        <span class="chip-label">Status</span>
+        <span class="chip-value">planned</span>
+      </button>
+      <button class="prop-chip chip-empty" id="chip-snew-dates" data-key="dates">
+        <span class="chip-label">Dates</span>
+        <span class="chip-value" id="chip-snew-dates-val">—</span>
+      </button>
+      <button class="prop-chips-more" id="snew-chips-more" title="More properties">···</button>
+    </div>
+
+    <div id="snew-prop-panel-wrap">${buildInlinePropPanel('sprint', null, sprintNewBuiltinDefs)}</div>
+
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost btn-sm" id="snew-cancel-btn">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="snew-create-btn">Create Sprint</button>
+    </div>
+  `;
+
+  openSlideover('New Sprint', body);
+
+  const titleTA = document.getElementById('sprint-new-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  setTimeout(() => titleTA.focus(), 60);
+
+  // ── Icon (pending, saved after create) ───────────────────────────────
+  let _pendingIcon = '';
+  const sprintIconBtn = document.getElementById('sprint-new-icon-btn');
+  const sprintIconDisplayEl = document.getElementById('sprint-new-icon-display');
+  const sprintIconLabel = document.getElementById('sprint-new-icon-label');
+  sprintIconBtn.onclick = (e) => {
+    e.stopPropagation();
+    showIconPicker(sprintIconBtn, 'sprint', null, _pendingIcon, (newIcon) => {
+      _pendingIcon = newIcon || '';
+      sprintIconDisplayEl.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
+      sprintIconLabel.textContent = newIcon ? '' : 'Add icon';
+    });
+  };
+
+  // ── Inline prop panel + chip config ──────────────────────────────────
+  const snewPropPanel = document.querySelector('#snew-prop-panel-wrap .inline-prop-panel');
+  document.getElementById('snew-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    showChipConfigPanel('sprint', e.currentTarget, [
+      { key: 'status', label: 'Status' },
+      { key: 'dates',  label: 'Dates' },
+    ]);
+  };
+  // inline prop panel always visible (matches edit slideover style)
+
+  const snewRerender = () => {
+    const wrap = document.getElementById('snew-prop-panel-wrap');
+    if (!wrap) return;
+    const wasVisible = wrap.querySelector('.inline-prop-panel')?.style.display !== 'none';
+    wrap.innerHTML = buildInlinePropPanel('sprint', null, sprintNewBuiltinDefs);
+    if (!wasVisible) wrap.querySelector('.inline-prop-panel').style.display = 'none';
+    bindInlinePropPanel('sprint', null, snewBuiltinEditFns, snewRerender);
+  };
+  const snewBuiltinEditFns = {
+    project: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...(projects||[]).map(p => ({ value: p.id, label: p.title }))];
+      openCombo(valEl, items, d.project_id, ({ value }) => { d.project_id = value ? parseInt(value) : null; snewRerender(); });
+    },
+    capacity: (valEl) => {
+      closeCombo();
+      _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover'; _comboEl.style.minWidth = '220px';
+      _comboEl.innerHTML = `<div style="padding:8px"><label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px">Capacity (Story Points)</label><input type="number" id="snew-sp-input" value="${d.story_points != null ? d.story_points : ''}" min="0" style="width:100%;box-sizing:border-box" placeholder="e.g. 40" /><div style="display:flex;gap:6px;margin-top:6px;justify-content:flex-end"><button class="btn btn-sm btn-ghost" id="snew-sp-cancel">Cancel</button><button class="btn btn-sm btn-primary" id="snew-sp-save">Set</button></div></div>`;
+      const rect = valEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+      requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; const inp = _comboEl.querySelector('#snew-sp-input'); if (inp) inp.focus(); });
+      _comboEl.querySelector('#snew-sp-cancel').onclick = closeCombo;
+      _comboEl.querySelector('#snew-sp-save').onclick = () => { const v2 = _comboEl.querySelector('#snew-sp-input').value.trim(); d.story_points = v2 !== '' ? parseInt(v2, 10) : null; closeCombo(); snewRerender(); };
+      setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
+    },
+    goal_text: (valEl) => {
+      closeCombo();
+      _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover'; _comboEl.style.minWidth = '260px';
+      _comboEl.innerHTML = `<div style="padding:8px"><label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px">Sprint Goal</label><input type="text" id="snew-goal-input" value="${(d.goal||'').replace(/"/g,'&quot;')}" style="width:100%;box-sizing:border-box" placeholder="What will this sprint accomplish?" /><div style="display:flex;gap:6px;margin-top:6px;justify-content:flex-end"><button class="btn btn-sm btn-ghost" id="snew-goal-cancel">Cancel</button><button class="btn btn-sm btn-primary" id="snew-goal-save">Set</button></div></div>`;
+      const rect = valEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+      requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; const inp = _comboEl.querySelector('#snew-goal-input'); if (inp) inp.focus(); });
+      _comboEl.querySelector('#snew-goal-cancel').onclick = closeCombo;
+      _comboEl.querySelector('#snew-goal-save').onclick = () => { d.goal = _comboEl.querySelector('#snew-goal-input').value.trim() || null; closeCombo(); snewRerender(); };
+      setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
+    },
+  };
+  bindInlinePropPanel('sprint', null, snewBuiltinEditFns, snewRerender);
+
+  // ── Combo/date helpers ────────────────────────────────────────────────
+  let _comboEl = null;
+  function closeCombo() { if (_comboEl) { _comboEl.remove(); _comboEl = null; } document.removeEventListener('mousedown', _comboOut); }
+  function _comboOut(e) { if (_comboEl && !_comboEl.contains(e.target)) closeCombo(); }
+  function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
+    closeCombo();
+    const { allowCreate = false } = opts;
+    let filter = '', focusIdx = -1;
+    _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover';
+    function renderC() {
+      const filtered = filter ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase())) : items;
+      const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+      _comboEl.innerHTML = `<div class="combo-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" /></div><div class="combo-list">${filtered.length ? filtered.map((it, i) => { const isSel = String(it.value) === String(currentVal); return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${it.label}</div>`; }).join('') : '<div class="combo-empty">No results</div>'}${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Create "${filter.trim()}"</div>` : ''}</div>`;
+      const inp = _comboEl.querySelector('.combo-search'); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+      inp.oninput = (e2) => { filter = e2.target.value; focusIdx = -1; renderC(); };
+      inp.onkeydown = (e2) => { const ci = _comboEl.querySelectorAll('.combo-item'); if (e2.key === 'ArrowDown') { e2.preventDefault(); focusIdx = Math.min(focusIdx+1, ci.length-1); renderC(); } else if (e2.key === 'ArrowUp') { e2.preventDefault(); focusIdx = Math.max(focusIdx-1, 0); renderC(); } else if (e2.key === 'Enter') { e2.preventDefault(); if (focusIdx >= 0 && ci[focusIdx]) ci[focusIdx].click(); } else if (e2.key === 'Escape') closeCombo(); };
+      _comboEl.querySelectorAll('.combo-item').forEach(el => { el.onclick = (e2) => { e2.stopPropagation(); if (el.dataset.create) { onSelect({ create: el.dataset.create }); closeCombo(); } else { onSelect({ value: el.dataset.val, label: el.dataset.label }); closeCombo(); } }; });
+    }
+    renderC();
+    const rect = anchorEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+    requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
+  }
+
+  let _dpEl = null;
+  function closeDatePicker() { if (_dpEl) { _dpEl.remove(); _dpEl = null; } document.removeEventListener('mousedown', _dpOut); }
+  function _dpOut(e) { if (_dpEl && !_dpEl.contains(e.target)) closeDatePicker(); }
+  function openDateRangePicker(anchorEl, startVal, endVal, onChange) {
+    closeDatePicker();
+    const today = new Date(); today.setHours(0,0,0,0);
+    let viewYear = today.getFullYear(), viewMonth = today.getMonth();
+    let rangeStart = startVal ? new Date(startVal+'T00:00:00') : null;
+    let rangeEnd = endVal ? new Date(endVal+'T00:00:00') : null;
+    let pickingEnd = !!rangeStart;
+    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+    function toISO(dt) { return dt ? dt.toISOString().split('T')[0] : null; }
+    _dpEl = document.createElement('div'); _dpEl.className = 'datepicker-popover';
+    function renderPicker() {
+      const firstDay = new Date(viewYear, viewMonth, 1); let startDow = firstDay.getDay(); startDow = startDow === 0 ? 6 : startDow - 1;
+      const daysInMonth = new Date(viewYear, viewMonth+1, 0).getDate(); let dayGrid = ''; let dayNum = 1 - startDow;
+      for (let r = 0; r < 6; r++) { for (let c = 0; c < 7; c++, dayNum++) { if (dayNum < 1 || dayNum > daysInMonth) { dayGrid += `<div class="dp-day other-month"></div>`; } else { const dd = new Date(viewYear, viewMonth, dayNum); dd.setHours(0,0,0,0); const iso = toISO(dd); let cls = 'dp-day'; if (dd.getTime() === today.getTime()) cls += ' today'; if (rangeStart && rangeEnd) { if (dd.getTime() === rangeStart.getTime()) cls += ' range-start'; else if (dd.getTime() === rangeEnd.getTime()) cls += ' range-end'; else if (dd > rangeStart && dd < rangeEnd) cls += ' in-range'; } else if (rangeStart && dd.getTime() === rangeStart.getTime()) cls += ' selected'; dayGrid += `<div class="${cls}" data-iso="${iso}">${dayNum}</div>`; } } }
+      const rangeLabel = rangeStart && rangeEnd ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → ${rangeEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'})}` : rangeStart ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → pick end` : 'Pick start date';
+      _dpEl.innerHTML = `<div class="dp-header"><button class="dp-nav-btn" id="dp-prev">‹</button><span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span><button class="dp-nav-btn" id="dp-next">›</button></div><div class="dp-grid">${DAYS.map(dd=>`<div class="dp-day-head">${dd}</div>`).join('')}${dayGrid}</div><div class="dp-footer"><span class="dp-footer-hint">${rangeLabel}</span><button class="dp-clear-btn" id="dp-clear">Clear</button></div>`;
+      _dpEl.querySelector('#dp-prev').onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderPicker(); };
+      _dpEl.querySelector('#dp-next').onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderPicker(); };
+      _dpEl.querySelector('#dp-clear').onclick = () => { rangeStart = null; rangeEnd = null; pickingEnd = false; onChange(null, null); renderPicker(); };
+      _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => { el.onclick = () => { const clicked = new Date(el.dataset.iso+'T00:00:00'); if (!rangeStart || (!pickingEnd && rangeEnd)) { rangeStart = clicked; rangeEnd = null; pickingEnd = true; } else if (pickingEnd) { if (clicked < rangeStart) { rangeEnd = rangeStart; rangeStart = clicked; } else { rangeEnd = clicked; } pickingEnd = false; onChange(toISO(rangeStart), toISO(rangeEnd)); } renderPicker(); }; });
+    }
+    renderPicker();
+    const rect = anchorEl.getBoundingClientRect(); _dpEl.style.top = (rect.bottom+4)+'px'; _dpEl.style.left = rect.left+'px'; document.body.appendChild(_dpEl);
+    requestAnimationFrame(() => { if (!_dpEl) return; const cr = _dpEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _dpEl.style.left = (window.innerWidth-cr.width-8)+'px'; if (cr.bottom > window.innerHeight-8) _dpEl.style.top = (rect.top-cr.height-4)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _dpOut), 0);
+  }
+
+  // ── Chip handlers ─────────────────────────────────────────────────────
+  document.getElementById('chip-snew-dates').onclick = (e) => {
+    e.stopPropagation();
+    openDateRangePicker(e.currentTarget, d.start_date, d.end_date, (start, end) => {
+      d.start_date = start; d.end_date = end || start;
+      const chipVal = document.getElementById('chip-snew-dates-val');
+      const chipEl = document.getElementById('chip-snew-dates');
+      if (chipVal) chipVal.textContent = fmtDateRange(start, end) || '—';
+      if (chipEl) chipEl.classList.toggle('chip-empty', !start && !end);
+    });
+  };
+
+  // ── Create / Cancel ───────────────────────────────────────────────────
+  document.getElementById('snew-cancel-btn').onclick = () => closeSlideover();
+  document.getElementById('snew-create-btn').onclick = async () => {
+    const title = document.getElementById('sprint-new-title').value.trim();
+    if (!title) { alert('Title is required'); return; }
+    const data = {
+      title,
+      project_id: d.project_id || null,
+      start_date: d.start_date || null,
+      end_date: d.end_date || null,
+      story_points: d.story_points,
+      goal: d.goal || null,
+      status: 'planned',
+    };
+    try {
+      const created = await api('POST', '/api/sprints', data);
+      if (created?.id && _pendingIcon) { try { await saveEntityIcon('sprint', created.id, _pendingIcon); } catch(e2) {} }
+      closeSlideover();
+      renderSprints();
+    } catch(err) { alert('Error creating sprint: ' + (err.message || String(err))); }
+  };
+}
+
+/* ─── Sprint Slideover (existing sprint, prop-chip style) ────────────── */
+async function showSprintSlideover(projects, sprint) {
+  const s = sprint;
+
+  // Refresh sprint data from server for latest state
+  try { const fresh = await api('GET', `/api/sprints/${s.id}`); if (fresh) Object.assign(s, fresh); } catch(e) {}
+
+  const projName = (projects||[]).find(p => String(p.id) === String(s.project_id))?.title || null;
+  const prog = s.progress || {};
+  const pct = prog.pct || 0;
+
+  function fmtDateRange(start, end) {
+    const fmt = (d) => { if (!d) return null; const dt = new Date(stripDate(d)+'T00:00:00'); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric'}); };
+    const s2 = fmt(start), e = fmt(end);
+    if (s2 && e && s2 !== e) return `${s2} → ${e}`;
+    return s2 || e || '—';
+  }
+
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const sprintBuiltinDefs = [
+    { key: 'project', label: 'Project', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+      renderValue: () => projName ? `<span>${projName}</span>` : '' },
+    { key: 'capacity', label: 'Capacity (SP)', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
+      renderValue: () => s.story_points != null ? `<span>${s.story_points}</span>` : '' },
+    { key: 'goal_text', label: 'Sprint Goal', icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => s.goal ? `<span>${s.goal}</span>` : '' },
+  ];
+
+  const progressSection = `
+    <div class="subtask-section" style="margin-top:16px">
+      <div class="subtask-section-title"><span>Progress · ${prog.done||0}/${prog.total||0} tasks</span></div>
+      <div class="progress-wrap" style="margin-top:8px">
+        <div class="progress-label"><span>${pct}%</span><span>${prog.done||0}/${prog.total||0}</span></div>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>
-    </div>
-    <div class="form-group"><label class="form-label">Project</label>
-      <select id="sp-project">${projOpts}</select></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Start Date</label><input type="date" id="sp-start" value="${s.start_date||''}" /></div>
-      <div class="form-group"><label class="form-label">End Date</label><input type="date" id="sp-end" value="${s.end_date||''}" /></div>
-    </div>
-    <div class="form-group"><label class="form-label">Capacity (Story Points)</label>
-      <input type="number" id="sp-story-points" min="0" placeholder="e.g. 40" value="${s.story_points != null ? s.story_points : ''}" style="width:100%" />
-    </div>
-    <div class="form-actions">
-      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">${s.id ? 'Save' : 'Create'}</button>
+      ${s.story_points ? (() => { const cap = s.story_points; const used = prog.story_points||0; const ratio = used/cap; const pctSP = Math.min(100, Math.round(ratio*100)); const color = ratio <= 0 ? 'var(--text-muted)' : ratio <= 1.0 ? `hsl(${Math.round(ratio*120)},55%,38%)` : 'hsl(0,75%,42%)'; return `<div style="margin-top:6px"><div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-bottom:3px"><span>Story Pts</span><span style="color:${color}">${used}/${cap}</span></div><div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pctSP}%;background:${color}"></div></div></div>`; })() : ''}
     </div>`;
 
-  openFormSlideover(s.id ? 'Edit Sprint' : 'New Sprint', body);
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  // ── Sprint icon picker ────────────────────────────────────────────────
-  const sprintIconBtn = document.getElementById('sprint-icon-btn');
-  const sprintIconDisplay = document.getElementById('sprint-icon-display');
-  if (s.id) {
-    loadEntityIcon('sprint', s.id).then(icon => {
-      if (sprintIconDisplay) { sprintIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 20) : '☐'; sprintIconDisplay.dataset.icon = icon || ''; }
+  const body = `
+    <button class="entity-icon-add-btn" id="sprint-icon-add-btn">
+      <span id="sprint-icon-display"></span>
+      <span id="sprint-icon-add-label">Add icon</span>
+    </button>
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="detail-title" rows="1">${(s.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+    </div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip chip-status-${s.status}" id="chip-sprint-status" data-key="status">
+        <span class="chip-label">Status</span>
+        <span class="chip-value">${(s.status||'').replace(/_/g,' ')}</span>
+      </button>
+      <button class="prop-chip${(s.start_date||s.end_date) ? '' : ' chip-empty'}" id="chip-sprint-dates" data-key="dates">
+        <span class="chip-label">Dates</span>
+        <span class="chip-value" id="chip-sprint-dates-val">${fmtDateRange(s.start_date, s.end_date)}</span>
+      </button>
+      <button class="prop-chips-more" id="sprint-chips-more" title="More properties">···</button>
+    </div>
+
+    ${buildInlinePropPanel('sprint', s.id, sprintBuiltinDefs)}
+
+    ${progressSection}
+    ${buildCommentSection('sprint', s.id)}
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px">
+      <button class="btn btn-ghost btn-sm" id="sprint-expand-btn">⤢ Full view</button>
+      <button class="btn btn-ghost btn-sm" id="sprint-delete-btn" style="color:var(--color-danger)">Delete</button>
+    </div>
+  `;
+
+  openSlideover(s.title, body, () => renderSprints());
+
+  // ── Icon ──────────────────────────────────────────────────────────────
+  const sprintIconAddBtn = document.getElementById('sprint-icon-add-btn');
+  const sprintIconDisplayEl = document.getElementById('sprint-icon-display');
+  const sprintIconAddLabel = document.getElementById('sprint-icon-add-label');
+  loadEntityIcon('sprint', s.id).then(icon => {
+    if (icon) { sprintIconDisplayEl.innerHTML = renderEntityIcon(icon, 32); sprintIconDisplayEl.dataset.icon = icon; sprintIconAddLabel.textContent = ''; }
+  });
+  sprintIconAddBtn.onclick = (e) => {
+    e.stopPropagation();
+    const cur = sprintIconDisplayEl.dataset.icon || '';
+    showIconPicker(sprintIconAddBtn, 'sprint', s.id, cur, (newIcon) => {
+      sprintIconDisplayEl.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : ''; sprintIconDisplayEl.dataset.icon = newIcon; sprintIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      saveEntityIcon('sprint', s.id, newIcon).catch(() => { sprintIconDisplayEl.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; sprintIconDisplayEl.dataset.icon = cur; sprintIconAddLabel.textContent = cur ? '' : 'Add icon'; });
     });
+  };
+
+  async function patchSprint(data) {
+    try { await api('PATCH', `/api/sprints/${s.id}`, data); } catch(e) { return; }
+    Object.assign(s, data);
   }
-  if (sprintIconBtn) {
-    sprintIconBtn.onclick = (e) => {
-      e.stopPropagation();
-      const cur = sprintIconDisplay ? sprintIconDisplay.dataset.icon || '' : '';
-      showIconPicker(sprintIconBtn, 'sprint', s.id || null, cur, (newIcon) => {
-        if (sprintIconDisplay) { sprintIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 20) : '☐'; sprintIconDisplay.dataset.icon = newIcon; }
-        if (s.id) {
-          saveEntityIcon('sprint', s.id, newIcon).catch(() => {
-            if (sprintIconDisplay) { sprintIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 20) : '☐'; sprintIconDisplay.dataset.icon = cur; }
-          });
-        }
-      });
-    };
-  }
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const spVal = document.getElementById('sp-story-points').value.trim();
-    const data = {
-      title: document.getElementById('sp-title').value.trim(),
-      project_id: document.getElementById('sp-project').value ? parseInt(document.getElementById('sp-project').value) : null,
-      start_date: document.getElementById('sp-start').value || null,
-      end_date: document.getElementById('sp-end').value || null,
-      story_points: spVal !== '' ? parseInt(spVal, 10) : null,
-    };
-    if (!data.title) { alert('Title is required'); return; }
-    if (s.id) {
-      await api('PATCH', `/api/sprints/${s.id}`, data);
-    } else {
-      data.status = 'planned';
-      await api('POST', '/api/sprints', data);
+
+  // ── Title auto-save ───────────────────────────────────────────────────
+  const titleTA = document.getElementById('detail-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  titleTA.onblur = (e) => patchSprint({ title: e.target.value });
+
+  // ── Combo/date helpers ────────────────────────────────────────────────
+  let _comboEl = null;
+  function closeCombo() { if (_comboEl) { _comboEl.remove(); _comboEl = null; } document.removeEventListener('mousedown', _comboOut); }
+  function _comboOut(e) { if (_comboEl && !_comboEl.contains(e.target)) closeCombo(); }
+  function openCombo(anchorEl, items, currentVal, onSelect) {
+    closeCombo();
+    let filter = '', focusIdx = -1;
+    _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover';
+    function render() {
+      const filtered = filter ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase())) : items;
+      _comboEl.innerHTML = `<div class="combo-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" /></div><div class="combo-list">${filtered.length ? filtered.map((it, i) => { const isSel = String(it.value) === String(currentVal); return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${it.label}</div>`; }).join('') : '<div class="combo-empty">No results</div>'}</div>`;
+      const inp = _comboEl.querySelector('.combo-search'); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+      inp.oninput = (e) => { filter = e.target.value; render(); };
+      inp.onkeydown = (e) => { const ci = _comboEl.querySelectorAll('.combo-item'); if (e.key === 'ArrowDown') { e.preventDefault(); focusIdx = Math.min(focusIdx+1, ci.length-1); render(); } else if (e.key === 'ArrowUp') { e.preventDefault(); focusIdx = Math.max(focusIdx-1, 0); render(); } else if (e.key === 'Enter') { e.preventDefault(); if (focusIdx >= 0 && ci[focusIdx]) ci[focusIdx].click(); } else if (e.key === 'Escape') closeCombo(); };
+      _comboEl.querySelectorAll('.combo-item').forEach(el => { el.onclick = (e) => { e.stopPropagation(); onSelect({ value: el.dataset.val, label: el.dataset.label }); closeCombo(); }; });
     }
-    closeFormSlideover();
+    render();
+    const rect = anchorEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+    requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
+  }
+
+  let _dpEl = null;
+  function closeDatePicker() { if (_dpEl) { _dpEl.remove(); _dpEl = null; } document.removeEventListener('mousedown', _dpOut); }
+  function _dpOut(e) { if (_dpEl && !_dpEl.contains(e.target)) closeDatePicker(); }
+  function openDateRangePicker(anchorEl, startVal, endVal, onChange) {
+    closeDatePicker();
+    const today = new Date(); today.setHours(0,0,0,0);
+    let viewYear = today.getFullYear(), viewMonth = today.getMonth();
+    let rangeStart = startVal ? new Date(startVal+'T00:00:00') : null;
+    let rangeEnd = endVal ? new Date(endVal+'T00:00:00') : null;
+    let pickingEnd = !!rangeStart;
+    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+    function toISO(d) { return d ? d.toISOString().split('T')[0] : null; }
+    _dpEl = document.createElement('div'); _dpEl.className = 'datepicker-popover';
+    function renderPicker() {
+      const firstDay = new Date(viewYear, viewMonth, 1); let startDow = firstDay.getDay(); startDow = startDow === 0 ? 6 : startDow - 1;
+      const daysInMonth = new Date(viewYear, viewMonth+1, 0).getDate(); let dayGrid = ''; let dayNum = 1 - startDow;
+      for (let r = 0; r < 6; r++) { for (let c = 0; c < 7; c++, dayNum++) { if (dayNum < 1 || dayNum > daysInMonth) { dayGrid += `<div class="dp-day other-month"></div>`; } else { const d = new Date(viewYear, viewMonth, dayNum); d.setHours(0,0,0,0); const iso = toISO(d); let cls = 'dp-day'; if (d.getTime() === today.getTime()) cls += ' today'; if (rangeStart && rangeEnd) { if (d.getTime() === rangeStart.getTime()) cls += ' range-start'; else if (d.getTime() === rangeEnd.getTime()) cls += ' range-end'; else if (d > rangeStart && d < rangeEnd) cls += ' in-range'; } else if (rangeStart && d.getTime() === rangeStart.getTime()) cls += ' selected'; dayGrid += `<div class="${cls}" data-iso="${iso}">${dayNum}</div>`; } } }
+      const rangeLabel = rangeStart && rangeEnd ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → ${rangeEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'})}` : rangeStart ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → pick end` : 'Pick start date';
+      _dpEl.innerHTML = `<div class="dp-header"><button class="dp-nav-btn" id="dp-prev">‹</button><span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span><button class="dp-nav-btn" id="dp-next">›</button></div><div class="dp-grid">${DAYS.map(d=>`<div class="dp-day-head">${d}</div>`).join('')}${dayGrid}</div><div class="dp-footer"><span class="dp-footer-hint">${rangeLabel}</span><button class="dp-clear-btn" id="dp-clear">Clear</button></div>`;
+      _dpEl.querySelector('#dp-prev').onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderPicker(); };
+      _dpEl.querySelector('#dp-next').onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderPicker(); };
+      _dpEl.querySelector('#dp-clear').onclick = () => { rangeStart = null; rangeEnd = null; pickingEnd = false; onChange(null, null); renderPicker(); };
+      _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => { el.onclick = () => { const clicked = new Date(el.dataset.iso+'T00:00:00'); if (!rangeStart || (!pickingEnd && rangeEnd)) { rangeStart = clicked; rangeEnd = null; pickingEnd = true; } else if (pickingEnd) { if (clicked < rangeStart) { rangeEnd = rangeStart; rangeStart = clicked; } else { rangeEnd = clicked; } pickingEnd = false; onChange(toISO(rangeStart), toISO(rangeEnd)); } renderPicker(); }; });
+    }
+    renderPicker();
+    const rect = anchorEl.getBoundingClientRect(); _dpEl.style.top = (rect.bottom+4)+'px'; _dpEl.style.left = rect.left+'px'; document.body.appendChild(_dpEl);
+    requestAnimationFrame(() => { if (!_dpEl) return; const cr = _dpEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _dpEl.style.left = (window.innerWidth-cr.width-8)+'px'; if (cr.bottom > window.innerHeight-8) _dpEl.style.top = (rect.top-cr.height-4)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _dpOut), 0);
+  }
+
+  // ── Chip handlers ─────────────────────────────────────────────────────
+  const SPRINT_STATUSES = ['planned', 'active', 'completed'];
+  document.getElementById('chip-sprint-status').onclick = (e) => {
+    e.stopPropagation();
+    const items = SPRINT_STATUSES.map(st => ({ value: st, label: st }));
+    openCombo(e.currentTarget, items, s.status, async ({ value }) => {
+      const chipEl = document.getElementById('chip-sprint-status');
+      if (chipEl) { chipEl.className = `prop-chip chip-status-${value}`; chipEl.querySelector('.chip-value').textContent = value; }
+      s.status = value;
+      await patchSprint({ status: value });
+    });
+  };
+
+  document.getElementById('chip-sprint-dates').onclick = (e) => {
+    e.stopPropagation();
+    openDateRangePicker(e.currentTarget, stripDate(s.start_date), stripDate(s.end_date), async (start, end) => {
+      const chipVal = document.getElementById('chip-sprint-dates-val');
+      if (chipVal) chipVal.textContent = fmtDateRange(start, end) || '—';
+      const chipEl = document.getElementById('chip-sprint-dates');
+      if (chipEl) chipEl.classList.toggle('chip-empty', !start && !end);
+      s.start_date = start; s.end_date = end;
+      await patchSprint({ start_date: start || null, end_date: end || null });
+    });
+  };
+
+  // ── Inline prop panel ─────────────────────────────────────────────────
+  const sprintInlinePropEditFns = {
+    project: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...(projects||[]).map(p => ({ value: p.id, label: p.title }))];
+      openCombo(valEl, items, s.project_id, async ({ value }) => { const p = (projects||[]).find(x => String(x.id) === String(value)); valEl.innerHTML = p ? `<span>${p.title}</span>` : ''; s.project_id = value ? parseInt(value) : null; await patchSprint({ project_id: s.project_id }); });
+    },
+    capacity: (valEl) => {
+      const inp = document.createElement('input'); inp.type = 'number'; inp.min = '0'; inp.style.cssText = 'width:80px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
+      inp.value = s.story_points || '';
+      valEl.innerHTML = ''; valEl.appendChild(inp); inp.focus();
+      inp.onblur = async () => { const val = parseInt(inp.value) || null; s.story_points = val; valEl.innerHTML = val != null ? `<span>${val}</span>` : ''; await patchSprint({ story_points: val }); };
+      inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); };
+    },
+    goal_text: (valEl) => {
+      const inp = document.createElement('input'); inp.type = 'text'; inp.style.cssText = 'width:180px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
+      inp.value = s.goal || '';
+      valEl.innerHTML = ''; valEl.appendChild(inp); inp.focus();
+      inp.onblur = async () => { const val = inp.value.trim() || null; s.goal = val; valEl.innerHTML = val ? `<span>${val}</span>` : ''; await patchSprint({ goal: val }); };
+      inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); };
+    },
+  };
+  bindInlinePropPanel('sprint', s.id, sprintInlinePropEditFns, () => showSprintSlideover(projects, s));
+  document.getElementById('sprint-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    showChipConfigPanel('sprint', e.currentTarget, [
+      { key: 'status', label: 'Status' },
+      { key: 'dates',  label: 'Dates' },
+    ], () => showSprintSlideover(projects, s));
+  };
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="sprint"]'));
+
+  document.getElementById('sprint-expand-btn').onclick = () => { closeSlideover(); renderSprintDetail(s.id); };
+  document.getElementById('sprint-delete-btn').onclick = async () => {
+    if (!confirm('Delete this sprint?')) return;
+    await api('DELETE', `/api/sprints/${s.id}`);
+    closeSlideover();
     renderSprints();
   };
 }
 
-/* ─── Resource Slideover (view + auto-save) ──────────────────────────── */
+/* ─── Resource Slideover (prop-chip style for existing, form for new) ── */
 async function showResourceSlideover(resource, afterSave) {
   const v = resource || {};
+  if (!v.id) { return showResourceModal(v, afterSave); }
+
   let projects = [], tasks = [], goals = [];
   try { [projects, tasks, goals] = await Promise.all([
     api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
   ]); } catch(e) {}
 
-  const goalOpts = '<option value="">— none —</option>' + goals.map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(v.goal_id)?'selected':''}>${g.title}</option>`).join('');
-  const projOpts = '<option value="">— none —</option>' + projects.map(p =>
-    `<option value="${p.id}" ${String(p.id)===String(v.project_id)?'selected':''}>${p.title}</option>`).join('');
-  const taskOpts = '<option value="">— none —</option>' + tasks.map(t =>
-    `<option value="${t.id}" ${String(t.id)===String(v.task_id)?'selected':''}>${t.title}</option>`).join('');
-
   const rawUrl = v.url || '';
-  const urlDisplay = rawUrl
-    ? `<a href="${rawUrl}" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">${rawUrl}</a>`
-    : '<span style="color:var(--text-muted)">—</span>';
-
   const fileName = v.file_path ? v.file_path.split('/').pop() : '';
+  const projName = projects.find(p => String(p.id) === String(v.project_id))?.title || null;
+  const goalName = goals.find(g => String(g.id) === String(v.goal_id))?.title || null;
+  const taskTitle = tasks.find(t => String(t.id) === String(v.task_id))?.title || null;
+
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const rsBuiltinDefs = [
+    { key: 'goal',    label: 'Goal',    icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
+    { key: 'project', label: 'Project', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+      renderValue: () => projName ? `<span>${projName}</span>` : '' },
+    { key: 'task',    label: 'Task',    icon: pIco('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>'),
+      renderValue: () => taskTitle ? `<span>${taskTitle}</span>` : '' },
+  ];
+
   const fileSection = `
-    <div class="form-group" style="margin:0">
-      <label class="form-label">Attached File</label>
-      <div id="rs-file-area" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <div class="subtask-section" style="margin-top:16px">
+      <div class="subtask-section-title"><span>Attached File</span></div>
+      <div id="rs-file-area" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px">
         ${fileName ? `<a id="rs-file-link" href="/api/resource-file/${v.id}" download="${fileName}" style="font-size:12px;color:var(--accent)">📎 ${fileName}</a>` : '<span style="font-size:12px;color:var(--text-muted)" id="rs-file-link">No file attached</span>'}
-        <label class="btn btn-sm btn-ghost" style="cursor:pointer;margin:0">
-          Upload file
-          <input type="file" id="rs-file-input" style="display:none" />
-        </label>
+        <label class="btn btn-sm btn-ghost" style="cursor:pointer;margin:0">Upload file<input type="file" id="rs-file-input" style="display:none" /></label>
         <span id="rs-file-status" style="font-size:11px;color:var(--text-muted)"></span>
       </div>
     </div>`;
 
   const body = `
-    <div style="display:flex;flex-direction:column;gap:12px;padding:4px 0">
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Title</label>
-        <input type="text" id="rs-title" value="${(v.title||'').replace(/"/g,'&quot;')}" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Type</label>
-        <input type="text" id="rs-type" value="${v.resource_type||v.type||''}" placeholder="e.g. link, book, tool…" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">URL</label>
-        <input type="url" id="rs-url" value="${rawUrl}" style="width:100%;box-sizing:border-box" />
-        <div id="rs-url-preview" style="margin-top:4px;font-size:12px">${urlDisplay}</div>
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Body / Notes</label>
-        <textarea id="rs-body" style="width:100%;box-sizing:border-box;min-height:100px">${v.body||''}</textarea>
-      </div>
-      ${fileSection}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        <div class="form-group" style="margin:0"><label class="form-label">Goal</label><select id="rs-goal" style="width:100%">${goalOpts}</select></div>
-        <div class="form-group" style="margin:0"><label class="form-label">Project</label><select id="rs-project" style="width:100%">${projOpts}</select></div>
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Task</label>
-        <select id="rs-task" style="width:100%">${taskOpts}</select>
-      </div>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
-        <button class="btn btn-ghost btn-sm" id="rs-json-btn">Show JSON</button>
-        <button class="btn btn-danger btn-sm" id="rs-delete-btn">Delete resource</button>
-      </div>
-      <div id="rs-save-indicator" style="font-size:11px;color:var(--text-muted);text-align:right;min-height:16px"></div>
-      ${v.id ? `<div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
-        <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Custom Properties</div>
-        ${buildInlinePropPanel('resource', v.id, [])}
-      </div>` : ''}
-      ${v.id ? buildCommentSection('resource', v.id) : ''}
-    </div>`;
+    <button class="entity-icon-add-btn" id="rs-icon-add-btn">
+      <span id="rs-icon-display"></span>
+      <span id="rs-icon-add-label">Add icon</span>
+    </button>
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="detail-title" rows="1">${(v.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+    </div>
 
-  openSlideover(v.title || 'Resource', body);
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip${v.resource_type ? '' : ' chip-empty'}" id="chip-rs-type" data-key="type">
+        <span class="chip-label">Type</span>
+        <span class="chip-value" id="chip-rs-type-val">${v.resource_type || '—'}</span>
+      </button>
+      <button class="prop-chip${rawUrl ? '' : ' chip-empty'}" id="chip-rs-url" data-key="url">
+        <span class="chip-label">URL</span>
+        <span class="chip-value" id="chip-rs-url-val">${rawUrl ? `<span style="max-width:160px;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:middle">${rawUrl.replace(/https?:\/\//, '')}</span>` : '—'}</span>
+      </button>
+      <button class="prop-chips-more" id="rs-chips-more" title="More properties">···</button>
+    </div>
 
-  const indicator = document.getElementById('rs-save-indicator');
-  if (v.id) bindInlinePropPanel('resource', v.id, {}, () => showResourceSlideover(resource, afterSave));
-  if (v.id) bindCommentSection(document.querySelector('.comment-section[data-entity-type="resource"]'));
-  let saveTimer = null;
+    ${buildInlinePropPanel('resource', v.id, rsBuiltinDefs)}
 
-  async function autoSave() {
-    const urlVal = document.getElementById('rs-url').value.trim();
-    const data = {
-      title:        document.getElementById('rs-title').value.trim() || v.title,
-      resource_type: document.getElementById('rs-type').value || 'note',
-      url:          urlVal || null,
-      body:         document.getElementById('rs-body').value,
-      goal_id:      document.getElementById('rs-goal').value ? parseInt(document.getElementById('rs-goal').value) : null,
-      project_id:   document.getElementById('rs-project').value ? parseInt(document.getElementById('rs-project').value) : null,
-      task_id:      document.getElementById('rs-task').value ? parseInt(document.getElementById('rs-task').value) : null,
-    };
-    indicator.textContent = 'Saving…';
-    try {
-      await api('PATCH', `/api/resources/${v.id}`, data);
-      indicator.textContent = 'Saved';
-      // Update url preview link
-      document.getElementById('rs-url-preview').innerHTML = urlVal
-        ? `<a href="${urlVal}" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">${urlVal}</a>`
-        : '<span style="color:var(--text-muted)">—</span>';
-      if (afterSave) afterSave();
-    } catch(e) {
-      indicator.textContent = 'Save failed';
-    }
-  }
+    <div class="form-group">
+      <label class="form-label">Body / Notes</label>
+      <textarea id="detail-body" style="width:100%;min-height:100px">${v.body||''}</textarea>
+    </div>
+    ${fileSection}
+    ${buildCommentSection('resource', v.id)}
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px">
+      <button class="btn btn-ghost btn-sm" id="rs-json-btn">Export JSON</button>
+      <button class="btn btn-ghost btn-sm" id="rs-delete-btn" style="color:var(--color-danger)">Delete</button>
+    </div>
+  `;
 
-  function scheduleAutoSave() {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(autoSave, 700);
-  }
+  openSlideover(v.title || 'Resource', body, afterSave || null);
 
-  ['rs-title','rs-type','rs-url','rs-body'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('input', scheduleAutoSave);
+  // ── Icon ──────────────────────────────────────────────────────────────
+  const rsIconAddBtn = document.getElementById('rs-icon-add-btn');
+  const rsIconDisplay = document.getElementById('rs-icon-display');
+  const rsIconAddLabel = document.getElementById('rs-icon-add-label');
+  loadEntityIcon('resource', v.id).then(icon => {
+    if (icon) { rsIconDisplay.innerHTML = renderEntityIcon(icon, 32); rsIconDisplay.dataset.icon = icon; rsIconAddLabel.textContent = ''; }
   });
-  ['rs-goal','rs-project','rs-task'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('change', autoSave);
-  });
-
-  document.getElementById('rs-delete-btn').onclick = async () => {
-    if (!confirm('Delete this resource?')) return;
-    await api('DELETE', `/api/resources/${v.id}`);
-    closeSlideover();
-    if (afterSave) afterSave(); else renderResources();
+  rsIconAddBtn.onclick = (e) => {
+    e.stopPropagation();
+    const cur = rsIconDisplay.dataset.icon || '';
+    showIconPicker(rsIconAddBtn, 'resource', v.id, cur, (newIcon) => {
+      rsIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : ''; rsIconDisplay.dataset.icon = newIcon; rsIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      saveEntityIcon('resource', v.id, newIcon).catch(() => { rsIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; rsIconDisplay.dataset.icon = cur; rsIconAddLabel.textContent = cur ? '' : 'Add icon'; });
+    });
   };
-  document.getElementById('rs-json-btn').onclick = () =>
-    showJSONModal(`/api/export/resource/${v.id}`, `resource-${(v.title||v.id).replace(/\s+/g,'-')}.json`);
 
+  async function patchResource(data) {
+    try { await api('PATCH', `/api/resources/${v.id}`, data); } catch(e) { return; }
+    Object.assign(v, data);
+  }
+
+  // ── Title auto-save ───────────────────────────────────────────────────
+  const titleTA = document.getElementById('detail-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  titleTA.onblur = (e) => patchResource({ title: e.target.value || v.title });
+
+  // ── Body auto-save ────────────────────────────────────────────────────
+  let bodyTimer = null;
+  document.getElementById('detail-body').addEventListener('input', () => {
+    clearTimeout(bodyTimer); bodyTimer = setTimeout(() => patchResource({ body: document.getElementById('detail-body').value }), 700);
+  });
+
+  // ── Combo helper ──────────────────────────────────────────────────────
+  let _comboEl = null;
+  function closeCombo() { if (_comboEl) { _comboEl.remove(); _comboEl = null; } document.removeEventListener('mousedown', _comboOut); }
+  function _comboOut(e) { if (_comboEl && !_comboEl.contains(e.target)) closeCombo(); }
+  function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
+    closeCombo();
+    const { allowCreate = false, multiSelect = false, selectedIds = [] } = opts;
+    let filter = '', focusIdx = -1, localSelected = new Set(selectedIds.map(String));
+    _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover';
+    function render() {
+      const filtered = filter ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase())) : items;
+      const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+      _comboEl.innerHTML = `<div class="combo-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" /></div><div class="combo-list">${filtered.length ? filtered.map((it, i) => { const isSel = String(it.value) === String(currentVal); return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${it.label}</div>`; }).join('') : '<div class="combo-empty">No results</div>'}${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Add "${filter.trim()}"</div>` : ''}</div>`;
+      const inp = _comboEl.querySelector('.combo-search'); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+      inp.oninput = (e) => { filter = e.target.value; render(); };
+      inp.onkeydown = (e) => { const ci = _comboEl.querySelectorAll('.combo-item'); if (e.key === 'ArrowDown') { e.preventDefault(); focusIdx = Math.min(focusIdx+1, ci.length-1); render(); } else if (e.key === 'ArrowUp') { e.preventDefault(); focusIdx = Math.max(focusIdx-1, 0); render(); } else if (e.key === 'Enter') { e.preventDefault(); if (focusIdx >= 0 && ci[focusIdx]) ci[focusIdx].click(); } else if (e.key === 'Escape') closeCombo(); };
+      _comboEl.querySelectorAll('.combo-item').forEach(el => { el.onclick = async (e) => { e.stopPropagation(); if (el.dataset.create) { await onSelect({ create: el.dataset.create }); closeCombo(); } else { onSelect({ value: el.dataset.val, label: el.dataset.label }); closeCombo(); } }; });
+    }
+    render();
+    const rect = anchorEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+    requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
+  }
+
+  // ── Chip handlers ─────────────────────────────────────────────────────
+  const RESOURCE_TYPES = ['link', 'book', 'article', 'video', 'tool', 'file', 'note', 'other'];
+  document.getElementById('chip-rs-type').onclick = (e) => {
+    e.stopPropagation();
+    const items = RESOURCE_TYPES.map(t => ({ value: t, label: t }));
+    openCombo(e.currentTarget, items, v.resource_type, async ({ value, create }) => {
+      const val = value || create || v.resource_type;
+      const chipEl = document.getElementById('chip-rs-type');
+      const chipVal = document.getElementById('chip-rs-type-val');
+      if (chipVal) chipVal.textContent = val || '—';
+      if (chipEl) chipEl.classList.toggle('chip-empty', !val);
+      v.resource_type = val;
+      await patchResource({ resource_type: val });
+    }, { allowCreate: true });
+  };
+
+  document.getElementById('chip-rs-url').onclick = (e) => {
+    e.stopPropagation();
+    // Inline URL edit — open a small input popover
+    closeCombo();
+    _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover'; _comboEl.style.minWidth = '300px';
+    _comboEl.innerHTML = `<div style="padding:8px"><label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px">URL</label><input type="url" id="rs-url-inline-input" value="${rawUrl.replace(/"/g,'&quot;')}" style="width:100%;box-sizing:border-box" placeholder="https://…" /><div style="display:flex;gap:6px;margin-top:6px;justify-content:flex-end"><button class="btn btn-sm btn-ghost" id="rs-url-cancel">Cancel</button><button class="btn btn-sm btn-primary" id="rs-url-save">Save</button></div></div>`;
+    const rect = e.currentTarget.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+    requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; const inp = _comboEl.querySelector('#rs-url-inline-input'); if (inp) inp.focus(); });
+    _comboEl.querySelector('#rs-url-cancel').onclick = closeCombo;
+    _comboEl.querySelector('#rs-url-save').onclick = async () => {
+      const urlVal = _comboEl.querySelector('#rs-url-inline-input').value.trim();
+      v.url = urlVal || null;
+      const chipVal = document.getElementById('chip-rs-url-val');
+      const chipEl = document.getElementById('chip-rs-url');
+      if (chipVal) chipVal.innerHTML = urlVal ? `<span style="max-width:160px;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:middle">${urlVal.replace(/https?:\/\//, '')}</span>` : '—';
+      if (chipEl) chipEl.classList.toggle('chip-empty', !urlVal);
+      closeCombo();
+      await patchResource({ url: urlVal || null });
+    };
+    setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
+  };
+
+  // ── Inline prop panel ─────────────────────────────────────────────────
+  const rsInlinePropEditFns = {
+    goal: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))];
+      openCombo(valEl, items, v.goal_id, async ({ value }) => { const g = goals.find(x => String(x.id) === String(value)); valEl.innerHTML = g ? `<span>${g.title}</span>` : ''; v.goal_id = value ? parseInt(value) : null; await patchResource({ goal_id: v.goal_id }); });
+    },
+    project: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))];
+      openCombo(valEl, items, v.project_id, async ({ value }) => { const p = projects.find(x => String(x.id) === String(value)); valEl.innerHTML = p ? `<span>${p.title}</span>` : ''; v.project_id = value ? parseInt(value) : null; await patchResource({ project_id: v.project_id }); });
+    },
+    task: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...tasks.map(t => ({ value: t.id, label: t.title }))];
+      openCombo(valEl, items, v.task_id, async ({ value }) => { const t = tasks.find(x => String(x.id) === String(value)); valEl.innerHTML = t ? `<span>${t.title}</span>` : ''; v.task_id = value ? parseInt(value) : null; await patchResource({ task_id: v.task_id }); });
+    },
+  };
+  bindInlinePropPanel('resource', v.id, rsInlinePropEditFns, () => showResourceSlideover(resource, afterSave));
+  document.getElementById('rs-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    showChipConfigPanel('resource', e.currentTarget, [
+      { key: 'type', label: 'Type' },
+      { key: 'url',  label: 'URL' },
+    ], () => showResourceSlideover(resource, afterSave));
+  };
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="resource"]'));
+
+  // ── File upload ───────────────────────────────────────────────────────
   const fileInput = document.getElementById('rs-file-input');
   const fileStatus = document.getElementById('rs-file-status');
-  if (fileInput && v.id) {
+  if (fileInput) {
     fileInput.onchange = async () => {
-      const file = fileInput.files[0];
-      if (!file) return;
+      const file = fileInput.files[0]; if (!file) return;
       fileStatus.textContent = 'Uploading…';
-      const form = new FormData();
-      form.append('file', file);
+      const form = new FormData(); form.append('file', file);
       try {
         const res = await fetch(`/api/resource-upload/${v.id}`, { method: 'POST', body: form });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         fileStatus.textContent = 'Uploaded';
         const linkEl = document.getElementById('rs-file-link');
-        if (linkEl) {
-          linkEl.href = `/api/resource-file/${v.id}`;
-          linkEl.download = data.filename;
-          linkEl.textContent = `📎 ${data.filename}`;
-          linkEl.style.display = '';
-        }
+        if (linkEl) { linkEl.href = `/api/resource-file/${v.id}`; linkEl.download = data.filename; linkEl.textContent = `📎 ${data.filename}`; linkEl.style.display = ''; }
         if (afterSave) afterSave();
-      } catch(e) {
-        fileStatus.textContent = 'Upload failed';
-      }
+      } catch(e) { fileStatus.textContent = 'Upload failed'; }
     };
   }
+
+  document.getElementById('rs-json-btn').onclick = () =>
+    showJSONModal(`/api/export/resource/${v.id}`, `resource-${(v.title||v.id).replace(/\s+/g,'-')}.json`);
+  document.getElementById('rs-delete-btn').onclick = async () => {
+    if (!confirm('Delete this resource?')) return;
+    await api('DELETE', `/api/resources/${v.id}`);
+    closeSlideover();
+    if (afterSave) afterSave(); else renderResources();
+  };
 }
 
 /* ─── Category Modal ─────────────────────────────────────────────────── */
 
+/* ─── Resource Create Slideover (prop-chip style) ────────────────────── */
 async function showResourceModal(presets, afterSave) {
-  const p = presets || {};
   let projects = [], tasks = [], goals = [];
   try { [projects, tasks, goals] = await Promise.all([
     api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
   ]); } catch(e) {}
 
-  const goalOpts = '<option value="">— none —</option>' + goals.map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(p.goal_id)?'selected':''}>${g.title}</option>`).join('');
-  const projOpts = '<option value="">— none —</option>' + projects.map(pr =>
-    `<option value="${pr.id}" ${String(pr.id)===String(p.project_id)?'selected':''}>${pr.title}</option>`).join('');
-  const taskOpts = '<option value="">— none —</option>' + tasks.map(t =>
-    `<option value="${t.id}" ${String(t.id)===String(p.task_id)?'selected':''}>${t.title}</option>`).join('');
+  const p = presets || {};
+  const d = {
+    resource_type: p.resource_type || '',
+    url: p.url || '',
+    goal_id: p.goal_id || null,
+    project_id: p.project_id || null,
+    task_id: p.task_id || null,
+  };
+
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const rsNewBuiltinDefs = [
+    { key: 'goal',    label: 'Goal',    icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => { const g = goals.find(x => String(x.id) === String(d.goal_id)); return g ? `<span>${g.title}</span>` : ''; } },
+    { key: 'project', label: 'Project', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+      renderValue: () => { const pr = projects.find(x => String(x.id) === String(d.project_id)); return pr ? `<span>${pr.title}</span>` : ''; } },
+    { key: 'task',    label: 'Task',    icon: pIco('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>'),
+      renderValue: () => { const t = tasks.find(x => String(x.id) === String(d.task_id)); return t ? `<span>${t.title}</span>` : ''; } },
+  ];
 
   const body = `
-    <div style="display:flex;flex-direction:column;gap:12px;padding:4px 0">
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Title *</label>
-        <input type="text" id="rs-title" placeholder="Resource title" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Type</label>
-        <input type="text" id="rs-type" placeholder="e.g. link, book, tool…" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">URL</label>
-        <input type="url" id="rs-url" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Body / Notes</label>
-        <textarea id="rs-body" style="width:100%;box-sizing:border-box;min-height:80px"></textarea>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        <div class="form-group" style="margin:0"><label class="form-label">Goal</label><select id="rs-goal" style="width:100%">${goalOpts}</select></div>
-        <div class="form-group" style="margin:0"><label class="form-label">Project</label><select id="rs-project" style="width:100%">${projOpts}</select></div>
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Task</label>
-        <select id="rs-task" style="width:100%">${taskOpts}</select>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-        <button class="btn btn-primary" id="modal-save-btn">Create</button>
-      </div>
-    </div>`;
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="rs-new-title" rows="1" placeholder="Resource title…"></textarea>
+    </div>
 
-  openFormSlideover('New Resource', body);
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const title = document.getElementById('rs-title').value.trim();
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip${d.resource_type ? '' : ' chip-empty'}" id="chip-rsnew-type" data-key="type">
+        <span class="chip-label">Type</span>
+        <span class="chip-value" id="chip-rsnew-type-val">${d.resource_type || '—'}</span>
+      </button>
+      <button class="prop-chip${d.url ? '' : ' chip-empty'}" id="chip-rsnew-url" data-key="url">
+        <span class="chip-label">URL</span>
+        <span class="chip-value" id="chip-rsnew-url-val">${d.url ? `<span style="max-width:160px;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:middle">${d.url.replace(/https?:\/\//, '')}</span>` : '—'}</span>
+      </button>
+      <button class="prop-chips-more" id="rsnew-chips-more" title="More properties">···</button>
+    </div>
+
+    <div id="rsnew-prop-panel-wrap">${buildInlinePropPanel('resource', null, rsNewBuiltinDefs)}</div>
+
+    <div class="form-group" style="margin-top:12px">
+      <label class="form-label">Body / Notes</label>
+      <textarea id="rs-new-body" style="width:100%;min-height:100px"></textarea>
+    </div>
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost btn-sm" id="rsnew-cancel-btn">Cancel</button>
+      <button class="btn btn-primary btn-sm" id="rsnew-create-btn">Create Resource</button>
+    </div>
+  `;
+
+  openSlideover('New Resource', body);
+
+  const titleTA = document.getElementById('rs-new-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  setTimeout(() => titleTA.focus(), 60);
+
+  // ── Inline prop panel + chip config ──────────────────────────────────
+  const rsnewPropPanel = document.querySelector('#rsnew-prop-panel-wrap .inline-prop-panel');
+  document.getElementById('rsnew-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    showChipConfigPanel('resource', e.currentTarget, [
+      { key: 'type', label: 'Type' },
+      { key: 'url',  label: 'URL' },
+    ]);
+  };
+  // inline prop panel always visible (matches edit slideover style)
+
+  const rsnewRerender = () => {
+    const wrap = document.getElementById('rsnew-prop-panel-wrap');
+    if (!wrap) return;
+    const wasVisible = wrap.querySelector('.inline-prop-panel')?.style.display !== 'none';
+    wrap.innerHTML = buildInlinePropPanel('resource', null, rsNewBuiltinDefs);
+    if (!wasVisible) wrap.querySelector('.inline-prop-panel').style.display = 'none';
+    bindInlinePropPanel('resource', null, rsnewBuiltinEditFns, rsnewRerender);
+  };
+  const rsnewBuiltinEditFns = {
+    goal: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))];
+      openCombo(valEl, items, d.goal_id, ({ value }) => { d.goal_id = value ? parseInt(value) : null; rsnewRerender(); });
+    },
+    project: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...projects.map(pr => ({ value: pr.id, label: pr.title }))];
+      openCombo(valEl, items, d.project_id, ({ value }) => { d.project_id = value ? parseInt(value) : null; rsnewRerender(); });
+    },
+    task: (valEl) => {
+      const items = [{ value: '', label: '— none —' }, ...tasks.map(t => ({ value: t.id, label: t.title }))];
+      openCombo(valEl, items, d.task_id, ({ value }) => { d.task_id = value ? parseInt(value) : null; rsnewRerender(); });
+    },
+  };
+  bindInlinePropPanel('resource', null, rsnewBuiltinEditFns, rsnewRerender);
+
+  // ── Combo helper ──────────────────────────────────────────────────────
+  let _comboEl = null;
+  function closeCombo() { if (_comboEl) { _comboEl.remove(); _comboEl = null; } document.removeEventListener('mousedown', _comboOut); }
+  function _comboOut(e) { if (_comboEl && !_comboEl.contains(e.target)) closeCombo(); }
+  function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
+    closeCombo();
+    const { allowCreate = false } = opts;
+    let filter = '', focusIdx = -1;
+    _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover';
+    function renderC() {
+      const filtered = filter ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase())) : items;
+      const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+      _comboEl.innerHTML = `<div class="combo-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" /></div><div class="combo-list">${filtered.length ? filtered.map((it, i) => { const isSel = String(it.value) === String(currentVal); return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${it.label}</div>`; }).join('') : '<div class="combo-empty">No results</div>'}${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Add "${filter.trim()}"</div>` : ''}</div>`;
+      const inp = _comboEl.querySelector('.combo-search'); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+      inp.oninput = (e2) => { filter = e2.target.value; renderC(); };
+      inp.onkeydown = (e2) => { const ci = _comboEl.querySelectorAll('.combo-item'); if (e2.key === 'ArrowDown') { e2.preventDefault(); focusIdx = Math.min(focusIdx+1, ci.length-1); renderC(); } else if (e2.key === 'ArrowUp') { e2.preventDefault(); focusIdx = Math.max(focusIdx-1, 0); renderC(); } else if (e2.key === 'Enter') { e2.preventDefault(); if (focusIdx >= 0 && ci[focusIdx]) ci[focusIdx].click(); } else if (e2.key === 'Escape') closeCombo(); };
+      _comboEl.querySelectorAll('.combo-item').forEach(el => { el.onclick = async (e2) => { e2.stopPropagation(); if (el.dataset.create) { await onSelect({ create: el.dataset.create }); closeCombo(); } else { onSelect({ value: el.dataset.val, label: el.dataset.label }); closeCombo(); } }; });
+    }
+    renderC();
+    const rect = anchorEl.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+    requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; });
+    setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
+  }
+
+  // ── Chip handlers ─────────────────────────────────────────────────────
+  const RESOURCE_TYPES = ['link', 'book', 'article', 'video', 'tool', 'file', 'note', 'other'];
+  document.getElementById('chip-rsnew-type').onclick = (e) => {
+    e.stopPropagation();
+    const items = RESOURCE_TYPES.map(t => ({ value: t, label: t }));
+    openCombo(e.currentTarget, items, d.resource_type, ({ value, create }) => {
+      const val = value || create || d.resource_type;
+      d.resource_type = val;
+      const chipVal = document.getElementById('chip-rsnew-type-val');
+      const chipEl = document.getElementById('chip-rsnew-type');
+      if (chipVal) chipVal.textContent = val || '—';
+      if (chipEl) chipEl.classList.toggle('chip-empty', !val);
+    }, { allowCreate: true });
+  };
+
+  document.getElementById('chip-rsnew-url').onclick = (e) => {
+    e.stopPropagation();
+    closeCombo();
+    _comboEl = document.createElement('div'); _comboEl.className = 'combo-popover'; _comboEl.style.minWidth = '300px';
+    _comboEl.innerHTML = `<div style="padding:8px"><label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px">URL</label><input type="url" id="rsnew-url-input" value="${d.url.replace(/"/g,'&quot;')}" style="width:100%;box-sizing:border-box" placeholder="https://…" /><div style="display:flex;gap:6px;margin-top:6px;justify-content:flex-end"><button class="btn btn-sm btn-ghost" id="rsnew-url-cancel">Cancel</button><button class="btn btn-sm btn-primary" id="rsnew-url-save">Set</button></div></div>`;
+    const rect = e.currentTarget.getBoundingClientRect(); _comboEl.style.top = (rect.bottom+4)+'px'; _comboEl.style.left = rect.left+'px'; document.body.appendChild(_comboEl);
+    requestAnimationFrame(() => { if (!_comboEl) return; const cr = _comboEl.getBoundingClientRect(); if (cr.right > window.innerWidth-8) _comboEl.style.left = (window.innerWidth-cr.width-8)+'px'; const inp = _comboEl.querySelector('#rsnew-url-input'); if (inp) inp.focus(); });
+    _comboEl.querySelector('#rsnew-url-cancel').onclick = closeCombo;
+    _comboEl.querySelector('#rsnew-url-save').onclick = () => {
+      const urlVal = _comboEl.querySelector('#rsnew-url-input').value.trim();
+      d.url = urlVal;
+      const chipVal = document.getElementById('chip-rsnew-url-val');
+      const chipEl = document.getElementById('chip-rsnew-url');
+      if (chipVal) chipVal.innerHTML = urlVal ? `<span style="max-width:160px;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:middle">${urlVal.replace(/https?:\/\//, '')}</span>` : '—';
+      if (chipEl) chipEl.classList.toggle('chip-empty', !urlVal);
+      closeCombo();
+    };
+    setTimeout(() => document.addEventListener('mousedown', _comboOut), 0);
+  };
+
+  // ── Create / Cancel ───────────────────────────────────────────────────
+  document.getElementById('rsnew-cancel-btn').onclick = () => closeSlideover();
+  document.getElementById('rsnew-create-btn').onclick = async () => {
+    const title = document.getElementById('rs-new-title').value.trim();
     if (!title) { alert('Title is required'); return; }
     const data = {
       title,
-      resource_type: document.getElementById('rs-type').value || 'note',
-      url: document.getElementById('rs-url').value.trim() || null,
-      body: document.getElementById('rs-body').value,
-      goal_id: document.getElementById('rs-goal').value ? parseInt(document.getElementById('rs-goal').value) : null,
-      project_id: document.getElementById('rs-project').value ? parseInt(document.getElementById('rs-project').value) : null,
-      task_id: document.getElementById('rs-task').value ? parseInt(document.getElementById('rs-task').value) : null,
+      resource_type: d.resource_type || 'note',
+      url: d.url || null,
+      body: document.getElementById('rs-new-body').value,
+      goal_id: d.goal_id || null,
+      project_id: d.project_id || null,
+      task_id: d.task_id || null,
     };
     try {
       await api('POST', '/api/resources', data);
-      closeFormSlideover();
+      closeSlideover();
       if (afterSave) afterSave();
-    } catch(e) {
-      alert('Failed to create resource: ' + e.message);
-    }
+    } catch(err) { alert('Failed to create resource: ' + (err.message || String(err))); }
   };
 }
 
@@ -9223,11 +11306,16 @@ function openConnectedAppsPanel() {
   function buildAppCard(app) {
     const running = app.running;
     const colorStyle = app.color ? `--app-color:${app.color}` : '';
+    const icon = app.icon || '⚙';
+    // If icon looks like an SVG path (starts with M, L, C etc.) render as <svg>, else as emoji text
+    const iconHtml = /^[MLCHVQTASZmlchvqtasz]/.test(icon.trim())
+      ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${escHtml(icon)}"/></svg>`
+      : escHtml(icon);
     return `
       <div class="app-card" data-app-id="${app.id}" style="${colorStyle}">
         <div class="app-card-top">
           <div class="app-icon-wrap">
-            <span class="app-icon">${escHtml(app.icon || '⚙')}</span>
+            <span class="app-icon">${iconHtml}</span>
             <span class="app-status-dot ${running ? 'online' : 'offline'}"></span>
           </div>
           <div class="app-info">
@@ -9273,6 +11361,10 @@ async function openRaibisSettings(defaultTab = 'apps') {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
           App Integrations
         </button>
+        <button class="settings-tab${defaultTab==='obsidian'?' active':''}" data-stab="obsidian">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+          Obsidian Sync
+        </button>
       </div>
       <div class="settings-content" id="_settings-content">
         <div class="settings-content-header">
@@ -9314,6 +11406,9 @@ async function openRaibisSettings(defaultTab = 'apps') {
     if (tab === 'apps') {
       title.textContent = 'Connected Apps';
       await renderAppsTab(body);
+    } else if (tab === 'obsidian') {
+      title.textContent = 'Obsidian Sync';
+      await renderObsidianTab(body);
     } else {
       title.textContent = 'App Integrations';
       await renderIntegrationsTab(body);
@@ -9588,10 +11683,125 @@ async function openRaibisSettings(defaultTab = 'apps') {
       } catch(e) { alert('Save failed: ' + e.message); }
     };
   }
+
+  async function renderObsidianTab(body) {
+    let config;
+    try { config = await api('GET', '/api/obsidian/config'); }
+    catch(e) { config = { vault_path: '', enabled: false }; }
+
+    body.innerHTML = `
+      <div class="obs-section">
+        <div class="obs-status-row">
+          <span class="obs-status-dot ${config.enabled ? 'obs-dot-on' : 'obs-dot-off'}"></span>
+          <span class="obs-status-label">${config.enabled ? 'Sync active' : 'Not configured'}</span>
+        </div>
+        <p class="obs-desc">
+          Every Goal, Project, Sprint, Task and Note is written to your Obsidian vault as a
+          <code>.md</code> file with YAML frontmatter properties.<br>
+          Cross-entity links are rendered as <code>[[wikilinks]]</code> so the Obsidian graph
+          view shows the full hierarchy.
+        </p>
+
+        <div class="obs-field-row">
+          <label class="obs-label">Vault path</label>
+          <input id="_obs-vault-path" class="obs-input" type="text"
+            placeholder="/Users/you/ObsidianVault"
+            value="${escHtml(config.vault_path || '')}">
+        </div>
+
+        <div class="obs-actions">
+          <button class="btn btn-primary" id="_obs-save-btn">Save vault path</button>
+          <button class="btn" id="_obs-sync-btn" ${config.enabled ? '' : 'disabled title="Configure vault path first"'}>
+            ↺ Sync all now
+          </button>
+        </div>
+
+        <div id="_obs-msg" style="min-height:20px;margin-top:8px;font-size:13px"></div>
+
+        <hr class="obs-divider">
+        <div class="obs-vault-layout">
+          <div class="obs-vault-layout-title">Vault folder layout</div>
+          <pre class="obs-layout-pre">&lt;vault_root&gt;/
+  Goals/        ← one .md per Goal
+  Projects/     ← one .md per Project
+  Sprints/      ← one .md per Sprint
+  Tasks/        ← one .md per Task (checkbox + wikilinks)
+  Notes/        ← one .md per Note
+  Resources/    ← one .md per Resource</pre>
+          <div class="obs-vault-layout-note">
+            Each file has YAML frontmatter with <code>raibis_id</code>, <code>raibis_type</code>,
+            status, priority, due dates, and tag arrays — all Dataview-compatible.
+            Cross-references use <code>[[wikilink]]</code> notation.
+          </div>
+        </div>
+      </div>
+    `;
+
+    const msg = document.getElementById('_obs-msg');
+
+    document.getElementById('_obs-save-btn').onclick = async () => {
+      const vaultPath = document.getElementById('_obs-vault-path').value.trim();
+      if (!vaultPath) { msg.style.color = 'var(--danger,#e05252)'; msg.textContent = 'Vault path is required.'; return; }
+      try {
+        await api('PUT', '/api/obsidian/config', { vault_path: vaultPath });
+        msg.style.color = 'var(--success,#22c55e)';
+        msg.textContent = '✓ Saved and sync started — files are being written to your vault.';
+        document.getElementById('_obs-sync-btn').removeAttribute('disabled');
+        // Update status dot
+        const dot = document.querySelector('.obs-status-dot');
+        const label = document.querySelector('.obs-status-label');
+        if (dot) { dot.className = 'obs-status-dot obs-dot-on'; }
+        if (label) { label.textContent = 'Sync active'; }
+        document.getElementById('_obs-sync-btn').removeAttribute('disabled');
+      } catch(e) {
+        msg.style.color = 'var(--danger,#e05252)';
+        msg.textContent = 'Error: ' + e.message;
+      }
+    };
+
+    document.getElementById('_obs-sync-btn').onclick = async () => {
+      const btn = document.getElementById('_obs-sync-btn');
+      btn.disabled = true; btn.textContent = 'Syncing…';
+      try {
+        await api('POST', '/api/obsidian/sync');
+        msg.style.color = 'var(--success,#22c55e)';
+        msg.textContent = '✓ Sync started — files are being written to the vault in the background.';
+      } catch(e) {
+        msg.style.color = 'var(--danger,#e05252)';
+        msg.textContent = 'Sync error: ' + e.message;
+      } finally {
+        btn.disabled = false; btn.textContent = '↺ Sync all now';
+      }
+    };
+  }
 }
 
 /* ─── Init ───────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
+  // Migrate stale savedViews: reset viewType to 'list' for views stored as 'cards' or 'table'
+  // (These entities now default to the task-style list view)
+  ['project','goal','note','sprint','resource'].forEach(entity => {
+    try {
+      const raw = localStorage.getItem(`savedViews_${entity}`);
+      if (!raw) return;
+      const views = JSON.parse(raw);
+      let changed = false;
+      views.forEach(v => { if (v.viewType === 'cards' || v.viewType === 'table') { v.viewType = 'list'; changed = true; } });
+      if (changed) localStorage.setItem(`savedViews_${entity}`, JSON.stringify(views));
+      // Also reset the viewMode var
+      const vmKey = `${entity}sViewMode`;
+      if (localStorage.getItem(vmKey) === 'cards' || localStorage.getItem(vmKey) === 'table') {
+        localStorage.setItem(vmKey, 'list');
+      }
+    } catch(e) {}
+  });
+  // Reset inline viewMode variables to match localStorage
+  if (localStorage.getItem('notesViewMode') === 'cards' || localStorage.getItem('notesViewMode') === 'table') localStorage.setItem('notesViewMode', 'list');
+  if (localStorage.getItem('sprintsViewMode') === 'cards' || localStorage.getItem('sprintsViewMode') === 'table') localStorage.setItem('sprintsViewMode', 'list');
+  if (localStorage.getItem('resourcesViewMode') === 'cards' || localStorage.getItem('resourcesViewMode') === 'table') localStorage.setItem('resourcesViewMode', 'list');
+  if (localStorage.getItem('projectsViewMode') === 'cards' || localStorage.getItem('projectsViewMode') === 'table') localStorage.setItem('projectsViewMode', 'list');
+  if (localStorage.getItem('goalsViewMode') === 'cards' || localStorage.getItem('goalsViewMode') === 'table') localStorage.setItem('goalsViewMode', 'list');
+
   // Nav click handlers
   document.querySelectorAll('[data-view]').forEach(link => {
     link.addEventListener('click', (e) => {
@@ -9631,6 +11841,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Connected apps panel
   document.getElementById('connected-apps-btn').onclick = openConnectedAppsPanel;
+
+  document.getElementById('restart-btn').onclick = async () => {
+    const btn = document.getElementById('restart-btn');
+    btn.disabled = true;
+    btn.title = 'Restarting…';
+    try { await api('POST', '/api/restart'); } catch(_) { /* server stops responding */ }
+    // Poll until the server comes back, then reload
+    const poll = setInterval(async () => {
+      try {
+        await fetch('/api/version');
+        clearInterval(poll);
+        location.reload();
+      } catch(_) {}
+    }, 800);
+  };
 
   // Mobile menu toggle
   const mobMenuBtn = document.getElementById('mob-menu-btn');

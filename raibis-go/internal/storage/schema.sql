@@ -207,3 +207,85 @@ CREATE TABLE IF NOT EXISTS comments (
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_comments_entity ON comments(entity_type, entity_id);
+
+-- ─────────────────────────────────────────
+-- Pages — universal content unit (Notion-style)
+-- type: "page" | "database"
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS pages (
+    id          TEXT    PRIMARY KEY,
+    type        TEXT    NOT NULL DEFAULT 'page',
+    title       TEXT    NOT NULL DEFAULT '',
+    icon        TEXT,
+    cover       TEXT,
+    body        TEXT,
+    database_id TEXT    REFERENCES pages(id) ON DELETE SET NULL,
+    parent_id   TEXT    REFERENCES pages(id) ON DELETE SET NULL,
+    archived    INTEGER NOT NULL DEFAULT 0,
+    position    REAL    NOT NULL DEFAULT 0,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_pages_database ON pages(database_id);
+CREATE INDEX IF NOT EXISTS idx_pages_parent   ON pages(parent_id);
+CREATE INDEX IF NOT EXISTS idx_pages_type     ON pages(type);
+
+-- ─────────────────────────────────────────
+-- Page properties — typed key-value store per page
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS page_properties (
+    page_id TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+    key     TEXT NOT NULL,
+    value   TEXT,
+    PRIMARY KEY (page_id, key)
+);
+
+-- ─────────────────────────────────────────
+-- Schema columns — typed columns for database pages
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS schema_columns (
+    database_id TEXT    NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+    key         TEXT    NOT NULL,
+    label       TEXT    NOT NULL DEFAULT '',
+    data_type   TEXT    NOT NULL DEFAULT 'text',
+    options     TEXT    NOT NULL DEFAULT '[]',
+    required    INTEGER NOT NULL DEFAULT 0,
+    position    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (database_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_schema_db ON schema_columns(database_id);
+
+-- ─────────────────────────────────────────
+-- Page relations — directed edges between pages
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS page_relations (
+    from_page_id TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+    to_page_id   TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+    key          TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (from_page_id, to_page_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_relations_from ON page_relations(from_page_id);
+CREATE INDEX IF NOT EXISTS idx_relations_to   ON page_relations(to_page_id);
+
+-- ─────────────────────────────────────────
+-- Obsidian vaults — configured vault paths for sync
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS obsidian_vaults (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    name      TEXT    NOT NULL DEFAULT '',
+    path      TEXT    NOT NULL,
+    active    INTEGER NOT NULL DEFAULT 1,
+    last_sync DATETIME
+);
+
+-- ─────────────────────────────────────────
+-- Settings — global key-value app settings
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- page_id column on comments (for page-based comments)
+-- Added as ALTER TABLE here so existing DBs get it via applyMigrations
+-- The column is NOT NULL-safe via COALESCE in queries

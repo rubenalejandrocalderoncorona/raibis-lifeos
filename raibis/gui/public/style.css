@@ -3,8 +3,7 @@
  * All color/spacing/typography tokens live in design-system.css.
  * This file maps those tokens into the legacy variable names so that
  * existing renderXxx() functions in app.js continue to work without
- * modification, while the visual output matches the new Notion/macOS
- * aesthetic.
+ * modification, while the visual output matches the Notion aesthetic.
  */
 
 :root,
@@ -31,6 +30,16 @@
   --shadow:          var(--shadow-float);
   --radius-sm:       var(--radius-sm);
   --radius:          var(--radius-md);
+
+  /* ── Notion card tint aliases ──────────────────────── */
+  --tint-peach:       #ffe8d4;
+  --tint-rose:        #fde0ec;
+  --tint-mint:        #d9f3e1;
+  --tint-lavender:    #e6e0f5;
+  --tint-sky:         #dcecfa;
+  --tint-yellow:      #fef7d6;
+  --tint-yellow-bold: #f9e79f;
+  --tint-cream:       #f8f5e8;
 }
 
 [data-theme="dark"] {
@@ -65,12 +74,14 @@ html {
 }
 
 body {
-  font-family: var(--font-sans);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+               system-ui, Helvetica, sans-serif;
   background: var(--color-bg);
   color: var(--color-text);
   min-height: 100vh;
   overflow-x: hidden;
   line-height: var(--leading-normal);
+  letter-spacing: -0.003em;
 }
 
 a { color: var(--color-accent); text-decoration: none; }
@@ -139,10 +150,7 @@ input:focus, select:focus, textarea:focus {
 .sidebar {
   width: var(--sidebar-width);
   flex-shrink: 0;
-  /* Glassmorphism — Notion/macOS sidebar feel */
   background: var(--color-sidebar-bg);
-  backdrop-filter: blur(var(--color-sidebar-blur)) saturate(var(--color-sidebar-sat));
-  -webkit-backdrop-filter: blur(var(--color-sidebar-blur)) saturate(var(--color-sidebar-sat));
   border-right: 1px solid var(--color-sidebar-border);
   position: sticky;
   top: 0;
@@ -157,7 +165,7 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: var(--space-5) 0;
+  padding: var(--space-3) 0;
 }
 
 /* ── Brand ────────────────────────────────────────────────────────── */
@@ -165,37 +173,35 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 0 var(--space-4) var(--space-5);
+  padding: var(--space-1) var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-1);
 }
 .brand-icon {
   color: var(--color-accent);
   flex-shrink: 0;
 }
 .brand-name {
-  font-family: var(--font-sans);
-  font-size: var(--text-md);
-  font-weight: var(--weight-semibold);
+  font-size: 14px;
+  font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--color-text);
   flex: 1;
 }
 
-/* ── Theme toggle button ──────────────────────────────────────────── */
+/* ── Theme toggle / icon buttons in brand bar ─────────────────────── */
 .theme-btn {
   background: none;
-  border: 1px solid var(--color-border);
-  color: var(--color-text-secondary);
+  border: none;
+  color: var(--color-text-tertiary);
   border-radius: var(--radius-sm);
-  width: 28px; height: 28px;
+  width: 26px; height: 26px;
   display: inline-flex; align-items: center; justify-content: center;
   transition: background var(--duration-fast) var(--ease-out),
-              border-color var(--duration-fast) var(--ease-out),
               color var(--duration-fast) var(--ease-out);
 }
 .theme-btn:hover {
-  background: var(--color-accent-dim);
-  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
   color: var(--color-accent);
 }
 @keyframes spin-once {
@@ -209,16 +215,16 @@ input:focus, select:focus, textarea:focus {
 /* ── Nav ──────────────────────────────────────────────────────────── */
 .sidebar-nav {
   flex: 1;
-  padding: var(--space-3) 0;
+  padding: var(--space-1) 0;
   display: flex;
   flex-direction: column;
 }
 
 .nav-section-label {
-  padding: var(--space-2) var(--space-4) var(--space-1);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-semibold);
-  letter-spacing: 0.06em;
+  padding: var(--space-3) var(--space-3) var(--space-1);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--color-text-tertiary);
   user-select: none;
@@ -228,33 +234,33 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 6px var(--space-4);
+  padding: 5px var(--space-3);
   color: var(--color-text-secondary);
-  font-size: var(--text-base);
-  font-weight: var(--weight-medium);
+  font-size: 13px;
+  font-weight: 500;
   text-decoration: none;
-  border-radius: 0;
-  /* Left indicator bar */
-  border-left: 2px solid transparent;
-  margin: 1px 0;
+  border-radius: var(--radius-sm);
+  margin: 1px var(--space-2);
   transition: color var(--duration-fast) var(--ease-out),
               background var(--duration-fast) var(--ease-out);
 }
 .nav-item:hover {
   color: var(--color-text);
-  background: var(--color-accent-subtle);
+  background: rgba(0,0,0,0.04);
   text-decoration: none;
+}
+[data-theme="dark"] .nav-item:hover {
+  background: rgba(255,255,255,0.05);
 }
 .nav-item.active {
   color: var(--color-accent);
-  border-left-color: var(--color-accent);
   background: var(--color-accent-dim);
-  font-weight: var(--weight-semibold);
+  font-weight: 600;
 }
 /* SVG nav icons */
 .nav-icon {
   flex-shrink: 0;
-  opacity: 0.7;
+  opacity: 0.65;
   transition: opacity var(--duration-fast) var(--ease-out);
 }
 .nav-item:hover .nav-icon,
@@ -264,16 +270,16 @@ input:focus, select:focus, textarea:focus {
 
 /* ── Sidebar footer ───────────────────────────────────────────────── */
 .sidebar-footer {
-  padding: var(--space-4) var(--space-4) 0;
+  padding: var(--space-3) var(--space-3) 0;
   border-top: 1px solid var(--color-border);
 }
 .ext-link {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) 0;
+  padding: var(--space-1) 0;
   color: var(--color-text-tertiary);
-  font-size: var(--text-xs);
+  font-size: 11px;
   text-decoration: none;
   transition: color var(--duration-fast) var(--ease-out);
 }
@@ -281,17 +287,17 @@ input:focus, select:focus, textarea:focus {
 
 .version-btn {
   font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.03em;
+  font-size: 10px;
+  letter-spacing: 0.02em;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  padding: var(--space-1) var(--space-2);
+  padding: 2px var(--space-2);
   margin-top: var(--space-1);
-  opacity: 0.65;
+  opacity: 0.55;
   transition: opacity var(--duration-fast) var(--ease-out),
               border-color var(--duration-fast) var(--ease-out);
 }
-.version-btn:hover { opacity: 1; border-color: var(--color-accent); }
+.version-btn:hover { opacity: 0.9; border-color: var(--color-accent); }
 
 /* ─── Main ────────────────────────────────────────────────────────── */
 .main-wrap {
@@ -314,8 +320,7 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   gap: var(--space-1);
   padding: var(--space-2) var(--space-8);
-  font-size: var(--text-sm);
-  font-family: var(--font-sans);
+  font-size: 12px;
   color: var(--color-text-tertiary);
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
@@ -357,45 +362,44 @@ input:focus, select:focus, textarea:focus {
 }
 
 .view-title {
-  font-family: var(--font-sans);
-  font-size: var(--text-xl);
-  font-weight: var(--weight-bold);
+  font-size: 22px;
+  font-weight: 600;
   color: var(--color-text);
-  letter-spacing: -0.025em;
-  line-height: var(--leading-tight);
+  letter-spacing: -0.03em;
+  line-height: 1.25;
 }
 .view-subtitle {
   color: var(--color-text-secondary);
-  font-size: var(--text-base);
+  font-size: 14px;
   margin-top: var(--space-1);
-  font-weight: var(--weight-regular);
+  font-weight: 400;
 }
-
-/* ─── Buttons ─────────────────────────────────────────────────────── */
+/* ─── Buttons — Notion 8px rectangle geometry ─────────────────────── */
 .btn {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 7px var(--space-4);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-base);
-  font-weight: var(--weight-medium);
+  padding: 7px 14px;
+  border-radius: var(--radius-md);   /* 8px — Notion rectangle, NOT pill */
+  font-size: 14px;
+  font-weight: 500;
   border: none;
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-out);
   white-space: nowrap;
+  letter-spacing: -0.005em;
 }
 .btn-primary {
-  background: var(--color-accent);
-  color: var(--color-text-inverse);
-  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.20);
+  background: var(--color-accent);   /* Notion purple #5645d4            */
+  color: #ffffff;
+  box-shadow: 0 1px 2px rgba(86, 69, 212, 0.20);
 }
 .btn-primary:hover {
   background: var(--color-accent-hover);
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+  box-shadow: 0 2px 8px rgba(86, 69, 212, 0.28);
   transform: translateY(-1px);
 }
-.btn-primary:active { transform: translateY(0); }
+.btn-primary:active { transform: translateY(0); background: var(--color-accent-deep); }
 
 .btn-ghost {
   background: none;
@@ -403,7 +407,7 @@ input:focus, select:focus, textarea:focus {
   color: var(--color-text-secondary);
 }
 .btn-ghost:hover {
-  background: var(--color-accent-dim);
+  background: var(--color-accent-subtle);
   color: var(--color-accent);
   border-color: var(--color-accent);
 }
@@ -418,35 +422,33 @@ input:focus, select:focus, textarea:focus {
   color: #fff;
 }
 
-.btn-sm { padding: 4px var(--space-3); font-size: var(--text-sm); }
+.btn-sm { padding: 4px 10px; font-size: 13px; }
 .btn-icon { padding: 5px var(--space-2); }
 
-/* ─── Cards ───────────────────────────────────────────────────────── */
+/* ─── Cards — Notion 12px radius ──────────────────────────────────── */
 .card {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-lg);    /* 12px — Notion card */
   padding: var(--space-5);
   margin-bottom: var(--space-3);
   transition: box-shadow var(--duration-base) var(--ease-out),
-              border-color var(--duration-base) var(--ease-out),
-              transform var(--duration-fast) var(--ease-out);
+              border-color var(--duration-base) var(--ease-out);
 }
 .card:hover {
   border-color: var(--color-border-strong);
   box-shadow: var(--shadow-hover);
 }
 .card-title {
-  font-weight: var(--weight-semibold);
-  font-size: var(--text-base);
+  font-weight: 600;
+  font-size: 14px;
   margin-bottom: var(--space-1);
   color: var(--color-text);
-  letter-spacing: -0.01em;
+  letter-spacing: -0.012em;
 }
 .card-meta {
-  font-size: var(--text-sm);
+  font-size: 12px;
   color: var(--color-text-secondary);
-  font-family: var(--font-sans);
   margin-top: var(--space-2);
 }
 
@@ -2632,7 +2634,7 @@ body.kanban-dragging-active * {
   color: #fff;
   border: none;
   cursor: pointer;
-  box-shadow: 0 4px 16px rgba(37, 99, 235, 0.35), 0 1px 4px rgba(37, 99, 235, 0.2);
+  box-shadow: 0 4px 16px rgba(86, 69, 212, 0.35), 0 1px 4px rgba(86, 69, 212, 0.2);
   transition: transform var(--duration-fast) var(--ease-spring),
               box-shadow var(--duration-fast) var(--ease-out);
   display: flex;
@@ -2641,7 +2643,7 @@ body.kanban-dragging-active * {
 }
 .ai-fab:hover {
   transform: scale(1.08) translateY(-1px);
-  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.45), 0 2px 6px rgba(37, 99, 235, 0.25);
+  box-shadow: 0 6px 20px rgba(86, 69, 212, 0.45), 0 2px 6px rgba(86, 69, 212, 0.25);
 }
 
 .quick-note-fab {
@@ -4199,6 +4201,7 @@ tr:hover .ctx-handle,
   display: flex; align-items: center; justify-content: center;
   background: var(--bg-hover); border-radius: 8px;
   flex-shrink: 0;
+  color: var(--app-color, var(--accent));
 }
 .app-status-dot {
   position: absolute; bottom: 1px; right: 1px;
@@ -4389,3 +4392,84 @@ tr:hover .ctx-handle,
   font-size: 10px; font-weight: 600; color: var(--text-muted);
   text-transform: uppercase; letter-spacing: .05em;
 }
+
+/* ─── Obsidian Sync Tab ───────────────────────────────────────── */
+.obs-section { padding: 4px 0; }
+.obs-status-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.obs-status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.obs-dot-on  { background: #22c55e; box-shadow: 0 0 0 2px rgba(34,197,94,.2); }
+.obs-dot-off { background: var(--text-muted); }
+.obs-status-label { font-size: 13px; font-weight: 500; color: var(--text-secondary, var(--text-muted)); }
+.obs-desc { font-size: 12.5px; color: var(--text-muted); line-height: 1.6; margin: 0 0 16px; }
+.obs-desc code { background: var(--bg-hover); padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+.obs-field-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.obs-label { font-size: 12px; font-weight: 500; color: var(--text-secondary, var(--text-muted)); }
+.obs-input { width: 100%; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; font-family: var(--font-mono, monospace); box-sizing: border-box; }
+.obs-input:focus { border-color: var(--accent); outline: none; }
+[data-theme="dark"] .obs-input { background: #1e1e1e; }
+.obs-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.obs-divider { border: none; border-top: 1px solid var(--border); margin: 18px 0 14px; }
+.obs-vault-layout { }
+.obs-vault-layout-title { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 8px; }
+.obs-layout-pre { background: var(--bg-hover); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 11.5px; font-family: var(--font-mono, monospace); color: var(--text-secondary, var(--text)); line-height: 1.6; margin: 0 0 10px; overflow-x: auto; white-space: pre; }
+.obs-vault-layout-note { font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+.obs-vault-layout-note code { background: var(--bg-hover); padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+
+/* ── Chip config popover ──────────────────────────────────────────────── */
+.chip-config-popover {
+  position: fixed;
+  min-width: 240px;
+  max-width: 300px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+  z-index: var(--z-top);
+  padding: 10px 0 6px;
+  overflow: hidden;
+}
+.ccp-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.ccp-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.ccp-hint { font-size: 11px; color: var(--text-muted); flex: 1; text-align: right; }
+.ccp-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  padding: 6px 12px 4px;
+}
+.ccp-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  cursor: default;
+}
+.ccp-row:hover { background: var(--bg-card-hover); }
+.ccp-drag-handle { color: var(--text-muted); cursor: grab; font-size: 14px; opacity: 0.5; }
+.ccp-drag-handle:hover { opacity: 1; }
+.ccp-label { flex: 1; font-size: 13px; color: var(--text); }
+.ccp-unpin-btn, .ccp-pin-btn, .ccp-delete-btn {
+  background: none;
+  border: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.ccp-unpin-btn:hover { background: var(--bg-hover); color: var(--text); }
+.ccp-pin-btn:hover { background: var(--accent-glow); color: var(--accent); }
+.ccp-pin-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.ccp-delete-btn:hover { background: rgba(239,68,68,.1); color: #ef4444; }
+.ccp-row.dragging { opacity: 0.4; }
+.ccp-row.drag-over { background: var(--accent-glow); }
+.ccp-empty { font-size: 12px; color: var(--text-dim); padding: 4px 12px; }
+

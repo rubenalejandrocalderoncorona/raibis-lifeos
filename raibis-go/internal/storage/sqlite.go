@@ -151,6 +151,64 @@ func applyMigrations(db *sql.DB) error {
 			created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_comments_entity ON comments(entity_type, entity_id)`,
+
+		// ── page_id on comments for page-based comment threads ──────────────────
+		`ALTER TABLE comments ADD COLUMN page_id TEXT REFERENCES pages(id) ON DELETE CASCADE`,
+
+		// ── universal page system ──────────────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS pages (
+			id          TEXT    PRIMARY KEY,
+			type        TEXT    NOT NULL DEFAULT 'page',
+			title       TEXT    NOT NULL DEFAULT '',
+			icon        TEXT,
+			cover       TEXT,
+			body        TEXT,
+			database_id TEXT    REFERENCES pages(id) ON DELETE SET NULL,
+			parent_id   TEXT    REFERENCES pages(id) ON DELETE SET NULL,
+			archived    INTEGER NOT NULL DEFAULT 0,
+			position    REAL    NOT NULL DEFAULT 0,
+			created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_pages_database ON pages(database_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_pages_parent   ON pages(parent_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_pages_type     ON pages(type)`,
+		`CREATE TABLE IF NOT EXISTS page_properties (
+			page_id TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+			key     TEXT NOT NULL,
+			value   TEXT,
+			PRIMARY KEY (page_id, key)
+		)`,
+		`CREATE TABLE IF NOT EXISTS schema_columns (
+			database_id TEXT    NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+			key         TEXT    NOT NULL,
+			label       TEXT    NOT NULL DEFAULT '',
+			data_type   TEXT    NOT NULL DEFAULT 'text',
+			options     TEXT    NOT NULL DEFAULT '[]',
+			required    INTEGER NOT NULL DEFAULT 0,
+			position    INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (database_id, key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_schema_db ON schema_columns(database_id)`,
+		`CREATE TABLE IF NOT EXISTS page_relations (
+			from_page_id TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+			to_page_id   TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+			key          TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (from_page_id, to_page_id, key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_relations_from ON page_relations(from_page_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_relations_to   ON page_relations(to_page_id)`,
+		`CREATE TABLE IF NOT EXISTS obsidian_vaults (
+			id        INTEGER PRIMARY KEY AUTOINCREMENT,
+			name      TEXT    NOT NULL DEFAULT '',
+			path      TEXT    NOT NULL,
+			active    INTEGER NOT NULL DEFAULT 1,
+			last_sync DATETIME
+		)`,
+		`CREATE TABLE IF NOT EXISTS settings (
+			key   TEXT PRIMARY KEY,
+			value TEXT
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -1066,11 +1124,21 @@ func emptyToNil(s string) any {
 func (s *sqliteStorage) CreateComment(c *domain.Comment) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(
-		`INSERT INTO comments (entity_type, entity_id, author, body, created_at)
-		 VALUES (?, ?, ?, ?, datetime('now'))`,
-		c.EntityType, c.EntityID, c.Author, c.Body,
-	)
+	var res sql.Result
+	var err error
+	if c.PageID != "" {
+		res, err = s.db.Exec(
+			`INSERT INTO comments (page_id, author, body, created_at)
+			 VALUES (?, ?, ?, datetime('now'))`,
+			c.PageID, c.Author, c.Body,
+		)
+	} else {
+		res, err = s.db.Exec(
+			`INSERT INTO comments (entity_type, entity_id, author, body, created_at)
+			 VALUES (?, ?, ?, ?, datetime('now'))`,
+			c.EntityType, c.EntityID, c.Author, c.Body,
+		)
+	}
 	if err != nil {
 		return 0, err
 	}

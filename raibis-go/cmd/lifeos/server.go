@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,34 +27,70 @@ import (
 	"github.com/raibis/raibis-go/internal/cmdutil"
 	"github.com/raibis/raibis-go/internal/domain"
 	"github.com/raibis/raibis-go/internal/gui"
+	"github.com/raibis/raibis-go/internal/obsidian"
+	pagesrv "github.com/raibis/raibis-go/internal/server"
+	obsync "github.com/raibis/raibis-go/internal/sync"
 	"github.com/raibis/raibis-go/internal/service"
 	"github.com/raibis/raibis-go/internal/storage"
 	"github.com/raibis/raibis-go/internal/vault"
 )
 
+// obsHolder is a shared, mutex-protected wrapper so the config handler can
+// initialise the syncer on-the-fly after the server has started.
+type obsHolder struct {
+	mu  sync.Mutex
+	obs *obsidian.Syncer
+}
+
 type serverConfig struct {
-	dbPath     string
-	socketPath string // UDS path; empty = UDS disabled
-	vaultPath  string
-	tcpPort    string // non-empty = also bind TCP (dual-listen for web GUI)
-	host       string // TCP bind address; "127.0.0.1" (default) or "0.0.0.0" (Flutter/LAN)
+	dbPath       string
+	socketPath   string // UDS path; empty = UDS disabled
+	vaultPath    string
+	tcpPort      string // non-empty = also bind TCP (dual-listen for web GUI)
+	host         string // TCP bind address; "127.0.0.1" (default) or "0.0.0.0" (Flutter/LAN)
+	obsidianPath string // Obsidian vault root; empty = no Obsidian sync
+}
+
+func (h *obsHolder) get() *obsidian.Syncer {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.obs
+}
+
+func (h *obsHolder) set(s *obsidian.Syncer) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.obs = s
+}
+
+// sync calls f with the syncer if one is configured. Safe to call when obsH is nil.
+func (h *obsHolder) sync(f func(*obsidian.Syncer)) {
+	if h == nil {
+		return
+	}
+	s := h.get()
+	if s != nil {
+		go f(s)
+	}
 }
 
 func runServer(args []string) {
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
-	socketFlag := fs.String("socket", cmdutil.DefaultSocketPath(), `Unix domain socket path ("" to disable)`)
-	dbFlag     := fs.String("db",     cmdutil.DefaultDBPath(),     "SQLite database path")
-	vaultFlag  := fs.String("vault",  cmdutil.DefaultVaultPath(),  "Vault root directory")
-	portFlag   := fs.String("port",   "",                          "Also bind TCP port for web GUI (e.g. 3344)")
-	hostFlag   := fs.String("host",   "127.0.0.1",                 `TCP bind address ("0.0.0.0" for LAN/Flutter access)`)
+	socketFlag   := fs.String("socket",         cmdutil.DefaultSocketPath(), `Unix domain socket path ("" to disable)`)
+	dbFlag       := fs.String("db",             cmdutil.DefaultDBPath(),     "SQLite database path")
+	vaultFlag    := fs.String("vault",           cmdutil.DefaultVaultPath(),  "Vault root directory")
+	portFlag     := fs.String("port",            "",                          "Also bind TCP port for web GUI (e.g. 3344)")
+	hostFlag     := fs.String("host",            "127.0.0.1",                 `TCP bind address ("0.0.0.0" for LAN/Flutter access)`)
+	obsidianFlag := fs.String("obsidian-vault",  "",                          "Obsidian vault root for sync (empty = disabled)")
 	fs.Parse(args) //nolint:errcheck — ExitOnError handles it
 
 	serve(serverConfig{
-		dbPath:     *dbFlag,
-		socketPath: *socketFlag,
-		vaultPath:  *vaultFlag,
-		tcpPort:    *portFlag,
-		host:       *hostFlag,
+		dbPath:       *dbFlag,
+		socketPath:   *socketFlag,
+		vaultPath:    *vaultFlag,
+		tcpPort:      *portFlag,
+		host:         *hostFlag,
+		obsidianPath: *obsidianFlag,
 	})
 }
 
@@ -72,7 +110,32 @@ func serve(cfg serverConfig) {
 	log.Printf("vault at %s", v.Root)
 
 	svc := service.New(store)
-	mux := buildMux(svc, store, v, cfg.dbPath)
+
+	// ── Obsidian sync (optional) ──────────────────────────────────────────────
+	obsH := &obsHolder{}
+	obsPath := cfg.obsidianPath
+	if obsPath == "" {
+		// Fall back to saved config in ~/.raibis/obsidian.json
+		obsPath = loadObsidianPath()
+	}
+	if obsPath != "" {
+		s := obsidian.New(store, obsPath)
+		obsH.set(s)
+		log.Printf("obsidian sync enabled at %s", obsPath)
+		go func() {
+			if err := s.SyncAll(); err != nil {
+				log.Printf("obsidian: initial sync error: %v", err)
+			}
+		}()
+	}
+
+	// ── Page-based vault syncers ──────────────────────────────────────────────
+	ctx, cancelSyncers := context.WithCancel(context.Background())
+	defer cancelSyncers()
+	syncers := pagesrv.StartVaultSyncers(ctx, store)
+	pagesrv.SeedSystemDatabases(store)
+
+	mux := buildMux(svc, store, v, cfg.dbPath, obsH, syncers...)
 
 	if cfg.socketPath == "" && cfg.tcpPort == "" {
 		fmt.Fprintln(os.Stderr, "lifeos server: no socket or port specified; use --socket or --port")
@@ -139,28 +202,28 @@ func serve(cfg serverConfig) {
 
 // ── Router ─────────────────────────────────────────────────────────────────────
 
-func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, dbPath string) http.Handler {
+func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, dbPath string, obsH *obsHolder, syncers ...*obsync.Syncer) http.Handler {
 	mux := http.NewServeMux()
 
 	// Tasks
-	mux.HandleFunc("/api/tasks", withCORS(tasksHandler(svc, store)))
-	mux.HandleFunc("/api/tasks/", withCORS(taskHandler(svc, store, dbPath)))
+	mux.HandleFunc("/api/tasks", withCORS(tasksHandler(svc, store, obsH)))
+	mux.HandleFunc("/api/tasks/", withCORS(taskHandler(svc, store, dbPath, obsH)))
 
 	// Goals
-	mux.HandleFunc("/api/goals", withCORS(goalsHandler(svc, store)))
-	mux.HandleFunc("/api/goals/", withCORS(goalHandler(store, dbPath)))
+	mux.HandleFunc("/api/goals", withCORS(goalsHandler(svc, store, obsH)))
+	mux.HandleFunc("/api/goals/", withCORS(goalHandler(store, dbPath, obsH)))
 
 	// Projects
-	mux.HandleFunc("/api/projects", withCORS(projectsHandler(svc, store)))
-	mux.HandleFunc("/api/projects/", withCORS(projectHandler(store, dbPath)))
+	mux.HandleFunc("/api/projects", withCORS(projectsHandler(svc, store, obsH)))
+	mux.HandleFunc("/api/projects/", withCORS(projectHandler(store, dbPath, obsH)))
 
 	// Sprints
-	mux.HandleFunc("/api/sprints", withCORS(sprintsHandler(svc, store, dbPath)))
-	mux.HandleFunc("/api/sprints/", withCORS(sprintHandler(store)))
+	mux.HandleFunc("/api/sprints", withCORS(sprintsHandler(svc, store, dbPath, obsH)))
+	mux.HandleFunc("/api/sprints/", withCORS(sprintHandler(store, obsH)))
 
 	// Notes — vault-backed file-only
-	mux.HandleFunc("/api/notes", withCORS(notesHandler(store, v)))
-	mux.HandleFunc("/api/notes/", withCORS(noteHandler(store, v)))
+	mux.HandleFunc("/api/notes", withCORS(notesHandler(store, v, obsH)))
+	mux.HandleFunc("/api/notes/", withCORS(noteHandler(store, v, obsH)))
 
 	// Categories
 	mux.HandleFunc("/api/categories", withCORS(categoriesHandler(store)))
@@ -186,6 +249,7 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Search & Version
 	mux.HandleFunc("/api/search", withCORS(searchHandler(store, dbPath)))
 	mux.HandleFunc("/api/version", withCORS(versionHandler()))
+	mux.HandleFunc("/api/restart", withCORS(restartHandler()))
 
 	// Vector sync feed — consumed by N8N / external embedding pipelines
 	mux.HandleFunc("/api/sync-feed", withCORS(syncFeedHandler(svc, store)))
@@ -199,11 +263,31 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	mux.HandleFunc("/api/integrations", withCORS(integrationsHandler()))
 	mux.HandleFunc("/api/integrations/probe", withCORS(integrationsProbeHandler()))
 
+	// Obsidian sync — config + manual trigger
+	mux.HandleFunc("/api/obsidian/config", withCORS(obsidianConfigHandler(obsH, store)))
+	mux.HandleFunc("/api/obsidian/sync", withCORS(obsidianSyncHandler(obsH)))
+
 	// Comments
 	mux.HandleFunc("/api/comments", withCORS(commentsHandler(store)))
 
 	// Properties (icon + custom key-value pairs per entity)
 	mux.HandleFunc("/api/properties", withCORS(propertiesHandler(store)))
+
+	// ── Page API (Notion-style universal page system) ──────────────────────────
+	// Mount the page server's routes directly on the same mux.
+	// pagesrv.BuildMux returns its own mux — we extract each route by walking
+	// common prefixes via a catch-all sub-handler.
+	pageMux := pagesrv.BuildMux(store, syncers...)
+	for _, prefix := range []string{
+		"/api/pages",
+		"/api/databases",
+		"/api/vaults",
+		"/api/settings",
+	} {
+		p := prefix
+		mux.HandleFunc(p, withCORS(func(w http.ResponseWriter, r *http.Request) { pageMux.ServeHTTP(w, r) }))
+		mux.HandleFunc(p+"/", withCORS(func(w http.ResponseWriter, r *http.Request) { pageMux.ServeHTTP(w, r) }))
+	}
 
 	// Embedded Web GUI — self-contained, no external /public folder needed.
 	// Serves index.html + assets for all non-/api/ requests.
@@ -281,7 +365,7 @@ func nullInt(n sql.NullInt64) any {
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────
 
-func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFunc {
+func tasksHandler(svc service.TaskService, store storage.Storage, obsH *obsHolder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -405,6 +489,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 				errJSON(w, 500, err.Error())
 				return
 			}
+			obsH.sync(func(s *obsidian.Syncer) { s.ExportTask(created) }) //nolint:errcheck
 			writeJSON(w, 201, created)
 
 		default:
@@ -413,7 +498,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 	}
 }
 
-func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) http.HandlerFunc {
+func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, obsH *obsHolder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
 		if strings.HasSuffix(path, "/tags") {
@@ -631,6 +716,7 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 			}
 			updated, _ := svc.Get(id)
 			updated.Tags, _ = store.GetEntityTags("task", id)
+			obsH.sync(func(s *obsidian.Syncer) { s.ExportTask(updated) }) //nolint:errcheck
 			writeJSON(w, 200, updated)
 
 		case http.MethodDelete:
@@ -638,6 +724,7 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 				errJSON(w, 500, err.Error())
 				return
 			}
+			obsH.sync(func(s *obsidian.Syncer) { s.DeleteTask(id) }) //nolint:errcheck
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
 		default:
@@ -648,7 +735,7 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 
 // ── Goals ─────────────────────────────────────────────────────────────────────
 
-func goalsHandler(svc service.TaskService, store storage.Storage) http.HandlerFunc {
+func goalsHandler(svc service.TaskService, store storage.Storage, obsH *obsHolder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -705,6 +792,9 @@ func goalsHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 				return
 			}
 			created, _ := store.GetGoal(id)
+			if created != nil {
+				obsH.sync(func(s *obsidian.Syncer) { s.ExportGoal(created) }) //nolint:errcheck
+			}
 			writeJSON(w, 201, created)
 
 		default:
@@ -713,7 +803,7 @@ func goalsHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 	}
 }
 
-func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
+func goalHandler(store storage.Storage, dbPath string, obsH *obsHolder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
 		if strings.HasSuffix(path, "/tags") {
@@ -849,6 +939,7 @@ func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			}
 			updated, _ := store.GetGoal(id)
 			updated.Tags, _ = store.GetEntityTags("goal", id)
+			obsH.sync(func(s *obsidian.Syncer) { s.ExportGoal(updated) }) //nolint:errcheck
 			writeJSON(w, 200, updated)
 
 		case http.MethodDelete:
@@ -856,6 +947,7 @@ func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			obsH.sync(func(s *obsidian.Syncer) { s.DeleteGoal(id) }) //nolint:errcheck
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
 		default:
@@ -866,7 +958,7 @@ func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 
 // ── Projects ──────────────────────────────────────────────────────────────────
 
-func projectsHandler(svc service.TaskService, store storage.Storage) http.HandlerFunc {
+func projectsHandler(svc service.TaskService, store storage.Storage, obsH *obsHolder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -910,6 +1002,9 @@ func projectsHandler(svc service.TaskService, store storage.Storage) http.Handle
 				return
 			}
 			created, _ := store.GetProject(id)
+			if created != nil {
+				obsH.sync(func(s *obsidian.Syncer) { s.ExportProject(created) }) //nolint:errcheck
+			}
 			writeJSON(w, 201, created)
 
 		default:
@@ -918,7 +1013,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage) http.Handle
 	}
 }
 
-func projectHandler(store storage.Storage, dbPath string) http.HandlerFunc {
+func projectHandler(store storage.Storage, dbPath string, obsH *obsHolder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
 		if strings.HasSuffix(path, "/tags") {
@@ -1034,6 +1129,7 @@ func projectHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			}
 			updated, _ := store.GetProject(id)
 			updated.Tags, _ = store.GetEntityTags("project", id)
+			obsH.sync(func(s *obsidian.Syncer) { s.ExportProject(updated) }) //nolint:errcheck
 			writeJSON(w, 200, updated)
 
 		case http.MethodDelete:
@@ -1041,6 +1137,7 @@ func projectHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			obsH.sync(func(s *obsidian.Syncer) { s.DeleteProject(id) }) //nolint:errcheck
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
 		default:
@@ -1051,7 +1148,7 @@ func projectHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 
 // ── Sprints ───────────────────────────────────────────────────────────────────
 
-func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath string) http.HandlerFunc {
+func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath string, obsH *obsHolder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -1094,7 +1191,9 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 				errJSON(w, 500, err.Error())
 				return
 			}
-			writeJSON(w, 201, map[string]any{"id": id, "title": body.Title, "status": "planned"})
+			if created, e := store.GetSprint(id); e == nil {
+				obsH.sync(func(s *obsidian.Syncer) { s.ExportSprint(created) }) //nolint:errcheck
+			}
 
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -1102,7 +1201,7 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 	}
 }
 
-func sprintHandler(store storage.Storage) http.HandlerFunc {
+func sprintHandler(store storage.Storage, obsH *obsHolder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseID(r.URL.Path)
 		if !ok {
@@ -1168,6 +1267,9 @@ func sprintHandler(store storage.Storage) http.HandlerFunc {
 					errJSON(w, 500, err.Error())
 					return
 				}
+				if updated, e := store.GetSprint(id); e == nil {
+					obsH.sync(func(s *obsidian.Syncer) { s.ExportSprint(updated) }) //nolint:errcheck
+				}
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
@@ -1179,7 +1281,7 @@ func sprintHandler(store storage.Storage) http.HandlerFunc {
 
 // ── Notes ─────────────────────────────────────────────────────────────────────
 
-func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
+func notesHandler(store storage.Storage, v *vault.Vault, obsH *obsHolder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -1257,6 +1359,10 @@ func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 			}
 			created, _ := store.GetNote(id)
 			created.Body, _ = v.ReadFile(fp)
+			if created != nil {
+				created.Tags, _ = store.GetEntityTags("note", id)
+				obsH.sync(func(s *obsidian.Syncer) { s.ExportNote(created) }) //nolint:errcheck
+			}
 			writeJSON(w, 201, created)
 
 		default:
@@ -1265,7 +1371,7 @@ func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 	}
 }
 
-func noteHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
+func noteHandler(store storage.Storage, v *vault.Vault, obsH *obsHolder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
 		if strings.HasSuffix(path, "/tags") {
@@ -1375,6 +1481,7 @@ func noteHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 			if updated.FilePath != nil {
 				updated.Body, _ = v.ReadFile(*updated.FilePath)
 			}
+			obsH.sync(func(s *obsidian.Syncer) { s.ExportNote(updated) }) //nolint:errcheck
 			writeJSON(w, 200, updated)
 
 		case http.MethodDelete:
@@ -1386,6 +1493,7 @@ func noteHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 			if n != nil && n.FilePath != nil {
 				v.DeleteFile(*n.FilePath) //nolint:errcheck
 			}
+			obsH.sync(func(s *obsidian.Syncer) { s.DeleteNote(id) }) //nolint:errcheck
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
 		default:
@@ -2434,6 +2542,24 @@ func versionHandler() http.HandlerFunc {
 	}
 }
 
+// POST /api/restart — asks the process to re-exec itself.
+// The web UI polls /api/version until it responds, then reloads.
+func restartHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"ok": true})
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			// Re-exec the current binary with the same arguments.
+			exe, _ := os.Executable()
+			syscall.Exec(exe, os.Args, os.Environ()) //nolint:errcheck
+		}()
+	}
+}
+
 // ── Search ────────────────────────────────────────────────────────────────────
 
 // searchHandler implements GET /api/search?q=<query>
@@ -3270,5 +3396,99 @@ func integrationsProbeHandler() http.HandlerFunc {
 			"inferred_type": inferred,
 			"error":         errMsg,
 		})
+	}
+}
+
+// ── Obsidian sync ─────────────────────────────────────────────────────────────
+
+func obsidianConfigPath() string {
+	return filepath.Join(raibisDir(), "obsidian.json")
+}
+
+func loadObsidianPath() string {
+	data, err := os.ReadFile(obsidianConfigPath())
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		VaultPath string `json:"vault_path"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	return cfg.VaultPath
+}
+
+func saveObsidianPath(p string) error {
+	data, _ := json.MarshalIndent(map[string]string{"vault_path": p}, "", "  ")
+	return os.WriteFile(obsidianConfigPath(), data, 0o644)
+}
+
+// GET /api/obsidian/config  — returns {vault_path, enabled}
+// PUT /api/obsidian/config  — sets vault_path; initialises syncer on-the-fly
+func obsidianConfigHandler(obsH *obsHolder, store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			cur := obsH.get()
+			vaultPath := loadObsidianPath()
+			if cur != nil {
+				vaultPath = cur.VaultPath()
+			}
+			writeJSON(w, 200, map[string]any{
+				"vault_path": vaultPath,
+				"enabled":    cur != nil,
+			})
+
+		case http.MethodPut:
+			var body struct {
+				VaultPath string `json:"vault_path"`
+			}
+			if err := readJSON(r, &body); err != nil {
+				errJSON(w, 400, "invalid JSON: "+err.Error())
+				return
+			}
+			if err := saveObsidianPath(body.VaultPath); err != nil {
+				errJSON(w, 500, "save config: "+err.Error())
+				return
+			}
+			// Initialise (or replace) the syncer immediately so no restart needed.
+			s := obsidian.New(store, body.VaultPath)
+			obsH.set(s)
+			go func() {
+				if err := s.SyncAll(); err != nil {
+					log.Printf("obsidian: on-the-fly sync error: %v", err)
+				}
+			}()
+			writeJSON(w, 200, map[string]any{
+				"ok":         true,
+				"vault_path": body.VaultPath,
+				"enabled":    true,
+			})
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// POST /api/obsidian/sync  — triggers a full re-export of all entities
+func obsidianSyncHandler(obsH *obsHolder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		s := obsH.get()
+		if s == nil {
+			errJSON(w, 400, "obsidian sync not configured — set vault_path via PUT /api/obsidian/config first")
+			return
+		}
+		go func() {
+			if err := s.SyncAll(); err != nil {
+				log.Printf("obsidian manual sync error: %v", err)
+			}
+		}()
+		writeJSON(w, 202, map[string]any{"ok": true, "message": "sync started in background"})
 	}
 }
