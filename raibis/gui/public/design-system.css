@@ -1,121 +1,151 @@
 /*
- * LifeOS Design System — Notion × macOS Aesthetic
- * ─────────────────────────────────────────────────
- * This file defines every design token for the LifeOS redesign.
- * Import before style.css. All components consume these tokens.
+ * LifeOS Design System — Notion Design Language
+ * ──────────────────────────────────────────────
+ * Token reference: notion-raibis-design.md
  *
- * Palette philosophy:
- *   - True white (#FFFFFF) card surfaces; warm off-white (#FAFAF9) page bg
- *   - High-contrast dark gray text (not pure black) — #1C1C1E (macOS label)
- *   - Borders at #E5E5E5 — barely-there, like Notion
- *   - Sidebar: glassmorphism / backdrop-blur with very light translucency
- *   - Accent: neutral indigo-blue (like Notion blue), never neon
- *   - Tags/badges: muted pastel fills, low-saturation
- *
- * Tailwind mapping (for reference when migrating to Tailwind later):
- *   --color-bg             → bg-[#FAFAF9]    (stone-50 equivalent)
- *   --color-surface        → bg-white
- *   --color-sidebar        → bg-white/70 + backdrop-blur-xl
- *   --color-border         → border-[#E5E5E5]  (zinc-200)
- *   --color-text           → text-[#1C1C1E]    (macOS label)
- *   --color-text-secondary → text-[#6B7280]    (gray-500)
- *   --color-text-tertiary  → text-[#9CA3AF]    (gray-400)
- *   --color-accent         → bg-[#2563EB]
- *   rounded-xl             → 12px
- *   rounded-2xl            → 16px
- *   shadow-sm              → var(--shadow-float)
- *   shadow-md              → var(--shadow-modal)
+ * Key philosophy:
+ *   - Notion Purple (#7C3AED) as the singular primary CTA — never blue
+ *   - Canvas white (#FFFFFF) cards on warm off-white (#FAFAF9) page bg
+ *   - Ink (#1A1A1A) for headlines; Charcoal (#37352F) for body
+ *   - Hairline borders (#E9E9E7) — barely-there, Notion-style
+ *   - Pastel card tint palette: peach, rose, mint, lavender, sky, yellow
+ *   - Sidebar: clean white/translucent, no heavy glass effect
+ *   - 8px buttons (rect), 12px cards — sober editorial geometry
  */
 
 /* ══════════════════════════════════════════════════════
-   LIGHT THEME (default — Notion/macOS)
+   LIGHT THEME (default — Notion)
    ══════════════════════════════════════════════════════ */
 :root,
 [data-theme="light"] {
 
   /* ── Page background ─────────────────────────────── */
-  --color-bg:            #FAFAF9;   /* warm off-white, Notion page bg  */
-  --color-bg-elevated:   #F5F5F4;   /* slightly darker for sections    */
+  --color-bg:            #FAFAF9;   /* Notion warm off-white page bg   */
+  --color-bg-elevated:   #F1F1EF;   /* section dividers / table header */
 
   /* ── Surface (cards, panels, modals) ─────────────── */
-  --color-surface:       #FFFFFF;
-  --color-surface-hover: #F9F9F8;   /* 2% tint on hover                */
+  --color-surface:       #FFFFFF;   /* canvas white                    */
+  --color-surface-hover: #F7F7F5;   /* subtle hover tint               */
+  --color-surface-soft:  #F4F4F2;   /* quieter section fills           */
 
-  /* ── Sidebar (glassmorphism) ─────────────────────── */
-  --color-sidebar-bg:    rgba(255, 255, 255, 0.72);
-  --color-sidebar-blur:  20px;       /* backdrop-filter: blur()         */
-  --color-sidebar-sat:   180%;       /* backdrop-filter: saturate()     */
-  --color-sidebar-border:rgba(229, 229, 229, 0.8);
+  /* ── Sidebar ─────────────────────────────────────── */
+  --color-sidebar-bg:    rgba(251, 251, 250, 0.92);
+  --color-sidebar-blur:  12px;
+  --color-sidebar-sat:   140%;
+  --color-sidebar-border:rgba(233, 233, 231, 0.9);
 
-  /* ── Borders ─────────────────────────────────────── */
-  --color-border:        #E5E5E5;   /* Notion-style hairline border    */
-  --color-border-strong: #D1D5DB;   /* slightly more visible           */
-  --color-border-focus:  #2563EB;   /* input focus ring                */
+  /* ── Borders (hairline system) ───────────────────── */
+  --color-border:        #E9E9E7;   /* hairline — Notion default       */
+  --color-border-strong: #D3D3CF;   /* inputs, cards on hover          */
+  --color-border-focus:  #7C3AED;   /* purple focus ring               */
 
-  /* ── Typography ──────────────────────────────────── */
-  --color-text:          #1C1C1E;   /* macOS label — near-black        */
-  --color-text-secondary:#6B7280;   /* gray-500 — subdued labels       */
-  --color-text-tertiary: #9CA3AF;   /* gray-400 — placeholders, dims   */
-  --color-text-inverse:  #FFFFFF;
+  /* ── Notion Brand Navy (hero bands) ─────────────── */
+  --color-brand-navy:    #1B1F2E;
+  --color-brand-navy-deep:#0F1219;
+  --color-brand-navy-mid: #252A3A;
 
-  /* ── Accent (Notion-style blue) ──────────────────── */
-  --color-accent:        #2563EB;   /* Notion blue / Apple blue        */
-  --color-accent-hover:  #1D4ED8;
-  --color-accent-subtle: rgba(37, 99, 235, 0.08);
-  --color-accent-dim:    rgba(37, 99, 235, 0.12);
+  /* ── Primary — Notion Purple ─────────────────────── */
+  --color-accent:        #7C3AED;   /* Notion signature purple CTA     */
+  --color-accent-hover:  #6D28D9;   /* pressed/hover                   */
+  --color-accent-deep:   #5B21B6;   /* deeper emphasis                 */
+  --color-accent-subtle: rgba(124, 58, 237, 0.08);
+  --color-accent-dim:    rgba(124, 58, 237, 0.12);
+
+  /* ── Link Blue (distinct from primary purple) ────── */
+  --color-link:          #2383E2;
+  --color-link-pressed:  #1A6EC7;
+
+  /* ── Typography — Notion ink levels ─────────────── */
+  --color-text:          #1A1A1A;   /* ink-deep / primary headlines    */
+  --color-text-body:     #37352F;   /* charcoal — Notion body text     */
+  --color-text-secondary:#6B6B6B;   /* slate — secondary labels        */
+  --color-text-tertiary: #9B9B9B;   /* steel — footer/muted            */
+  --color-text-muted:    #BCBCBC;   /* stone — disabled/placeholders   */
+  --color-text-inverse:  #FFFFFF;   /* on-dark                         */
+  --color-text-inverse-muted: rgba(255,255,255,0.65);
 
   /* ── Semantic colors ─────────────────────────────── */
-  --color-success:       #16A34A;
-  --color-success-bg:    rgba(22, 163, 74, 0.08);
-  --color-warning:       #D97706;
-  --color-warning-bg:    rgba(217, 119, 6, 0.08);
-  --color-danger:        #DC2626;
-  --color-danger-bg:     rgba(220, 38, 38, 0.08);
+  --color-success:       #0F7B6C;
+  --color-success-bg:    rgba(15, 123, 108, 0.08);
+  --color-warning:       #CB912F;
+  --color-warning-bg:    rgba(203, 145, 47, 0.10);
+  --color-danger:        #E03E3E;
+  --color-danger-bg:     rgba(224, 62, 62, 0.08);
+
+  /* ── Notion pastel card tints ────────────────────── */
+  --tint-peach:          #FDEBD0;
+  --tint-rose:           #FAE0E4;
+  --tint-mint:           #D4EFDF;
+  --tint-lavender:       #E8DAFB;
+  --tint-sky:            #D6EAF8;
+  --tint-yellow:         #FEF9C3;
+  --tint-yellow-bold:    #FDE047;   /* high-emphasis feature banner    */
+  --tint-cream:          #FDF6E3;
+  --tint-gray:           #F1F1EF;
+
+  /* ── Brand color spectrum ────────────────────────── */
+  --brand-pink:          #F06292;
+  --brand-pink-deep:     #E91E63;
+  --brand-orange:        #FB8C00;
+  --brand-orange-deep:   #E65100;
+  --brand-purple:        #9C6ADE;
+  --brand-purple-300:    #C4B5FD;
+  --brand-purple-800:    #4C1D95;
+  --brand-teal:          #00897B;
+  --brand-green:         #2ECC71;
+  --brand-yellow:        #F6C90E;
+  --brand-brown:         #8B5E3C;
 
   /* ── Muted pastel tag fills (Notion tag system) ──── */
   --tag-blue-bg:         #EFF6FF;  --tag-blue-text:   #1D4ED8;
-  --tag-green-bg:        #F0FDF4;  --tag-green-text:  #15803D;
-  --tag-red-bg:          #FEF2F2;  --tag-red-text:    #B91C1C;
-  --tag-yellow-bg:       #FFFBEB;  --tag-yellow-text: #92400E;
-  --tag-purple-bg:       #F5F3FF;  --tag-purple-text: #6D28D9;
-  --tag-orange-bg:       #FFF7ED;  --tag-orange-text: #C2410C;
-  --tag-pink-bg:         #FDF2F8;  --tag-pink-text:   #9D174D;
-  --tag-cyan-bg:         #ECFEFF;  --tag-cyan-text:   #0E7490;
+  --tag-green-bg:        #ECFDF5;  --tag-green-text:  #065F46;
+  --tag-red-bg:          #FEF2F2;  --tag-red-text:    #991B1B;
+  --tag-yellow-bg:       #FEFCE8;  --tag-yellow-text: #78350F;
+  --tag-purple-bg:       #F5F3FF;  --tag-purple-text: #4C1D95;
+  --tag-orange-bg:       #FFF7ED;  --tag-orange-text: #9A3412;
+  --tag-pink-bg:         #FDF2F8;  --tag-pink-text:   #831843;
+  --tag-cyan-bg:         #ECFEFF;  --tag-cyan-text:   #164E63;
   --tag-gray-bg:         #F9FAFB;  --tag-gray-text:   #374151;
 
-  /* ── Shadows (soft, diffused, macOS-native) ──────── */
-  /* Flat surface — cards in grid, table rows           */
+  /* ── Shadows — Notion elevation system ──────────── */
   --shadow-none:         none;
 
-  /* Small floating — dropdowns, tooltips               */
+  /* Level 1 — subtle hover lift                        */
   --shadow-float:
-    0 1px 2px rgba(0, 0, 0, 0.04),
-    0 4px 12px rgba(0, 0, 0, 0.06);
+    rgba(15, 15, 15, 0.04) 0px 1px 2px 0px,
+    rgba(15, 15, 15, 0.06) 0px 3px 8px 0px;
 
-  /* Slide-over panels, popovers                        */
-  --shadow-panel:
-    0 2px 8px rgba(0, 0, 0, 0.04),
-    0 8px 32px rgba(0, 0, 0, 0.10),
-    0 24px 64px rgba(0, 0, 0, 0.06);
+  /* Level 2 — feature cards                            */
+  --shadow-card:
+    rgba(15, 15, 15, 0.08) 0px 4px 12px 0px;
 
-  /* Modals — centered dialogs                          */
+  /* Level 3 — workspace mockup hero card               */
+  --shadow-mockup:
+    rgba(15, 15, 15, 0.20) 0px 24px 48px -8px;
+
+  /* Level 4 — modals / dropdowns                       */
   --shadow-modal:
-    0 4px 16px rgba(0, 0, 0, 0.06),
-    0 16px 48px rgba(0, 0, 0, 0.12),
-    0 40px 96px rgba(0, 0, 0, 0.08);
+    rgba(15, 15, 15, 0.16) 0px 16px 48px -8px,
+    rgba(15, 15, 15, 0.06) 0px 4px 12px 0px;
 
-  /* Micro hover lift on cards                          */
+  /* Slide-over panels                                  */
+  --shadow-panel:
+    rgba(15, 15, 15, 0.12) 0px 8px 32px -4px,
+    rgba(15, 15, 15, 0.06) 0px 2px 8px 0px;
+
+  /* Hover lift                                         */
   --shadow-hover:
-    0 2px 6px rgba(0, 0, 0, 0.06),
-    0 8px 24px rgba(0, 0, 0, 0.08);
+    rgba(15, 15, 15, 0.08) 0px 4px 16px 0px;
 
-  /* ── Border radii ────────────────────────────────── */
-  --radius-xs:  4px;    /* badges, tags, chips          */
-  --radius-sm:  6px;    /* inputs, small buttons        */
-  --radius-md:  8px;    /* standard cards               */
-  --radius-lg:  12px;   /* rounded-xl — panels, modals  */
-  --radius-xl:  16px;   /* rounded-2xl — slide-overs    */
-  --radius-pill:999px;  /* pill buttons, toggles        */
+  /* ── Border radii — Notion geometry ─────────────── */
+  --radius-xs:  4px;    /* tag chips                    */
+  --radius-sm:  6px;    /* type badges                  */
+  --radius-md:  8px;    /* buttons, inputs — RECT not pill */
+  --radius-lg:  12px;   /* cards, pricing tiers         */
+  --radius-xl:  16px;   /* larger panels                */
+  --radius-xxl: 20px;   /* featured showcases           */
+  --radius-xxxl:24px;   /* large feature cards          */
+  --radius-pill:9999px; /* status badges, pill tabs ONLY */
 
   /* ── Spacing scale (4-point grid) ───────────────── */
   --space-1:   4px;
@@ -128,21 +158,25 @@
   --space-10:  40px;
   --space-12:  48px;
   --space-16:  64px;
+  --space-24:  96px;
+  --space-30:  120px;
 
-  /* ── Typography ──────────────────────────────────── */
-  --font-sans:    'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text',
-                  'Segoe UI', system-ui, sans-serif;
+  /* ── Typography — Notion Sans (Inter-based) ──────── */
+  --font-sans:    'Inter', -apple-system, BlinkMacSystemFont,
+                  system-ui, 'Segoe UI', Helvetica, sans-serif;
   --font-mono:    'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace,
                   monospace;
 
-  /* Type scale */
+  /* Type scale — Notion hierarchy */
   --text-xs:    11px;   /* captions, version labels     */
-  --text-sm:    12px;   /* badges, helper text          */
-  --text-base:  14px;   /* body copy                    */
-  --text-md:    15px;   /* slightly emphasized body     */
-  --text-lg:    18px;   /* section headings             */
-  --text-xl:    22px;   /* page titles                  */
-  --text-2xl:   28px;   /* stat values                  */
+  --text-sm:    13px;   /* caption-bold, badge labels   */
+  --text-base:  14px;   /* body-sm / button labels      */
+  --text-md:    16px;   /* body-md — primary body       */
+  --text-lg:    18px;   /* heading-5 / subtitle         */
+  --text-xl:    22px;   /* heading-4 / feature titles   */
+  --text-2xl:   28px;   /* heading-3 / card titles      */
+  --text-3xl:   36px;   /* heading-2 / section openers  */
+  --text-4xl:   48px;   /* heading-1 / page headlines   */
 
   /* Line heights */
   --leading-tight:  1.25;
@@ -190,34 +224,46 @@
 }
 
 /* ══════════════════════════════════════════════════════
-   DARK THEME — Notion dark / macOS dark
+   DARK THEME — Notion dark
    ══════════════════════════════════════════════════════ */
 [data-theme="dark"] {
 
   --color-bg:            #191919;   /* Notion dark page bg             */
-  --color-bg-elevated:   #1F1F1F;
+  --color-bg-elevated:   #202020;
 
   --color-surface:       #252525;   /* Notion dark card surface        */
-  --color-surface-hover: #2C2C2C;
+  --color-surface-hover: #2D2D2D;
+  --color-surface-soft:  #1E1E1E;
 
-  --color-sidebar-bg:    rgba(25, 25, 25, 0.80);
-  --color-sidebar-blur:  20px;
-  --color-sidebar-sat:   150%;
+  --color-sidebar-bg:    rgba(25, 25, 25, 0.88);
+  --color-sidebar-blur:  12px;
+  --color-sidebar-sat:   130%;
   --color-sidebar-border:rgba(255, 255, 255, 0.06);
 
   --color-border:        #2F2F2F;
   --color-border-strong: #3D3D3D;
-  --color-border-focus:  #5B8DEF;
+  --color-border-focus:  #9D6FED;   /* lighter purple for dark focus   */
 
-  --color-text:          #EFEFEF;   /* off-white — not pure #FFF       */
+  --color-brand-navy:    #1B1F2E;
+  --color-brand-navy-deep:#0F1219;
+  --color-brand-navy-mid: #252A3A;
+
+  --color-accent:        #9D6FED;   /* lighter purple for dark mode    */
+  --color-accent-hover:  #B48CF5;
+  --color-accent-deep:   #7C3AED;
+  --color-accent-subtle: rgba(157, 111, 237, 0.12);
+  --color-accent-dim:    rgba(157, 111, 237, 0.18);
+
+  --color-link:          #529CCA;
+  --color-link-pressed:  #6BB0D8;
+
+  --color-text:          #EFEFEF;
+  --color-text-body:     #CFCFCF;
   --color-text-secondary:#9B9B9B;
-  --color-text-tertiary: #5E5E5E;
+  --color-text-tertiary: #686868;
+  --color-text-muted:    #454545;
   --color-text-inverse:  #191919;
-
-  --color-accent:        #5B8DEF;   /* desaturated blue for dark mode  */
-  --color-accent-hover:  #7AA7F5;
-  --color-accent-subtle: rgba(91, 141, 239, 0.10);
-  --color-accent-dim:    rgba(91, 141, 239, 0.15);
+  --color-text-inverse-muted: rgba(25, 25, 25, 0.55);
 
   --color-success:       #4ADE80;
   --color-success-bg:    rgba(74, 222, 128, 0.10);
@@ -226,25 +272,41 @@
   --color-danger:        #F87171;
   --color-danger-bg:     rgba(248, 113, 113, 0.10);
 
+  /* Dark pastel tints — desaturated                   */
+  --tint-peach:          rgba(253, 212, 160, 0.15);
+  --tint-rose:           rgba(250, 182, 193, 0.14);
+  --tint-mint:           rgba(180, 235, 185, 0.13);
+  --tint-lavender:       rgba(196, 181, 253, 0.15);
+  --tint-sky:            rgba(186, 230, 253, 0.13);
+  --tint-yellow:         rgba(254, 240, 138, 0.12);
+  --tint-yellow-bold:    rgba(250, 204, 21, 0.20);
+  --tint-cream:          rgba(253, 246, 227, 0.10);
+  --tint-gray:           rgba(241, 241, 239, 0.07);
+
   /* Dark pastel tags — desaturated, softer            */
   --tag-blue-bg:         rgba(59, 130, 246, 0.15);  --tag-blue-text:   #93C5FD;
   --tag-green-bg:        rgba(34, 197, 94, 0.12);   --tag-green-text:  #86EFAC;
   --tag-red-bg:          rgba(239, 68, 68, 0.12);   --tag-red-text:    #FCA5A5;
   --tag-yellow-bg:       rgba(234, 179, 8, 0.12);   --tag-yellow-text: #FDE68A;
-  --tag-purple-bg:       rgba(139, 92, 246, 0.12);  --tag-purple-text: #C4B5FD;
+  --tag-purple-bg:       rgba(139, 92, 246, 0.15);  --tag-purple-text: #C4B5FD;
   --tag-orange-bg:       rgba(249, 115, 22, 0.12);  --tag-orange-text: #FDBA74;
   --tag-pink-bg:         rgba(236, 72, 153, 0.10);  --tag-pink-text:   #F9A8D4;
   --tag-cyan-bg:         rgba(6, 182, 212, 0.10);   --tag-cyan-text:   #67E8F9;
   --tag-gray-bg:         rgba(156, 163, 175, 0.10); --tag-gray-text:   #9CA3AF;
 
   --shadow-float:
-    0 1px 2px rgba(0, 0, 0, 0.20),
-    0 4px 12px rgba(0, 0, 0, 0.30);
+    rgba(0, 0, 0, 0.20) 0px 1px 3px 0px,
+    rgba(0, 0, 0, 0.30) 0px 4px 12px 0px;
+
+  --shadow-card:
+    rgba(0, 0, 0, 0.30) 0px 4px 12px 0px;
+
+  --shadow-mockup:
+    rgba(0, 0, 0, 0.50) 0px 24px 48px -8px;
 
   --shadow-panel:
-    0 2px 8px rgba(0, 0, 0, 0.25),
-    0 8px 32px rgba(0, 0, 0, 0.40),
-    0 24px 64px rgba(0, 0, 0, 0.20);
+    rgba(0, 0, 0, 0.35) 0px 8px 32px -4px,
+    rgba(0, 0, 0, 0.20) 0px 2px 8px 0px;
 
   --shadow-modal:
     0 4px 16px rgba(0, 0, 0, 0.30),
@@ -252,8 +314,23 @@
     0 40px 96px rgba(0, 0, 0, 0.25);
 
   --shadow-hover:
-    0 2px 6px rgba(0, 0, 0, 0.25),
-    0 8px 24px rgba(0, 0, 0, 0.30);
+    rgba(0, 0, 0, 0.30) 0px 4px 16px 0px;
+
+  --space-24:  96px;
+  --space-30:  120px;
+
+  --tint-peach:   rgba(253, 212, 160, 0.15);
+  --tint-rose:    rgba(250, 182, 193, 0.14);
+  --tint-mint:    rgba(180, 235, 185, 0.13);
+  --tint-lavender:rgba(196, 181, 253, 0.15);
+  --tint-sky:     rgba(186, 230, 253, 0.13);
+  --tint-yellow:  rgba(254, 240, 138, 0.12);
+
+  --radius-xxl:  20px;
+  --radius-xxxl: 24px;
+
+  --text-3xl:   36px;
+  --text-4xl:   48px;
 
   --scrollbar-track:  transparent;
   --scrollbar-thumb:  #3D3D3D;
@@ -277,32 +354,35 @@
          colors: {
            // Semantic tokens map to CSS vars via theme('colors.*')
            brand: {
-             DEFAULT: '#2563EB',
-             hover:   '#1D4ED8',
-             subtle:  'rgba(37,99,235,0.08)',
+             DEFAULT: '#7C3AED',   // Notion purple
+             hover:   '#6D28D9',
+             subtle:  'rgba(124,58,237,0.08)',
            },
            surface: {
              DEFAULT: '#FFFFFF',
              bg:      '#FAFAF9',
-             elevated:'#F5F5F4',
+             elevated:'#F1F1EF',
            },
            text: {
-             DEFAULT:   '#1C1C1E',
-             secondary: '#6B7280',
-             tertiary:  '#9CA3AF',
+             DEFAULT:   '#1A1A1A',
+             body:      '#37352F',
+             secondary: '#6B6B6B',
+             tertiary:  '#9B9B9B',
            },
            border: {
-             DEFAULT: '#E5E5E5',
-             strong:  '#D1D5DB',
+             DEFAULT: '#E9E9E7',
+             strong:  '#D3D3CF',
            },
          },
          borderRadius: {
-           xs:  '4px',
-           sm:  '6px',
-           md:  '8px',
-           lg:  '12px',  // rounded-xl feel
-           xl:  '16px',  // rounded-2xl
-           pill:'999px',
+           xs:   '4px',
+           sm:   '6px',
+           md:   '8px',    // buttons — rectangles, NOT pills
+           lg:   '12px',   // cards
+           xl:   '16px',
+           xxl:  '20px',
+           xxxl: '24px',
+           pill: '9999px', // only for badges/tabs
          },
          boxShadow: {
            float: '0 1px 2px rgba(0,0,0,.04), 0 4px 12px rgba(0,0,0,.06)',
