@@ -37,19 +37,19 @@
   /* ── Borders (hairline system) ───────────────────── */
   --color-border:        #E9E9E7;   /* hairline — Notion default       */
   --color-border-strong: #D3D3CF;   /* inputs, cards on hover          */
-  --color-border-focus:  #7C3AED;   /* purple focus ring               */
+  --color-border-focus:  #0F0F0F;   /* black focus ring                */
 
   /* ── Notion Brand Navy (hero bands) ─────────────── */
   --color-brand-navy:    #1B1F2E;
   --color-brand-navy-deep:#0F1219;
   --color-brand-navy-mid: #252A3A;
 
-  /* ── Primary — Notion Purple ─────────────────────── */
-  --color-accent:        #7C3AED;   /* Notion signature purple CTA     */
-  --color-accent-hover:  #6D28D9;   /* pressed/hover                   */
-  --color-accent-deep:   #5B21B6;   /* deeper emphasis                 */
-  --color-accent-subtle: rgba(124, 58, 237, 0.08);
-  --color-accent-dim:    rgba(124, 58, 237, 0.12);
+  /* ── Primary — Black/White ───────────────────────── */
+  --color-accent:        #0F0F0F;   /* black primary CTA               */
+  --color-accent-hover:  #2A2A2A;   /* hover                           */
+  --color-accent-deep:   #000000;   /* deep emphasis                   */
+  --color-accent-subtle: rgba(15, 15, 15, 0.06);
+  --color-accent-dim:    rgba(15, 15, 15, 0.10);
 
   /* ── Link Blue (distinct from primary purple) ────── */
   --color-link:          #2383E2;
@@ -242,17 +242,17 @@
 
   --color-border:        #2F2F2F;
   --color-border-strong: #3D3D3D;
-  --color-border-focus:  #9D6FED;   /* lighter purple for dark focus   */
+  --color-border-focus:  #FFFFFF;   /* white focus ring on dark        */
 
   --color-brand-navy:    #1B1F2E;
   --color-brand-navy-deep:#0F1219;
   --color-brand-navy-mid: #252A3A;
 
-  --color-accent:        #9D6FED;   /* lighter purple for dark mode    */
-  --color-accent-hover:  #B48CF5;
-  --color-accent-deep:   #7C3AED;
-  --color-accent-subtle: rgba(157, 111, 237, 0.12);
-  --color-accent-dim:    rgba(157, 111, 237, 0.18);
+  --color-accent:        #FFFFFF;   /* white primary CTA on dark       */
+  --color-accent-hover:  #E5E5E5;
+  --color-accent-deep:   #F0F0F0;
+  --color-accent-subtle: rgba(255, 255, 255, 0.08);
+  --color-accent-dim:    rgba(255, 255, 255, 0.12);
 
   --color-link:          #529CCA;
   --color-link-pressed:  #6BB0D8;
