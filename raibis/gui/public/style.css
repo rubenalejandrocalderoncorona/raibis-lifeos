@@ -1843,6 +1843,29 @@ body.kanban-dragging-active * {
 }
 .dp-clear-btn:hover { background: var(--danger-dim); color: var(--danger); }
 
+/* ─── Modal date chip button ────────────────────────────────────────── */
+.modal-date-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 80ms, border-color 80ms, color 80ms;
+  margin-top: 4px;
+  font-family: inherit;
+}
+.modal-date-chip:before { content: '📅 '; font-size: 12px; }
+.modal-date-chip:hover {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* ─── All-properties side panel ────────────────────────────────────── */
 .prop-panel {
   display: flex;

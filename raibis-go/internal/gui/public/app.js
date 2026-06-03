@@ -1189,7 +1189,8 @@ function customPropCell(entity, recordId, def) {
     return `<td><input type="checkbox" class="custom-prop-check" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" ${val?'checked':''}></td>`;
   }
   if (def.type === 'date') {
-    return `<td><input type="date" class="custom-prop-input" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" value="${val}" style="font-size:11px;border:none;background:transparent;color:var(--text-primary);width:110px"></td>`;
+    const display = val ? _dateChipDisplay(val) : '—';
+    return `<td><button type="button" class="table-date-chip" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" data-value="${val}" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text-primary);padding:0">${display}</button></td>`;
   }
   return `<td><span class="custom-prop-text" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" contenteditable="true" style="font-size:12px;outline:none;min-width:60px;display:inline-block">${val}</span></td>`;
 }
@@ -1272,8 +1273,65 @@ function bindCustomPropCells() {
   document.querySelectorAll('.custom-prop-text').forEach(el => {
     el.onblur = () => setCustomPropValue(el.dataset.entity, el.dataset.recordId, el.dataset.propKey, el.textContent.trim());
   });
+  document.querySelectorAll('.table-date-chip').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      openSingleDatePickerGlobal(btn, btn.dataset.value || '', (val) => {
+        btn.dataset.value = val || '';
+        btn.textContent = val ? _dateChipDisplay(val) : '—';
+        setCustomPropValue(btn.dataset.entity, btn.dataset.recordId, btn.dataset.propKey, val || '');
+      });
+    };
+  });
 }
 const CAL_EVENT_TYPES = ['task','goal','project','sprint'];
+
+// ── Modal date chip helpers (shared across all forms) ────────────────────
+function _dateChipDisplay(iso) {
+  if (!iso) return 'Pick date';
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function _rangeDateChipDisplay(startIso, endIso) {
+  if (!startIso && !endIso) return 'Pick date range';
+  if (!endIso || startIso === endIso) return _dateChipDisplay(startIso);
+  return `${_dateChipDisplay(startIso)} → ${_dateChipDisplay(endIso)}`;
+}
+function singleDateChipHtml(id, value) {
+  return `<button type="button" class="modal-date-chip" data-single-target="${id}">${_dateChipDisplay(value || null)}</button>
+<input type="hidden" id="${id}" value="${value || ''}">`;
+}
+function rangeDateChipHtml(startId, startVal, endId, endVal) {
+  return `<button type="button" class="modal-date-chip" data-start-target="${startId}" data-end-target="${endId}">${_rangeDateChipDisplay(startVal || null, endVal || null)}</button>
+<input type="hidden" id="${startId}" value="${startVal || ''}">
+<input type="hidden" id="${endId}" value="${endVal || ''}">`;
+}
+function bindModalDateChips(containerEl) {
+  const container = containerEl || document;
+  container.querySelectorAll('.modal-date-chip').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const singleId = btn.dataset.singleTarget;
+      const startId = btn.dataset.startTarget;
+      const endId = btn.dataset.endTarget;
+      if (singleId) {
+        const inp = document.getElementById(singleId);
+        openSingleDatePickerGlobal(btn, inp?.value || '', (val) => {
+          if (inp) { inp.value = val || ''; inp.dispatchEvent(new Event('input', { bubbles: true })); }
+          btn.textContent = _dateChipDisplay(val);
+        });
+      } else if (startId && endId) {
+        const startInp = document.getElementById(startId);
+        const endInp = document.getElementById(endId);
+        openDateRangePickerGlobal(btn, startInp?.value || null, endInp?.value || null, (start, end) => {
+          if (startInp) { startInp.value = start || ''; startInp.dispatchEvent(new Event('input', { bubbles: true })); }
+          if (endInp) { endInp.value = end || ''; endInp.dispatchEvent(new Event('input', { bubbles: true })); }
+          btn.textContent = _rangeDateChipDisplay(start, end);
+        });
+      }
+    };
+  });
+}
 
 // ── Prop panel order persistence ──────────────────────────────────────────
 function getEntityPropOrder(entity) {
@@ -1393,11 +1451,16 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
       if (valEl.querySelector('input,textarea')) return;
       const currentVals = getCustomPropValues(entity, recordId);
       const cur = currentVals[key] ?? '';
-      const inp = def.type === 'date'
-        ? Object.assign(document.createElement('input'), { type: 'date', value: cur })
-        : def.type === 'number'
-          ? Object.assign(document.createElement('input'), { type: 'number', value: cur })
-          : Object.assign(document.createElement('input'), { type: 'text', value: cur, placeholder: def.label });
+      if (def.type === 'date') {
+        openSingleDatePickerGlobal(valEl, cur || null, (val) => {
+          setCustomPropValue(entity, recordId, key, val || '');
+          onRerender();
+        });
+        return;
+      }
+      const inp = def.type === 'number'
+        ? Object.assign(document.createElement('input'), { type: 'number', value: cur })
+        : Object.assign(document.createElement('input'), { type: 'text', value: cur, placeholder: def.label });
       inp.style.cssText = 'width:100%;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
       valEl.innerHTML = '';
       valEl.appendChild(inp);
@@ -3077,7 +3140,7 @@ async function renderTasks() {
       priority: t => t.priority,
       due_date: t => t.due_date || '',
       story_points: t => t.story_points,
-      _text: t => t.title + ' ' + (t.description || '') + ' ' + (t.project_title || ''),
+      _text: t => t.title + ' ' + (t.description || '') + ' ' + (t.project_title || '') + ' ' + Object.values(getCustomPropValues('task', t.id) || {}).filter(v => typeof v === 'string' || typeof v === 'number').join(' '),
     });
   }
 
@@ -3660,7 +3723,7 @@ async function renderProjects() {
       status: p => p.status,
       macro_area: p => p.macro_area || '',
       goal_id: p => String(p.goal_id || ''),
-      _text: p => p.title + ' ' + (p.description || '') + ' ' + (p.goal_title || ''),
+      _text: p => p.title + ' ' + (p.description || '') + ' ' + (p.goal_title || '') + ' ' + Object.values(getCustomPropValues('project', p.id) || {}).filter(v => typeof v === 'string' || typeof v === 'number').join(' '),
     });
   }
 
@@ -3702,15 +3765,13 @@ async function renderProjects() {
     document.querySelectorAll('.proj-slideover-card').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.proj-del-btn, .proj-export-btn, .ctx-handle')) return;
-        const p = projects.find(x => String(x.id) === el.dataset.projId);
-        showProjectSlideover(p, goals, () => renderProjects());
+        renderView('project-detail', el.dataset.projId);
       };
     });
     document.querySelectorAll('.task-title-link[data-proj-id]').forEach(el => {
       el.onclick = (e) => {
         e.stopPropagation();
-        const p = projects.find(x => String(x.id) === el.dataset.projId);
-        showProjectSlideover(p, goals, () => renderProjects());
+        renderView('project-detail', el.dataset.projId);
       };
     });
     document.querySelectorAll('.proj-export-btn').forEach(el => {
@@ -3789,7 +3850,7 @@ async function renderGoals() {
       status: g => g.status,
       type: g => g.type || '',
       year: g => g.year || '',
-      _text: g => g.title + ' ' + (g.description || ''),
+      _text: g => g.title + ' ' + (g.description || '') + ' ' + Object.values(getCustomPropValues('goal', g.id) || {}).filter(v => typeof v === 'string' || typeof v === 'number').join(' '),
     });
   }
 
@@ -3972,15 +4033,13 @@ async function renderGoals() {
     document.querySelectorAll('.goal-slideover-card').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.goal-del-btn, .goal-export-btn, .ctx-handle')) return;
-        const g = goals.find(x => String(x.id) === el.dataset.goalId);
-        showGoalSlideover(g, () => renderGoals());
+        renderView('goal-detail', el.dataset.goalId);
       };
     });
     document.querySelectorAll('.goal-nav-link').forEach(el => {
       el.onclick = (e) => {
         e.stopPropagation();
-        const g = goals.find(x => String(x.id) === el.dataset.goalId);
-        showGoalSlideover(g, () => renderGoals());
+        renderView('goal-detail', el.dataset.goalId);
       };
     });
     document.querySelectorAll('.goal-export-btn').forEach(el => {
@@ -5055,7 +5114,7 @@ async function renderResources() {
     return applyViewFiltersAndSorts(resources, activeResView, {
       title: r => r.title,
       resource_type: r => r.resource_type || '',
-      _text: r => r.title + ' ' + (r.url || '') + ' ' + (r.body || ''),
+      _text: r => r.title + ' ' + (r.url || '') + ' ' + (r.body || '') + ' ' + Object.values(getCustomPropValues('resource', r.id) || {}).filter(v => typeof v === 'string' || typeof v === 'number').join(' '),
     });
   }
 
@@ -5654,6 +5713,127 @@ async function bindPropertiesWidget(entityType, entityId, listContainerId, addBt
       document.getElementById('prop-new-val').onkeydown = (e) => { if (e.key === 'Enter') saveNew(); };
     };
   }
+}
+
+/* ─── Global Date Picker ─────────────────────────────────────────────── */
+let _dpEl = null;
+function closeDatePicker() {
+  if (_dpEl) { _dpEl.remove(); _dpEl = null; }
+  document.removeEventListener('mousedown', _dpOutside);
+}
+function _dpOutside(e) {
+  if (_dpEl && !_dpEl.contains(e.target)) closeDatePicker();
+}
+
+function openDateRangePickerGlobal(anchorEl, startVal, endVal, onChange, singleDate = false) {
+  closeDatePicker();
+  const today = new Date(); today.setHours(0,0,0,0);
+  let viewYear = today.getFullYear();
+  let viewMonth = today.getMonth();
+  if (startVal) { const d = new Date(startVal + 'T00:00:00'); viewYear = d.getFullYear(); viewMonth = d.getMonth(); }
+  let rangeStart = startVal ? new Date(startVal + 'T00:00:00') : null;
+  let rangeEnd = endVal ? new Date(endVal + 'T00:00:00') : null;
+  let pickingEnd = !!rangeStart && !singleDate;
+
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+  function toISO(d) { return d ? d.toISOString().split('T')[0] : null; }
+
+  _dpEl = document.createElement('div');
+  _dpEl.className = 'datepicker-popover';
+
+  function renderPicker() {
+    const firstDay = new Date(viewYear, viewMonth, 1);
+    let startDow = firstDay.getDay();
+    startDow = startDow === 0 ? 6 : startDow - 1;
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+    let dayGrid = '';
+    let dayNum = 1 - startDow;
+    for (let r = 0; r < 6; r++) {
+      for (let c = 0; c < 7; c++, dayNum++) {
+        if (dayNum < 1 || dayNum > daysInMonth) {
+          dayGrid += `<div class="dp-day other-month"></div>`;
+        } else {
+          const d = new Date(viewYear, viewMonth, dayNum); d.setHours(0,0,0,0);
+          const iso = toISO(d);
+          let cls = 'dp-day';
+          if (d.getTime() === today.getTime()) cls += ' today';
+          if (rangeStart && rangeEnd) {
+            if (d.getTime() === rangeStart.getTime()) cls += ' range-start';
+            else if (d.getTime() === rangeEnd.getTime()) cls += ' range-end';
+            else if (d > rangeStart && d < rangeEnd) cls += ' in-range';
+          } else if (rangeStart && d.getTime() === rangeStart.getTime()) {
+            cls += ' selected';
+          }
+          dayGrid += `<div class="${cls}" data-iso="${iso}">${dayNum}</div>`;
+        }
+      }
+    }
+    const rangeLabel = singleDate
+      ? (rangeStart ? rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'}) : 'Pick date')
+      : rangeStart && rangeEnd
+        ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → ${rangeEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'})}`
+        : rangeStart ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → pick end`
+        : 'Pick start date';
+
+    _dpEl.innerHTML = `
+      <div class="dp-header">
+        <button class="dp-nav-btn" id="dp-prev">‹</button>
+        <span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span>
+        <button class="dp-nav-btn" id="dp-next">›</button>
+      </div>
+      <div class="dp-grid">
+        ${DAYS.map(d => `<div class="dp-day-head">${d}</div>`).join('')}
+        ${dayGrid}
+      </div>
+      <div class="dp-footer">
+        <span class="dp-footer-hint">${rangeLabel}</span>
+        <button class="dp-clear-btn" id="dp-clear">Clear</button>
+      </div>`;
+
+    _dpEl.querySelector('#dp-prev').onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderPicker(); };
+    _dpEl.querySelector('#dp-next').onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderPicker(); };
+    _dpEl.querySelector('#dp-clear').onclick = () => {
+      rangeStart = null; rangeEnd = null; pickingEnd = false;
+      onChange(null, null); renderPicker();
+    };
+    _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => {
+      el.onclick = () => {
+        const clicked = new Date(el.dataset.iso + 'T00:00:00');
+        if (singleDate) {
+          onChange(toISO(clicked), null);
+          closeDatePicker();
+          return;
+        }
+        if (!rangeStart || (!pickingEnd && rangeEnd)) {
+          rangeStart = clicked; rangeEnd = null; pickingEnd = true;
+        } else if (pickingEnd) {
+          if (clicked < rangeStart) { rangeEnd = rangeStart; rangeStart = clicked; }
+          else { rangeEnd = clicked; }
+          pickingEnd = false;
+          onChange(toISO(rangeStart), toISO(rangeEnd));
+        }
+        renderPicker();
+      };
+    });
+  }
+
+  renderPicker();
+  const rect = anchorEl.getBoundingClientRect();
+  _dpEl.style.top = (rect.bottom + 4) + 'px';
+  _dpEl.style.left = rect.left + 'px';
+  document.body.appendChild(_dpEl);
+  requestAnimationFrame(() => {
+    if (!_dpEl) return;
+    const cr = _dpEl.getBoundingClientRect();
+    if (cr.right > window.innerWidth - 8) _dpEl.style.left = (window.innerWidth - cr.width - 8) + 'px';
+    if (cr.bottom > window.innerHeight - 8) _dpEl.style.top = (rect.top - cr.height - 4) + 'px';
+  });
+  setTimeout(() => document.addEventListener('mousedown', _dpOutside), 0);
+}
+
+function openSingleDatePickerGlobal(anchorEl, currentVal, onChange) {
+  openDateRangePickerGlobal(anchorEl, currentVal, null, (start) => onChange(start || null), true);
 }
 
 /* ─── Task Slideover ─────────────────────────────────────────────────── */
@@ -6420,132 +6600,6 @@ async function showTaskSlideover(taskId) {
     setTimeout(() => document.addEventListener('mousedown', _comboOutside), 0);
   }
 
-  // ── Date range picker ─────────────────────────────────────────────────
-  let _dpEl = null;
-  function closeDatePicker() {
-    if (_dpEl) { _dpEl.remove(); _dpEl = null; }
-    document.removeEventListener('mousedown', _dpOutside);
-  }
-  function _dpOutside(e) {
-    if (_dpEl && !_dpEl.contains(e.target)) closeDatePicker();
-  }
-
-  function openDateRangePicker(anchorEl, startVal, endVal, onChange) {
-    closeDatePicker();
-    const today = new Date(); today.setHours(0,0,0,0);
-    let viewYear = today.getFullYear();
-    let viewMonth = today.getMonth();
-    let rangeStart = startVal ? new Date(startVal + 'T00:00:00') : null;
-    let rangeEnd = endVal ? new Date(endVal + 'T00:00:00') : null;
-    let pickingEnd = !!rangeStart; // if start exists, next click sets end
-
-    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-    const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
-
-    function toISO(d) { return d ? d.toISOString().split('T')[0] : null; }
-
-    _dpEl = document.createElement('div');
-    _dpEl.className = 'datepicker-popover';
-
-    function renderPicker() {
-      const firstDay = new Date(viewYear, viewMonth, 1);
-      let startDow = firstDay.getDay(); // 0=Sun
-      startDow = startDow === 0 ? 6 : startDow - 1; // Mon=0
-
-      const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
-      let dayGrid = '';
-      let dayNum = 1 - startDow;
-      for (let r = 0; r < 6; r++) {
-        for (let c = 0; c < 7; c++, dayNum++) {
-          if (dayNum < 1 || dayNum > daysInMonth) {
-            dayGrid += `<div class="dp-day other-month"></div>`;
-          } else {
-            const d = new Date(viewYear, viewMonth, dayNum); d.setHours(0,0,0,0);
-            const iso = toISO(d);
-            let cls = 'dp-day';
-            if (d.getTime() === today.getTime()) cls += ' today';
-            if (rangeStart && rangeEnd) {
-              if (d.getTime() === rangeStart.getTime()) cls += ' range-start';
-              else if (d.getTime() === rangeEnd.getTime()) cls += ' range-end';
-              else if (d > rangeStart && d < rangeEnd) cls += ' in-range';
-            } else if (rangeStart && d.getTime() === rangeStart.getTime()) {
-              cls += ' selected';
-            }
-            dayGrid += `<div class="${cls}" data-iso="${iso}">${dayNum}</div>`;
-          }
-        }
-      }
-
-      const rangeLabel = rangeStart && rangeEnd
-        ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → ${rangeEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'})}`
-        : rangeStart
-        ? `${rangeStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} → pick end`
-        : 'Pick start date';
-
-      _dpEl.innerHTML = `
-        <div class="dp-header">
-          <button class="dp-nav-btn" id="dp-prev">‹</button>
-          <span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span>
-          <button class="dp-nav-btn" id="dp-next">›</button>
-        </div>
-        <div class="dp-grid">
-          ${DAYS.map(d => `<div class="dp-day-head">${d}</div>`).join('')}
-          ${dayGrid}
-        </div>
-        <div class="dp-footer">
-          <span class="dp-footer-hint">${rangeLabel}</span>
-          <button class="dp-clear-btn" id="dp-clear">Clear</button>
-        </div>`;
-
-      _dpEl.querySelector('#dp-prev').onclick = () => {
-        viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; }
-        renderPicker();
-      };
-      _dpEl.querySelector('#dp-next').onclick = () => {
-        viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; }
-        renderPicker();
-      };
-      _dpEl.querySelector('#dp-clear').onclick = () => {
-        rangeStart = null; rangeEnd = null; pickingEnd = false;
-        onChange(null, null);
-        renderPicker();
-      };
-
-      _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => {
-        el.onclick = () => {
-          const clicked = new Date(el.dataset.iso + 'T00:00:00');
-          if (!rangeStart || (!pickingEnd && rangeEnd)) {
-            // Start fresh
-            rangeStart = clicked; rangeEnd = null; pickingEnd = true;
-          } else if (pickingEnd) {
-            if (clicked < rangeStart) { rangeEnd = rangeStart; rangeStart = clicked; }
-            else { rangeEnd = clicked; }
-            pickingEnd = false;
-            onChange(toISO(rangeStart), toISO(rangeEnd));
-          }
-          renderPicker();
-        };
-      });
-    }
-
-    renderPicker();
-
-    // Position
-    const rect = anchorEl.getBoundingClientRect();
-    _dpEl.style.top = (rect.bottom + 4) + 'px';
-    _dpEl.style.left = rect.left + 'px';
-    document.body.appendChild(_dpEl);
-
-    requestAnimationFrame(() => {
-      if (!_dpEl) return;
-      const cr = _dpEl.getBoundingClientRect();
-      if (cr.right > window.innerWidth - 8) _dpEl.style.left = (window.innerWidth - cr.width - 8) + 'px';
-      if (cr.bottom > window.innerHeight - 8) _dpEl.style.top = (rect.top - cr.height - 4) + 'px';
-    });
-
-    setTimeout(() => document.addEventListener('mousedown', _dpOutside), 0);
-  }
-
   // ── Chip click handlers ───────────────────────────────────────────────
   function applyChipValueColor(chipEl, storageKey, value) {
     if (!chipEl) return;
@@ -6587,12 +6641,11 @@ async function showTaskSlideover(taskId) {
 
   document.getElementById('chip-due').onclick = (e) => {
     e.stopPropagation();
-    openDateRangePicker(
+    openDateRangePickerGlobal(
       e.currentTarget,
       stripDate(task.start_date),
       stripDate(task.due_date),
       async (start, end) => {
-        // Optimistic UI
         const chipVal = document.getElementById('chip-due-val');
         if (chipVal) chipVal.textContent = fmtDateRange(start, end) || '—';
         await patchTask({ start_date: start || null, due_date: end || start || null });
@@ -6602,7 +6655,7 @@ async function showTaskSlideover(taskId) {
 
   document.getElementById('chip-focus').onclick = (e) => {
     e.stopPropagation();
-    openDateRangePicker(
+    openDateRangePickerGlobal(
       e.currentTarget,
       stripDate(task.focus_block_start),
       stripDate(task.focus_block),
@@ -6707,7 +6760,7 @@ async function showTaskSlideover(taskId) {
     };
 
     document.getElementById('pp-focus').onclick = (ev) => {
-      openDateRangePicker(ev.currentTarget, null, stripDate(task.focus_block), async (start, end) => {
+      openDateRangePickerGlobal(ev.currentTarget, null, stripDate(task.focus_block), async (start, end) => {
         const val = end || start;
         document.getElementById('pp-focus').textContent = val ? new Date(val+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '—';
         await patchTask({ focus_block: val || null });
@@ -8049,16 +8102,14 @@ function taskModalBody(task, resources) {
         <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
       </div>
       <div id="t-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        <input type="date" id="t-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
+        ${singleDateChipHtml('t-due', stripDate(v.due_date))}
       </div>
       <div id="t-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        <input type="date" id="t-start" value="${stripDate(v.start_date)}" />
-        <span class="date-range-arrow">→</span>
-        <input type="date" id="t-due-range" value="${stripDate(v.due_date)}" />
+        ${rangeDateChipHtml('t-start', stripDate(v.start_date), 't-due-range', stripDate(v.due_date))}
       </div>
     </div>
     <div class="grid-2">
-      <div class="form-group"><label class="form-label">Focus Block</label><input type="date" id="t-focus" value="${stripDate(v.focus_block)}" /></div>
+      <div class="form-group"><label class="form-label">Focus Block</label>${singleDateChipHtml('t-focus', stripDate(v.focus_block))}</div>
       <div></div>
     </div>
     <div class="grid-2">
@@ -8100,7 +8151,7 @@ function taskModalBody(task, resources) {
         if (def.type === 'checkbox') {
           input = `<input type="checkbox" id="t-cp-${def.key}" ${existing?'checked':''} style="width:auto;margin-top:4px">`;
         } else if (def.type === 'date') {
-          input = `<input type="date" id="t-cp-${def.key}" value="${existing}">`;
+          input = singleDateChipHtml(`t-cp-${def.key}`, existing);
         } else if (def.type === 'number') {
           input = `<input type="number" id="t-cp-${def.key}" value="${existing}" min="0">`;
         } else {
@@ -8159,6 +8210,7 @@ async function showNewTaskModal(presets, afterSave) {
   const resources = await getTaskModalResources();
   const fake = { status: 'todo', priority: 'medium', ...presets };
   openFormSlideover('New Task', taskModalBody(fake, resources));
+  bindModalDateChips();
   document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
   bindDateModeToggle('t-date-due-wrap', 't-date-range-wrap');
   document.getElementById('t-is-recurring')?.addEventListener('change', (e) => {
@@ -8185,6 +8237,7 @@ async function showNewTaskModal(presets, afterSave) {
 async function showEditTaskModal(task) {
   const resources = await getTaskModalResources();
   openFormSlideover('Edit Task', taskModalBody(task, resources));
+  bindModalDateChips();
   document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
   bindDateModeToggle('t-date-due-wrap', 't-date-range-wrap');
   document.getElementById('t-is-recurring')?.addEventListener('change', (e) => {
@@ -8246,12 +8299,10 @@ async function showGoalModal(goal, afterSave) {
         <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
       </div>
       <div id="g-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        <input type="date" id="g-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
+        ${singleDateChipHtml('g-due', stripDate(v.due_date))}
       </div>
       <div id="g-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        <input type="date" id="g-start" value="${stripDate(v.start_date)}" />
-        <span class="date-range-arrow">→</span>
-        <input type="date" id="g-due-range" value="${stripDate(v.due_date)}" />
+        ${rangeDateChipHtml('g-start', stripDate(v.start_date), 'g-due-range', stripDate(v.due_date))}
       </div>
     </div>
     <div class="grid-2">
@@ -8269,6 +8320,7 @@ async function showGoalModal(goal, afterSave) {
     </div>`;
 
   openFormSlideover(v.id ? 'Edit Goal' : 'New Goal', body);
+  bindModalDateChips();
   bindTagPicker();
   bindDateModeToggle('g-date-due-wrap', 'g-date-range-wrap');
   document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
@@ -8355,12 +8407,10 @@ async function showProjectSlideover(project, goals, afterSave) {
         <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
       </div>
       <div id="psl-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        <input type="date" id="psl-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
+        ${singleDateChipHtml('psl-due', stripDate(v.due_date))}
       </div>
       <div id="psl-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        <input type="date" id="psl-start" value="${stripDate(v.start_date)}" />
-        <span class="date-range-arrow">→</span>
-        <input type="date" id="psl-due-range" value="${stripDate(v.due_date)}" />
+        ${rangeDateChipHtml('psl-start', stripDate(v.start_date), 'psl-due-range', stripDate(v.due_date))}
       </div>
     </div>
     <div class="form-group"><label class="form-label">Tags</label>${tagPickerHtml(existingTagIds)}</div>
@@ -8369,6 +8419,7 @@ async function showProjectSlideover(project, goals, afterSave) {
     </div>`;
 
   openFormSlideover('Edit Project', body);
+  bindModalDateChips();
   bindTagPicker();
   bindDateModeToggle('psl-date-due-wrap', 'psl-date-range-wrap');
 
@@ -8450,12 +8501,10 @@ async function showGoalSlideover(goal, afterSave) {
         <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
       </div>
       <div id="gsl-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        <input type="date" id="gsl-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
+        ${singleDateChipHtml('gsl-due', stripDate(v.due_date))}
       </div>
       <div id="gsl-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        <input type="date" id="gsl-start" value="${stripDate(v.start_date)}" />
-        <span class="date-range-arrow">→</span>
-        <input type="date" id="gsl-due-range" value="${stripDate(v.due_date)}" />
+        ${rangeDateChipHtml('gsl-start', stripDate(v.start_date), 'gsl-due-range', stripDate(v.due_date))}
       </div>
     </div>
     <div class="grid-2">
@@ -8470,6 +8519,7 @@ async function showGoalSlideover(goal, afterSave) {
     </div>`;
 
   openFormSlideover('Edit Goal', body);
+  bindModalDateChips();
   bindTagPicker();
   bindDateModeToggle('gsl-date-due-wrap', 'gsl-date-range-wrap');
 
@@ -8559,12 +8609,10 @@ async function showProjectModal(project, goals, afterSave) {
         <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
       </div>
       <div id="p-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        <input type="date" id="p-due" value="${stripDate(v.due_date)}" style="margin-top:6px" />
+        ${singleDateChipHtml('p-due', stripDate(v.due_date))}
       </div>
       <div id="p-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        <input type="date" id="p-start" value="${stripDate(v.start_date)}" />
-        <span class="date-range-arrow">→</span>
-        <input type="date" id="p-due-range" value="${stripDate(v.due_date)}" />
+        ${rangeDateChipHtml('p-start', stripDate(v.start_date), 'p-due-range', stripDate(v.due_date))}
       </div>
     </div>
     <div class="form-group"><label class="form-label">Tags</label>
@@ -8576,6 +8624,7 @@ async function showProjectModal(project, goals, afterSave) {
     </div>`;
 
   openFormSlideover(v.id ? 'Edit Project' : 'New Project', body);
+  bindModalDateChips();
   bindTagPicker();
   bindDateModeToggle('p-date-due-wrap', 'p-date-range-wrap');
   document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
@@ -8648,7 +8697,7 @@ async function showNoteModal(note, afterSave) {
       <textarea id="n-body" style="min-height:160px">${v.body||''}</textarea></div>
     <div class="grid-2">
       <div class="form-group"><label class="form-label">Category</label><select id="n-category">${catOpts}</select></div>
-      <div class="form-group"><label class="form-label">Note Date</label><input type="date" id="n-date" value="${v.note_date||''}" /></div>
+      <div class="form-group"><label class="form-label">Note Date</label>${singleDateChipHtml('n-date', v.note_date||'')}</div>
     </div>
     <div class="grid-2">
       <div class="form-group"><label class="form-label">Goal</label><select id="n-goal">${goalOpts}</select></div>
@@ -8670,6 +8719,7 @@ async function showNoteModal(note, afterSave) {
     </div>`;
 
   openFormSlideover(v.id ? 'Edit Note' : 'New Note', body);
+  bindModalDateChips();
   const cancelBtn = document.getElementById('modal-cancel-btn');
   if (cancelBtn) cancelBtn.onclick = closeFormSlideover;
 
@@ -8778,8 +8828,8 @@ function showSprintModal(projects, sprint) {
     <div class="form-group"><label class="form-label">Project</label>
       <select id="sp-project">${projOpts}</select></div>
     <div class="grid-2">
-      <div class="form-group"><label class="form-label">Start Date</label><input type="date" id="sp-start" value="${s.start_date||''}" /></div>
-      <div class="form-group"><label class="form-label">End Date</label><input type="date" id="sp-end" value="${s.end_date||''}" /></div>
+      <div class="form-group"><label class="form-label">Start Date</label>${singleDateChipHtml('sp-start', s.start_date||'')}</div>
+      <div class="form-group"><label class="form-label">End Date</label>${singleDateChipHtml('sp-end', s.end_date||'')}</div>
     </div>
     <div class="form-group"><label class="form-label">Capacity (Story Points)</label>
       <input type="number" id="sp-story-points" min="0" placeholder="e.g. 40" value="${s.story_points != null ? s.story_points : ''}" style="width:100%" />
@@ -8790,6 +8840,7 @@ function showSprintModal(projects, sprint) {
     </div>`;
 
   openFormSlideover(s.id ? 'Edit Sprint' : 'New Sprint', body);
+  bindModalDateChips();
   document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
   // ── Sprint icon picker ────────────────────────────────────────────────
   const sprintIconBtn = document.getElementById('sprint-icon-btn');
@@ -9707,7 +9758,7 @@ function showQuickNoteModal() {
       <textarea id="qn-body" rows="8" placeholder="Write your note…" style="width:100%;min-height:160px"></textarea>
     </div>
     <div class="grid-2">
-      <div class="form-group"><label class="form-label">Date</label><input type="date" id="qn-date" value="${today}" /></div>
+      <div class="form-group"><label class="form-label">Date</label>${singleDateChipHtml('qn-date', today)}</div>
       <div class="form-group"><label class="form-label">Category</label><select id="qn-category">${catOpts}</select></div>
     </div>
     <div class="form-actions">
@@ -9716,6 +9767,7 @@ function showQuickNoteModal() {
     </div>`;
 
   openModal('Quick Note', body);
+  bindModalDateChips();
   document.getElementById('modal-cancel-btn').onclick = closeModal;
   requestAnimationFrame(() => document.getElementById('qn-title')?.focus());
   document.getElementById('modal-save-btn').onclick = async () => {

@@ -3,6 +3,8 @@ GO_DIR    := $(ROOT)/raibis-go
 TAURI_DIR := $(ROOT)/raibis-tauri/src-tauri
 PORT      ?= 3344
 
+export PATH := $(HOME)/.cargo/bin:$(PATH)
+
 .PHONY: web app tui stop restart-web restart-app hard
 
 MODE ?= web
@@ -49,7 +51,7 @@ app:
 	    "/Applications/Raibis LifeOS.app/Contents/MacOS/lifeos"
 	@cp -f "$(TAURI_DIR)/target/debug/raibis-lifeos" \
 	    "/Applications/Raibis LifeOS.app/Contents/MacOS/raibis-lifeos"
-	@codesign --force --deep --sign - "/Applications/Raibis LifeOS.app"
+	@codesign --force --deep --sign - --no-strict "/Applications/Raibis LifeOS.app"
 	@echo "→ Launching app..."
 	@open "/Applications/Raibis LifeOS.app"
 	@sleep 3
@@ -121,7 +123,7 @@ ifeq ($(or $(mode),$(MODE)),app)
 	@chown $(USER) "/Applications/Raibis LifeOS.app/Contents/MacOS/lifeos" 2>/dev/null || true
 	@cp -f "$(GO_DIR)/../raibis-tauri/src-tauri/binaries/lifeos-aarch64-apple-darwin" \
 	    "/Applications/Raibis LifeOS.app/Contents/MacOS/lifeos"
-	@codesign --force --deep --sign - "/Applications/Raibis LifeOS.app"
+	@codesign --force --deep --sign - --no-strict "/Applications/Raibis LifeOS.app"
 	@echo "→ Launching app..."
 	@open "/Applications/Raibis LifeOS.app"
 	@sleep 3
