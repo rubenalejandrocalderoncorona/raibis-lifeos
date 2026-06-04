@@ -3727,11 +3727,31 @@ async function renderProjects() {
     });
   }
 
+  function buildProjectListView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◆</div><div class="empty-state-text">No projects found</div></div>`;
+    const vis = (key) => entityPropVisible('project', key);
+    return `<div class="entity-list-view">${list.map(p => {
+      const prog = p.progress || {};
+      const pct = prog.pct || 0;
+      return `<div class="entity-list-row proj-list-row" data-proj-id="${p.id}">
+        <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+        <span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
+        <span class="entity-list-title proj-list-title">${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></span>
+        ${vis('status') ? statusBadge(p.status) : ''}
+        ${vis('goal') && p.goal_title ? `<span class="entity-list-meta">${p.goal_title}</span>` : ''}
+        ${vis('area') && p.macro_area ? `<span class="entity-list-meta">${p.macro_area.split('(')[0].trim()}</span>` : ''}
+        ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
+        <span onclick="event.stopPropagation()"><button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button></span>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
   function render() {
     const list = getFiltered();
     let html;
     if (projectsViewMode === 'table') html = buildTableView(list);
     else if (projectsViewMode === 'kanban') html = buildProjectKanbanView(list);
+    else if (projectsViewMode === 'list') html = buildProjectListView(list);
     else html = buildCardsView(list);
     document.getElementById('proj-list').innerHTML = html;
     bindProjEvents();
@@ -3751,7 +3771,12 @@ async function renderProjects() {
       document.querySelectorAll('.proj-kanban-card').forEach(card => {
         card.addEventListener('click', (e) => {
           if (e.target.closest('.ctx-handle')) return;
-          renderView('project-detail', card.dataset.projId);
+          if (e.target.closest('.kanban-card-title')) {
+            renderView('project-detail', card.dataset.projId);
+            return;
+          }
+          const p = projects.find(x => String(x.id) === card.dataset.projId);
+          if (p) showProjectSlideover(p, goals, render);
         });
       });
       bindCtxHandles();
@@ -3765,13 +3790,29 @@ async function renderProjects() {
     document.querySelectorAll('.proj-slideover-card').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.proj-del-btn, .proj-export-btn, .ctx-handle')) return;
-        renderView('project-detail', el.dataset.projId);
+        if (e.target.closest('.card-title')) {
+          renderView('project-detail', el.dataset.projId);
+          return;
+        }
+        const p = projects.find(x => String(x.id) === el.dataset.projId);
+        if (p) showProjectSlideover(p, goals, render);
       };
     });
     document.querySelectorAll('.task-title-link[data-proj-id]').forEach(el => {
       el.onclick = (e) => {
         e.stopPropagation();
         renderView('project-detail', el.dataset.projId);
+      };
+    });
+    document.querySelectorAll('.proj-list-row').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.proj-export-btn, .ctx-handle')) return;
+        if (e.target.closest('.proj-list-title')) {
+          renderView('project-detail', el.dataset.projId);
+          return;
+        }
+        const p = projects.find(x => String(x.id) === el.dataset.projId);
+        if (p) showProjectSlideover(p, goals, render);
       };
     });
     document.querySelectorAll('.proj-export-btn').forEach(el => {
@@ -3854,11 +3895,31 @@ async function renderGoals() {
     });
   }
 
+  function buildGoalListView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◈</div><div class="empty-state-text">No goals found</div></div>`;
+    const vis = (key) => entityPropVisible('goal', key);
+    return `<div class="entity-list-view">${list.map(g => {
+      const prog = g.progress || {};
+      const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
+      return `<div class="entity-list-row goal-list-row" data-goal-id="${g.id}">
+        <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+        <span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
+        <span class="entity-list-title goal-list-title">${g.title}<span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></span>
+        ${vis('type') && g.type ? `<span class="entity-list-meta">${g.type}</span>` : ''}
+        ${vis('year') && g.year ? `<span class="entity-list-meta">${g.year}</span>` : ''}
+        ${vis('status') ? statusBadge(g.status) : ''}
+        ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
+        <span onclick="event.stopPropagation()"><button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button></span>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
   function render() {
     const list = getFiltered();
     let html;
     if (goalsViewMode === 'table') html = buildTableView(list);
     else if (goalsViewMode === 'kanban') html = buildGoalKanbanView(list);
+    else if (goalsViewMode === 'list') html = buildGoalListView(list);
     else html = buildCardsView(list);
     document.getElementById('goal-list').innerHTML = html;
     bindGoalEvents();
@@ -3878,7 +3939,12 @@ async function renderGoals() {
       document.querySelectorAll('.goal-kanban-card').forEach(card => {
         card.addEventListener('click', (e) => {
           if (e.target.closest('.ctx-handle')) return;
-          renderView('goal-detail', card.dataset.goalId);
+          if (e.target.closest('.kanban-card-title')) {
+            renderView('goal-detail', card.dataset.goalId);
+            return;
+          }
+          const g = goals.find(x => String(x.id) === card.dataset.goalId);
+          if (g) showGoalSlideover(g, render);
         });
       });
       bindCtxHandles();
@@ -4033,13 +4099,29 @@ async function renderGoals() {
     document.querySelectorAll('.goal-slideover-card').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.goal-del-btn, .goal-export-btn, .ctx-handle')) return;
-        renderView('goal-detail', el.dataset.goalId);
+        if (e.target.closest('.card-title')) {
+          renderView('goal-detail', el.dataset.goalId);
+          return;
+        }
+        const g = goals.find(x => String(x.id) === el.dataset.goalId);
+        if (g) showGoalSlideover(g, render);
       };
     });
     document.querySelectorAll('.goal-nav-link').forEach(el => {
       el.onclick = (e) => {
         e.stopPropagation();
         renderView('goal-detail', el.dataset.goalId);
+      };
+    });
+    document.querySelectorAll('.goal-list-row').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.goal-export-btn, .ctx-handle')) return;
+        if (e.target.closest('.goal-list-title')) {
+          renderView('goal-detail', el.dataset.goalId);
+          return;
+        }
+        const g = goals.find(x => String(x.id) === el.dataset.goalId);
+        if (g) showGoalSlideover(g, render);
       };
     });
     document.querySelectorAll('.goal-export-btn').forEach(el => {
@@ -6142,13 +6224,6 @@ async function showTaskSlideover(taskId) {
     <div class="subtask-section" style="margin-top:20px">
       <div class="subtask-section-title"><span>Resources (${(task.resources||[]).length})</span></div>
       <div>${resourcesHtml}</div>
-    </div>
-    <div class="subtask-section" style="margin-top:20px" id="props-section">
-      <div class="subtask-section-title">
-        <span>Properties</span>
-        <button class="btn btn-sm btn-ghost" id="add-prop-btn">+ Add</button>
-      </div>
-      <div id="props-list"></div>
     </div>
     ${buildCommentSection('task', taskId)}
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border)">
