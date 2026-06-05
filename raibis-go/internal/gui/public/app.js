@@ -6297,13 +6297,6 @@ async function showTaskSlideover(taskId) {
       <div class="subtask-section-title"><span>Resources (${(task.resources||[]).length})</span></div>
       <div>${resourcesHtml}</div>
     </div>
-    <div class="subtask-section" style="margin-top:20px" id="props-section">
-      <div class="subtask-section-title">
-        <span>Extra Properties</span>
-        <button class="btn btn-sm btn-ghost" id="add-prop-btn">+ Add</button>
-      </div>
-      <div id="props-list"></div>
-    </div>
     ${buildCommentSection('task', taskId)}
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border)">
       <button class="btn btn-ghost btn-sm" id="task-export-btn">Export JSON</button>
@@ -6997,9 +6990,6 @@ async function showTaskSlideover(taskId) {
 
   document.getElementById('task-export-btn').onclick = () =>
     showJSONModal(`/api/export/task/${taskId}`, `task-${task.title.replace(/\s+/g,'-')}.json`);
-
-  // Properties widget
-  bindPropertiesWidget('task', taskId, 'props-list', 'add-prop-btn');
 
   // Breadcrumb navigation
   document.querySelectorAll('.bc-goal').forEach(el => {

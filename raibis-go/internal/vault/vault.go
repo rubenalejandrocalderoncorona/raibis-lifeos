@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -111,6 +112,88 @@ func (v *Vault) DeleteFile(path string) error {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+// ── Entity Markdown files ──────────────────────────────────────────────────
+
+// EntityFilePath returns the deterministic vault path for a Raibis entity.
+// Format: {root}/raibis/{entityType}/{entityType}-{id}.md
+func (v *Vault) EntityFilePath(entityType string, id int64) string {
+	dir := filepath.Join(v.Root, "raibis", entityType)
+	os.MkdirAll(dir, 0o755) //nolint:errcheck
+	return filepath.Join(dir, fmt.Sprintf("%s-%d.md", entityType, id))
+}
+
+// WriteEntityMD writes YAML frontmatter + optional body for a Raibis entity.
+// Errors are logged by callers; the HTTP response is never blocked on vault I/O.
+func (v *Vault) WriteEntityMD(entityType string, id int64, frontmatter map[string]any, body string) error {
+	path := v.EntityFilePath(entityType, id)
+	content := buildFrontmatter(frontmatter)
+	if body != "" {
+		content += "\n" + body
+	}
+	return v.WriteFile(path, content)
+}
+
+// DeleteEntityMD removes the markdown file for a Raibis entity.
+func (v *Vault) DeleteEntityMD(entityType string, id int64) error {
+	return v.DeleteFile(v.EntityFilePath(entityType, id))
+}
+
+// buildFrontmatter serialises a map as YAML frontmatter (--- … ---).
+// Keys are sorted for deterministic output; nil, zero-int, and empty-string
+// values are omitted.
+func buildFrontmatter(props map[string]any) string {
+	keys := make([]string, 0, len(props))
+	for k, val := range props {
+		if val != nil {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	for _, k := range keys {
+		switch val := props[k].(type) {
+		case string:
+			if val == "" {
+				continue
+			}
+			if strings.ContainsAny(val, ":\n\"'#") {
+				escaped := strings.ReplaceAll(val, `"`, `\"`)
+				escaped = strings.ReplaceAll(escaped, "\n", `\n`)
+				sb.WriteString(fmt.Sprintf("%s: \"%s\"\n", k, escaped))
+			} else {
+				sb.WriteString(fmt.Sprintf("%s: %s\n", k, val))
+			}
+		case int:
+			if val == 0 {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("%s: %d\n", k, val))
+		case int64:
+			if val == 0 {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("%s: %d\n", k, val))
+		case float64:
+			sb.WriteString(fmt.Sprintf("%s: %g\n", k, val))
+		case bool:
+			sb.WriteString(fmt.Sprintf("%s: %t\n", k, val))
+		case []string:
+			if len(val) == 0 {
+				continue
+			}
+			quoted := make([]string, len(val))
+			for i, s := range val {
+				quoted[i] = fmt.Sprintf("%q", s)
+			}
+			sb.WriteString(fmt.Sprintf("%s: [%s]\n", k, strings.Join(quoted, ", ")))
+		}
+	}
+	sb.WriteString("---\n")
+	return sb.String()
+}
 
 var nonAlphaNum = regexp.MustCompile(`[^a-z0-9]+`)
 

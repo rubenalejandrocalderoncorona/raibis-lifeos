@@ -143,20 +143,20 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	mux := http.NewServeMux()
 
 	// Tasks
-	mux.HandleFunc("/api/tasks", withCORS(tasksHandler(svc, store)))
-	mux.HandleFunc("/api/tasks/", withCORS(taskHandler(svc, store, dbPath)))
+	mux.HandleFunc("/api/tasks", withCORS(tasksHandler(svc, store, v)))
+	mux.HandleFunc("/api/tasks/", withCORS(taskHandler(svc, store, dbPath, v)))
 
 	// Goals
-	mux.HandleFunc("/api/goals", withCORS(goalsHandler(svc, store)))
-	mux.HandleFunc("/api/goals/", withCORS(goalHandler(store, dbPath)))
+	mux.HandleFunc("/api/goals", withCORS(goalsHandler(svc, store, v)))
+	mux.HandleFunc("/api/goals/", withCORS(goalHandler(store, dbPath, v)))
 
 	// Projects
-	mux.HandleFunc("/api/projects", withCORS(projectsHandler(svc, store)))
-	mux.HandleFunc("/api/projects/", withCORS(projectHandler(store, dbPath)))
+	mux.HandleFunc("/api/projects", withCORS(projectsHandler(svc, store, v)))
+	mux.HandleFunc("/api/projects/", withCORS(projectHandler(store, dbPath, v)))
 
 	// Sprints
-	mux.HandleFunc("/api/sprints", withCORS(sprintsHandler(svc, store, dbPath)))
-	mux.HandleFunc("/api/sprints/", withCORS(sprintHandler(store)))
+	mux.HandleFunc("/api/sprints", withCORS(sprintsHandler(svc, store, dbPath, v)))
+	mux.HandleFunc("/api/sprints/", withCORS(sprintHandler(store, v)))
 
 	// Notes — vault-backed file-only
 	mux.HandleFunc("/api/notes", withCORS(notesHandler(store, v)))
@@ -284,7 +284,7 @@ func nullInt(n sql.NullInt64) any {
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────
 
-func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFunc {
+func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -408,6 +408,11 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 				errJSON(w, 500, err.Error())
 				return
 			}
+			go func() {
+				if err := vlt.WriteEntityMD("task", created.ID, taskFM(created), ""); err != nil {
+					log.Printf("vault: write task %d: %v", created.ID, err)
+				}
+			}()
 			writeJSON(w, 201, created)
 
 		default:
@@ -416,7 +421,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 	}
 }
 
-func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) http.HandlerFunc {
+func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
 		if strings.HasSuffix(path, "/tags") {
@@ -634,6 +639,11 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 			}
 			updated, _ := svc.Get(id)
 			updated.Tags, _ = store.GetEntityTags("task", id)
+			go func() {
+				if err := vlt.WriteEntityMD("task", updated.ID, taskFM(updated), ""); err != nil {
+					log.Printf("vault: update task %d: %v", updated.ID, err)
+				}
+			}()
 			writeJSON(w, 200, updated)
 
 		case http.MethodDelete:
@@ -641,6 +651,11 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 				errJSON(w, 500, err.Error())
 				return
 			}
+			go func() {
+				if err := vlt.DeleteEntityMD("task", id); err != nil {
+					log.Printf("vault: delete task %d: %v", id, err)
+				}
+			}()
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
 		default:
@@ -651,7 +666,7 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string) 
 
 // ── Goals ─────────────────────────────────────────────────────────────────────
 
-func goalsHandler(svc service.TaskService, store storage.Storage) http.HandlerFunc {
+func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -708,6 +723,11 @@ func goalsHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 				return
 			}
 			created, _ := store.GetGoal(id)
+			go func() {
+				if err := vlt.WriteEntityMD("goal", created.ID, goalFM(created), ""); err != nil {
+					log.Printf("vault: write goal %d: %v", created.ID, err)
+				}
+			}()
 			writeJSON(w, 201, created)
 
 		default:
@@ -716,7 +736,7 @@ func goalsHandler(svc service.TaskService, store storage.Storage) http.HandlerFu
 	}
 }
 
-func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
+func goalHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
 		if strings.HasSuffix(path, "/tags") {
@@ -852,6 +872,11 @@ func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			}
 			updated, _ := store.GetGoal(id)
 			updated.Tags, _ = store.GetEntityTags("goal", id)
+			go func() {
+				if err := vlt.WriteEntityMD("goal", updated.ID, goalFM(updated), ""); err != nil {
+					log.Printf("vault: update goal %d: %v", updated.ID, err)
+				}
+			}()
 			writeJSON(w, 200, updated)
 
 		case http.MethodDelete:
@@ -859,6 +884,11 @@ func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			go func() {
+				if err := vlt.DeleteEntityMD("goal", id); err != nil {
+					log.Printf("vault: delete goal %d: %v", id, err)
+				}
+			}()
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
 		default:
@@ -869,7 +899,7 @@ func goalHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 
 // ── Projects ──────────────────────────────────────────────────────────────────
 
-func projectsHandler(svc service.TaskService, store storage.Storage) http.HandlerFunc {
+func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -913,6 +943,11 @@ func projectsHandler(svc service.TaskService, store storage.Storage) http.Handle
 				return
 			}
 			created, _ := store.GetProject(id)
+			go func() {
+				if err := vlt.WriteEntityMD("project", created.ID, projectFM(created), ""); err != nil {
+					log.Printf("vault: write project %d: %v", created.ID, err)
+				}
+			}()
 			writeJSON(w, 201, created)
 
 		default:
@@ -921,7 +956,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage) http.Handle
 	}
 }
 
-func projectHandler(store storage.Storage, dbPath string) http.HandlerFunc {
+func projectHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
 		if strings.HasSuffix(path, "/tags") {
@@ -1037,6 +1072,11 @@ func projectHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			}
 			updated, _ := store.GetProject(id)
 			updated.Tags, _ = store.GetEntityTags("project", id)
+			go func() {
+				if err := vlt.WriteEntityMD("project", updated.ID, projectFM(updated), ""); err != nil {
+					log.Printf("vault: update project %d: %v", updated.ID, err)
+				}
+			}()
 			writeJSON(w, 200, updated)
 
 		case http.MethodDelete:
@@ -1044,6 +1084,11 @@ func projectHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			go func() {
+				if err := vlt.DeleteEntityMD("project", id); err != nil {
+					log.Printf("vault: delete project %d: %v", id, err)
+				}
+			}()
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
 		default:
@@ -1054,7 +1099,7 @@ func projectHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 
 // ── Sprints ───────────────────────────────────────────────────────────────────
 
-func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath string) http.HandlerFunc {
+func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath string, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -1097,6 +1142,12 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 				errJSON(w, 500, err.Error())
 				return
 			}
+			sp.ID = id
+			go func() {
+				if err := vlt.WriteEntityMD("sprint", sp.ID, sprintFM(sp), ""); err != nil {
+					log.Printf("vault: write sprint %d: %v", sp.ID, err)
+				}
+			}()
 			writeJSON(w, 201, map[string]any{"id": id, "title": body.Title, "status": "planned"})
 
 		default:
@@ -1105,7 +1156,7 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 	}
 }
 
-func sprintHandler(store storage.Storage) http.HandlerFunc {
+func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseID(r.URL.Path)
 		if !ok {
@@ -1171,6 +1222,13 @@ func sprintHandler(store storage.Storage) http.HandlerFunc {
 					errJSON(w, 500, err.Error())
 					return
 				}
+			}
+			if sp, err := store.GetSprint(id); err == nil {
+				go func() {
+					if err := vlt.WriteEntityMD("sprint", sp.ID, sprintFM(sp), ""); err != nil {
+						log.Printf("vault: update sprint %d: %v", sp.ID, err)
+					}
+				}()
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
@@ -3309,6 +3367,141 @@ func integrationsProbeHandler() http.HandlerFunc {
 			"error":         errMsg,
 		})
 	}
+}
+
+// ── Vault frontmatter helpers ─────────────────────────────────────────────────
+
+func taskFM(t *domain.Task) map[string]any {
+	fm := map[string]any{
+		"id":         t.ID,
+		"title":      t.Title,
+		"status":     string(t.Status),
+		"priority":   string(t.Priority),
+		"created_at": t.CreatedAt.Format(time.RFC3339),
+		"updated_at": t.UpdatedAt.Format(time.RFC3339),
+	}
+	if t.Description != "" {
+		fm["description"] = t.Description
+	}
+	if t.GoalID != nil {
+		fm["goal_id"] = *t.GoalID
+	}
+	if t.ProjectID != nil {
+		fm["project_id"] = *t.ProjectID
+	}
+	if t.SprintID != nil {
+		fm["sprint_id"] = *t.SprintID
+	}
+	if t.DueDate != nil {
+		fm["due_date"] = t.DueDate.Format("2006-01-02")
+	}
+	if t.StartDate != nil {
+		fm["start_date"] = t.StartDate.Format("2006-01-02")
+	}
+	if t.StoryPoints != nil && *t.StoryPoints > 0 {
+		fm["story_points"] = *t.StoryPoints
+	}
+	if len(t.Tags) > 0 {
+		names := make([]string, len(t.Tags))
+		for i, tg := range t.Tags {
+			names[i] = tg.Name
+		}
+		fm["tags"] = names
+	}
+	return fm
+}
+
+func goalFM(g *domain.Goal) map[string]any {
+	fm := map[string]any{
+		"id":         g.ID,
+		"title":      g.Title,
+		"status":     string(g.Status),
+		"created_at": g.CreatedAt.Format(time.RFC3339),
+	}
+	if g.Description != "" {
+		fm["description"] = g.Description
+	}
+	if g.Type != "" {
+		fm["type"] = g.Type
+	}
+	if g.Year != "" {
+		fm["year"] = g.Year
+	}
+	if g.DueDate != nil && *g.DueDate != "" {
+		fm["due_date"] = *g.DueDate
+	}
+	if g.StartDate != nil && *g.StartDate != "" {
+		fm["start_date"] = *g.StartDate
+	}
+	if g.Target != nil {
+		fm["target"] = *g.Target
+	}
+	if g.CurrentValue != nil {
+		fm["current_value"] = *g.CurrentValue
+	}
+	if len(g.Tags) > 0 {
+		names := make([]string, len(g.Tags))
+		for i, tg := range g.Tags {
+			names[i] = tg.Name
+		}
+		fm["tags"] = names
+	}
+	return fm
+}
+
+func projectFM(p *domain.Project) map[string]any {
+	fm := map[string]any{
+		"id":         p.ID,
+		"title":      p.Title,
+		"status":     string(p.Status),
+		"created_at": p.CreatedAt.Format(time.RFC3339),
+	}
+	if p.Description != "" {
+		fm["description"] = p.Description
+	}
+	if p.GoalID != nil {
+		fm["goal_id"] = *p.GoalID
+	}
+	if p.MacroArea != "" {
+		fm["macro_area"] = p.MacroArea
+	}
+	if p.DueDate != nil {
+		fm["due_date"] = p.DueDate.Format("2006-01-02")
+	}
+	if p.StartDate != nil {
+		fm["start_date"] = p.StartDate.Format("2006-01-02")
+	}
+	if len(p.Tags) > 0 {
+		names := make([]string, len(p.Tags))
+		for i, tg := range p.Tags {
+			names[i] = tg.Name
+		}
+		fm["tags"] = names
+	}
+	return fm
+}
+
+func sprintFM(s *domain.Sprint) map[string]any {
+	fm := map[string]any{
+		"id":         s.ID,
+		"title":      s.Title,
+		"project_id": s.ProjectID,
+		"status":     string(s.Status),
+		"created_at": s.CreatedAt.Format(time.RFC3339),
+	}
+	if s.Goal != "" {
+		fm["goal"] = s.Goal
+	}
+	if s.StartDate != nil {
+		fm["start_date"] = s.StartDate.Format("2006-01-02")
+	}
+	if s.EndDate != nil {
+		fm["end_date"] = s.EndDate.Format("2006-01-02")
+	}
+	if s.StoryPoints != nil {
+		fm["story_points"] = *s.StoryPoints
+	}
+	return fm
 }
 
 func configHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
