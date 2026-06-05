@@ -205,6 +205,9 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Properties (icon + custom key-value pairs per entity)
 	mux.HandleFunc("/api/properties", withCORS(propertiesHandler(store)))
 
+	// Server config (vault path, db path)
+	mux.HandleFunc("/api/config", withCORS(configHandler(v, dbPath)))
+
 	// Embedded Web GUI — self-contained, no external /public folder needed.
 	// Serves index.html + assets for all non-/api/ requests.
 	sub, err := gui.Sub()
@@ -3304,6 +3307,19 @@ func integrationsProbeHandler() http.HandlerFunc {
 			"inferred_type": inferred,
 			"is_list":       isList,
 			"error":         errMsg,
+		})
+	}
+}
+
+func configHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			errJSON(w, 405, "method not allowed")
+			return
+		}
+		writeJSON(w, 200, map[string]string{
+			"vault_path": v.Root,
+			"db_path":    dbPath,
 		})
 	}
 }

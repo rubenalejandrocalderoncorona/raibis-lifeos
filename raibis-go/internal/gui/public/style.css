@@ -1848,22 +1848,86 @@ body.kanban-dragging-active * {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 6px 12px;
-  background: var(--bg-surface);
+  height: 28px;
+  padding: 0 12px;
+  background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-pill);
   color: var(--text);
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
   transition: background 80ms, border-color 80ms, color 80ms;
   margin-top: 4px;
   font-family: inherit;
+  white-space: nowrap;
 }
-.modal-date-chip:before { content: '📅 '; font-size: 12px; }
+.modal-date-chip:before { content: '📅'; font-size: 11px; margin-right: 2px; }
 .modal-date-chip:hover {
   background: var(--accent-glow);
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* ─── Entity list view (projects, goals) ────────────────────────────── */
+.entity-list-view {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.entity-list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 80ms, border-color 80ms;
+  min-height: 38px;
+}
+.entity-list-row:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border);
+}
+.entity-list-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.entity-list-title:hover { text-decoration: underline; color: var(--accent); }
+.entity-list-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.entity-list-progress {
+  width: 60px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.entity-list-progress-bar {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 200ms;
+}
+.entity-list-pct {
+  font-size: 11px;
+  color: var(--text-muted);
+  width: 32px;
+  text-align: right;
+  flex-shrink: 0;
 }
 
 /* ─── All-properties side panel ────────────────────────────────────── */
@@ -3206,25 +3270,29 @@ body.kanban-dragging-active * {
 /* ─── Date mode toggle ───────────────────────────────────────────────── */
 .date-mode-toggle {
   display: inline-flex;
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
+  gap: 4px;
   margin-bottom: 6px;
 }
 .date-mode-btn {
-  background: none;
-  border: none;
-  padding: 4px 10px;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
   font-size: 11px;
+  font-weight: 500;
   cursor: pointer;
   color: var(--text-muted);
-  transition: background 80ms ease, color 80ms ease;
+  transition: background 80ms ease, border-color 80ms ease, color 80ms ease;
 }
 .date-mode-btn.active {
   background: var(--accent);
+  border-color: var(--accent);
   color: #fff;
 }
-.date-mode-btn:hover:not(.active) { background: var(--accent-dim); color: var(--accent); }
+.date-mode-btn:hover:not(.active) { background: var(--accent-glow); border-color: var(--accent); color: var(--accent); }
 .date-range-row {
   display: flex;
   align-items: center;
@@ -4535,6 +4603,75 @@ tr:hover .ctx-handle,
   border-radius: var(--radius-lg);
   padding: var(--space-8);
 }
+
+/* ─── Property Manager Panel ──────────────────────────────────────────── */
+.prop-mgr-panel {
+  position: fixed;
+  width: 280px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+  z-index: var(--z-top);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.prop-mgr-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  border-bottom: 1px solid var(--border);
+}
+.prop-mgr-close {
+  background: none; border: none; cursor: pointer;
+  font-size: 16px; color: var(--text-dim); padding: 0 2px;
+}
+.prop-mgr-close:hover { color: var(--text); }
+.prop-mgr-list { padding: 4px 0; max-height: 240px; overflow-y: auto; }
+.prop-mgr-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; transition: background 60ms;
+}
+.prop-mgr-row:hover { background: var(--bg-card-hover); }
+.prop-mgr-icon { flex-shrink: 0; color: var(--text-dim); }
+.prop-mgr-label { flex: 1; font-size: 13px; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prop-mgr-type { font-size: 10px; color: var(--text-dim); flex-shrink: 0; }
+.prop-mgr-del {
+  background: none; border: none; cursor: pointer; opacity: 0;
+  color: var(--danger); font-size: 15px; padding: 0 2px; flex-shrink: 0;
+  transition: opacity 80ms;
+}
+.prop-mgr-row:hover .prop-mgr-del { opacity: 1; }
+.prop-mgr-empty { padding: 12px; font-size: 12px; color: var(--text-dim); text-align: center; }
+.prop-mgr-footer {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+}
+.prop-mgr-add-btn {
+  font-size: 12px; color: var(--text-muted); cursor: pointer;
+  transition: color 80ms;
+}
+.prop-mgr-add-btn:hover { color: var(--accent); }
+
+/* ─── Vault Settings ────────────────────────────────────────────────── */
+.vault-settings { padding: 4px 0; }
+.vault-settings-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.vault-settings-label {
+  width: 100px; flex-shrink: 0;
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
+  display: flex; align-items: center; gap: 6px;
+}
+.vault-settings-value { flex: 1; min-width: 0; font-size: 13px; }
 
 /* ─── Grain overlay — subtle texture on backgrounds ──────────────────── */
 .grain {

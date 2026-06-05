@@ -2,8 +2,10 @@ ROOT      := $(shell pwd)
 GO_DIR    := $(ROOT)/raibis-go
 TAURI_DIR := $(ROOT)/raibis-tauri/src-tauri
 PORT      ?= 3344
+VAULT     ?= /Users/racc/Documents
 
-export PATH := $(HOME)/.cargo/bin:$(PATH)
+export PATH         := $(HOME)/.cargo/bin:$(PATH)
+export LIFEOS_VAULT := $(VAULT)
 
 .PHONY: web app tui stop restart-web restart-app hard
 

@@ -903,6 +903,74 @@ function openSortEditPopover(anchorEl, entity, view, idx, onSave) {
 }
 
 // Bind tab bar interactions
+// ── Property Manager Panel ─────────────────────────────────────────────────
+// Opens a floating panel anchored to btnEl that lets the user see, add, and
+// remove custom property definitions for the given entity type.
+function openPropManager(btnEl, entity) {
+  const existing = document.getElementById('prop-mgr-panel');
+  if (existing) { existing.remove(); return; }
+
+  function render() {
+    const defs = getCustomPropDefs(entity);
+    const typeSvg = (iconPath) => `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconPath}</svg>`;
+    const rows = defs.length
+      ? defs.map(d => {
+          const pt = CUSTOM_PROP_TYPES.find(p => p.type === d.type);
+          return `<div class="prop-mgr-row" data-key="${d.key}">
+            <span class="prop-mgr-icon">${pt ? typeSvg(pt.icon) : ''}</span>
+            <span class="prop-mgr-label">${d.label}</span>
+            <span class="prop-mgr-type">${d.type}</span>
+            <button class="prop-mgr-del" data-key="${d.key}" title="Remove">×</button>
+          </div>`;
+        }).join('')
+      : `<div class="prop-mgr-empty">No custom properties yet</div>`;
+
+    panel.innerHTML = `
+      <div class="prop-mgr-header">
+        <span>Properties · ${entity.charAt(0).toUpperCase()+entity.slice(1)}</span>
+        <button class="prop-mgr-close" id="prop-mgr-close-btn">×</button>
+      </div>
+      <div class="prop-mgr-list">${rows}</div>
+      <div class="prop-mgr-footer">
+        <span class="add-prop-btn prop-mgr-add-btn" data-entity="${entity}">+ Add property</span>
+      </div>`;
+
+    panel.querySelectorAll('.prop-mgr-del').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const key = btn.dataset.key;
+        if (!confirm(`Remove property "${key}" from all ${entity}s?`)) return;
+        const defs = getCustomPropDefs(entity).filter(d => d.key !== key);
+        setCustomPropDefs(entity, defs);
+        const ord = getEntityPropOrder(entity);
+        if (ord) setEntityPropOrder(entity, ord.filter(k => k !== key));
+        document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
+        render();
+      };
+    });
+    document.getElementById('prop-mgr-close-btn').onclick = () => panel.remove();
+    bindAddPropBtn(entity, () => { render(); document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } })); });
+  }
+
+  const panel = document.createElement('div');
+  panel.id = 'prop-mgr-panel';
+  panel.className = 'prop-mgr-panel';
+  document.body.appendChild(panel);
+  render();
+
+  const rect = btnEl.getBoundingClientRect();
+  panel.style.top = (rect.bottom + 6) + 'px';
+  panel.style.right = (window.innerWidth - rect.right) + 'px';
+
+  const dismiss = (e) => {
+    if (!panel.contains(e.target) && e.target !== btnEl) {
+      panel.remove();
+      document.removeEventListener('mousedown', dismiss, true);
+    }
+  };
+  setTimeout(() => document.addEventListener('mousedown', dismiss, true), 10);
+}
+
 function bindViewTabBar(entity, onTabSwitch, onViewsChanged) {
   // Tab clicks — use mousedown to avoid conflict with dblclick/rename
   document.querySelectorAll(`#${entity}-view-tabs .view-tab`).forEach(tab => {
@@ -1065,6 +1133,10 @@ function bindViewTabBar(entity, onTabSwitch, onViewsChanged) {
 
   if (tbFilter) tbFilter.onclick = (e) => { e.stopPropagation(); toggleFilterSortBar(); };
   if (tbSort)   tbSort.onclick   = (e) => { e.stopPropagation(); toggleFilterSortBar(); };
+
+  // Settings/Properties button → open property manager panel
+  const tbSettings = document.getElementById(`${entity}-tb-settings`);
+  if (tbSettings) tbSettings.onclick = (e) => { e.stopPropagation(); openPropManager(tbSettings, entity); };
 
   // Search toggle: show/hide a search input row below the tab bar
   if (tbSearch) tbSearch.onclick = (e) => {
@@ -3727,11 +3799,31 @@ async function renderProjects() {
     });
   }
 
+  function buildProjectListView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◆</div><div class="empty-state-text">No projects found</div></div>`;
+    const vis = (key) => entityPropVisible('project', key);
+    return `<div class="entity-list-view">${list.map(p => {
+      const prog = p.progress || {};
+      const pct = prog.pct || 0;
+      return `<div class="entity-list-row proj-list-row" data-proj-id="${p.id}">
+        <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+        <span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
+        <span class="entity-list-title proj-list-title">${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></span>
+        ${vis('status') ? statusBadge(p.status) : ''}
+        ${vis('goal') && p.goal_title ? `<span class="entity-list-meta">${p.goal_title}</span>` : ''}
+        ${vis('area') && p.macro_area ? `<span class="entity-list-meta">${p.macro_area.split('(')[0].trim()}</span>` : ''}
+        ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
+        <span onclick="event.stopPropagation()"><button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button></span>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
   function render() {
     const list = getFiltered();
     let html;
     if (projectsViewMode === 'table') html = buildTableView(list);
     else if (projectsViewMode === 'kanban') html = buildProjectKanbanView(list);
+    else if (projectsViewMode === 'list') html = buildProjectListView(list);
     else html = buildCardsView(list);
     document.getElementById('proj-list').innerHTML = html;
     bindProjEvents();
@@ -3751,7 +3843,12 @@ async function renderProjects() {
       document.querySelectorAll('.proj-kanban-card').forEach(card => {
         card.addEventListener('click', (e) => {
           if (e.target.closest('.ctx-handle')) return;
-          renderView('project-detail', card.dataset.projId);
+          if (e.target.closest('.kanban-card-title')) {
+            renderView('project-detail', card.dataset.projId);
+            return;
+          }
+          const p = projects.find(x => String(x.id) === card.dataset.projId);
+          if (p) showProjectSlideover(p, goals, render);
         });
       });
       bindCtxHandles();
@@ -3765,13 +3862,29 @@ async function renderProjects() {
     document.querySelectorAll('.proj-slideover-card').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.proj-del-btn, .proj-export-btn, .ctx-handle')) return;
-        renderView('project-detail', el.dataset.projId);
+        if (e.target.closest('.card-title')) {
+          renderView('project-detail', el.dataset.projId);
+          return;
+        }
+        const p = projects.find(x => String(x.id) === el.dataset.projId);
+        if (p) showProjectSlideover(p, goals, render);
       };
     });
     document.querySelectorAll('.task-title-link[data-proj-id]').forEach(el => {
       el.onclick = (e) => {
         e.stopPropagation();
         renderView('project-detail', el.dataset.projId);
+      };
+    });
+    document.querySelectorAll('.proj-list-row').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.proj-export-btn, .ctx-handle')) return;
+        if (e.target.closest('.proj-list-title')) {
+          renderView('project-detail', el.dataset.projId);
+          return;
+        }
+        const p = projects.find(x => String(x.id) === el.dataset.projId);
+        if (p) showProjectSlideover(p, goals, render);
       };
     });
     document.querySelectorAll('.proj-export-btn').forEach(el => {
@@ -3854,11 +3967,31 @@ async function renderGoals() {
     });
   }
 
+  function buildGoalListView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◈</div><div class="empty-state-text">No goals found</div></div>`;
+    const vis = (key) => entityPropVisible('goal', key);
+    return `<div class="entity-list-view">${list.map(g => {
+      const prog = g.progress || {};
+      const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
+      return `<div class="entity-list-row goal-list-row" data-goal-id="${g.id}">
+        <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+        <span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
+        <span class="entity-list-title goal-list-title">${g.title}<span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></span>
+        ${vis('type') && g.type ? `<span class="entity-list-meta">${g.type}</span>` : ''}
+        ${vis('year') && g.year ? `<span class="entity-list-meta">${g.year}</span>` : ''}
+        ${vis('status') ? statusBadge(g.status) : ''}
+        ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
+        <span onclick="event.stopPropagation()"><button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button></span>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
   function render() {
     const list = getFiltered();
     let html;
     if (goalsViewMode === 'table') html = buildTableView(list);
     else if (goalsViewMode === 'kanban') html = buildGoalKanbanView(list);
+    else if (goalsViewMode === 'list') html = buildGoalListView(list);
     else html = buildCardsView(list);
     document.getElementById('goal-list').innerHTML = html;
     bindGoalEvents();
@@ -3878,7 +4011,12 @@ async function renderGoals() {
       document.querySelectorAll('.goal-kanban-card').forEach(card => {
         card.addEventListener('click', (e) => {
           if (e.target.closest('.ctx-handle')) return;
-          renderView('goal-detail', card.dataset.goalId);
+          if (e.target.closest('.kanban-card-title')) {
+            renderView('goal-detail', card.dataset.goalId);
+            return;
+          }
+          const g = goals.find(x => String(x.id) === card.dataset.goalId);
+          if (g) showGoalSlideover(g, render);
         });
       });
       bindCtxHandles();
@@ -4033,13 +4171,29 @@ async function renderGoals() {
     document.querySelectorAll('.goal-slideover-card').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.goal-del-btn, .goal-export-btn, .ctx-handle')) return;
-        renderView('goal-detail', el.dataset.goalId);
+        if (e.target.closest('.card-title')) {
+          renderView('goal-detail', el.dataset.goalId);
+          return;
+        }
+        const g = goals.find(x => String(x.id) === el.dataset.goalId);
+        if (g) showGoalSlideover(g, render);
       };
     });
     document.querySelectorAll('.goal-nav-link').forEach(el => {
       el.onclick = (e) => {
         e.stopPropagation();
         renderView('goal-detail', el.dataset.goalId);
+      };
+    });
+    document.querySelectorAll('.goal-list-row').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.goal-export-btn, .ctx-handle')) return;
+        if (e.target.closest('.goal-list-title')) {
+          renderView('goal-detail', el.dataset.goalId);
+          return;
+        }
+        const g = goals.find(x => String(x.id) === el.dataset.goalId);
+        if (g) showGoalSlideover(g, render);
       };
     });
     document.querySelectorAll('.goal-export-btn').forEach(el => {
@@ -6145,7 +6299,7 @@ async function showTaskSlideover(taskId) {
     </div>
     <div class="subtask-section" style="margin-top:20px" id="props-section">
       <div class="subtask-section-title">
-        <span>Properties</span>
+        <span>Extra Properties</span>
         <button class="btn btn-sm btn-ghost" id="add-prop-btn">+ Add</button>
       </div>
       <div id="props-list"></div>
@@ -9316,6 +9470,10 @@ async function openRaibisSettings(defaultTab = 'apps') {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
           raibis
         </div>
+        <button class="settings-tab${defaultTab==='vault'?' active':''}" data-stab="vault">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          Vault
+        </button>
         <button class="settings-tab${defaultTab==='apps'?' active':''}" data-stab="apps">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
           Connected Apps
@@ -9362,13 +9520,48 @@ async function openRaibisSettings(defaultTab = 'apps') {
     const title = document.getElementById('_settings-title');
     body.innerHTML = `<div style="color:var(--text-muted);font-size:13px;text-align:center;padding:32px 0">Loading…</div>`;
 
-    if (tab === 'apps') {
+    if (tab === 'vault') {
+      title.textContent = 'Vault';
+      await renderVaultTab(body);
+    } else if (tab === 'apps') {
       title.textContent = 'Connected Apps';
       await renderAppsTab(body);
     } else {
       title.textContent = 'App Integrations';
       await renderIntegrationsTab(body);
     }
+  }
+
+  async function renderVaultTab(body) {
+    let cfg = {};
+    try { cfg = await api('GET', '/api/config'); } catch(e) { cfg = { vault_path: '(unknown)' }; }
+    const vaultPath = cfg.vault_path || '(not set)';
+    const isObsidian = vaultPath.includes('Documents') || vaultPath.toLowerCase().includes('obsidian');
+    body.innerHTML = `
+      <div class="vault-settings">
+        <div class="vault-settings-row">
+          <div class="vault-settings-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Vault Path
+          </div>
+          <div class="vault-settings-value">
+            <code style="font-size:12px;background:var(--bg-card);padding:4px 8px;border-radius:4px;border:1px solid var(--border);display:block;word-break:break-all">${vaultPath}</code>
+            ${isObsidian ? '<div style="color:var(--color-success);font-size:11px;margin-top:4px">✓ Obsidian vault detected</div>' : ''}
+          </div>
+        </div>
+        <div class="vault-settings-row" style="align-items:flex-start;margin-top:12px">
+          <div class="vault-settings-label">Structure</div>
+          <div class="vault-settings-value" style="font-size:12px;color:var(--text-muted);line-height:1.6">
+            Notes → <code>${vaultPath}/notes/</code><br>
+            Resources → <code>${vaultPath}/resources/</code>
+          </div>
+        </div>
+        <div style="margin-top:20px;padding:12px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);font-size:12px;color:var(--text-muted);line-height:1.7">
+          <strong style="color:var(--text)">To change the vault path:</strong><br>
+          Web mode: set <code>LIFEOS_VAULT=/path/to/vault</code> in the Makefile or environment.<br>
+          Desktop app: the vault is configured in <code>main.rs</code> (requires rebuild).
+        </div>
+      </div>`;
   }
 
   async function renderAppsTab(body) {
