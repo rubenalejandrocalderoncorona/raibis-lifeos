@@ -71,6 +71,10 @@ func serve(cfg serverConfig) {
 	}
 	log.Printf("vault at %s", v.Root)
 
+	// Rebuild SQLite from vault — imports any entities missing from the index.
+	// Safe to run on every start: INSERT OR IGNORE means existing rows are untouched.
+	syncVaultToSQLite(v, cfg.dbPath)
+
 	svc := service.New(store)
 	mux := buildMux(svc, store, v, cfg.dbPath)
 
@@ -3367,6 +3371,156 @@ func integrationsProbeHandler() http.HandlerFunc {
 			"error":         errMsg,
 		})
 	}
+}
+
+// ── Vault → SQLite startup sync ───────────────────────────────────────────────
+
+// syncVaultToSQLite scans vault entity dirs and inserts any entities that are
+// missing from SQLite (INSERT OR IGNORE). This rebuilds the index whenever
+// SQLite is deleted or entities are added directly in Obsidian.
+// Dependency order: goals → projects → sprints → tasks.
+func syncVaultToSQLite(v *vault.Vault, dbPath string) {
+	db, err := openRawDB(dbPath)
+	if err != nil {
+		log.Printf("vault sync: open db: %v", err)
+		return
+	}
+	defer db.Close()
+
+	n := 0
+
+	// Goals
+	if files, _ := v.ScanEntityFiles("goal"); len(files) > 0 {
+		for _, fm := range files {
+			id, _ := strconv.ParseInt(fm["id"], 10, 64)
+			if id == 0 {
+				continue
+			}
+			res, _ := db.Exec(`INSERT OR IGNORE INTO goals
+				(id,title,description,status,type,year,start_date,due_date,
+				 start_value,current_value,target,created_at)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+				id, fm["title"], nullStr(fm["description"]),
+				fmDefault(fm["status"], "active"),
+				nullStr(fm["type"]), nullStr(fm["year"]),
+				nullStr(fm["start_date"]), nullStr(fm["due_date"]),
+				fmFloat64(fm["start_value"]), fmFloat64(fm["current_value"]),
+				fmFloat64(fm["target"]),
+				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
+			)
+			if ra, _ := res.RowsAffected(); ra > 0 {
+				n++
+			}
+		}
+	}
+
+	// Projects
+	if files, _ := v.ScanEntityFiles("project"); len(files) > 0 {
+		for _, fm := range files {
+			id, _ := strconv.ParseInt(fm["id"], 10, 64)
+			if id == 0 {
+				continue
+			}
+			res, _ := db.Exec(`INSERT OR IGNORE INTO projects
+				(id,goal_id,title,description,status,macro_area,created_at)
+				VALUES (?,?,?,?,?,?,?)`,
+				id, fmInt64(fm["goal_id"]), fm["title"],
+				nullStr(fm["description"]),
+				fmDefault(fm["status"], "active"),
+				nullStr(fm["macro_area"]),
+				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
+			)
+			if ra, _ := res.RowsAffected(); ra > 0 {
+				n++
+			}
+		}
+	}
+
+	// Sprints (need project to exist first)
+	if files, _ := v.ScanEntityFiles("sprint"); len(files) > 0 {
+		for _, fm := range files {
+			id, _ := strconv.ParseInt(fm["id"], 10, 64)
+			projID, _ := strconv.ParseInt(fm["project_id"], 10, 64)
+			if id == 0 || projID == 0 {
+				continue
+			}
+			res, _ := db.Exec(`INSERT OR IGNORE INTO sprints
+				(id,project_id,title,goal,start_date,end_date,status,created_at)
+				VALUES (?,?,?,?,?,?,?,?)`,
+				id, projID, fm["title"], nullStr(fm["goal"]),
+				nullStr(fm["start_date"]), nullStr(fm["end_date"]),
+				fmDefault(fm["status"], "planned"),
+				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
+			)
+			if ra, _ := res.RowsAffected(); ra > 0 {
+				n++
+			}
+		}
+	}
+
+	// Tasks (need project/sprint/goal to exist first)
+	if files, _ := v.ScanEntityFiles("task"); len(files) > 0 {
+		for _, fm := range files {
+			id, _ := strconv.ParseInt(fm["id"], 10, 64)
+			if id == 0 {
+				continue
+			}
+			res, _ := db.Exec(`INSERT OR IGNORE INTO tasks
+				(id,goal_id,project_id,sprint_id,title,description,
+				 status,priority,due_date,start_date,story_points,
+				 created_at,updated_at)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				id,
+				fmInt64(fm["goal_id"]), fmInt64(fm["project_id"]), fmInt64(fm["sprint_id"]),
+				fm["title"], nullStr(fm["description"]),
+				fmDefault(fm["status"], "todo"),
+				fmDefault(fm["priority"], "medium"),
+				nullStr(fm["due_date"]), nullStr(fm["start_date"]),
+				fmInt64(fm["story_points"]),
+				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
+				fmDefault(fm["updated_at"], time.Now().Format(time.RFC3339)),
+			)
+			if ra, _ := res.RowsAffected(); ra > 0 {
+				n++
+			}
+		}
+	}
+
+	if n > 0 {
+		log.Printf("vault sync: imported %d entities from vault into SQLite", n)
+	}
+}
+
+// fmDefault returns s if non-empty, otherwise def.
+func fmDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+// fmInt64 parses a string as int64, returning nil if empty or invalid.
+func fmInt64(s string) any {
+	if s == "" {
+		return nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return n
+}
+
+// fmFloat64 parses a string as float64, returning nil if empty or invalid.
+func fmFloat64(s string) any {
+	if s == "" {
+		return nil
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return nil
+	}
+	return f
 }
 
 // ── Vault frontmatter helpers ─────────────────────────────────────────────────

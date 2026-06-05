@@ -108,7 +108,7 @@ fn main() {
                 .shell()
                 .sidecar("lifeos")
                 .expect("[raibis] lifeos sidecar binary not found in bundle")
-                .args(["server", "--port", "3344", "--vault", "/Users/racc/Documents"]);
+                .args(["server", "--port", "3344", "--vault", "/Users/racc/Documents/Obsidian Vault"]);
 
             let (mut rx, _child) = sidecar_cmd
                 .spawn()

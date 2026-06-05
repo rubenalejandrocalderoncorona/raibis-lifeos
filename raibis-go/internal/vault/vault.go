@@ -139,6 +139,73 @@ func (v *Vault) DeleteEntityMD(entityType string, id int64) error {
 	return v.DeleteFile(v.EntityFilePath(entityType, id))
 }
 
+// ParseFrontmatter extracts YAML frontmatter from markdown content.
+// Returns a key→value map and the body text after the closing ---.
+// Values are returned as raw strings (quoted strings are unquoted).
+func ParseFrontmatter(content string) (props map[string]string, body string) {
+	if !strings.HasPrefix(content, "---\n") {
+		return nil, content
+	}
+	rest := content[4:]
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return nil, content
+	}
+	fm := rest[:end]
+	body = ""
+	if len(rest) > end+4 {
+		body = strings.TrimPrefix(rest[end+4:], "\n")
+	}
+	props = make(map[string]string)
+	for _, line := range strings.Split(fm, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.Index(line, ": ")
+		if idx < 0 {
+			continue
+		}
+		k := strings.TrimSpace(line[:idx])
+		v := strings.TrimSpace(line[idx+2:])
+		if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+			v = v[1 : len(v)-1]
+			v = strings.ReplaceAll(v, `\"`, `"`)
+			v = strings.ReplaceAll(v, `\n`, "\n")
+		}
+		props[k] = v
+	}
+	return props, body
+}
+
+// ScanEntityFiles returns parsed frontmatter maps from all .md files in
+// {vault}/raibis/{entityType}/. Files without a valid "id" field are skipped.
+func (v *Vault) ScanEntityFiles(entityType string) ([]map[string]string, error) {
+	dir := filepath.Join(v.Root, "raibis", entityType)
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("vault: scan %s: %w", entityType, err)
+	}
+	var results []map[string]string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		props, _ := ParseFrontmatter(string(b))
+		if props != nil && props["id"] != "" {
+			results = append(results, props)
+		}
+	}
+	return results, nil
+}
+
 // buildFrontmatter serialises a map as YAML frontmatter (--- … ---).
 // Keys are sorted for deterministic output; nil, zero-int, and empty-string
 // values are omitted.

@@ -2,7 +2,7 @@ ROOT      := $(shell pwd)
 GO_DIR    := $(ROOT)/raibis-go
 TAURI_DIR := $(ROOT)/raibis-tauri/src-tauri
 PORT      ?= 3344
-VAULT     ?= /Users/racc/Documents
+VAULT     ?= /Users/racc/Documents/Obsidian Vault
 
 export PATH         := $(HOME)/.cargo/bin:$(PATH)
 export LIFEOS_VAULT := $(VAULT)
