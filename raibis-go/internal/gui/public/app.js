@@ -1282,7 +1282,6 @@ function bindAddPropBtn(entity, onAdd) {
       const picker = document.createElement('div');
       picker.id = 'add-prop-picker';
       picker.className = 'prop-vis-panel';
-      picker.style.cssText = 'position:absolute;z-index:300;min-width:280px;padding:8px 6px 6px';
       const typeSvg = (iconPath) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconPath}</svg>`;
 
       const connectedTypes = await getConnectedPropTypes();
@@ -1297,10 +1296,15 @@ function bindAddPropBtn(entity, onAdd) {
         buildSection(CUSTOM_PROP_TYPES) +
         (connectedTypes.length ? `<div class="prop-type-section-header">Connected Apps</div>` + buildSection(connectedTypes) : '');
 
-      // Anchor: use closest th (table header), or the btn's parent as relative anchor
-      const anchor = btn.closest('th') || btn.parentElement;
-      anchor.style.position = 'relative';
-      anchor.appendChild(picker);
+      // Position fixed from viewport rect — escapes overflow:auto clipping in slideovers
+      const bRect = btn.getBoundingClientRect();
+      picker.style.cssText = `position:fixed;z-index:9100;min-width:280px;padding:8px 6px 6px;top:${bRect.bottom+4}px;left:${bRect.left}px`;
+      document.body.appendChild(picker);
+      requestAnimationFrame(() => {
+        const cr = picker.getBoundingClientRect();
+        if (cr.right > window.innerWidth - 8) picker.style.left = (window.innerWidth - cr.width - 8) + 'px';
+        if (cr.bottom > window.innerHeight - 8) picker.style.top = (bRect.top - cr.height - 4) + 'px';
+      });
       picker.querySelectorAll('.prop-type-row').forEach(row => {
         row.onclick = (ev) => {
           ev.stopPropagation();

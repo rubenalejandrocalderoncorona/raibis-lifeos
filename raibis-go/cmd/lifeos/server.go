@@ -413,7 +413,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				return
 			}
 			go func() {
-				if err := vlt.WriteEntityMD("task", created.ID, taskFM(created), ""); err != nil {
+				if err := vlt.WriteEntityMD("task", created.ID, taskFM(created), taskLinksBody(created, store)); err != nil {
 					log.Printf("vault: write task %d: %v", created.ID, err)
 				}
 			}()
@@ -644,7 +644,7 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 			updated, _ := svc.Get(id)
 			updated.Tags, _ = store.GetEntityTags("task", id)
 			go func() {
-				if err := vlt.WriteEntityMD("task", updated.ID, taskFM(updated), ""); err != nil {
+				if err := vlt.WriteEntityMD("task", updated.ID, taskFM(updated), taskLinksBody(updated, store)); err != nil {
 					log.Printf("vault: update task %d: %v", updated.ID, err)
 				}
 			}()
@@ -948,7 +948,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 			}
 			created, _ := store.GetProject(id)
 			go func() {
-				if err := vlt.WriteEntityMD("project", created.ID, projectFM(created), ""); err != nil {
+				if err := vlt.WriteEntityMD("project", created.ID, projectFM(created), projectLinksBody(created, store)); err != nil {
 					log.Printf("vault: write project %d: %v", created.ID, err)
 				}
 			}()
@@ -1077,7 +1077,7 @@ func projectHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http
 			updated, _ := store.GetProject(id)
 			updated.Tags, _ = store.GetEntityTags("project", id)
 			go func() {
-				if err := vlt.WriteEntityMD("project", updated.ID, projectFM(updated), ""); err != nil {
+				if err := vlt.WriteEntityMD("project", updated.ID, projectFM(updated), projectLinksBody(updated, store)); err != nil {
 					log.Printf("vault: update project %d: %v", updated.ID, err)
 				}
 			}()
@@ -1148,7 +1148,7 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 			}
 			sp.ID = id
 			go func() {
-				if err := vlt.WriteEntityMD("sprint", sp.ID, sprintFM(sp), ""); err != nil {
+				if err := vlt.WriteEntityMD("sprint", sp.ID, sprintFM(sp), sprintLinksBody(sp, store)); err != nil {
 					log.Printf("vault: write sprint %d: %v", sp.ID, err)
 				}
 			}()
@@ -1229,7 +1229,7 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 			}
 			if sp, err := store.GetSprint(id); err == nil {
 				go func() {
-					if err := vlt.WriteEntityMD("sprint", sp.ID, sprintFM(sp), ""); err != nil {
+					if err := vlt.WriteEntityMD("sprint", sp.ID, sprintFM(sp), sprintLinksBody(sp, store)); err != nil {
 						log.Printf("vault: update sprint %d: %v", sp.ID, err)
 					}
 				}()
@@ -3529,6 +3529,7 @@ func taskFM(t *domain.Task) map[string]any {
 	fm := map[string]any{
 		"id":         t.ID,
 		"title":      t.Title,
+		"aliases":    []string{t.Title},
 		"status":     string(t.Status),
 		"priority":   string(t.Priority),
 		"created_at": t.CreatedAt.Format(time.RFC3339),
@@ -3569,6 +3570,7 @@ func goalFM(g *domain.Goal) map[string]any {
 	fm := map[string]any{
 		"id":         g.ID,
 		"title":      g.Title,
+		"aliases":    []string{g.Title},
 		"status":     string(g.Status),
 		"created_at": g.CreatedAt.Format(time.RFC3339),
 	}
@@ -3607,6 +3609,7 @@ func projectFM(p *domain.Project) map[string]any {
 	fm := map[string]any{
 		"id":         p.ID,
 		"title":      p.Title,
+		"aliases":    []string{p.Title},
 		"status":     string(p.Status),
 		"created_at": p.CreatedAt.Format(time.RFC3339),
 	}
@@ -3639,6 +3642,7 @@ func sprintFM(s *domain.Sprint) map[string]any {
 	fm := map[string]any{
 		"id":         s.ID,
 		"title":      s.Title,
+		"aliases":    []string{s.Title},
 		"project_id": s.ProjectID,
 		"status":     string(s.Status),
 		"created_at": s.CreatedAt.Format(time.RFC3339),
@@ -3656,6 +3660,47 @@ func sprintFM(s *domain.Sprint) map[string]any {
 		fm["story_points"] = *s.StoryPoints
 	}
 	return fm
+}
+
+// ── Vault wiki-link body helpers ──────────────────────────────────────────────
+// These write [[entity-id|Title]] links into the note body so Obsidian's graph
+// view shows real edges between related notes. Each entity that links upward
+// (task→project, project→goal, sprint→project) gets its parent as a wiki link.
+
+func taskLinksBody(t *domain.Task, store storage.Storage) string {
+	var lines []string
+	if t.GoalID != nil {
+		if g, err := store.GetGoal(*t.GoalID); err == nil {
+			lines = append(lines, fmt.Sprintf("[[goal-%d|%s]]", g.ID, g.Title))
+		}
+	}
+	if t.ProjectID != nil {
+		if p, err := store.GetProject(*t.ProjectID); err == nil {
+			lines = append(lines, fmt.Sprintf("[[project-%d|%s]]", p.ID, p.Title))
+		}
+	}
+	if t.SprintID != nil {
+		if sp, err := store.GetSprint(*t.SprintID); err == nil {
+			lines = append(lines, fmt.Sprintf("[[sprint-%d|%s]]", sp.ID, sp.Title))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func projectLinksBody(p *domain.Project, store storage.Storage) string {
+	if p.GoalID != nil {
+		if g, err := store.GetGoal(*p.GoalID); err == nil {
+			return fmt.Sprintf("[[goal-%d|%s]]", g.ID, g.Title)
+		}
+	}
+	return ""
+}
+
+func sprintLinksBody(s *domain.Sprint, store storage.Storage) string {
+	if p, err := store.GetProject(s.ProjectID); err == nil {
+		return fmt.Sprintf("[[project-%d|%s]]", p.ID, p.Title)
+	}
+	return ""
 }
 
 func configHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
