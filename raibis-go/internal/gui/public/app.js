@@ -1314,19 +1314,60 @@ function bindAddPropBtn(entity, onAdd) {
           const pt = isConnected
             ? connectedTypes.find(t => t.type === rawType)
             : CUSTOM_PROP_TYPES.find(t => t.type === rawType);
-          const name = prompt(`Name for the new ${pt?.label || rawType} property:`);
-          if (!name || !name.trim()) return;
-          const key = name.trim().toLowerCase().replace(/\s+/g, '_');
-          const defs = getCustomPropDefs(entity);
-          if (defs.some(d => d.key === key)) { alert('A property with that name already exists.'); return; }
-          if (isConnected) {
-            defs.push({ key, label: name.trim(), type: 'connected', integrationId: pt.integrationId });
-          } else {
-            defs.push({ key, label: name.trim(), type: rawType });
-          }
-          setCustomPropDefs(entity, defs);
-          onAdd();
-          document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
+
+          // Inline name input — replaces native prompt() for Tauri/browser compat
+          document.getElementById('add-prop-name-picker')?.remove();
+          const namePicker = document.createElement('div');
+          namePicker.id = 'add-prop-name-picker';
+          namePicker.className = 'prop-vis-panel';
+          namePicker.innerHTML =
+            `<div style="padding:6px 10px 4px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">Name this ${pt?.label || rawType} property</div>
+            <div style="padding:4px 8px 8px;display:flex;gap:6px;align-items:center">
+              <input id="add-prop-name-input" type="text" placeholder="Property name…"
+                style="flex:1;font-size:13px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)"/>
+              <button id="add-prop-name-confirm" class="btn btn-sm btn-primary" style="white-space:nowrap">Add</button>
+            </div>`;
+          const bRect2 = btn.getBoundingClientRect();
+          namePicker.style.cssText = `position:fixed;z-index:9200;min-width:260px;top:${bRect2.bottom+4}px;left:${bRect2.left}px`;
+          document.body.appendChild(namePicker);
+          const nameInp = document.getElementById('add-prop-name-input');
+          requestAnimationFrame(() => nameInp.focus());
+
+          const confirmAdd = () => {
+            const name = nameInp.value.trim();
+            if (!name) { nameInp.style.borderColor = 'var(--danger)'; nameInp.focus(); return; }
+            const key = name.toLowerCase().replace(/\s+/g, '_');
+            const defs = getCustomPropDefs(entity);
+            if (defs.some(d => d.key === key)) {
+              nameInp.style.borderColor = 'var(--danger)';
+              nameInp.title = 'A property with that name already exists';
+              nameInp.focus();
+              return;
+            }
+            if (isConnected) {
+              defs.push({ key, label: name, type: 'connected', integrationId: pt.integrationId });
+            } else {
+              defs.push({ key, label: name, type: rawType });
+            }
+            setCustomPropDefs(entity, defs);
+            namePicker.remove();
+            onAdd();
+            document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
+          };
+
+          document.getElementById('add-prop-name-confirm').onclick = (e) => { e.stopPropagation(); confirmAdd(); };
+          nameInp.onkeydown = (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); confirmAdd(); }
+            if (e.key === 'Escape') { namePicker.remove(); }
+          };
+          setTimeout(() => {
+            document.addEventListener('click', function nameOutside(ev2) {
+              if (!namePicker.contains(ev2.target)) {
+                namePicker.remove();
+                document.removeEventListener('click', nameOutside);
+              }
+            });
+          }, 0);
         };
       });
       document.addEventListener('click', function outsideClick(ev) {
@@ -2385,6 +2426,91 @@ function renderCurrentView() {
     case 'resources':      renderResources(); break;
     case 'dashboard':      renderDashboard(); break;
   }
+}
+
+// ── openValuePicker ──────────────────────────────────────────────────────────
+// Shows a simple floating list of options anchored to anchorEl.
+// options: [{ value, label }] or [string]
+// onSelect(value) is called on pick.
+function openValuePicker(anchorEl, options, onSelect) {
+  document.getElementById('value-picker-popup')?.remove();
+  const popup = document.createElement('div');
+  popup.id = 'value-picker-popup';
+  popup.className = 'prop-vis-panel';
+  popup.innerHTML = options.map(o => {
+    const v = typeof o === 'string' ? o : o.value;
+    const l = typeof o === 'string' ? o : o.label;
+    return `<div class="prop-vis-row value-pick-item" data-val="${String(v).replace(/"/g,'&quot;')}" style="cursor:pointer">${l}</div>`;
+  }).join('');
+  const rect = anchorEl.getBoundingClientRect();
+  popup.style.cssText = `position:fixed;z-index:9100;min-width:160px;top:${rect.bottom+4}px;left:${rect.left}px`;
+  document.body.appendChild(popup);
+  requestAnimationFrame(() => {
+    const cr = popup.getBoundingClientRect();
+    if (cr.right > window.innerWidth - 8) popup.style.left = (window.innerWidth - cr.width - 8) + 'px';
+    if (cr.bottom > window.innerHeight - 8) popup.style.top = (rect.top - cr.height - 4) + 'px';
+  });
+  popup.querySelectorAll('.value-pick-item').forEach(el => {
+    el.onclick = (e) => { e.stopPropagation(); popup.remove(); onSelect(el.dataset.val); };
+  });
+  setTimeout(() => {
+    document.addEventListener('click', function handler(ev) {
+      if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', handler); }
+    });
+  }, 0);
+}
+
+// ── openTagsPicker ────────────────────────────────────────────────────────────
+// Shows a floating multi-select tags panel.
+// selectedIds: number[]; onCommit(ids: number[]) called on Done.
+function openTagsPicker(anchorEl, selectedIds, onCommit) {
+  document.getElementById('tags-picker-popup')?.remove();
+  const popup = document.createElement('div');
+  popup.id = 'tags-picker-popup';
+  popup.className = 'prop-vis-panel';
+  let sel = new Set((selectedIds || []).map(String));
+
+  function renderTagsPicker() {
+    popup.innerHTML =
+      `<div style="padding:4px 10px 6px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">Tags</div>` +
+      (allTags.length
+        ? allTags.map(t =>
+            `<div class="prop-vis-row" data-tag-id="${t.id}" style="cursor:pointer;user-select:none">
+              <span class="multi-chip color-${t.color||'blue'}" style="opacity:${sel.has(String(t.id))?'1':'0.35'}">${t.name}</span>
+            </div>`).join('')
+        : '<div style="padding:4px 10px;font-size:12px;color:var(--text-muted)">No tags</div>') +
+      `<div style="padding:6px 8px;border-top:1px solid var(--border)">
+        <button id="tags-picker-done" class="btn btn-sm btn-primary" style="width:100%">Done</button>
+      </div>`;
+
+    popup.querySelectorAll('[data-tag-id]').forEach(el => {
+      el.onclick = (e) => {
+        e.stopPropagation();
+        const id = String(el.dataset.tagId);
+        if (sel.has(id)) sel.delete(id); else sel.add(id);
+        renderTagsPicker();
+      };
+    });
+    document.getElementById('tags-picker-done').onclick = (e) => {
+      e.stopPropagation();
+      popup.remove();
+      onCommit([...sel].map(Number));
+    };
+  }
+
+  renderTagsPicker();
+  const rect = anchorEl.getBoundingClientRect();
+  popup.style.cssText = `position:fixed;z-index:9100;min-width:200px;max-height:320px;overflow-y:auto;top:${rect.bottom+4}px;left:${rect.left}px`;
+  document.body.appendChild(popup);
+  requestAnimationFrame(() => {
+    const cr = popup.getBoundingClientRect();
+    if (cr.right > window.innerWidth - 8) popup.style.left = (window.innerWidth - cr.width - 8) + 'px';
+  });
+  setTimeout(() => {
+    document.addEventListener('click', function handler(ev) {
+      if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', handler); }
+    });
+  }, 0);
 }
 
 function showContextMenu(entityType, entityId, anchorEl) {
@@ -4529,20 +4655,20 @@ async function renderSprints() {
   function bindSprintEvents() {
     bindCtxHandles();
     document.querySelectorAll('.sprint-detail-link').forEach(el => {
-      el.onclick = (e) => { e.stopPropagation(); renderView('sprint-detail', el.dataset.sprintId); };
+      el.onclick = (e) => { e.stopPropagation(); showSprintSlideover(el.dataset.sprintId, render); };
     });
-    // Whole card click → sprint detail (ignore clicks on buttons)
+    // Whole card click → sprint sideview (ignore clicks on buttons)
     document.querySelectorAll('.card[data-sprint-id]').forEach(card => {
       card.onclick = (e) => {
         if (e.target.closest('button') || e.target.closest('.ctx-handle')) return;
-        renderView('sprint-detail', card.dataset.sprintId);
+        showSprintSlideover(card.dataset.sprintId, render);
       };
     });
-    // Table row click → sprint detail (ignore clicks on buttons)
+    // Table row click → sprint sideview (ignore clicks on buttons)
     document.querySelectorAll('tr.sprint-row[data-sprint-id]').forEach(row => {
       row.onclick = (e) => {
         if (e.target.closest('button') || e.target.closest('.ctx-handle')) return;
-        renderView('sprint-detail', row.dataset.sprintId);
+        showSprintSlideover(row.dataset.sprintId, render);
       };
     });
     document.querySelectorAll('.sprint-status-btn').forEach(el => {
@@ -4575,7 +4701,7 @@ async function renderSprints() {
       el.onclick = (e) => {
         e.stopPropagation();
         const s = sprints.find(x => String(x.id) === el.dataset.sprintId);
-        if (s) showSprintModal(projects, s);
+        if (s) showSprintSlideover(s.id, render);
       };
     });
   }
@@ -6302,8 +6428,9 @@ async function showTaskSlideover(taskId) {
       <div>${resourcesHtml}</div>
     </div>
     ${buildCommentSection('task', taskId)}
-    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border)">
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <button class="btn btn-ghost btn-sm" id="task-export-btn">Export JSON</button>
+      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" id="task-delete-btn">Delete</button>
     </div>
   `;
 
@@ -6994,6 +7121,8 @@ async function showTaskSlideover(taskId) {
 
   document.getElementById('task-export-btn').onclick = () =>
     showJSONModal(`/api/export/task/${taskId}`, `task-${task.title.replace(/\s+/g,'-')}.json`);
+
+  document.getElementById('task-delete-btn').onclick = () => deleteEntity('task', taskId);
 
   // Breadcrumb navigation
   document.querySelectorAll('.bc-goal').forEach(el => {
@@ -8512,205 +8641,452 @@ async function showGoalModal(goal, afterSave) {
 /* ─── Project Slideover (auto-save, expand to detail) ───────────────── */
 async function showProjectSlideover(project, goals, afterSave) {
   if (!project?.id) { showProjectModal(project, goals, afterSave); return; }
-  const v = project;
-  const goalOpts = '<option value="">— none —</option>' + (goals||[]).map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(v.goal_id)?'selected':''}>${g.title}</option>`).join('');
-  const statusOpts = PROJECT_STATUSES.map(s =>
-    `<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
-  const macroOpts = '<option value="">— none —</option>' + MACRO_AREAS.map(m =>
-    `<option value="${m}" ${v.macro_area===m?'selected':''}>${m}</option>`).join('');
-  const kanbanOpts = '<option value="">— none —</option>' + KANBAN_COLS.map(k =>
-    `<option value="${k}" ${v.kanban_col===k?'selected':''}>${k}</option>`).join('');
-  const catOpts = categoryOptions(v.category_id, true);
-  let existingTagIds = [];
-  try { existingTagIds = (await api('GET', `/api/projects/${v.id}/tags`) || []).map(t => t.id); } catch(e) {}
+  const projectId = project.id;
+  openSlideover('Project Detail', '<div class="loading">Loading…</div>');
 
-  const body = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <span style="font-size:11px;color:var(--text-muted)">Auto-saved</span>
-      <button id="proj-sl-expand" title="Open full detail view" style="background:none;border:none;cursor:pointer;padding:4px;color:var(--text-muted);font-size:16px">⤢</button>
-    </div>
-    <div class="form-group"><label class="form-label">Title</label>
-      <input type="text" id="psl-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
-    <div class="form-group"><label class="form-label">Description</label>
-      <textarea id="psl-desc">${v.description||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Goal</label><select id="psl-goal">${goalOpts}</select></div>
-      <div class="form-group"><label class="form-label">Status</label><select id="psl-status">${statusOpts}</select></div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Macro Area</label><select id="psl-macro">${macroOpts}</select></div>
-      <div class="form-group"><label class="form-label">Kanban Column</label><select id="psl-kanban">${kanbanOpts}</select></div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Category</label><select id="psl-category">${catOpts}</select></div>
-      <div class="form-group"><label class="form-label" style="margin-top:20px;display:flex;align-items:center;gap:8px">
-        <input type="checkbox" id="psl-archived" ${v.archived?'checked':''} style="width:auto" /> Archived
-      </label></div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Date</label>
-      <div class="date-mode-toggle">
-        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
-        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
-      </div>
-      <div id="psl-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        ${singleDateChipHtml('psl-due', stripDate(v.due_date))}
-      </div>
-      <div id="psl-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        ${rangeDateChipHtml('psl-start', stripDate(v.start_date), 'psl-due-range', stripDate(v.due_date))}
-      </div>
-    </div>
-    <div class="form-group"><label class="form-label">Tags</label>${tagPickerHtml(existingTagIds)}</div>
-    <div class="form-actions">
-      <button class="btn btn-danger" id="psl-delete-btn">Delete</button>
-    </div>`;
+  let p;
+  try { p = await api('GET', `/api/projects/${projectId}`); } catch(e) { return; }
+  if (!goals || !goals.length) {
+    try { goals = await api('GET', '/api/goals'); } catch(e) { goals = []; }
+  }
 
-  openFormSlideover('Edit Project', body);
-  bindModalDateChips();
-  bindTagPicker();
-  bindDateModeToggle('psl-date-due-wrap', 'psl-date-range-wrap');
+  const tags = p.tags || [];
+  const tasks = (p.tasks || []).filter(t => !t.parent_task_id);
 
-  document.getElementById('proj-sl-expand').onclick = () => {
-    closeFormSlideover();
-    renderView('project-detail', v.id);
-  };
-
-  let saveTimer = null;
-  async function autoSave() {
-    const isRange = document.getElementById('psl-date-range-wrap')?.style.display !== 'none';
-    const data = {
-      title: document.getElementById('psl-title').value.trim(),
-      description: document.getElementById('psl-desc').value,
-      goal_id: document.getElementById('psl-goal').value ? parseInt(document.getElementById('psl-goal').value) : null,
-      status: document.getElementById('psl-status').value,
-      macro_area: document.getElementById('psl-macro').value || null,
-      kanban_col: document.getElementById('psl-kanban').value || null,
-      category_id: document.getElementById('psl-category').value ? parseInt(document.getElementById('psl-category').value) : null,
-      archived: document.getElementById('psl-archived').checked,
-      start_date: isRange ? (document.getElementById('psl-start')?.value || null) : null,
-      due_date: isRange ? (document.getElementById('psl-due-range')?.value || null) : (document.getElementById('psl-due')?.value || null),
-    };
-    if (!data.title) return;
-    await api('PATCH', `/api/projects/${v.id}`, data);
-    const tagIds = getSelectedTagIds();
-    try { await api('PUT', `/api/projects/${v.id}/tags`, { tag_ids: tagIds }); } catch(e) {}
+  async function patchProject(data) {
+    try { await api('PATCH', `/api/projects/${projectId}`, data); } catch(e) { return; }
     if (afterSave) afterSave();
   }
-  function scheduleAutoSave() { clearTimeout(saveTimer); saveTimer = setTimeout(autoSave, 600); }
 
-  ['psl-title','psl-desc','psl-due','psl-start','psl-due-range'].forEach(id =>
-    document.getElementById(id)?.addEventListener('input', scheduleAutoSave));
-  ['psl-goal','psl-status','psl-macro','psl-kanban','psl-category'].forEach(id =>
-    document.getElementById(id)?.addEventListener('change', () => { clearTimeout(saveTimer); autoSave(); }));
-  document.getElementById('psl-archived')?.addEventListener('change', () => { clearTimeout(saveTimer); autoSave(); });
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const catName = allCategories ? (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name : null;
+  const goalName = goals.find(g => String(g.id) === String(p.goal_id))?.title || null;
 
-  document.getElementById('psl-delete-btn').onclick = async () => {
-    if (!confirm('Delete this project?')) return;
-    await api('DELETE', `/api/projects/${v.id}`);
-    closeFormSlideover();
-    renderProjects();
+  const projBuiltinDefs = [
+    { key: 'goal', label: 'Goal', icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
+    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+    { key: 'macro', label: 'Macro Area', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => p.macro_area ? `<span>${p.macro_area.split('(')[0].trim()}</span>` : '' },
+  ];
+  const projInlinePropPanel = buildInlinePropPanel('project', projectId, projBuiltinDefs);
+
+  const goalCrumb = goalName
+    ? `<div class="detail-bc-prefix"><span class="bc-part bc-goal" data-goal-id="${p.goal_id}" style="cursor:pointer">${goalName}</span></div>`
+    : '';
+
+  const taskRows = tasks.map(t =>
+    `<li class="task-row" data-task-id="${t.id}" style="cursor:pointer">
+      <div class="task-check ${t.status==='done'?'done':''}" data-check-id="${t.id}">${t.status==='done'?'✓':''}</div>
+      <div class="task-content"><div class="task-title">${t.title}</div></div>
+      ${statusBadge(t.status)}
+    </li>`
+  ).join('') || '<li style="padding:8px;color:var(--text-muted);font-size:13px">No tasks</li>';
+
+  const body = `
+    <button class="entity-icon-add-btn" id="proj-icon-add-btn">
+      <span id="proj-icon-display"></span>
+      <span id="proj-icon-add-label">Add icon</span>
+    </button>
+    <div class="detail-title-area">
+      ${goalCrumb}
+      <textarea class="detail-title-input" id="detail-title" rows="1">${(p.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+    </div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip" id="chip-status" data-key="status">
+        <span class="chip-label">Status</span>
+        <span class="chip-value">${(p.status||'active').replace('_',' ')}</span>
+      </button>
+      <button class="prop-chip" id="chip-due" data-key="due">
+        <span class="chip-label">Due</span>
+        <span class="chip-value" id="chip-due-val">${fmtDate(p.due_date) || '—'}</span>
+      </button>
+      <button class="prop-chip" id="chip-goal" data-key="goal">
+        <span class="chip-label">Goal</span>
+        <span class="chip-value" id="chip-goal-val">${goalName || '—'}</span>
+      </button>
+      <button class="prop-chip" id="chip-tags" data-key="tags">
+        <span class="chip-label">Tags</span>
+        <span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span>
+      </button>
+      <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
+    </div>
+
+    ${projInlinePropPanel}
+
+    <div class="form-group">
+      <label class="form-label">Description</label>
+      <textarea id="detail-desc" style="width:100%;min-height:80px">${p.description || ''}</textarea>
+    </div>
+
+    <div class="subtask-section">
+      <div class="subtask-section-title">
+        <span>Tasks (${tasks.length})</span>
+        <button class="btn btn-sm btn-ghost" id="proj-open-detail-btn">Open Full View ⤢</button>
+      </div>
+      <ul class="task-list" id="proj-task-list">${taskRows}</ul>
+    </div>
+
+    ${buildCommentSection('project', projectId)}
+
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <button class="btn btn-ghost btn-sm" id="proj-export-btn">Export JSON</button>
+      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" id="proj-delete-btn">Delete</button>
+    </div>
+  `;
+
+  openSlideover(p.title, body);
+
+  // Icon
+  const projIconAddBtn = document.getElementById('proj-icon-add-btn');
+  const projIconDisplay = document.getElementById('proj-icon-display');
+  const projIconAddLabel = document.getElementById('proj-icon-add-label');
+  loadEntityIcon('project', projectId).then(icon => {
+    if (icon) { projIconDisplay.innerHTML = renderEntityIcon(icon, 32); projIconDisplay.dataset.icon = icon; projIconAddLabel.textContent = ''; }
+  });
+  projIconAddBtn.onclick = (e) => {
+    e.stopPropagation();
+    const cur = projIconDisplay.dataset.icon || '';
+    showIconPicker(projIconAddBtn, 'project', projectId, cur, (newIcon) => {
+      projIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
+      projIconDisplay.dataset.icon = newIcon || '';
+      projIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      saveEntityIcon('project', projectId, newIcon);
+    });
   };
+
+  // Title
+  const titleTA = document.getElementById('detail-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  titleTA.onblur = (e) => { if (e.target.value.trim()) patchProject({ title: e.target.value.trim() }); };
+
+  document.getElementById('detail-desc').onblur = (e) => patchProject({ description: e.target.value });
+
+  // Breadcrumb goal nav
+  document.querySelector('.bc-goal')?.addEventListener('click', () => { closeSlideover(); renderView('goal-detail', p.goal_id); });
+
+  // Prop chips
+  document.getElementById('chip-status').onclick = (e) => {
+    e.stopPropagation();
+    openValuePicker(e.currentTarget, PROJECT_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => {
+      document.getElementById('chip-status').querySelector('.chip-value').textContent = val.replace('_',' ');
+      await patchProject({ status: val });
+    });
+  };
+  document.getElementById('chip-due').onclick = (e) => {
+    e.stopPropagation();
+    openDateRangePickerGlobal(e.currentTarget, stripDate(p.start_date), stripDate(p.due_date), async (start, end) => {
+      await patchProject({ start_date: start || null, due_date: end || null });
+      const v = document.getElementById('chip-due-val');
+      if (v) v.textContent = end ? fmtDate(end) : (start ? fmtDate(start) : '—');
+    });
+  };
+  document.getElementById('chip-goal').onclick = (e) => {
+    e.stopPropagation();
+    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...(goals||[]).map(g => ({ value: g.id, label: g.title }))], async (val) => {
+      document.getElementById('chip-goal-val').textContent = val ? (goals||[]).find(g => String(g.id) === String(val))?.title || val : '—';
+      await patchProject({ goal_id: val ? parseInt(val) : null });
+    });
+  };
+  document.getElementById('chip-tags').onclick = (e) => {
+    e.stopPropagation();
+    openTagsPicker(e.currentTarget, tags.map(t => t.id), async (ids) => {
+      await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: ids });
+      const sel = allTags.filter(t => ids.includes(t.id));
+      const v = document.getElementById('chip-tags-val');
+      if (v) v.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      if (afterSave) afterSave();
+    });
+  };
+
+  // ··· More
+  document.getElementById('prop-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    const pIco2 = (path) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${path}</svg>`;
+    openFormSlideover('Project Properties', `<div class="prop-panel">
+      <div class="prop-panel-row"><div class="prop-panel-label">${pIco2('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>')} Category</div>
+        <div class="prop-panel-value" id="pp-category" style="cursor:pointer">${catName || '—'}</div></div>
+      <div class="prop-panel-row"><div class="prop-panel-label">Macro Area</div>
+        <div class="prop-panel-value" id="pp-macro" style="cursor:pointer">${p.macro_area ? p.macro_area.split('(')[0].trim() : '—'}</div></div>
+      <div class="prop-panel-row"><div class="prop-panel-label">Kanban Col</div>
+        <div class="prop-panel-value" id="pp-kanban" style="cursor:pointer">${p.kanban_col || '—'}</div></div>
+      <div class="prop-panel-row"><div class="prop-panel-label">Archived</div>
+        <div class="prop-panel-value">
+          <label class="toggle-switch toggle-switch-sm"><input type="checkbox" id="pp-archived" ${p.archived?'checked':''}/><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
+        </div></div>
+    </div>`);
+    document.getElementById('pp-category').onclick = (ev) => {
+      openValuePicker(ev.currentTarget, [{ value: '', label: '— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => {
+        await patchProject({ category_id: val ? parseInt(val) : null });
+        document.getElementById('pp-category').textContent = val ? (allCategories||[]).find(c => String(c.id) === String(val))?.name || '—' : '—';
+      });
+    };
+    document.getElementById('pp-macro').onclick = (ev) => {
+      openValuePicker(ev.currentTarget, [{ value: '', label: '— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => {
+        await patchProject({ macro_area: val || null });
+        document.getElementById('pp-macro').textContent = val ? val.split('(')[0].trim() : '—';
+      });
+    };
+    document.getElementById('pp-kanban').onclick = (ev) => {
+      openValuePicker(ev.currentTarget, [{ value: '', label: '— none —' }, ...KANBAN_COLS.map(k => ({ value: k, label: k }))], async (val) => {
+        await patchProject({ kanban_col: val || null });
+        document.getElementById('pp-kanban').textContent = val || '—';
+      });
+    };
+    document.getElementById('pp-archived').onchange = async (ev) => {
+      await patchProject({ archived: ev.target.checked });
+    };
+  };
+
+  // Inline prop panel
+  bindInlinePropPanel('project', projectId, {
+    goal: (valEl) => {
+      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...(goals||[]).map(g => ({ value: g.id, label: g.title }))], async (val) => {
+        await patchProject({ goal_id: val ? parseInt(val) : null });
+        showProjectSlideover({ id: projectId }, goals, afterSave);
+      });
+    },
+    category: (valEl) => {
+      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => {
+        await patchProject({ category_id: val ? parseInt(val) : null });
+        showProjectSlideover({ id: projectId }, goals, afterSave);
+      });
+    },
+    macro: (valEl) => {
+      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => {
+        await patchProject({ macro_area: val || null });
+        showProjectSlideover({ id: projectId }, goals, afterSave);
+      });
+    },
+  }, () => showProjectSlideover({ id: projectId }, goals, afterSave));
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
+
+  // Task rows click → task sideview
+  document.querySelectorAll('#proj-task-list [data-task-id]').forEach(el => {
+    el.onclick = () => showTaskSlideover(el.dataset.taskId);
+  });
+
+  document.getElementById('proj-open-detail-btn').onclick = () => { closeSlideover(); renderView('project-detail', projectId); };
+  document.getElementById('proj-export-btn').onclick = () => showJSONModal(`/api/export/project/${projectId}`, `project-${projectId}.json`);
+  document.getElementById('proj-delete-btn').onclick = () => deleteEntity('project', projectId);
 }
 
 /* ─── Goal Slideover (auto-save, expand to detail) ──────────────────── */
 async function showGoalSlideover(goal, afterSave) {
   if (!goal?.id) { showGoalModal(goal, afterSave); return; }
-  const v = goal;
-  const typeOpts = GOAL_TYPES.map(t => `<option value="${t}" ${v.type===t?'selected':''}>${t}</option>`).join('');
-  const yearOpts = GOAL_YEARS.map(y => `<option value="${y}" ${v.year===y?'selected':''}>${y}</option>`).join('');
-  const statusOpts = GOAL_STATUSES.map(s =>
-    `<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
-  const catOpts = categoryOptions(v.category_id, true);
-  let existingTagIds = [];
-  try { existingTagIds = (await api('GET', `/api/goals/${v.id}/tags`) || []).map(t => t.id); } catch(e) {}
+  const goalId = goal.id;
+  openSlideover('Goal Detail', '<div class="loading">Loading…</div>');
 
-  const body = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <span style="font-size:11px;color:var(--text-muted)">Auto-saved</span>
-      <button id="goal-sl-expand" title="Open full detail view" style="background:none;border:none;cursor:pointer;padding:4px;color:var(--text-muted);font-size:16px">⤢</button>
-    </div>
-    <div class="form-group"><label class="form-label">Title</label>
-      <input type="text" id="gsl-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
-    <div class="form-group"><label class="form-label">Description</label>
-      <textarea id="gsl-desc">${v.description||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Type</label><select id="gsl-type">${typeOpts}</select></div>
-      <div class="form-group"><label class="form-label">Year</label><select id="gsl-year">${yearOpts}</select></div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Status</label><select id="gsl-status">${statusOpts}</select></div>
-      <div class="form-group"><label class="form-label">Category</label><select id="gsl-category">${catOpts}</select></div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Date</label>
-      <div class="date-mode-toggle">
-        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
-        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
-      </div>
-      <div id="gsl-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        ${singleDateChipHtml('gsl-due', stripDate(v.due_date))}
-      </div>
-      <div id="gsl-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        ${rangeDateChipHtml('gsl-start', stripDate(v.start_date), 'gsl-due-range', stripDate(v.due_date))}
-      </div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Start Value</label><input type="number" id="gsl-sv" value="${v.start_value||''}" /></div>
-      <div class="form-group"><label class="form-label">Current Value</label><input type="number" id="gsl-cv" value="${v.current_value||''}" /></div>
-    </div>
-    <div class="form-group"><label class="form-label">Target Value</label>
-      <input type="number" id="gsl-target" value="${v.target||''}" /></div>
-    <div class="form-group"><label class="form-label">Tags</label>${tagPickerHtml(existingTagIds)}</div>
-    <div class="form-actions">
-      <button class="btn btn-danger" id="gsl-delete-btn">Delete</button>
-    </div>`;
+  let g;
+  try { g = await api('GET', `/api/goals/${goalId}`); } catch(e) { return; }
 
-  openFormSlideover('Edit Goal', body);
-  bindModalDateChips();
-  bindTagPicker();
-  bindDateModeToggle('gsl-date-due-wrap', 'gsl-date-range-wrap');
+  const tags = g.tags || [];
+  const projects = g.projects || [];
 
-  document.getElementById('goal-sl-expand').onclick = () => {
-    closeFormSlideover();
-    renderView('goal-detail', v.id);
-  };
-
-  let saveTimer = null;
-  async function autoSave() {
-    const isRange = document.getElementById('gsl-date-range-wrap')?.style.display !== 'none';
-    const data = {
-      title: document.getElementById('gsl-title').value.trim(),
-      description: document.getElementById('gsl-desc').value,
-      type: document.getElementById('gsl-type').value,
-      year: document.getElementById('gsl-year').value,
-      status: document.getElementById('gsl-status').value,
-      category_id: document.getElementById('gsl-category').value ? parseInt(document.getElementById('gsl-category').value) : null,
-      start_date: isRange ? (document.getElementById('gsl-start')?.value || null) : null,
-      due_date: isRange ? (document.getElementById('gsl-due-range')?.value || null) : (document.getElementById('gsl-due')?.value || null),
-      start_value: parseFloat(document.getElementById('gsl-sv').value) || 0,
-      current_value: parseFloat(document.getElementById('gsl-cv').value) || 0,
-      target: parseFloat(document.getElementById('gsl-target').value) || 0,
-    };
-    if (!data.title) return;
-    await api('PATCH', `/api/goals/${v.id}`, data);
-    const tagIds = getSelectedTagIds();
-    try { await api('PUT', `/api/goals/${v.id}/tags`, { tag_ids: tagIds }); } catch(e) {}
+  async function patchGoal(data) {
+    try { await api('PATCH', `/api/goals/${goalId}`, data); } catch(e) { return; }
     if (afterSave) afterSave();
   }
-  function scheduleAutoSave() { clearTimeout(saveTimer); saveTimer = setTimeout(autoSave, 600); }
 
-  ['gsl-title','gsl-desc','gsl-due','gsl-start','gsl-due-range','gsl-sv','gsl-cv','gsl-target'].forEach(id =>
-    document.getElementById(id)?.addEventListener('input', scheduleAutoSave));
-  ['gsl-type','gsl-year','gsl-status','gsl-category'].forEach(id =>
-    document.getElementById(id)?.addEventListener('change', () => { clearTimeout(saveTimer); autoSave(); }));
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const catName = allCategories ? (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name : null;
 
-  document.getElementById('gsl-delete-btn').onclick = async () => {
-    if (!confirm('Delete this goal?')) return;
-    await api('DELETE', `/api/goals/${v.id}`);
-    closeFormSlideover();
-    renderGoals();
+  const goalBuiltinDefs = [
+    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+    { key: 'due', label: 'Due Date', icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+      renderValue: () => g.due_date ? `<span>${fmtDate(g.due_date)}</span>` : '' },
+  ];
+  const goalInlinePropPanel = buildInlinePropPanel('goal', goalId, goalBuiltinDefs);
+
+  const projRows = projects.map(p =>
+    `<div class="note-card" data-proj-id="${p.id}" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin-bottom:6px;padding:8px 10px">
+      <span>${p.title}</span>
+      <span>${statusBadge(p.status)}</span>
+    </div>`
+  ).join('') || '<div style="color:var(--text-muted);font-size:13px">No linked projects</div>';
+
+  const body = `
+    <button class="entity-icon-add-btn" id="goal-icon-add-btn">
+      <span id="goal-icon-display"></span>
+      <span id="goal-icon-add-label">Add icon</span>
+    </button>
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="detail-title" rows="1">${(g.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+    </div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip" id="chip-status" data-key="status">
+        <span class="chip-label">Status</span>
+        <span class="chip-value">${(g.status||'active').replace('_',' ')}</span>
+      </button>
+      <button class="prop-chip" id="chip-type" data-key="type">
+        <span class="chip-label">Type</span>
+        <span class="chip-value" id="chip-type-val">${g.type || '—'}</span>
+      </button>
+      <button class="prop-chip" id="chip-year" data-key="year">
+        <span class="chip-label">Year</span>
+        <span class="chip-value" id="chip-year-val">${g.year || '—'}</span>
+      </button>
+      <button class="prop-chip" id="chip-tags" data-key="tags">
+        <span class="chip-label">Tags</span>
+        <span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span>
+      </button>
+      <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
+    </div>
+
+    ${goalInlinePropPanel}
+
+    <div class="form-group">
+      <label class="form-label">Description</label>
+      <textarea id="detail-desc" style="width:100%;min-height:80px">${g.description || ''}</textarea>
+    </div>
+
+    <div class="subtask-section">
+      <div class="subtask-section-title">
+        <span>Projects (${projects.length})</span>
+        <button class="btn btn-sm btn-ghost" id="goal-open-detail-btn">Open Full View ⤢</button>
+      </div>
+      <div id="goal-proj-list">${projRows}</div>
+    </div>
+
+    ${buildCommentSection('goal', goalId)}
+
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <button class="btn btn-ghost btn-sm" id="goal-export-btn">Export JSON</button>
+      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" id="goal-delete-btn">Delete</button>
+    </div>
+  `;
+
+  openSlideover(g.title, body);
+
+  // Icon
+  const goalIconAddBtn = document.getElementById('goal-icon-add-btn');
+  const goalIconDisplay = document.getElementById('goal-icon-display');
+  const goalIconAddLabel = document.getElementById('goal-icon-add-label');
+  loadEntityIcon('goal', goalId).then(icon => {
+    if (icon) { goalIconDisplay.innerHTML = renderEntityIcon(icon, 32); goalIconDisplay.dataset.icon = icon; goalIconAddLabel.textContent = ''; }
+  });
+  goalIconAddBtn.onclick = (e) => {
+    e.stopPropagation();
+    const cur = goalIconDisplay.dataset.icon || '';
+    showIconPicker(goalIconAddBtn, 'goal', goalId, cur, (newIcon) => {
+      goalIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
+      goalIconDisplay.dataset.icon = newIcon || '';
+      goalIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      saveEntityIcon('goal', goalId, newIcon);
+    });
   };
+
+  // Title
+  const titleTA = document.getElementById('detail-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  titleTA.onblur = (e) => { if (e.target.value.trim()) patchGoal({ title: e.target.value.trim() }); };
+
+  // Description
+  document.getElementById('detail-desc').onblur = (e) => patchGoal({ description: e.target.value });
+
+  // Prop chips
+  document.getElementById('chip-status').onclick = (e) => {
+    e.stopPropagation();
+    openValuePicker(e.currentTarget, GOAL_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => {
+      document.getElementById('chip-status').querySelector('.chip-value').textContent = val.replace('_',' ');
+      await patchGoal({ status: val });
+    });
+  };
+  document.getElementById('chip-type').onclick = (e) => {
+    e.stopPropagation();
+    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...GOAL_TYPES.map(t => ({ value: t, label: t }))], async (val) => {
+      document.getElementById('chip-type-val').textContent = val || '—';
+      await patchGoal({ type: val || null });
+    });
+  };
+  document.getElementById('chip-year').onclick = (e) => {
+    e.stopPropagation();
+    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...GOAL_YEARS.map(y => ({ value: y, label: y }))], async (val) => {
+      document.getElementById('chip-year-val').textContent = val || '—';
+      await patchGoal({ year: val || null });
+    });
+  };
+  document.getElementById('chip-tags').onclick = (e) => {
+    e.stopPropagation();
+    openTagsPicker(e.currentTarget, tags.map(t => t.id), async (ids) => {
+      await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: ids });
+      const sel = allTags.filter(t => ids.includes(t.id));
+      const v = document.getElementById('chip-tags-val');
+      if (v) v.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      if (afterSave) afterSave();
+    });
+  };
+
+  // ··· More properties
+  document.getElementById('prop-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    const pIco2 = (path) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${path}</svg>`;
+    openFormSlideover('Goal Properties', `<div class="prop-panel">
+      <div class="prop-panel-row"><div class="prop-panel-label">${pIco2('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>')} Category</div>
+        <div class="prop-panel-value" id="pp-category" style="cursor:pointer">${catName || '—'}</div></div>
+      <div class="prop-panel-row"><div class="prop-panel-label">Due Date</div>
+        <div class="prop-panel-value" id="pp-due" style="cursor:pointer">${fmtDate(g.due_date) || '—'}</div></div>
+      <div class="prop-panel-row"><div class="prop-panel-label">Start Value</div>
+        <div class="prop-panel-value"><input type="number" id="pp-sv" value="${g.start_value != null ? g.start_value : ''}" style="width:80px;font-size:13px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg-card);color:var(--text-primary)"/></div></div>
+      <div class="prop-panel-row"><div class="prop-panel-label">Current Value</div>
+        <div class="prop-panel-value"><input type="number" id="pp-cv" value="${g.current_value != null ? g.current_value : ''}" style="width:80px;font-size:13px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg-card);color:var(--text-primary)"/></div></div>
+      <div class="prop-panel-row"><div class="prop-panel-label">Target Value</div>
+        <div class="prop-panel-value"><input type="number" id="pp-target" value="${g.target != null ? g.target : ''}" style="width:80px;font-size:13px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg-card);color:var(--text-primary)"/></div></div>
+    </div>`);
+    document.getElementById('pp-category').onclick = (ev) => {
+      openValuePicker(ev.currentTarget, [{ value: '', label: '— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => {
+        await patchGoal({ category_id: val ? parseInt(val) : null });
+        document.getElementById('pp-category').textContent = val ? (allCategories||[]).find(c => String(c.id) === String(val))?.name || '—' : '—';
+      });
+    };
+    document.getElementById('pp-due').onclick = (ev) => {
+      openSingleDatePickerGlobal(ev.currentTarget, stripDate(g.due_date), async (val) => {
+        await patchGoal({ due_date: val || null });
+        document.getElementById('pp-due').textContent = val ? fmtDate(val) : '—';
+      });
+    };
+    const saveMetrics = async () => {
+      const sv = parseFloat(document.getElementById('pp-sv')?.value);
+      const cv = parseFloat(document.getElementById('pp-cv')?.value);
+      const tgt = parseFloat(document.getElementById('pp-target')?.value);
+      await patchGoal({ start_value: isNaN(sv) ? null : sv, current_value: isNaN(cv) ? null : cv, target: isNaN(tgt) ? null : tgt });
+    };
+    ['pp-sv','pp-cv','pp-target'].forEach(id => { document.getElementById(id)?.addEventListener('blur', saveMetrics); });
+  };
+
+  // Inline prop panel
+  bindInlinePropPanel('goal', goalId, {
+    category: (valEl) => {
+      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => {
+        await patchGoal({ category_id: val ? parseInt(val) : null });
+        showGoalSlideover({ id: goalId }, afterSave);
+      });
+    },
+    due: (valEl) => {
+      openSingleDatePickerGlobal(valEl, stripDate(g.due_date), async (val) => {
+        await patchGoal({ due_date: val || null });
+        showGoalSlideover({ id: goalId }, afterSave);
+      });
+    },
+  }, () => showGoalSlideover({ id: goalId }, afterSave));
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="goal"]'));
+
+  // Project cards nav
+  document.querySelectorAll('#goal-proj-list [data-proj-id]').forEach(el => {
+    el.onclick = () => { closeSlideover(); renderView('project-detail', el.dataset.projId); };
+  });
+
+  document.getElementById('goal-open-detail-btn').onclick = () => { closeSlideover(); renderView('goal-detail', goalId); };
+  document.getElementById('goal-export-btn').onclick = () => showJSONModal(`/api/export/goal/${goalId}`, `goal-${goalId}.json`);
+  document.getElementById('goal-delete-btn').onclick = () => deleteEntity('goal', goalId);
 }
 
 /* ─── Project Modal ──────────────────────────────────────────────────── */
@@ -8815,6 +9191,9 @@ async function showProjectModal(project, goals, afterSave) {
 /* ─── Note Modal ─────────────────────────────────────────────────────── */
 async function showNoteModal(note, afterSave) {
   const v = note || {};
+  // Existing notes open the detail sideview; new notes use the form
+  if (v.id) { showNoteSlideover(v.id, afterSave); return; }
+
   let projects = [], tasks = [], goals = [];
   try { [projects, tasks, goals] = await Promise.all([
     api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
@@ -8827,22 +9206,12 @@ async function showNoteModal(note, afterSave) {
     `<option value="${p.id}" ${String(p.id)===String(v.project_id)?'selected':''}>${p.title}</option>`).join('');
   const taskOpts = '<option value="">— none —</option>' + tasks.map(t =>
     `<option value="${t.id}" ${String(t.id)===String(v.task_id)?'selected':''}>${t.title}</option>`).join('');
-  const selectedTagIds = (v.tags || []).map(t => t.id);
 
-  const isNew = !v.id;
   const body = `
-    ${!isNew ? `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <span style="font-size:11px;color:var(--text-muted)" id="note-save-indicator">Auto-saved</span>
-      <button class="btn btn-ghost btn-sm" id="note-json-inline-btn">Show JSON</button>
-    </div>` : ''}
-    <div class="form-group"><label class="form-label">Title</label>
-      <div style="display:flex;align-items:center;gap:8px">
-        <button type="button" class="entity-icon-btn" id="note-icon-btn" title="Set icon"><span id="note-icon-display">☐</span></button>
-        <input type="text" id="n-title" value="${(v.title||'').replace(/"/g,'&quot;')}" style="flex:1" />
-      </div>
-    </div>
+    <div class="form-group"><label class="form-label">Title *</label>
+      <input type="text" id="n-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
     <div class="form-group"><label class="form-label">Body</label>
-      <textarea id="n-body" style="min-height:160px">${v.body||''}</textarea></div>
+      <textarea id="n-body" style="min-height:120px">${v.body||''}</textarea></div>
     <div class="grid-2">
       <div class="form-group"><label class="form-label">Category</label><select id="n-category">${catOpts}</select></div>
       <div class="form-group"><label class="form-label">Note Date</label>${singleDateChipHtml('n-date', v.note_date||'')}</div>
@@ -8852,58 +9221,15 @@ async function showNoteModal(note, afterSave) {
       <div class="form-group"><label class="form-label">Project</label><select id="n-project">${projOpts}</select></div>
     </div>
     <div class="form-group"><label class="form-label">Task</label><select id="n-task">${taskOpts}</select></div>
-    <div class="form-group"><label class="form-label">Tags</label>
-      <div class="tag-picker" id="note-tag-picker">${tagPickerHtml(selectedTagIds)}</div>
-    </div>
-    ${v.id ? `<div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
-      <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Custom Properties</div>
-      ${buildInlinePropPanel('note', v.id, [])}
-    </div>` : ''}
-    ${v.id ? buildCommentSection('note', v.id) : ''}
     <div class="form-actions">
-      ${v.id ? `<button class="btn btn-danger" id="modal-delete-btn">Delete</button>` : ''}
-      ${isNew ? `<button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">Save</button>` : ''}
+      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
+      <button class="btn btn-primary" id="modal-save-btn">Save</button>
     </div>`;
 
-  openFormSlideover(v.id ? 'Edit Note' : 'New Note', body);
+  openFormSlideover('New Note', body);
   bindModalDateChips();
-  const cancelBtn = document.getElementById('modal-cancel-btn');
-  if (cancelBtn) cancelBtn.onclick = closeFormSlideover;
-
-  // ── Note icon picker ──────────────────────────────────────────────────
-  const noteIconBtn = document.getElementById('note-icon-btn');
-  const noteIconDisplay = document.getElementById('note-icon-display');
-  if (v.id) {
-    loadEntityIcon('note', v.id).then(icon => {
-      if (noteIconDisplay) { noteIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 20) : '☐'; noteIconDisplay.dataset.icon = icon || ''; }
-    });
-  }
-  if (noteIconBtn) {
-    noteIconBtn.onclick = (e) => {
-      e.stopPropagation();
-      const cur = noteIconDisplay ? noteIconDisplay.dataset.icon || '' : '';
-      showIconPicker(noteIconBtn, 'note', v.id || null, cur, (newIcon) => {
-        if (noteIconDisplay) { noteIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 20) : '☐'; noteIconDisplay.dataset.icon = newIcon; }
-        if (v.id) {
-          saveEntityIcon('note', v.id, newIcon).catch(() => {
-            if (noteIconDisplay) { noteIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 20) : '☐'; noteIconDisplay.dataset.icon = cur; }
-          });
-        }
-      });
-    };
-  }
-
-  // Bind inline custom props panel (for existing notes only)
-  if (v.id) bindInlinePropPanel('note', v.id, {}, () => showNoteModal(note, afterSave));
-  if (v.id) bindCommentSection(document.querySelector('.comment-section[data-entity-type="note"]'));
-
-  // Tag picker toggle
-  document.querySelectorAll('#note-tag-picker .tag-chip').forEach(chip => {
-    chip.onclick = () => chip.classList.toggle('selected');
-  });
-
-  async function saveNote(isCreate) {
+  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
+  document.getElementById('modal-save-btn').onclick = async () => {
     const data = {
       title: document.getElementById('n-title').value.trim(),
       body: document.getElementById('n-body').value,
@@ -8912,52 +9238,380 @@ async function showNoteModal(note, afterSave) {
       goal_id: document.getElementById('n-goal').value ? parseInt(document.getElementById('n-goal').value) : null,
       project_id: document.getElementById('n-project').value ? parseInt(document.getElementById('n-project').value) : null,
       task_id: document.getElementById('n-task').value ? parseInt(document.getElementById('n-task').value) : null,
+      ...(v.task_id && { task_id: parseInt(v.task_id) }),
+      ...(v.project_id && { project_id: parseInt(v.project_id) }),
+      ...(v.goal_id && { goal_id: parseInt(v.goal_id) }),
     };
-    if (!data.title) { if (isCreate) alert('Title is required'); return; }
-    const indicator = document.getElementById('note-save-indicator');
-    if (indicator) indicator.textContent = 'Saving…';
+    if (!data.title) { alert('Title is required'); return; }
     try {
-      let savedId = v.id;
-      if (v.id) {
-        await api('PATCH', `/api/notes/${v.id}`, data);
-      } else {
-        const created = await api('POST', '/api/notes', data);
-        if (created) savedId = created.id;
-      }
-      const pickedIds = [...document.querySelectorAll('#note-tag-picker .tag-chip.selected')].map(c => parseInt(c.dataset.tagId));
-      if (savedId) {
-        try { await api('PUT', `/api/notes/${savedId}/tags`, { tag_ids: pickedIds }); } catch(e) {}
-      }
-      if (indicator) indicator.textContent = 'Saved';
-      if (isCreate) { closeFormSlideover(); if (afterSave) afterSave(); else renderNotes(); }
-      else if (afterSave) afterSave();
-    } catch(err) {
-      if (indicator) indicator.textContent = 'Save failed';
-      if (isCreate) alert('Error saving note: ' + (err.message || String(err)));
-    }
-  }
-
-  if (isNew) {
-    document.getElementById('modal-save-btn').onclick = () => saveNote(true);
-  } else {
-    let saveTimer = null;
-    function scheduleAutoSave() { clearTimeout(saveTimer); saveTimer = setTimeout(() => saveNote(false), 600); }
-    ['n-title','n-body','n-date'].forEach(id => document.getElementById(id)?.addEventListener('input', scheduleAutoSave));
-    ['n-category','n-goal','n-project','n-task'].forEach(id => document.getElementById(id)?.addEventListener('change', () => { clearTimeout(saveTimer); saveNote(false); }));
-    document.querySelectorAll('#note-tag-picker .tag-chip').forEach(chip => {
-      chip.addEventListener('click', () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => saveNote(false), 300); });
-    });
-    document.getElementById('note-json-inline-btn')?.addEventListener('click', () =>
-      showJSONModal(`/api/export/note/${v.id}`, `note-${v.title||v.id}.json`));
-  }
-  if (v.id) {
-    document.getElementById('modal-delete-btn').onclick = async () => {
-      if (!confirm('Delete this note?')) return;
-      await api('DELETE', `/api/notes/${v.id}`);
+      await api('POST', '/api/notes', data);
       closeFormSlideover();
       if (afterSave) afterSave(); else renderNotes();
-    };
+    } catch(err) { alert('Error saving note: ' + (err.message || String(err))); }
+  };
+}
+
+/* ─── Note Sideview (task-sideview style for existing notes) ─────────── */
+async function showNoteSlideover(noteId, afterSave) {
+  openSlideover('Note Detail', '<div class="loading">Loading…</div>');
+
+  let n, projects = [], goals = [];
+  try {
+    [n, projects, goals] = await Promise.all([
+      api('GET', `/api/notes/${noteId}`),
+      api('GET', '/api/projects'),
+      api('GET', '/api/goals'),
+    ]);
+  } catch(e) { return; }
+
+  const tags = n.tags || [];
+
+  async function patchNote(data) {
+    try { await api('PATCH', `/api/notes/${noteId}`, data); } catch(e) { return; }
+    if (afterSave) afterSave();
   }
+
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const catName = allCategories ? (allCategories.find(c => String(c.id) === String(n.category_id)) || {}).name : null;
+  const projName = projects.find(p => String(p.id) === String(n.project_id))?.title || null;
+  const goalName = goals.find(g => String(g.id) === String(n.goal_id))?.title || null;
+
+  const noteBuiltinDefs = [
+    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+    { key: 'project', label: 'Project', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+      renderValue: () => projName ? `<span>${projName}</span>` : '' },
+    { key: 'goal', label: 'Goal', icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
+  ];
+  const noteInlinePropPanel = buildInlinePropPanel('note', noteId, noteBuiltinDefs);
+
+  const body = `
+    <button class="entity-icon-add-btn" id="note-icon-add-btn">
+      <span id="note-icon-display"></span>
+      <span id="note-icon-add-label">Add icon</span>
+    </button>
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="detail-title" rows="1">${(n.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+    </div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip" id="chip-date" data-key="date">
+        <span class="chip-label">Date</span>
+        <span class="chip-value" id="chip-date-val">${fmtDate(n.note_date) || '—'}</span>
+      </button>
+      <button class="prop-chip" id="chip-project" data-key="project">
+        <span class="chip-label">Project</span>
+        <span class="chip-value" id="chip-project-val">${projName || '—'}</span>
+      </button>
+      <button class="prop-chip" id="chip-goal" data-key="goal">
+        <span class="chip-label">Goal</span>
+        <span class="chip-value" id="chip-goal-val">${goalName || '—'}</span>
+      </button>
+      <button class="prop-chip" id="chip-tags" data-key="tags">
+        <span class="chip-label">Tags</span>
+        <span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span>
+      </button>
+    </div>
+
+    ${noteInlinePropPanel}
+
+    <div class="form-group" style="margin-top:16px">
+      <label class="form-label">Content</label>
+      <textarea id="detail-body" style="width:100%;min-height:200px">${n.body || ''}</textarea>
+    </div>
+
+    ${buildCommentSection('note', noteId)}
+
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <button class="btn btn-ghost btn-sm" id="note-export-btn">Export JSON</button>
+      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" id="note-delete-btn">Delete</button>
+    </div>
+  `;
+
+  openSlideover(n.title || 'Note', body);
+
+  // Icon
+  const noteIconAddBtn = document.getElementById('note-icon-add-btn');
+  const noteIconDisplay = document.getElementById('note-icon-display');
+  const noteIconAddLabel = document.getElementById('note-icon-add-label');
+  loadEntityIcon('note', noteId).then(icon => {
+    if (icon) { noteIconDisplay.innerHTML = renderEntityIcon(icon, 32); noteIconDisplay.dataset.icon = icon; noteIconAddLabel.textContent = ''; }
+  });
+  noteIconAddBtn.onclick = (e) => {
+    e.stopPropagation();
+    const cur = noteIconDisplay.dataset.icon || '';
+    showIconPicker(noteIconAddBtn, 'note', noteId, cur, (newIcon) => {
+      noteIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
+      noteIconDisplay.dataset.icon = newIcon || '';
+      noteIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      saveEntityIcon('note', noteId, newIcon);
+    });
+  };
+
+  // Title
+  const titleTA = document.getElementById('detail-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  titleTA.onblur = (e) => { if (e.target.value.trim()) patchNote({ title: e.target.value.trim() }); };
+
+  // Body
+  let bodyTimer = null;
+  document.getElementById('detail-body').addEventListener('input', () => {
+    clearTimeout(bodyTimer);
+    bodyTimer = setTimeout(() => patchNote({ body: document.getElementById('detail-body').value }), 800);
+  });
+
+  // Prop chips
+  document.getElementById('chip-date').onclick = (e) => {
+    e.stopPropagation();
+    openSingleDatePickerGlobal(e.currentTarget, stripDate(n.note_date), async (val) => {
+      document.getElementById('chip-date-val').textContent = val ? fmtDate(val) : '—';
+      await patchNote({ note_date: val || null });
+    });
+  };
+  document.getElementById('chip-project').onclick = (e) => {
+    e.stopPropagation();
+    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
+      document.getElementById('chip-project-val').textContent = val ? projects.find(p => String(p.id) === String(val))?.title || '—' : '—';
+      await patchNote({ project_id: val ? parseInt(val) : null });
+    });
+  };
+  document.getElementById('chip-goal').onclick = (e) => {
+    e.stopPropagation();
+    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => {
+      document.getElementById('chip-goal-val').textContent = val ? goals.find(g => String(g.id) === String(val))?.title || '—' : '—';
+      await patchNote({ goal_id: val ? parseInt(val) : null });
+    });
+  };
+  document.getElementById('chip-tags').onclick = (e) => {
+    e.stopPropagation();
+    openTagsPicker(e.currentTarget, tags.map(t => t.id), async (ids) => {
+      await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: ids });
+      const sel = allTags.filter(t => ids.includes(t.id));
+      const v = document.getElementById('chip-tags-val');
+      if (v) v.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      if (afterSave) afterSave();
+    });
+  };
+
+  // Inline prop panel
+  bindInlinePropPanel('note', noteId, {
+    category: (valEl) => {
+      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => {
+        await patchNote({ category_id: val ? parseInt(val) : null });
+        showNoteSlideover(noteId, afterSave);
+      });
+    },
+    project: (valEl) => {
+      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
+        await patchNote({ project_id: val ? parseInt(val) : null });
+        showNoteSlideover(noteId, afterSave);
+      });
+    },
+    goal: (valEl) => {
+      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => {
+        await patchNote({ goal_id: val ? parseInt(val) : null });
+        showNoteSlideover(noteId, afterSave);
+      });
+    },
+  }, () => showNoteSlideover(noteId, afterSave));
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="note"]'));
+
+  document.getElementById('note-export-btn').onclick = () => showJSONModal(`/api/export/note/${noteId}`, `note-${noteId}.json`);
+  document.getElementById('note-delete-btn').onclick = () => deleteEntity('note', noteId);
+}
+
+/* ─── Sprint Slideover (task-sideview style) ─────────────────────────── */
+async function showSprintSlideover(sprintId, afterSave) {
+  openSlideover('Sprint Detail', '<div class="loading">Loading…</div>');
+
+  let s, allProjects = [];
+  try {
+    [s, allProjects] = await Promise.all([
+      api('GET', `/api/sprints/${sprintId}`),
+      api('GET', '/api/projects'),
+    ]);
+  } catch(e) { return; }
+
+  const tasks = (s.tasks || []).filter(t => !t.parent_task_id);
+  const projName = allProjects.find(p => String(p.id) === String(s.project_id))?.title || null;
+
+  async function patchSprint(data) {
+    try { await api('PATCH', `/api/sprints/${sprintId}`, data); } catch(e) { return; }
+    if (afterSave) afterSave();
+  }
+
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+
+  const sprintBuiltinDefs = [
+    { key: 'project', label: 'Project', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+      renderValue: () => projName ? `<span>${projName}</span>` : '' },
+    { key: 'points', label: 'Capacity (pts)', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
+      renderValue: () => s.story_points != null ? `<span>${s.story_points}</span>` : '' },
+  ];
+  const sprintInlinePropPanel = buildInlinePropPanel('sprint', sprintId, sprintBuiltinDefs);
+
+  const projCrumb = projName
+    ? `<div class="detail-bc-prefix"><span class="bc-part bc-proj" data-proj-id="${s.project_id}" style="cursor:pointer">${projName}</span></div>`
+    : '';
+
+  const taskRows = tasks.map(t =>
+    `<li class="task-row" data-task-id="${t.id}" style="cursor:pointer">
+      <div class="task-check ${t.status==='done'?'done':''}" data-check-id="${t.id}">${t.status==='done'?'✓':''}</div>
+      <div class="task-content"><div class="task-title">${t.title}</div></div>
+      ${statusBadge(t.status)}
+    </li>`
+  ).join('') || '<li style="padding:8px;color:var(--text-muted);font-size:13px">No tasks</li>';
+
+  const dateRange = s.start_date && s.end_date
+    ? `${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}`
+    : fmtDate(s.start_date || s.end_date) || '—';
+
+  const SPRINT_STATUSES = ['planned','active','completed'];
+
+  const body = `
+    <button class="entity-icon-add-btn" id="sprint-icon-add-btn">
+      <span id="sprint-icon-display"></span>
+      <span id="sprint-icon-add-label">Add icon</span>
+    </button>
+    <div class="detail-title-area">
+      ${projCrumb}
+      <textarea class="detail-title-input" id="detail-title" rows="1">${(s.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+    </div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip" id="chip-status" data-key="status">
+        <span class="chip-label">Status</span>
+        <span class="chip-value">${s.status || 'planned'}</span>
+      </button>
+      <button class="prop-chip" id="chip-dates" data-key="dates">
+        <span class="chip-label">Dates</span>
+        <span class="chip-value" id="chip-dates-val">${dateRange}</span>
+      </button>
+      <button class="prop-chip" id="chip-project" data-key="project">
+        <span class="chip-label">Project</span>
+        <span class="chip-value" id="chip-project-val">${projName || '—'}</span>
+      </button>
+      <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
+    </div>
+
+    ${sprintInlinePropPanel}
+
+    <div class="subtask-section" style="margin-top:12px">
+      <div class="subtask-section-title">
+        <span>Tasks (${tasks.length})</span>
+        <button class="btn btn-sm btn-ghost" id="sprint-open-detail-btn">Open Full View ⤢</button>
+      </div>
+      <ul class="task-list" id="sprint-task-list">${taskRows}</ul>
+    </div>
+
+    ${buildCommentSection('sprint', sprintId)}
+
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <button class="btn btn-ghost btn-sm" id="sprint-export-btn">Export JSON</button>
+      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" id="sprint-delete-btn">Delete</button>
+    </div>
+  `;
+
+  openSlideover(s.title, body);
+
+  // Icon
+  const sprintIconAddBtn = document.getElementById('sprint-icon-add-btn');
+  const sprintIconDisplay = document.getElementById('sprint-icon-display');
+  const sprintIconAddLabel = document.getElementById('sprint-icon-add-label');
+  loadEntityIcon('sprint', sprintId).then(icon => {
+    if (icon) { sprintIconDisplay.innerHTML = renderEntityIcon(icon, 32); sprintIconDisplay.dataset.icon = icon; sprintIconAddLabel.textContent = ''; }
+  });
+  sprintIconAddBtn.onclick = (e) => {
+    e.stopPropagation();
+    const cur = sprintIconDisplay.dataset.icon || '';
+    showIconPicker(sprintIconAddBtn, 'sprint', sprintId, cur, (newIcon) => {
+      sprintIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
+      sprintIconDisplay.dataset.icon = newIcon || '';
+      sprintIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      saveEntityIcon('sprint', sprintId, newIcon);
+    });
+  };
+
+  // Title
+  const titleTA = document.getElementById('detail-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  titleTA.onblur = (e) => { if (e.target.value.trim()) patchSprint({ title: e.target.value.trim() }); };
+
+  // Breadcrumb nav
+  document.querySelector('.bc-proj')?.addEventListener('click', () => { closeSlideover(); renderView('project-detail', s.project_id); });
+
+  // Prop chips
+  document.getElementById('chip-status').onclick = (e) => {
+    e.stopPropagation();
+    openValuePicker(e.currentTarget, SPRINT_STATUSES.map(v => ({ value: v, label: v })), async (val) => {
+      document.getElementById('chip-status').querySelector('.chip-value').textContent = val;
+      await patchSprint({ status: val });
+    });
+  };
+  document.getElementById('chip-dates').onclick = (e) => {
+    e.stopPropagation();
+    openDateRangePickerGlobal(e.currentTarget, stripDate(s.start_date), stripDate(s.end_date), async (start, end) => {
+      await patchSprint({ start_date: start || null, end_date: end || null });
+      const v = document.getElementById('chip-dates-val');
+      if (v) v.textContent = start && end ? `${fmtDate(start)} → ${fmtDate(end)}` : fmtDate(start || end) || '—';
+    });
+  };
+  document.getElementById('chip-project').onclick = (e) => {
+    e.stopPropagation();
+    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
+      document.getElementById('chip-project-val').textContent = val ? allProjects.find(p => String(p.id) === String(val))?.title || val : '—';
+      await patchSprint({ project_id: val ? parseInt(val) : null });
+    });
+  };
+
+  // ··· More
+  document.getElementById('prop-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    openFormSlideover('Sprint Properties', `<div class="prop-panel">
+      <div class="prop-panel-row"><div class="prop-panel-label">Capacity (Story Points)</div>
+        <div class="prop-panel-value"><input type="number" id="pp-sp" value="${s.story_points != null ? s.story_points : ''}" min="0" style="width:80px;font-size:13px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg-card);color:var(--text-primary)"/></div></div>
+    </div>`);
+    document.getElementById('pp-sp')?.addEventListener('blur', async () => {
+      const val = parseInt(document.getElementById('pp-sp').value);
+      await patchSprint({ story_points: isNaN(val) ? null : val });
+    });
+  };
+
+  // Inline prop panel
+  bindInlinePropPanel('sprint', sprintId, {
+    project: (valEl) => {
+      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
+        await patchSprint({ project_id: val ? parseInt(val) : null });
+        showSprintSlideover(sprintId, afterSave);
+      });
+    },
+    points: (valEl) => {
+      const inp = document.createElement('input');
+      inp.type = 'number'; inp.min = '0'; inp.style.cssText = 'width:80px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
+      inp.value = s.story_points || '';
+      valEl.innerHTML = ''; valEl.appendChild(inp); inp.focus();
+      inp.onblur = async () => { await patchSprint({ story_points: parseInt(inp.value) || null }); };
+      inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); };
+    },
+  }, () => showSprintSlideover(sprintId, afterSave));
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="sprint"]'));
+
+  // Task rows
+  document.querySelectorAll('#sprint-task-list [data-task-id]').forEach(el => {
+    el.onclick = () => showTaskSlideover(el.dataset.taskId);
+  });
+
+  document.getElementById('sprint-open-detail-btn').onclick = () => { closeSlideover(); renderView('sprint-detail', sprintId); };
+  document.getElementById('sprint-export-btn').onclick = () => showJSONModal(`/api/export/sprint/${sprintId}`, `sprint-${sprintId}.json`);
+  document.getElementById('sprint-delete-btn').onclick = () => {
+    if (!confirm('Delete this sprint?')) return;
+    api('DELETE', `/api/sprints/${sprintId}`).then(() => { closeSlideover(); renderSprints(); });
+  };
 }
 
 /* ─── Sprint Modal ───────────────────────────────────────────────────── */
@@ -9036,135 +9690,177 @@ function showSprintModal(projects, sprint) {
 /* ─── Resource Slideover (view + auto-save) ──────────────────────────── */
 async function showResourceSlideover(resource, afterSave) {
   const v = resource || {};
-  let projects = [], tasks = [], goals = [];
-  try { [projects, tasks, goals] = await Promise.all([
-    api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
-  ]); } catch(e) {}
+  if (!v.id) { showResourceModal(null, afterSave); return; }
+  const resId = v.id;
+  openSlideover('Resource Detail', '<div class="loading">Loading…</div>');
 
-  const goalOpts = '<option value="">— none —</option>' + goals.map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(v.goal_id)?'selected':''}>${g.title}</option>`).join('');
-  const projOpts = '<option value="">— none —</option>' + projects.map(p =>
-    `<option value="${p.id}" ${String(p.id)===String(v.project_id)?'selected':''}>${p.title}</option>`).join('');
-  const taskOpts = '<option value="">— none —</option>' + tasks.map(t =>
-    `<option value="${t.id}" ${String(t.id)===String(v.task_id)?'selected':''}>${t.title}</option>`).join('');
+  let r, projects = [], goals = [];
+  try {
+    [r, projects, goals] = await Promise.all([
+      api('GET', `/api/resources/${resId}`),
+      api('GET', '/api/projects'),
+      api('GET', '/api/goals'),
+    ]);
+  } catch(e) { return; }
 
-  const rawUrl = v.url || '';
-  const urlDisplay = rawUrl
-    ? `<a href="${rawUrl}" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">${rawUrl}</a>`
-    : '<span style="color:var(--text-muted)">—</span>';
+  async function patchResource(data) {
+    try { await api('PATCH', `/api/resources/${resId}`, data); } catch(e) { return; }
+    if (afterSave) afterSave();
+  }
 
-  const fileName = v.file_path ? v.file_path.split('/').pop() : '';
-  const fileSection = `
-    <div class="form-group" style="margin:0">
-      <label class="form-label">Attached File</label>
-      <div id="rs-file-area" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        ${fileName ? `<a id="rs-file-link" href="/api/resource-file/${v.id}" download="${fileName}" style="font-size:12px;color:var(--accent)">📎 ${fileName}</a>` : '<span style="font-size:12px;color:var(--text-muted)" id="rs-file-link">No file attached</span>'}
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const rawUrl = r.url || '';
+  const projName = projects.find(p => String(p.id) === String(r.project_id))?.title || null;
+  const goalName = goals.find(g => String(g.id) === String(r.goal_id))?.title || null;
+  const fileName = r.file_path ? r.file_path.split('/').pop() : '';
+
+  const resBuiltinDefs = [
+    { key: 'project', label: 'Project', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+      renderValue: () => projName ? `<span>${projName}</span>` : '' },
+    { key: 'goal', label: 'Goal', icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
+  ];
+  const resInlinePropPanel = buildInlinePropPanel('resource', resId, resBuiltinDefs);
+
+  const body = `
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="detail-title" rows="1">${(r.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+    </div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip" id="chip-type" data-key="type">
+        <span class="chip-label">Type</span>
+        <span class="chip-value" id="chip-type-val">${r.resource_type || '—'}</span>
+      </button>
+      <button class="prop-chip${rawUrl ? '' : ' chip-empty'}" id="chip-url" data-key="url">
+        <span class="chip-label">URL</span>
+        <span class="chip-value" id="chip-url-val">${rawUrl ? `<a href="${rawUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;display:inline-block;vertical-align:bottom">${rawUrl.replace(/^https?:\/\//,'')}</a>` : '—'}</span>
+      </button>
+      <button class="prop-chip" id="chip-project" data-key="project">
+        <span class="chip-label">Project</span>
+        <span class="chip-value" id="chip-project-val">${projName || '—'}</span>
+      </button>
+      <button class="prop-chip" id="chip-goal" data-key="goal">
+        <span class="chip-label">Goal</span>
+        <span class="chip-value" id="chip-goal-val">${goalName || '—'}</span>
+      </button>
+    </div>
+
+    ${resInlinePropPanel}
+
+    <div class="form-group" style="margin-top:16px">
+      <label class="form-label">Body / Notes</label>
+      <textarea id="detail-body" style="width:100%;min-height:120px">${r.body || ''}</textarea>
+    </div>
+
+    <div class="subtask-section">
+      <div class="subtask-section-title"><span>File Attachment</span></div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0">
+        ${fileName
+          ? `<a href="/api/resource-file/${resId}" download="${fileName}" style="font-size:12px;color:var(--accent)">📎 ${fileName}</a>`
+          : '<span style="font-size:12px;color:var(--text-muted)">No file attached</span>'}
         <label class="btn btn-sm btn-ghost" style="cursor:pointer;margin:0">
-          Upload file
-          <input type="file" id="rs-file-input" style="display:none" />
+          Upload file<input type="file" id="rs-file-input" style="display:none" />
         </label>
         <span id="rs-file-status" style="font-size:11px;color:var(--text-muted)"></span>
       </div>
-    </div>`;
+    </div>
 
-  const body = `
-    <div style="display:flex;flex-direction:column;gap:12px;padding:4px 0">
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Title</label>
-        <input type="text" id="rs-title" value="${(v.title||'').replace(/"/g,'&quot;')}" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Type</label>
-        <input type="text" id="rs-type" value="${v.resource_type||v.type||''}" placeholder="e.g. link, book, tool…" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">URL</label>
-        <input type="url" id="rs-url" value="${rawUrl}" style="width:100%;box-sizing:border-box" />
-        <div id="rs-url-preview" style="margin-top:4px;font-size:12px">${urlDisplay}</div>
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Body / Notes</label>
-        <textarea id="rs-body" style="width:100%;box-sizing:border-box;min-height:100px">${v.body||''}</textarea>
-      </div>
-      ${fileSection}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        <div class="form-group" style="margin:0"><label class="form-label">Goal</label><select id="rs-goal" style="width:100%">${goalOpts}</select></div>
-        <div class="form-group" style="margin:0"><label class="form-label">Project</label><select id="rs-project" style="width:100%">${projOpts}</select></div>
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Task</label>
-        <select id="rs-task" style="width:100%">${taskOpts}</select>
-      </div>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
-        <button class="btn btn-ghost btn-sm" id="rs-json-btn">Show JSON</button>
-        <button class="btn btn-danger btn-sm" id="rs-delete-btn">Delete resource</button>
-      </div>
-      <div id="rs-save-indicator" style="font-size:11px;color:var(--text-muted);text-align:right;min-height:16px"></div>
-      ${v.id ? `<div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
-        <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Custom Properties</div>
-        ${buildInlinePropPanel('resource', v.id, [])}
-      </div>` : ''}
-      ${v.id ? buildCommentSection('resource', v.id) : ''}
-    </div>`;
+    ${buildCommentSection('resource', resId)}
 
-  openSlideover(v.title || 'Resource', body);
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <button class="btn btn-ghost btn-sm" id="res-export-btn">Export JSON</button>
+      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" id="res-delete-btn">Delete</button>
+    </div>
+  `;
 
-  const indicator = document.getElementById('rs-save-indicator');
-  if (v.id) bindInlinePropPanel('resource', v.id, {}, () => showResourceSlideover(resource, afterSave));
-  if (v.id) bindCommentSection(document.querySelector('.comment-section[data-entity-type="resource"]'));
-  let saveTimer = null;
+  openSlideover(r.title || 'Resource', body);
 
-  async function autoSave() {
-    const urlVal = document.getElementById('rs-url').value.trim();
-    const data = {
-      title:        document.getElementById('rs-title').value.trim() || v.title,
-      resource_type: document.getElementById('rs-type').value || 'note',
-      url:          urlVal || null,
-      body:         document.getElementById('rs-body').value,
-      goal_id:      document.getElementById('rs-goal').value ? parseInt(document.getElementById('rs-goal').value) : null,
-      project_id:   document.getElementById('rs-project').value ? parseInt(document.getElementById('rs-project').value) : null,
-      task_id:      document.getElementById('rs-task').value ? parseInt(document.getElementById('rs-task').value) : null,
+  // Title
+  const titleTA = document.getElementById('detail-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
+  titleTA.onblur = (e) => { if (e.target.value.trim()) patchResource({ title: e.target.value.trim() }); };
+
+  // Body auto-save
+  let bodyTimer = null;
+  document.getElementById('detail-body').addEventListener('input', () => {
+    clearTimeout(bodyTimer);
+    bodyTimer = setTimeout(() => patchResource({ body: document.getElementById('detail-body').value }), 800);
+  });
+
+  // Prop chips
+  document.getElementById('chip-type').onclick = (e) => {
+    e.stopPropagation();
+    const typeInp = document.createElement('input');
+    typeInp.type = 'text';
+    typeInp.value = r.resource_type || '';
+    typeInp.placeholder = 'e.g. link, book, tool…';
+    typeInp.style.cssText = 'font-size:12px;padding:3px 6px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text-primary);width:120px';
+    const chip = document.getElementById('chip-type');
+    const valSpan = chip.querySelector('.chip-value');
+    valSpan.innerHTML = ''; valSpan.appendChild(typeInp); typeInp.focus();
+    typeInp.onblur = async () => {
+      const v2 = typeInp.value.trim();
+      valSpan.textContent = v2 || '—';
+      if (v2 !== (r.resource_type || '')) await patchResource({ resource_type: v2 || null });
     };
-    indicator.textContent = 'Saving…';
-    try {
-      await api('PATCH', `/api/resources/${v.id}`, data);
-      indicator.textContent = 'Saved';
-      // Update url preview link
-      document.getElementById('rs-url-preview').innerHTML = urlVal
-        ? `<a href="${urlVal}" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">${urlVal}</a>`
-        : '<span style="color:var(--text-muted)">—</span>';
-      if (afterSave) afterSave();
-    } catch(e) {
-      indicator.textContent = 'Save failed';
-    }
-  }
-
-  function scheduleAutoSave() {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(autoSave, 700);
-  }
-
-  ['rs-title','rs-type','rs-url','rs-body'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('input', scheduleAutoSave);
-  });
-  ['rs-goal','rs-project','rs-task'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('change', autoSave);
-  });
-
-  document.getElementById('rs-delete-btn').onclick = async () => {
-    if (!confirm('Delete this resource?')) return;
-    await api('DELETE', `/api/resources/${v.id}`);
-    closeSlideover();
-    if (afterSave) afterSave(); else renderResources();
+    typeInp.onkeydown = (ke) => { if (ke.key === 'Enter') typeInp.blur(); if (ke.key === 'Escape') { valSpan.textContent = r.resource_type || '—'; } };
   };
-  document.getElementById('rs-json-btn').onclick = () =>
-    showJSONModal(`/api/export/resource/${v.id}`, `resource-${(v.title||v.id).replace(/\s+/g,'-')}.json`);
+  document.getElementById('chip-url').onclick = (e) => {
+    e.stopPropagation();
+    const urlInp = document.createElement('input');
+    urlInp.type = 'url';
+    urlInp.value = rawUrl;
+    urlInp.placeholder = 'https://…';
+    urlInp.style.cssText = 'font-size:12px;padding:3px 6px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text-primary);width:200px';
+    const chip = document.getElementById('chip-url');
+    const valSpan = chip.querySelector('.chip-value');
+    valSpan.innerHTML = ''; valSpan.appendChild(urlInp); urlInp.focus();
+    urlInp.onblur = async () => {
+      const v2 = urlInp.value.trim();
+      valSpan.innerHTML = v2 ? `<a href="${v2}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none">${v2.replace(/^https?:\/\//,'')}</a>` : '—';
+      if (v2 !== rawUrl) await patchResource({ url: v2 || null });
+    };
+    urlInp.onkeydown = (ke) => { if (ke.key === 'Enter') urlInp.blur(); };
+  };
+  document.getElementById('chip-project').onclick = (e) => {
+    e.stopPropagation();
+    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
+      document.getElementById('chip-project-val').textContent = val ? projects.find(p => String(p.id) === String(val))?.title || '—' : '—';
+      await patchResource({ project_id: val ? parseInt(val) : null });
+    });
+  };
+  document.getElementById('chip-goal').onclick = (e) => {
+    e.stopPropagation();
+    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => {
+      document.getElementById('chip-goal-val').textContent = val ? goals.find(g => String(g.id) === String(val))?.title || '—' : '—';
+      await patchResource({ goal_id: val ? parseInt(val) : null });
+    });
+  };
 
+  // Inline prop panel
+  bindInlinePropPanel('resource', resId, {
+    project: (valEl) => {
+      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
+        await patchResource({ project_id: val ? parseInt(val) : null });
+        showResourceSlideover({ id: resId }, afterSave);
+      });
+    },
+    goal: (valEl) => {
+      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => {
+        await patchResource({ goal_id: val ? parseInt(val) : null });
+        showResourceSlideover({ id: resId }, afterSave);
+      });
+    },
+  }, () => showResourceSlideover({ id: resId }, afterSave));
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="resource"]'));
+
+  // File upload
   const fileInput = document.getElementById('rs-file-input');
   const fileStatus = document.getElementById('rs-file-status');
-  if (fileInput && v.id) {
+  if (fileInput) {
     fileInput.onchange = async () => {
       const file = fileInput.files[0];
       if (!file) return;
@@ -9172,23 +9868,18 @@ async function showResourceSlideover(resource, afterSave) {
       const form = new FormData();
       form.append('file', file);
       try {
-        const res = await fetch(`/api/resource-upload/${v.id}`, { method: 'POST', body: form });
+        const res = await fetch(`/api/resource-upload/${resId}`, { method: 'POST', body: form });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
         fileStatus.textContent = 'Uploaded';
-        const linkEl = document.getElementById('rs-file-link');
-        if (linkEl) {
-          linkEl.href = `/api/resource-file/${v.id}`;
-          linkEl.download = data.filename;
-          linkEl.textContent = `📎 ${data.filename}`;
-          linkEl.style.display = '';
-        }
         if (afterSave) afterSave();
-      } catch(e) {
-        fileStatus.textContent = 'Upload failed';
-      }
+      } catch(e) { fileStatus.textContent = 'Upload failed'; }
     };
   }
+
+  document.getElementById('res-export-btn').onclick = () =>
+    showJSONModal(`/api/export/resource/${resId}`, `resource-${resId}.json`);
+  document.getElementById('res-delete-btn').onclick = () => deleteEntity('resource', resId);
 }
 
 /* ─── Category Modal ─────────────────────────────────────────────────── */
