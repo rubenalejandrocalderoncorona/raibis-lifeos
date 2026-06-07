@@ -4405,16 +4405,30 @@ async function renderNotes() {
     });
   }
 
+  function buildNoteListView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
+    const vis = (key) => entityPropVisible('note', key);
+    return `<div class="entity-list-view">${list.map(n => {
+      return `<div class="entity-list-row note-card" data-note-id="${n.id}">
+        <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+        <span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
+        <span class="entity-list-title">${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></span>
+        ${vis('date') && fmtDate(n.note_date) ? `<span class="entity-list-meta">${fmtDate(n.note_date)}</span>` : ''}
+        ${vis('category') && n.category_name ? `<span class="entity-list-meta">${n.category_name}</span>` : ''}
+        ${vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : ''}
+      </div>`;
+    }).join('')}</div>`;
+  }
+
   function render() {
     const list = getFiltered();
-    if (!list.length) {
-      document.getElementById('notes-list').innerHTML =
-        `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
-    } else {
-      document.getElementById('notes-list').innerHTML =
-        notesViewMode === 'table' ? buildNoteTable(list) :
-        `<div style="display:grid;gap:12px">${list.map(buildNoteCard).join('')}</div>`;
-    }
+    let html;
+    if (notesViewMode === 'table') html = buildNoteTable(list);
+    else if (notesViewMode === 'list') html = buildNoteListView(list);
+    else html = list.length
+      ? `<div style="display:grid;gap:12px">${list.map(buildNoteCard).join('')}</div>`
+      : `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
+    document.getElementById('notes-list').innerHTML = html;
     bindNoteEvents();
     if (notesViewMode === 'table') { bindAddPropBtn('note', render); bindCustomPropCells(); }
     injectListIcons('note', list.map(n => n.id));
@@ -5402,10 +5416,29 @@ async function renderResources() {
     });
   }
 
+  function buildResourceListView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">⬡</div><div class="empty-state-text">No resources yet</div></div>`;
+    const vis = (key) => entityPropVisible('resource', key);
+    return `<div class="entity-list-view">${list.map(r => {
+      const linked = r.goal_title || r.project_title || r.task_title;
+      return `<div class="entity-list-row res-row" data-res-id="${r.id}">
+        <span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+        <span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
+        <span class="entity-list-title">${r.title}<span class="comment-badge" data-comment-for="${r.id}" data-comment-entity="resource" style="display:none"></span></span>
+        ${vis('type') && r.resource_type ? `<span class="entity-list-meta">${r.resource_type}</span>` : ''}
+        ${vis('linked') && linked ? `<span class="entity-list-meta">→ ${linked}</span>` : ''}
+        ${vis('url') && r.url ? `<span class="entity-list-meta" onclick="event.stopPropagation()"><a href="${r.url}" target="_blank" rel="noopener" style="color:var(--accent)">${r.url.length > 40 ? r.url.slice(0,40)+'…' : r.url}</a></span>` : ''}
+      </div>`;
+    }).join('')}</div>`;
+  }
+
   function render() {
     const list = getFiltered();
-    document.getElementById('res-table').innerHTML =
-      resourcesViewMode === 'cards' ? buildCards(list) : buildTable(list);
+    let html;
+    if (resourcesViewMode === 'cards') html = buildCards(list);
+    else if (resourcesViewMode === 'list') html = buildResourceListView(list);
+    else html = buildTable(list);
+    document.getElementById('res-table').innerHTML = html;
     bindResEvents();
     if (resourcesViewMode === 'table') { bindAddPropBtn('resource', render); bindCustomPropCells(); }
     injectListIcons('resource', list.map(r => r.id));
