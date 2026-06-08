@@ -1252,6 +1252,9 @@ function setCustomPropValue(entity, recordId, key, value) {
   const vals = getCustomPropValues(entity, recordId);
   vals[key] = value;
   localStorage.setItem(`customPropVals_${entity}_${recordId}`, JSON.stringify(vals));
+  // Sync to backend (persists to DB + Obsidian vault frontmatter)
+  api('POST', `/api/properties?entity_type=${entity}&entity_id=${recordId}`, { key, value: String(value) })
+    .catch(e => console.warn('[vault] custom prop sync failed:', e));
 }
 
 function customPropCell(entity, recordId, def) {
@@ -4654,11 +4657,31 @@ async function renderSprints() {
     });
   }
 
+  function buildSprintListView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">⚡</div><div class="empty-state-text">No sprints found</div></div>`;
+    const vis = (key) => entityPropVisible('sprint', key);
+    return `<div class="entity-list-view">${list.map(s => {
+      const prog = s.progress || {};
+      const pct = prog.pct || 0;
+      return `<div class="entity-list-row sprint-detail-link" data-sprint-id="${s.id}">
+        <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+        <span class="list-icon-slot" data-icon-entity="sprint" data-icon-id="${s.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
+        <span class="entity-list-title">${s.title}<span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></span>
+        ${vis('status') ? statusBadge(s.status) : ''}
+        ${vis('project') && s.project_title ? `<span class="entity-list-meta">${s.project_title}</span>` : ''}
+        ${vis('dates') ? `<span class="entity-list-meta">${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</span>` : ''}
+        ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
+      </div>`;
+    }).join('')}</div>`;
+  }
+
   function render() {
     const list = getFiltered();
-    document.getElementById('sprints-list').innerHTML =
-      sprintsViewMode === 'table' ? buildSprintTable(list) :
-      (list.map(buildSprintCard).join('') || `<div class="empty-state"><div class="empty-state-icon">⚡</div><div class="empty-state-text">No sprints found</div></div>`);
+    let html;
+    if (sprintsViewMode === 'table') html = buildSprintTable(list);
+    else if (sprintsViewMode === 'list') html = buildSprintListView(list);
+    else html = list.map(buildSprintCard).join('') || `<div class="empty-state"><div class="empty-state-icon">⚡</div><div class="empty-state-text">No sprints found</div></div>`;
+    document.getElementById('sprints-list').innerHTML = html;
     bindSprintEvents();
     injectListIcons('sprint', list.map(s => s.id));
     injectCommentBadges('sprint', list.map(s => s.id));

@@ -207,7 +207,7 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	mux.HandleFunc("/api/comments", withCORS(commentsHandler(store)))
 
 	// Properties (icon + custom key-value pairs per entity)
-	mux.HandleFunc("/api/properties", withCORS(propertiesHandler(store)))
+	mux.HandleFunc("/api/properties", withCORS(propertiesHandler(store, v)))
 
 	// Server config (vault path, db path)
 	mux.HandleFunc("/api/config", withCORS(configHandler(v, dbPath)))
@@ -413,7 +413,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				return
 			}
 			go func() {
-				if err := vlt.WriteEntityMD("task", created.ID, taskFM(created), taskLinksBody(created, store)); err != nil {
+				if err := vlt.WriteEntityMD("task", created.ID, mergeFMWithProps(taskFM(created), store, "task", created.ID), taskLinksBody(created, store)); err != nil {
 					log.Printf("vault: write task %d: %v", created.ID, err)
 				}
 			}()
@@ -644,7 +644,7 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 			updated, _ := svc.Get(id)
 			updated.Tags, _ = store.GetEntityTags("task", id)
 			go func() {
-				if err := vlt.WriteEntityMD("task", updated.ID, taskFM(updated), taskLinksBody(updated, store)); err != nil {
+				if err := vlt.WriteEntityMD("task", updated.ID, mergeFMWithProps(taskFM(updated), store, "task", updated.ID), taskLinksBody(updated, store)); err != nil {
 					log.Printf("vault: update task %d: %v", updated.ID, err)
 				}
 			}()
@@ -728,7 +728,7 @@ func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 			}
 			created, _ := store.GetGoal(id)
 			go func() {
-				if err := vlt.WriteEntityMD("goal", created.ID, goalFM(created), ""); err != nil {
+				if err := vlt.WriteEntityMD("goal", created.ID, mergeFMWithProps(goalFM(created), store, "goal", created.ID), ""); err != nil {
 					log.Printf("vault: write goal %d: %v", created.ID, err)
 				}
 			}()
@@ -877,7 +877,7 @@ func goalHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.Ha
 			updated, _ := store.GetGoal(id)
 			updated.Tags, _ = store.GetEntityTags("goal", id)
 			go func() {
-				if err := vlt.WriteEntityMD("goal", updated.ID, goalFM(updated), ""); err != nil {
+				if err := vlt.WriteEntityMD("goal", updated.ID, mergeFMWithProps(goalFM(updated), store, "goal", updated.ID), ""); err != nil {
 					log.Printf("vault: update goal %d: %v", updated.ID, err)
 				}
 			}()
@@ -948,7 +948,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 			}
 			created, _ := store.GetProject(id)
 			go func() {
-				if err := vlt.WriteEntityMD("project", created.ID, projectFM(created), projectLinksBody(created, store)); err != nil {
+				if err := vlt.WriteEntityMD("project", created.ID, mergeFMWithProps(projectFM(created), store, "project", created.ID), projectLinksBody(created, store)); err != nil {
 					log.Printf("vault: write project %d: %v", created.ID, err)
 				}
 			}()
@@ -1077,7 +1077,7 @@ func projectHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http
 			updated, _ := store.GetProject(id)
 			updated.Tags, _ = store.GetEntityTags("project", id)
 			go func() {
-				if err := vlt.WriteEntityMD("project", updated.ID, projectFM(updated), projectLinksBody(updated, store)); err != nil {
+				if err := vlt.WriteEntityMD("project", updated.ID, mergeFMWithProps(projectFM(updated), store, "project", updated.ID), projectLinksBody(updated, store)); err != nil {
 					log.Printf("vault: update project %d: %v", updated.ID, err)
 				}
 			}()
@@ -1148,7 +1148,7 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 			}
 			sp.ID = id
 			go func() {
-				if err := vlt.WriteEntityMD("sprint", sp.ID, sprintFM(sp), sprintLinksBody(sp, store)); err != nil {
+				if err := vlt.WriteEntityMD("sprint", sp.ID, mergeFMWithProps(sprintFM(sp), store, "sprint", sp.ID), sprintLinksBody(sp, store)); err != nil {
 					log.Printf("vault: write sprint %d: %v", sp.ID, err)
 				}
 			}()
@@ -1229,7 +1229,7 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 			}
 			if sp, err := store.GetSprint(id); err == nil {
 				go func() {
-					if err := vlt.WriteEntityMD("sprint", sp.ID, sprintFM(sp), sprintLinksBody(sp, store)); err != nil {
+					if err := vlt.WriteEntityMD("sprint", sp.ID, mergeFMWithProps(sprintFM(sp), store, "sprint", sp.ID), sprintLinksBody(sp, store)); err != nil {
 						log.Printf("vault: update sprint %d: %v", sp.ID, err)
 					}
 				}()
@@ -2708,7 +2708,7 @@ func commentsHandler(store storage.Storage) http.HandlerFunc {
 	}
 }
 
-func propertiesHandler(store storage.Storage) http.HandlerFunc {
+func propertiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		entityType := q.Get("entity_type")
@@ -2741,6 +2741,24 @@ func propertiesHandler(store storage.Storage) http.HandlerFunc {
 			if err := store.SetProperty(entityType, entityID, body.Key, body.Value); err != nil {
 				errJSON(w, 500, err.Error())
 				return
+			}
+			// Sync non-internal keys to the Obsidian vault frontmatter
+			if !strings.HasPrefix(body.Key, "_") {
+				go func() {
+					path := vlt.EntityFilePath(entityType, entityID)
+					content, _ := vlt.ReadFile(path)
+					existingProps, fileBody := vault.ParseFrontmatter(content)
+					if existingProps == nil {
+						existingProps = make(map[string]string)
+						fileBody = content
+					}
+					existingProps[body.Key] = body.Value
+					fm := make(map[string]any, len(existingProps))
+					for k, v := range existingProps {
+						fm[k] = v
+					}
+					_ = vlt.WriteEntityMD(entityType, entityID, fm, fileBody)
+				}()
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
 		case http.MethodDelete:
@@ -3701,6 +3719,22 @@ func sprintLinksBody(s *domain.Sprint, store storage.Storage) string {
 		return fmt.Sprintf("[[project-%d|%s]]", p.ID, p.Title)
 	}
 	return ""
+}
+
+// mergeFMWithProps merges any stored entity_properties (excluding internal _*
+// keys like _icon) into an existing frontmatter map. This ensures custom props
+// set from the UI survive every WriteEntityMD call.
+func mergeFMWithProps(fm map[string]any, store storage.Storage, entityType string, entityID int64) map[string]any {
+	props, err := store.ListProperties(entityType, entityID)
+	if err != nil {
+		return fm
+	}
+	for k, v := range props {
+		if !strings.HasPrefix(k, "_") {
+			fm[k] = v
+		}
+	}
+	return fm
 }
 
 func configHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
