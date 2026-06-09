@@ -2431,6 +2431,195 @@ function renderCurrentView() {
   }
 }
 
+// ── Prop Section Manager ─────────────────────────────────────────────────────
+// Manages which properties are shown in the heading (horizontal chip bar, max 5)
+// vs the body (vertical inline prop panel). Opened by the ··· button.
+
+const ENTITY_ALL_PROPS = {
+  task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goal'},{key:'project',label:'Project'},{key:'category',label:'Category'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'}],
+  goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'due',label:'Due Date'},{key:'metrics',label:'Metrics'}],
+  project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goal'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
+  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Project'},{key:'points',label:'Story Points'}],
+  note:     [{key:'date',label:'Date'},{key:'project',label:'Project'},{key:'goal',label:'Goal'},{key:'tags',label:'Tags'},{key:'category',label:'Category'}],
+  resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Project'},{key:'goal',label:'Goal'}],
+};
+
+const ENTITY_SECTION_DEFAULTS = {
+  task:     { heading:['status','priority','due','focus','tags'],   body:['goal','project','category','points','recur'] },
+  goal:     { heading:['status','type','year','tags'],              body:['category','due','metrics'] },
+  project:  { heading:['status','due','goal','tags'],              body:['category','macro','kanban','archived'] },
+  sprint:   { heading:['status','dates','project'],                body:['points'] },
+  note:     { heading:['date','project','goal','tags'],            body:['category'] },
+  resource: { heading:['type','url','project','goal'],             body:[] },
+};
+
+function getPropSections(entity) {
+  try {
+    const s = localStorage.getItem(`propSections_${entity}`);
+    if (s) return JSON.parse(s);
+  } catch(e) {}
+  const d = ENTITY_SECTION_DEFAULTS[entity];
+  return d ? { heading:[...d.heading], body:[...d.body] } : { heading:[], body:[] };
+}
+
+function setPropSections(entity, sections) {
+  localStorage.setItem(`propSections_${entity}`, JSON.stringify(sections));
+}
+
+function openPropSectionManager(anchorEl, entity, onSave) {
+  document.getElementById('prop-section-mgr')?.remove();
+  const MAX = 5;
+
+  function allProps() {
+    const base = ENTITY_ALL_PROPS[entity] || [];
+    const custom = getCustomPropDefs(entity).map(d => ({ key: d.key, label: d.label }));
+    return [...base, ...custom];
+  }
+
+  function normalizedSections() {
+    const s = getPropSections(entity);
+    const all = allProps().map(p => p.key);
+    all.forEach(k => { if (!s.heading.includes(k) && !s.body.includes(k)) s.body.push(k); });
+    s.heading = s.heading.filter(k => all.includes(k));
+    s.body    = s.body.filter(k => all.includes(k));
+    return s;
+  }
+
+  const panel = document.createElement('div');
+  panel.id = 'prop-section-mgr';
+  panel.className = 'prop-vis-panel';
+  panel.style.cssText = 'position:fixed;z-index:9200;min-width:280px;max-width:300px;padding:0;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.18)';
+
+  let dragKey = null, dragZone = null;
+
+  function renderPanel() {
+    const s = normalizedSections();
+    const all = allProps();
+    const canAdd = s.heading.length < MAX;
+
+    const renderRow = (k, zone) => {
+      const p = all.find(x => x.key === k) || { key: k, label: k };
+      const isHead = zone === 'heading';
+      return `<div class="psm-row" draggable="true" data-key="${k}" data-zone="${zone}"
+        style="display:flex;align-items:center;gap:8px;padding:5px 12px;cursor:grab;user-select:none;border-radius:4px;transition:background .1s">
+        <span style="color:var(--text-muted);font-size:13px;flex-shrink:0;cursor:grab">⠿</span>
+        <span style="flex:1;font-size:13px;color:var(--text-primary)">${p.label}</span>
+        <button class="psm-move" data-key="${k}" data-to="${isHead?'body':'heading'}"
+          ${!isHead && !canAdd ? 'disabled' : ''}
+          style="font-size:10px;padding:2px 7px;border:1px solid var(--border);border-radius:3px;background:none;cursor:pointer;color:var(--text-muted);flex-shrink:0;${!isHead && !canAdd ? 'opacity:.3;cursor:default' : ''}">
+          ${isHead ? '↓ Body' : '↑ Top'}
+        </button>
+      </div>`;
+    };
+
+    const headRows = s.heading.map(k => renderRow(k,'heading')).join('') ||
+      '<div style="padding:6px 12px;font-size:12px;color:var(--text-muted);font-style:italic">Empty</div>';
+    const bodyRows = s.body.map(k => renderRow(k,'body')).join('') ||
+      '<div style="padding:6px 12px;font-size:12px;color:var(--text-muted);font-style:italic">Empty</div>';
+
+    panel.innerHTML = `
+      <div style="padding:7px 12px 5px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+        <span>Heading</span><span style="font-weight:400">${s.heading.length}/5</span>
+      </div>
+      <div id="psm-zone-heading" data-zone="heading" style="min-height:36px;padding:3px 0;border-bottom:1px solid var(--border)">${headRows}</div>
+      <div style="padding:7px 12px 5px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Body</div>
+      <div id="psm-zone-body" data-zone="body" style="min-height:36px;padding:3px 0;max-height:260px;overflow-y:auto">${bodyRows}</div>
+    `;
+
+    // Move buttons
+    panel.querySelectorAll('.psm-move:not([disabled])').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const key = btn.dataset.key, to = btn.dataset.to;
+        const s2 = normalizedSections();
+        if (to === 'heading') {
+          if (s2.heading.length >= MAX) return;
+          s2.body = s2.body.filter(k => k !== key);
+          s2.heading = [...s2.heading, key];
+        } else {
+          s2.heading = s2.heading.filter(k => k !== key);
+          s2.body = [key, ...s2.body];
+        }
+        setPropSections(entity, s2);
+        onSave();
+        renderPanel();
+      };
+    });
+
+    // Drag rows
+    panel.querySelectorAll('.psm-row').forEach(row => {
+      row.ondragstart = (e) => {
+        dragKey = row.dataset.key; dragZone = row.dataset.zone;
+        e.dataTransfer.effectAllowed = 'move';
+        setTimeout(() => row.style.opacity = '.4', 0);
+      };
+      row.ondragend = () => {
+        row.style.opacity = '';
+        panel.querySelectorAll('.psm-dv').forEach(el => el.classList.remove('psm-dv'));
+        dragKey = null; dragZone = null;
+      };
+      row.ondragover = (e) => { e.preventDefault(); row.classList.add('psm-dv'); };
+      row.ondragleave = () => row.classList.remove('psm-dv');
+      row.ondrop = (e) => {
+        e.preventDefault(); row.classList.remove('psm-dv');
+        if (!dragKey || dragKey === row.dataset.key) return;
+        const targetKey = row.dataset.key, targetZone = row.dataset.zone;
+        const s2 = normalizedSections();
+        s2.heading = s2.heading.filter(k => k !== dragKey);
+        s2.body    = s2.body.filter(k => k !== dragKey);
+        if (targetZone === 'heading') {
+          if (s2.heading.length >= MAX && dragZone !== 'heading') return;
+          const idx = s2.heading.indexOf(targetKey);
+          s2.heading.splice(idx >= 0 ? idx : s2.heading.length, 0, dragKey);
+        } else {
+          const idx = s2.body.indexOf(targetKey);
+          s2.body.splice(idx >= 0 ? idx : s2.body.length, 0, dragKey);
+        }
+        setPropSections(entity, s2);
+        onSave();
+        renderPanel();
+      };
+    });
+
+    // Drop on empty zone area
+    panel.querySelectorAll('[id^="psm-zone-"]').forEach(zone => {
+      zone.ondragover = (e) => { e.preventDefault(); zone.style.outline = '2px dashed var(--accent)'; };
+      zone.ondragleave = () => { zone.style.outline = ''; };
+      zone.ondrop = (e) => {
+        e.preventDefault(); zone.style.outline = '';
+        if (!dragKey) return;
+        const targetZone = zone.dataset.zone;
+        const s2 = normalizedSections();
+        s2.heading = s2.heading.filter(k => k !== dragKey);
+        s2.body    = s2.body.filter(k => k !== dragKey);
+        if (targetZone === 'heading') {
+          if (s2.heading.length >= MAX && dragZone !== 'heading') return;
+          s2.heading.push(dragKey);
+        } else {
+          s2.body.push(dragKey);
+        }
+        setPropSections(entity, s2);
+        onSave();
+        renderPanel();
+      };
+    });
+  }
+
+  renderPanel();
+
+  const rect = anchorEl.getBoundingClientRect();
+  const w = 300;
+  let left = rect.right - w;
+  if (left < 8) left = 8;
+  if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8;
+  panel.style.top  = `${Math.min(rect.bottom + 4, window.innerHeight - 340)}px`;
+  panel.style.left = `${left}px`;
+  document.body.appendChild(panel);
+
+  const dismiss = (e) => { if (!panel.contains(e.target) && e.target !== anchorEl) { panel.remove(); document.removeEventListener('mousedown', dismiss); } };
+  setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
+}
+
 // ── openValuePicker ──────────────────────────────────────────────────────────
 // Shows a simple floating list of options anchored to anchorEl.
 // options: [{ value, label }] or [string]
@@ -6405,19 +6594,35 @@ async function showTaskSlideover(taskId) {
 
   // ── Inline prop panel (built-in extra props + custom props) ──────────────
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
-  const taskBuiltinDefs = [
-    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+  const taskSections = getPropSections('task');
+  const isInHead = (k) => taskSections.heading.includes(k);
+  const TASK_CHIP_KEYS = ['status','priority','due','focus','tags'];
+  const taskExtraHeadKeys = taskSections.heading.filter(k => !TASK_CHIP_KEYS.includes(k));
+
+  const allTaskBuiltinDefs = [
+    { key: 'status',   label: 'Status',       icon: pIco('<circle cx="12" cy="12" r="10"/>'),
+      renderValue: () => task.status ? `<span>${task.status.replace('_',' ')}</span>` : '' },
+    { key: 'priority', label: 'Priority',     icon: pIco('<polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/>'),
+      renderValue: () => task.priority ? `<span>${task.priority}</span>` : '' },
+    { key: 'due',      label: 'Due Date',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+      renderValue: () => { const v = fmtDateRange(task.start_date, task.due_date); return v ? `<span>${v}</span>` : ''; } },
+    { key: 'focus',    label: 'Focus Block',  icon: pIco('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'),
+      renderValue: () => { const v = fmtDateRange(task.focus_block_start, task.focus_block); return v ? `<span>${v}</span>` : ''; } },
+    { key: 'tags',     label: 'Tags',         icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
+      renderValue: () => tags.length ? tags.map(t => tagHtml(t)).join('') : '' },
+    { key: 'category', label: 'Category',     icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? `<span>${catName}</span>` : '' },
-    { key: 'goal',     label: 'Goal',     icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+    { key: 'goal',     label: 'Goal',         icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
       renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
-    { key: 'project',  label: 'Project',  icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+    { key: 'project',  label: 'Project',      icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
       renderValue: () => projName ? `<span>${projName}</span>` : '' },
     { key: 'points',   label: 'Story Points', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
       renderValue: () => task.story_points != null && task.story_points > 0 ? `<span>${task.story_points}</span>` : '' },
-    { key: 'recur',    label: 'Recurring', icon: pIco('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>'),
+    { key: 'recur',    label: 'Recurring',    icon: pIco('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>'),
       renderValue: () => (task.recur_interval||0) > 0 ? `<span>Every ${task.recur_interval} ${task.recur_unit||'days'}</span>` : '' },
   ];
-  const taskInlinePropPanel = buildInlinePropPanel('task', taskId, taskBuiltinDefs);
+  const taskBodyDefs = allTaskBuiltinDefs.filter(d => taskSections.body.includes(d.key));
+  const taskInlinePropPanel = buildInlinePropPanel('task', taskId, taskBodyDefs);
 
   const body = `
     <button class="entity-icon-add-btn" id="task-icon-add-btn">
@@ -6430,26 +6635,27 @@ async function showTaskSlideover(taskId) {
     </div>
 
     <div class="prop-chips" id="prop-chips">
-      <button class="prop-chip chip-status-${task.status}" id="chip-status" data-key="status">
+      ${isInHead('status') ? `<button class="prop-chip chip-status-${task.status}" id="chip-status" data-key="status">
         <span class="chip-label">Status</span>
         <span class="chip-value"${(() => { const c = getValueColor('taskStatuses', task.status); return c ? ` style="background:${c}22;color:${c};border-radius:3px;padding:1px 5px;font-weight:600"` : ''; })()}>${task.status.replace('_',' ')}</span>
-      </button>
-      <button class="prop-chip chip-priority-${task.priority}" id="chip-priority" data-key="priority">
+      </button>` : ''}
+      ${isInHead('priority') ? `<button class="prop-chip chip-priority-${task.priority}" id="chip-priority" data-key="priority">
         <span class="chip-label">Priority</span>
         <span class="chip-value"${(() => { const c = getValueColor('taskPriorities', task.priority); return c ? ` style="background:${c}22;color:${c};border-radius:3px;padding:1px 5px;font-weight:600"` : ''; })()}>${task.priority}</span>
-      </button>
-      <button class="prop-chip" id="chip-due" data-key="due">
+      </button>` : ''}
+      ${isInHead('due') ? `<button class="prop-chip" id="chip-due" data-key="due">
         <span class="chip-label">Due</span>
         <span class="chip-value" id="chip-due-val">${fmtDateRange(task.start_date, task.due_date)}</span>
-      </button>
-      <button class="prop-chip${task.focus_block ? '' : ' chip-empty'}" id="chip-focus" data-key="focus" title="Focus block">
+      </button>` : ''}
+      ${isInHead('focus') ? `<button class="prop-chip${task.focus_block ? '' : ' chip-empty'}" id="chip-focus" data-key="focus" title="Focus block">
         <span class="chip-label">Focus</span>
         <span class="chip-value" id="chip-focus-val">${fmtDateRange(task.focus_block_start, task.focus_block)}</span>
-      </button>
-      <button class="prop-chip" id="chip-tags" data-key="tags">
+      </button>` : ''}
+      ${isInHead('tags') ? `<button class="prop-chip" id="chip-tags" data-key="tags">
         <span class="chip-label">Tags</span>
         <span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span>
-      </button>
+      </button>` : ''}
+      ${taskExtraHeadKeys.map(k => { const def = allTaskBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
 
@@ -6710,6 +6916,39 @@ async function showTaskSlideover(taskId) {
 
   // ── Bind inline prop panel (extra built-in + custom props) ───────────────
   const taskInlinePropEditFns = {
+    status: (valEl) => {
+      openEditableValueCombo(valEl, TASK_STATUSES, 'taskStatuses', task.status, async (value) => {
+        await handleStatusChange(value);
+      });
+    },
+    priority: (valEl) => {
+      openEditableValueCombo(valEl, TASK_PRIORITIES, 'taskPriorities', task.priority, async (value) => {
+        await patchTask({ priority: value });
+      });
+    },
+    due: (valEl) => {
+      openDateRangePickerGlobal(valEl, stripDate(task.start_date), stripDate(task.due_date), async (start, end) => {
+        await patchTask({ start_date: start || null, due_date: end || start || null });
+        showTaskSlideover(taskId);
+      });
+    },
+    focus: (valEl) => {
+      openDateRangePickerGlobal(valEl, stripDate(task.focus_block_start), stripDate(task.focus_block), async (start, end) => {
+        await patchTask({ focus_block_start: start || null, focus_block: end || start || null });
+        showTaskSlideover(taskId);
+      });
+    },
+    tags: (valEl) => {
+      const curIds = tags.map(t => t.id);
+      openCombo(valEl, allTags.map(t => ({ value: t.id, label: t.name, color: t.color })), null, async ({ multiIds, create }) => {
+        if (create) {
+          try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/tasks/${taskId}/tags`, { tag_ids: [...new Set([...curIds, nt.id])] }); } catch(err) {}
+        } else {
+          await api('PUT', `/api/tasks/${taskId}/tags`, { tag_ids: (multiIds||[]).map(Number) });
+        }
+        showTaskSlideover(taskId);
+      }, { multiSelect: true, allowCreate: true, selectedIds: curIds });
+    },
     category: (valEl) => {
       const cats = (allCategories||TASK_CATEGORIES.map((n,i)=>({id:i+1,name:n}))).map(c => ({ value: c.id, label: c.name }));
       openCombo(valEl, cats, task.category_id, async ({ value, label, create }) => {
@@ -6947,7 +7186,7 @@ async function showTaskSlideover(taskId) {
     }
   }
 
-  document.getElementById('chip-status').onclick = (e) => {
+  document.getElementById('chip-status')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openEditableValueCombo(e.currentTarget, TASK_STATUSES, 'taskStatuses', task.status, async (value) => {
       const chipEl = document.getElementById('chip-status');
@@ -6958,9 +7197,9 @@ async function showTaskSlideover(taskId) {
       }
       await handleStatusChange(value);
     });
-  };
+  });
 
-  document.getElementById('chip-priority').onclick = (e) => {
+  document.getElementById('chip-priority')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openEditableValueCombo(e.currentTarget, TASK_PRIORITIES, 'taskPriorities', task.priority, async (value) => {
       const chipEl = document.getElementById('chip-priority');
@@ -6971,9 +7210,9 @@ async function showTaskSlideover(taskId) {
       }
       await patchTask({ priority: value });
     });
-  };
+  });
 
-  document.getElementById('chip-due').onclick = (e) => {
+  document.getElementById('chip-due')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openDateRangePickerGlobal(
       e.currentTarget,
@@ -6985,9 +7224,9 @@ async function showTaskSlideover(taskId) {
         await patchTask({ start_date: start || null, due_date: end || start || null });
       }
     );
-  };
+  });
 
-  document.getElementById('chip-focus').onclick = (e) => {
+  document.getElementById('chip-focus')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openDateRangePickerGlobal(
       e.currentTarget,
@@ -7001,15 +7240,14 @@ async function showTaskSlideover(taskId) {
         await patchTask({ focus_block_start: start || null, focus_block: end || start || null });
       }
     );
-  };
+  });
 
-  document.getElementById('chip-tags').onclick = (e) => {
+  document.getElementById('chip-tags')?.addEventListener('click', (e) => {
     e.stopPropagation();
     const items = allTags.map(t => ({ value: t.id, label: t.name, color: t.color }));
     const curIds = tags.map(t => t.id);
     openCombo(e.currentTarget, items, null, async ({ multiIds, create }) => {
       if (create) {
-        // Create tag then re-open
         try {
           const newTag = await api('POST', '/api/tags', { name: create, color: 'blue' });
           allTags.push(newTag);
@@ -7028,130 +7266,20 @@ async function showTaskSlideover(taskId) {
       }
       await api('PUT', `/api/tasks/${taskId}/tags`, { tag_ids: ids });
     }, { multiSelect: true, allowCreate: true, selectedIds: curIds });
-  };
+  });
 
-  // ── ··· More properties panel ─────────────────────────────────────────
+  // Extra heading chips (props moved from body → heading)
+  taskExtraHeadKeys.forEach(k => {
+    const el = document.getElementById(`chip-extra-${k}`);
+    if (!el) return;
+    const fn = taskInlinePropEditFns[k];
+    if (fn) el.addEventListener('click', (e) => { e.stopPropagation(); fn(el.querySelector('.chip-value')); });
+  });
+
+  // ··· Section manager
   document.getElementById('prop-chips-more').onclick = (e) => {
     e.stopPropagation();
-
-    const pIco = (path) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
-
-    const panelBody = `<div class="prop-panel" id="all-props-panel">
-      <div class="prop-panel-row">
-        <div class="prop-panel-label">${pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>')} Category</div>
-        <div class="prop-panel-value" id="pp-category">${catName || '—'}</div>
-      </div>
-      <div class="prop-panel-row">
-        <div class="prop-panel-label">${pIco('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>')} Focus Block</div>
-        <div class="prop-panel-value" id="pp-focus">${fmtDateRange(task.focus_block_start, task.focus_block) || '—'}</div>
-      </div>
-      <div class="prop-panel-row">
-        <div class="prop-panel-label">${pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>')} Story Points</div>
-        <div class="prop-panel-value" id="pp-points">${task.story_points != null ? task.story_points : '—'}</div>
-      </div>
-      <div class="prop-panel-row">
-        <div class="prop-panel-label">${pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>')} Goal</div>
-        <div class="prop-panel-value" id="pp-goal">${goalName || '—'}</div>
-      </div>
-      <div class="prop-panel-row">
-        <div class="prop-panel-label">${pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>')} Project</div>
-        <div class="prop-panel-value" id="pp-project">${projName || '—'}</div>
-      </div>
-      <div class="prop-panel-row" style="align-items:center">
-        <div class="prop-panel-label">${pIco('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>')} Recurring</div>
-        <div id="pp-recur" style="display:flex;align-items:center;gap:8px">
-          <label class="toggle-switch toggle-switch-sm">
-            <input type="checkbox" id="pp-recur-toggle" ${(task.recur_interval||0)>0?'checked':''} />
-            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-          </label>
-          <div id="pp-recur-fields" style="display:${(task.recur_interval||0)>0?'flex':'none'};gap:6px;align-items:center">
-            <span style="font-size:12px;color:var(--text-muted)">Every</span>
-            <input type="number" id="pp-recur-interval" value="${task.recur_interval||1}" min="1" style="width:50px;font-size:12px" />
-            <select id="pp-recur-unit" style="font-size:12px">
-              ${['days','weeks','months','years'].map(u => `<option value="${u}" ${(task.recur_unit||'').toLowerCase()===u?'selected':''}>${u}</option>`).join('')}
-            </select>
-          </div>
-        </div>
-      </div>
-    </div>`;
-
-    openFormSlideover('All Properties', panelBody);
-
-    // Bind click-to-edit on each prop-panel-value
-    document.getElementById('pp-category').onclick = (ev) => {
-      const cats = (allCategories||TASK_CATEGORIES.map((n,i)=>({id:i+1,name:n}))).map(c => ({ value: c.id, label: c.name }));
-      openCombo(ev.currentTarget, cats, task.category_id, async ({ value, label, create }) => {
-        if (create) {
-          try {
-            const nc = await api('POST', '/api/categories', { name: create });
-            await patchTask({ category_id: nc.id });
-          } catch(err) {}
-        } else {
-          document.getElementById('pp-category').textContent = label;
-          await patchTask({ category_id: value ? parseInt(value) : null });
-        }
-      }, { allowCreate: true });
-    };
-
-    document.getElementById('pp-focus').onclick = (ev) => {
-      openDateRangePickerGlobal(ev.currentTarget, null, stripDate(task.focus_block), async (start, end) => {
-        const val = end || start;
-        document.getElementById('pp-focus').textContent = val ? new Date(val+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '—';
-        await patchTask({ focus_block: val || null });
-      });
-    };
-
-    document.getElementById('pp-points').onclick = (ev) => {
-      const el = ev.currentTarget;
-      const inp = document.createElement('input');
-      inp.type = 'number'; inp.min = '0'; inp.style.cssText = 'width:80px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
-      inp.value = task.story_points || '';
-      el.innerHTML = '';
-      el.appendChild(inp);
-      inp.focus();
-      inp.onblur = async () => {
-        const v = parseInt(inp.value) || 0;
-        el.textContent = v || '—';
-        await patchTask({ story_points: v });
-      };
-      inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); };
-    };
-
-    document.getElementById('pp-goal').onclick = (ev) => {
-      const items = [{ value: '', label: '— none —' }, ...allGoals.map(g => ({ value: g.id, label: g.title }))];
-      openCombo(ev.currentTarget, items, task.goal_id, async ({ value, label }) => {
-        document.getElementById('pp-goal').textContent = value ? label : '—';
-        await patchTask({ goal_id: value ? parseInt(value) : null });
-      });
-    };
-
-    document.getElementById('pp-project').onclick = (ev) => {
-      const items = [{ value: '', label: '— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))];
-      openCombo(ev.currentTarget, items, task.project_id, async ({ value, label }) => {
-        document.getElementById('pp-project').textContent = value ? label : '—';
-        await patchTask({ project_id: value ? parseInt(value) : null });
-      });
-    };
-
-    const recurToggle = document.getElementById('pp-recur-toggle');
-    const recurFields = document.getElementById('pp-recur-fields');
-    recurToggle.onchange = async () => {
-      recurFields.style.display = recurToggle.checked ? 'flex' : 'none';
-      if (!recurToggle.checked) {
-        task.recur_interval = 0; task.recur_unit = '';
-        await patchTask({ recur_interval: 0, recur_unit: '' });
-      }
-    };
-    const saveRecur = async () => {
-      if (!recurToggle.checked) return;
-      const interval = parseInt(document.getElementById('pp-recur-interval').value) || 1;
-      const unit = document.getElementById('pp-recur-unit').value || 'days';
-      task.recur_interval = interval; task.recur_unit = unit;
-      await patchTask({ recur_interval: interval, recur_unit: unit });
-    };
-    document.getElementById('pp-recur-interval').onblur = saveRecur;
-    document.getElementById('pp-recur-interval').onkeydown = e => { if (e.key === 'Enter') saveRecur(); };
-    document.getElementById('pp-recur-unit').onchange = saveRecur;
+    openPropSectionManager(e.currentTarget, 'task', () => showTaskSlideover(taskId));
   };
 
   // ── Other existing bindings ──────────────────────────────────────────
@@ -8718,15 +8846,31 @@ async function showProjectSlideover(project, goals, afterSave) {
   const catName = allCategories ? (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name : null;
   const goalName = goals.find(g => String(g.id) === String(p.goal_id))?.title || null;
 
-  const projBuiltinDefs = [
-    { key: 'goal', label: 'Goal', icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+  const projSections = getPropSections('project');
+  const projIsInHead = (k) => projSections.heading.includes(k);
+  const PROJ_CHIP_KEYS = ['status','due','goal','tags'];
+  const projExtraHeadKeys = projSections.heading.filter(k => !PROJ_CHIP_KEYS.includes(k));
+
+  const allProjBuiltinDefs = [
+    { key: 'status',   label: 'Status',    icon: pIco('<circle cx="12" cy="12" r="10"/>'),
+      renderValue: () => `<span>${(p.status||'active').replace('_',' ')}</span>` },
+    { key: 'due',      label: 'Due Date',  icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+      renderValue: () => fmtDate(p.due_date) ? `<span>${fmtDate(p.due_date)}</span>` : '' },
+    { key: 'goal',     label: 'Goal',      icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
       renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
-    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+    { key: 'tags',     label: 'Tags',      icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
+      renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
+    { key: 'category', label: 'Category',  icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? `<span>${catName}</span>` : '' },
-    { key: 'macro', label: 'Macro Area', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+    { key: 'macro',    label: 'Macro Area',icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
       renderValue: () => p.macro_area ? `<span>${p.macro_area.split('(')[0].trim()}</span>` : '' },
+    { key: 'kanban',   label: 'Kanban Col',icon: pIco('<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>'),
+      renderValue: () => p.kanban_col ? `<span>${p.kanban_col}</span>` : '' },
+    { key: 'archived', label: 'Archived',  icon: pIco('<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>'),
+      renderValue: () => p.archived ? `<span>Yes</span>` : '' },
   ];
-  const projInlinePropPanel = buildInlinePropPanel('project', projectId, projBuiltinDefs);
+  const projBodyDefs = allProjBuiltinDefs.filter(d => projSections.body.includes(d.key));
+  const projInlinePropPanel = buildInlinePropPanel('project', projectId, projBodyDefs);
 
   const goalCrumb = goalName
     ? `<div class="detail-bc-prefix"><span class="bc-part bc-goal" data-goal-id="${p.goal_id}" style="cursor:pointer">${goalName}</span></div>`
@@ -8751,22 +8895,11 @@ async function showProjectSlideover(project, goals, afterSave) {
     </div>
 
     <div class="prop-chips" id="prop-chips">
-      <button class="prop-chip" id="chip-status" data-key="status">
-        <span class="chip-label">Status</span>
-        <span class="chip-value">${(p.status||'active').replace('_',' ')}</span>
-      </button>
-      <button class="prop-chip" id="chip-due" data-key="due">
-        <span class="chip-label">Due</span>
-        <span class="chip-value" id="chip-due-val">${fmtDate(p.due_date) || '—'}</span>
-      </button>
-      <button class="prop-chip" id="chip-goal" data-key="goal">
-        <span class="chip-label">Goal</span>
-        <span class="chip-value" id="chip-goal-val">${goalName || '—'}</span>
-      </button>
-      <button class="prop-chip" id="chip-tags" data-key="tags">
-        <span class="chip-label">Tags</span>
-        <span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span>
-      </button>
+      ${projIsInHead('status') ? `<button class="prop-chip" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value">${(p.status||'active').replace('_',' ')}</span></button>` : ''}
+      ${projIsInHead('due') ? `<button class="prop-chip" id="chip-due" data-key="due"><span class="chip-label">Due</span><span class="chip-value" id="chip-due-val">${fmtDate(p.due_date) || '—'}</span></button>` : ''}
+      ${projIsInHead('goal') ? `<button class="prop-chip" id="chip-goal" data-key="goal"><span class="chip-label">Goal</span><span class="chip-value" id="chip-goal-val">${goalName || '—'}</span></button>` : ''}
+      ${projIsInHead('tags') ? `<button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>` : ''}
+      ${projExtraHeadKeys.map(k => { const def = allProjBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
 
@@ -8826,99 +8959,63 @@ async function showProjectSlideover(project, goals, afterSave) {
   document.querySelector('.bc-goal')?.addEventListener('click', () => { closeSlideover(); renderView('goal-detail', p.goal_id); });
 
   // Prop chips
-  document.getElementById('chip-status').onclick = (e) => {
+  document.getElementById('chip-status')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openValuePicker(e.currentTarget, PROJECT_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => {
-      document.getElementById('chip-status').querySelector('.chip-value').textContent = val.replace('_',' ');
+      const el = document.getElementById('chip-status'); if (el) el.querySelector('.chip-value').textContent = val.replace('_',' ');
       await patchProject({ status: val });
     });
-  };
-  document.getElementById('chip-due').onclick = (e) => {
+  });
+  document.getElementById('chip-due')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openDateRangePickerGlobal(e.currentTarget, stripDate(p.start_date), stripDate(p.due_date), async (start, end) => {
       await patchProject({ start_date: start || null, due_date: end || null });
-      const v = document.getElementById('chip-due-val');
-      if (v) v.textContent = end ? fmtDate(end) : (start ? fmtDate(start) : '—');
+      const v = document.getElementById('chip-due-val'); if (v) v.textContent = end ? fmtDate(end) : (start ? fmtDate(start) : '—');
     });
-  };
-  document.getElementById('chip-goal').onclick = (e) => {
+  });
+  document.getElementById('chip-goal')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...(goals||[]).map(g => ({ value: g.id, label: g.title }))], async (val) => {
-      document.getElementById('chip-goal-val').textContent = val ? (goals||[]).find(g => String(g.id) === String(val))?.title || val : '—';
+      const v = document.getElementById('chip-goal-val'); if (v) v.textContent = val ? (goals||[]).find(g => String(g.id) === String(val))?.title || val : '—';
       await patchProject({ goal_id: val ? parseInt(val) : null });
     });
-  };
-  document.getElementById('chip-tags').onclick = (e) => {
+  });
+  document.getElementById('chip-tags')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openTagsPicker(e.currentTarget, tags.map(t => t.id), async (ids) => {
       await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: ids });
       const sel = allTags.filter(t => ids.includes(t.id));
-      const v = document.getElementById('chip-tags-val');
-      if (v) v.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      const v = document.getElementById('chip-tags-val'); if (v) v.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
       if (afterSave) afterSave();
     });
-  };
+  });
 
-  // ··· More
+  // Extra heading chips
+  const projInlinePropEditFns = {
+    status:   (valEl) => { openValuePicker(valEl, PROJECT_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchProject({ status: val }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    due:      (valEl) => { openDateRangePickerGlobal(valEl, stripDate(p.start_date), stripDate(p.due_date), async (start, end) => { await patchProject({ start_date: start||null, due_date: end||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    goal:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(goals||[]).map(g => ({ value: g.id, label: g.title }))], async (val) => { await patchProject({ goal_id: val ? parseInt(val) : null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: ids }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    category: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchProject({ category_id: val ? parseInt(val) : null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    macro:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => { await patchProject({ macro_area: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    kanban:   (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...KANBAN_COLS.map(k => ({ value: k, label: k }))], async (val) => { await patchProject({ kanban_col: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    archived: (valEl) => { patchProject({ archived: !p.archived }).then(() => showProjectSlideover({ id: projectId }, goals, afterSave)); },
+  };
+  projExtraHeadKeys.forEach(k => {
+    const el = document.getElementById(`chip-extra-${k}`);
+    if (!el) return;
+    const fn = projInlinePropEditFns[k];
+    if (fn) el.addEventListener('click', (e) => { e.stopPropagation(); fn(el.querySelector('.chip-value')); });
+  });
+
+  // ··· Section manager
   document.getElementById('prop-chips-more').onclick = (e) => {
     e.stopPropagation();
-    const pIco2 = (path) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${path}</svg>`;
-    openFormSlideover('Project Properties', `<div class="prop-panel">
-      <div class="prop-panel-row"><div class="prop-panel-label">${pIco2('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>')} Category</div>
-        <div class="prop-panel-value" id="pp-category" style="cursor:pointer">${catName || '—'}</div></div>
-      <div class="prop-panel-row"><div class="prop-panel-label">Macro Area</div>
-        <div class="prop-panel-value" id="pp-macro" style="cursor:pointer">${p.macro_area ? p.macro_area.split('(')[0].trim() : '—'}</div></div>
-      <div class="prop-panel-row"><div class="prop-panel-label">Kanban Col</div>
-        <div class="prop-panel-value" id="pp-kanban" style="cursor:pointer">${p.kanban_col || '—'}</div></div>
-      <div class="prop-panel-row"><div class="prop-panel-label">Archived</div>
-        <div class="prop-panel-value">
-          <label class="toggle-switch toggle-switch-sm"><input type="checkbox" id="pp-archived" ${p.archived?'checked':''}/><span class="toggle-track"><span class="toggle-thumb"></span></span></label>
-        </div></div>
-    </div>`);
-    document.getElementById('pp-category').onclick = (ev) => {
-      openValuePicker(ev.currentTarget, [{ value: '', label: '— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => {
-        await patchProject({ category_id: val ? parseInt(val) : null });
-        document.getElementById('pp-category').textContent = val ? (allCategories||[]).find(c => String(c.id) === String(val))?.name || '—' : '—';
-      });
-    };
-    document.getElementById('pp-macro').onclick = (ev) => {
-      openValuePicker(ev.currentTarget, [{ value: '', label: '— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => {
-        await patchProject({ macro_area: val || null });
-        document.getElementById('pp-macro').textContent = val ? val.split('(')[0].trim() : '—';
-      });
-    };
-    document.getElementById('pp-kanban').onclick = (ev) => {
-      openValuePicker(ev.currentTarget, [{ value: '', label: '— none —' }, ...KANBAN_COLS.map(k => ({ value: k, label: k }))], async (val) => {
-        await patchProject({ kanban_col: val || null });
-        document.getElementById('pp-kanban').textContent = val || '—';
-      });
-    };
-    document.getElementById('pp-archived').onchange = async (ev) => {
-      await patchProject({ archived: ev.target.checked });
-    };
+    openPropSectionManager(e.currentTarget, 'project', () => showProjectSlideover({ id: projectId }, goals, afterSave));
   };
 
   // Inline prop panel
-  bindInlinePropPanel('project', projectId, {
-    goal: (valEl) => {
-      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...(goals||[]).map(g => ({ value: g.id, label: g.title }))], async (val) => {
-        await patchProject({ goal_id: val ? parseInt(val) : null });
-        showProjectSlideover({ id: projectId }, goals, afterSave);
-      });
-    },
-    category: (valEl) => {
-      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => {
-        await patchProject({ category_id: val ? parseInt(val) : null });
-        showProjectSlideover({ id: projectId }, goals, afterSave);
-      });
-    },
-    macro: (valEl) => {
-      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => {
-        await patchProject({ macro_area: val || null });
-        showProjectSlideover({ id: projectId }, goals, afterSave);
-      });
-    },
-  }, () => showProjectSlideover({ id: projectId }, goals, afterSave));
+  bindInlinePropPanel('project', projectId, projInlinePropEditFns, () => showProjectSlideover({ id: projectId }, goals, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
 
   // Task rows click → task sideview
@@ -8951,13 +9048,29 @@ async function showGoalSlideover(goal, afterSave) {
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
   const catName = allCategories ? (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name : null;
 
-  const goalBuiltinDefs = [
+  const goalSections = getPropSections('goal');
+  const goalIsInHead = (k) => goalSections.heading.includes(k);
+  const GOAL_CHIP_KEYS = ['status','type','year','tags'];
+  const goalExtraHeadKeys = goalSections.heading.filter(k => !GOAL_CHIP_KEYS.includes(k));
+
+  const allGoalBuiltinDefs = [
+    { key: 'status',   label: 'Status',   icon: pIco('<circle cx="12" cy="12" r="10"/>'),
+      renderValue: () => `<span>${(g.status||'active').replace('_',' ')}</span>` },
+    { key: 'type',     label: 'Type',     icon: pIco('<path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z"/><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/>'),
+      renderValue: () => g.type ? `<span>${g.type}</span>` : '' },
+    { key: 'year',     label: 'Year',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+      renderValue: () => g.year ? `<span>${g.year}</span>` : '' },
+    { key: 'tags',     label: 'Tags',     icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
+      renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? `<span>${catName}</span>` : '' },
-    { key: 'due', label: 'Due Date', icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+    { key: 'due',      label: 'Due Date', icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => g.due_date ? `<span>${fmtDate(g.due_date)}</span>` : '' },
+    { key: 'metrics',  label: 'Metrics',  icon: pIco('<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
+      renderValue: () => g.target != null ? `<span>${g.current_value ?? '—'}/${g.target}</span>` : '' },
   ];
-  const goalInlinePropPanel = buildInlinePropPanel('goal', goalId, goalBuiltinDefs);
+  const goalBodyDefs = allGoalBuiltinDefs.filter(d => goalSections.body.includes(d.key));
+  const goalInlinePropPanel = buildInlinePropPanel('goal', goalId, goalBodyDefs);
 
   const projRows = projects.map(p =>
     `<div class="note-card" data-proj-id="${p.id}" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin-bottom:6px;padding:8px 10px">
@@ -8976,22 +9089,11 @@ async function showGoalSlideover(goal, afterSave) {
     </div>
 
     <div class="prop-chips" id="prop-chips">
-      <button class="prop-chip" id="chip-status" data-key="status">
-        <span class="chip-label">Status</span>
-        <span class="chip-value">${(g.status||'active').replace('_',' ')}</span>
-      </button>
-      <button class="prop-chip" id="chip-type" data-key="type">
-        <span class="chip-label">Type</span>
-        <span class="chip-value" id="chip-type-val">${g.type || '—'}</span>
-      </button>
-      <button class="prop-chip" id="chip-year" data-key="year">
-        <span class="chip-label">Year</span>
-        <span class="chip-value" id="chip-year-val">${g.year || '—'}</span>
-      </button>
-      <button class="prop-chip" id="chip-tags" data-key="tags">
-        <span class="chip-label">Tags</span>
-        <span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span>
-      </button>
+      ${goalIsInHead('status') ? `<button class="prop-chip" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value">${(g.status||'active').replace('_',' ')}</span></button>` : ''}
+      ${goalIsInHead('type') ? `<button class="prop-chip" id="chip-type" data-key="type"><span class="chip-label">Type</span><span class="chip-value" id="chip-type-val">${g.type || '—'}</span></button>` : ''}
+      ${goalIsInHead('year') ? `<button class="prop-chip" id="chip-year" data-key="year"><span class="chip-label">Year</span><span class="chip-value" id="chip-year-val">${g.year || '—'}</span></button>` : ''}
+      ${goalIsInHead('tags') ? `<button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>` : ''}
+      ${goalExtraHeadKeys.map(k => { const def = allGoalBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
 
@@ -9049,90 +9151,75 @@ async function showGoalSlideover(goal, afterSave) {
   document.getElementById('detail-desc').onblur = (e) => patchGoal({ description: e.target.value });
 
   // Prop chips
-  document.getElementById('chip-status').onclick = (e) => {
+  document.getElementById('chip-status')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openValuePicker(e.currentTarget, GOAL_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => {
-      document.getElementById('chip-status').querySelector('.chip-value').textContent = val.replace('_',' ');
+      const el = document.getElementById('chip-status'); if (el) el.querySelector('.chip-value').textContent = val.replace('_',' ');
       await patchGoal({ status: val });
     });
-  };
-  document.getElementById('chip-type').onclick = (e) => {
+  });
+  document.getElementById('chip-type')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...GOAL_TYPES.map(t => ({ value: t, label: t }))], async (val) => {
-      document.getElementById('chip-type-val').textContent = val || '—';
+      const v = document.getElementById('chip-type-val'); if (v) v.textContent = val || '—';
       await patchGoal({ type: val || null });
     });
-  };
-  document.getElementById('chip-year').onclick = (e) => {
+  });
+  document.getElementById('chip-year')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...GOAL_YEARS.map(y => ({ value: y, label: y }))], async (val) => {
-      document.getElementById('chip-year-val').textContent = val || '—';
+      const v = document.getElementById('chip-year-val'); if (v) v.textContent = val || '—';
       await patchGoal({ year: val || null });
     });
-  };
-  document.getElementById('chip-tags').onclick = (e) => {
+  });
+  document.getElementById('chip-tags')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openTagsPicker(e.currentTarget, tags.map(t => t.id), async (ids) => {
       await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: ids });
       const sel = allTags.filter(t => ids.includes(t.id));
-      const v = document.getElementById('chip-tags-val');
-      if (v) v.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      const v = document.getElementById('chip-tags-val'); if (v) v.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
       if (afterSave) afterSave();
     });
+  });
+
+  const goalInlinePropEditFns = {
+    status:   (valEl) => { openValuePicker(valEl, GOAL_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchGoal({ status: val }); showGoalSlideover({ id: goalId }, afterSave); }); },
+    type:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_TYPES.map(t => ({ value: t, label: t }))], async (val) => { await patchGoal({ type: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
+    year:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_YEARS.map(y => ({ value: y, label: y }))], async (val) => { await patchGoal({ year: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
+    tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: ids }); showGoalSlideover({ id: goalId }, afterSave); }); },
+    category: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchGoal({ category_id: val ? parseInt(val) : null }); showGoalSlideover({ id: goalId }, afterSave); }); },
+    due:      (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(g.due_date), async (val) => { await patchGoal({ due_date: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
+    metrics:  (valEl) => {
+      valEl.innerHTML = `<div style="display:flex;flex-direction:column;gap:4px">
+        <input type="number" placeholder="Start" value="${g.start_value??''}" id="gm-sv" style="width:70px;font-size:12px;padding:2px 5px;border:1px solid var(--accent);border-radius:3px;background:var(--bg-card);color:var(--text)">
+        <input type="number" placeholder="Current" value="${g.current_value??''}" id="gm-cv" style="width:70px;font-size:12px;padding:2px 5px;border:1px solid var(--accent);border-radius:3px;background:var(--bg-card);color:var(--text)">
+        <input type="number" placeholder="Target" value="${g.target??''}" id="gm-t" style="width:70px;font-size:12px;padding:2px 5px;border:1px solid var(--accent);border-radius:3px;background:var(--bg-card);color:var(--text)">
+      </div>`;
+      document.getElementById('gm-sv')?.focus();
+      const save = async () => {
+        const sv = parseFloat(document.getElementById('gm-sv')?.value); const cv = parseFloat(document.getElementById('gm-cv')?.value); const t = parseFloat(document.getElementById('gm-t')?.value);
+        await patchGoal({ start_value: isNaN(sv)?null:sv, current_value: isNaN(cv)?null:cv, target: isNaN(t)?null:t });
+        showGoalSlideover({ id: goalId }, afterSave);
+      };
+      ['gm-sv','gm-cv','gm-t'].forEach(id => { document.getElementById(id)?.addEventListener('blur', () => setTimeout(save, 150)); document.getElementById(id)?.addEventListener('keydown', e => { if (e.key==='Enter') save(); }); });
+    },
   };
 
-  // ··· More properties
+  goalExtraHeadKeys.forEach(k => {
+    const el = document.getElementById(`chip-extra-${k}`);
+    if (!el) return;
+    const fn = goalInlinePropEditFns[k];
+    if (fn) el.addEventListener('click', (e) => { e.stopPropagation(); fn(el.querySelector('.chip-value')); });
+  });
+
+  // ··· Section manager
   document.getElementById('prop-chips-more').onclick = (e) => {
     e.stopPropagation();
-    const pIco2 = (path) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${path}</svg>`;
-    openFormSlideover('Goal Properties', `<div class="prop-panel">
-      <div class="prop-panel-row"><div class="prop-panel-label">${pIco2('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>')} Category</div>
-        <div class="prop-panel-value" id="pp-category" style="cursor:pointer">${catName || '—'}</div></div>
-      <div class="prop-panel-row"><div class="prop-panel-label">Due Date</div>
-        <div class="prop-panel-value" id="pp-due" style="cursor:pointer">${fmtDate(g.due_date) || '—'}</div></div>
-      <div class="prop-panel-row"><div class="prop-panel-label">Start Value</div>
-        <div class="prop-panel-value"><input type="number" id="pp-sv" value="${g.start_value != null ? g.start_value : ''}" style="width:80px;font-size:13px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg-card);color:var(--text-primary)"/></div></div>
-      <div class="prop-panel-row"><div class="prop-panel-label">Current Value</div>
-        <div class="prop-panel-value"><input type="number" id="pp-cv" value="${g.current_value != null ? g.current_value : ''}" style="width:80px;font-size:13px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg-card);color:var(--text-primary)"/></div></div>
-      <div class="prop-panel-row"><div class="prop-panel-label">Target Value</div>
-        <div class="prop-panel-value"><input type="number" id="pp-target" value="${g.target != null ? g.target : ''}" style="width:80px;font-size:13px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg-card);color:var(--text-primary)"/></div></div>
-    </div>`);
-    document.getElementById('pp-category').onclick = (ev) => {
-      openValuePicker(ev.currentTarget, [{ value: '', label: '— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => {
-        await patchGoal({ category_id: val ? parseInt(val) : null });
-        document.getElementById('pp-category').textContent = val ? (allCategories||[]).find(c => String(c.id) === String(val))?.name || '—' : '—';
-      });
-    };
-    document.getElementById('pp-due').onclick = (ev) => {
-      openSingleDatePickerGlobal(ev.currentTarget, stripDate(g.due_date), async (val) => {
-        await patchGoal({ due_date: val || null });
-        document.getElementById('pp-due').textContent = val ? fmtDate(val) : '—';
-      });
-    };
-    const saveMetrics = async () => {
-      const sv = parseFloat(document.getElementById('pp-sv')?.value);
-      const cv = parseFloat(document.getElementById('pp-cv')?.value);
-      const tgt = parseFloat(document.getElementById('pp-target')?.value);
-      await patchGoal({ start_value: isNaN(sv) ? null : sv, current_value: isNaN(cv) ? null : cv, target: isNaN(tgt) ? null : tgt });
-    };
-    ['pp-sv','pp-cv','pp-target'].forEach(id => { document.getElementById(id)?.addEventListener('blur', saveMetrics); });
+    openPropSectionManager(e.currentTarget, 'goal', () => showGoalSlideover({ id: goalId }, afterSave));
   };
 
   // Inline prop panel
-  bindInlinePropPanel('goal', goalId, {
-    category: (valEl) => {
-      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => {
-        await patchGoal({ category_id: val ? parseInt(val) : null });
-        showGoalSlideover({ id: goalId }, afterSave);
-      });
-    },
-    due: (valEl) => {
-      openSingleDatePickerGlobal(valEl, stripDate(g.due_date), async (val) => {
-        await patchGoal({ due_date: val || null });
-        showGoalSlideover({ id: goalId }, afterSave);
-      });
-    },
-  }, () => showGoalSlideover({ id: goalId }, afterSave));
+  bindInlinePropPanel('goal', goalId, goalInlinePropEditFns, () => showGoalSlideover({ id: goalId }, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="goal"]'));
 
   // Project cards nav
@@ -9332,15 +9419,25 @@ async function showNoteSlideover(noteId, afterSave) {
   const projName = projects.find(p => String(p.id) === String(n.project_id))?.title || null;
   const goalName = goals.find(g => String(g.id) === String(n.goal_id))?.title || null;
 
-  const noteBuiltinDefs = [
+  const noteSections = getPropSections('note');
+  const noteIsInHead = (k) => noteSections.heading.includes(k);
+  const NOTE_CHIP_KEYS = ['date','project','goal','tags'];
+  const noteExtraHeadKeys = noteSections.heading.filter(k => !NOTE_CHIP_KEYS.includes(k));
+
+  const allNoteBuiltinDefs = [
+    { key: 'date',     label: 'Date',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+      renderValue: () => n.note_date ? `<span>${fmtDate(n.note_date)}</span>` : '' },
+    { key: 'project',  label: 'Project',  icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+      renderValue: () => projName ? `<span>${projName}</span>` : '' },
+    { key: 'goal',     label: 'Goal',     icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
+    { key: 'tags',     label: 'Tags',     icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
+      renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? `<span>${catName}</span>` : '' },
-    { key: 'project', label: 'Project', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
-      renderValue: () => projName ? `<span>${projName}</span>` : '' },
-    { key: 'goal', label: 'Goal', icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
-      renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
   ];
-  const noteInlinePropPanel = buildInlinePropPanel('note', noteId, noteBuiltinDefs);
+  const noteBodyDefs = allNoteBuiltinDefs.filter(d => noteSections.body.includes(d.key));
+  const noteInlinePropPanel = buildInlinePropPanel('note', noteId, noteBodyDefs);
 
   const body = `
     <button class="entity-icon-add-btn" id="note-icon-add-btn">
@@ -9352,22 +9449,12 @@ async function showNoteSlideover(noteId, afterSave) {
     </div>
 
     <div class="prop-chips" id="prop-chips">
-      <button class="prop-chip" id="chip-date" data-key="date">
-        <span class="chip-label">Date</span>
-        <span class="chip-value" id="chip-date-val">${fmtDate(n.note_date) || '—'}</span>
-      </button>
-      <button class="prop-chip" id="chip-project" data-key="project">
-        <span class="chip-label">Project</span>
-        <span class="chip-value" id="chip-project-val">${projName || '—'}</span>
-      </button>
-      <button class="prop-chip" id="chip-goal" data-key="goal">
-        <span class="chip-label">Goal</span>
-        <span class="chip-value" id="chip-goal-val">${goalName || '—'}</span>
-      </button>
-      <button class="prop-chip" id="chip-tags" data-key="tags">
-        <span class="chip-label">Tags</span>
-        <span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span>
-      </button>
+      ${noteIsInHead('date') ? `<button class="prop-chip" id="chip-date" data-key="date"><span class="chip-label">Date</span><span class="chip-value" id="chip-date-val">${fmtDate(n.note_date) || '—'}</span></button>` : ''}
+      ${noteIsInHead('project') ? `<button class="prop-chip" id="chip-project" data-key="project"><span class="chip-label">Project</span><span class="chip-value" id="chip-project-val">${projName || '—'}</span></button>` : ''}
+      ${noteIsInHead('goal') ? `<button class="prop-chip" id="chip-goal" data-key="goal"><span class="chip-label">Goal</span><span class="chip-value" id="chip-goal-val">${goalName || '—'}</span></button>` : ''}
+      ${noteIsInHead('tags') ? `<button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>` : ''}
+      ${noteExtraHeadKeys.map(k => { const def = allNoteBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
+      <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
 
     ${noteInlinePropPanel}
@@ -9420,59 +9507,60 @@ async function showNoteSlideover(noteId, afterSave) {
   });
 
   // Prop chips
-  document.getElementById('chip-date').onclick = (e) => {
+  document.getElementById('chip-date')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openSingleDatePickerGlobal(e.currentTarget, stripDate(n.note_date), async (val) => {
-      document.getElementById('chip-date-val').textContent = val ? fmtDate(val) : '—';
+      const v = document.getElementById('chip-date-val'); if (v) v.textContent = val ? fmtDate(val) : '—';
       await patchNote({ note_date: val || null });
     });
-  };
-  document.getElementById('chip-project').onclick = (e) => {
+  });
+  document.getElementById('chip-project')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
-      document.getElementById('chip-project-val').textContent = val ? projects.find(p => String(p.id) === String(val))?.title || '—' : '—';
+      const v = document.getElementById('chip-project-val'); if (v) v.textContent = val ? projects.find(p => String(p.id) === String(val))?.title || '—' : '—';
       await patchNote({ project_id: val ? parseInt(val) : null });
     });
-  };
-  document.getElementById('chip-goal').onclick = (e) => {
+  });
+  document.getElementById('chip-goal')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => {
-      document.getElementById('chip-goal-val').textContent = val ? goals.find(g => String(g.id) === String(val))?.title || '—' : '—';
+      const v = document.getElementById('chip-goal-val'); if (v) v.textContent = val ? goals.find(g => String(g.id) === String(val))?.title || '—' : '—';
       await patchNote({ goal_id: val ? parseInt(val) : null });
     });
-  };
-  document.getElementById('chip-tags').onclick = (e) => {
+  });
+  document.getElementById('chip-tags')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openTagsPicker(e.currentTarget, tags.map(t => t.id), async (ids) => {
       await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: ids });
       const sel = allTags.filter(t => ids.includes(t.id));
-      const v = document.getElementById('chip-tags-val');
-      if (v) v.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      const v = document.getElementById('chip-tags-val'); if (v) v.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
       if (afterSave) afterSave();
     });
+  });
+
+  const noteInlinePropEditFns = {
+    date:     (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(n.note_date), async (val) => { await patchNote({ note_date: val||null }); showNoteSlideover(noteId, afterSave); }); },
+    project:  (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => { await patchNote({ project_id: val ? parseInt(val) : null }); showNoteSlideover(noteId, afterSave); }); },
+    goal:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => { await patchNote({ goal_id: val ? parseInt(val) : null }); showNoteSlideover(noteId, afterSave); }); },
+    tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: ids }); showNoteSlideover(noteId, afterSave); }); },
+    category: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchNote({ category_id: val ? parseInt(val) : null }); showNoteSlideover(noteId, afterSave); }); },
+  };
+
+  noteExtraHeadKeys.forEach(k => {
+    const el = document.getElementById(`chip-extra-${k}`);
+    if (!el) return;
+    const fn = noteInlinePropEditFns[k];
+    if (fn) el.addEventListener('click', (e) => { e.stopPropagation(); fn(el.querySelector('.chip-value')); });
+  });
+
+  // ··· Section manager
+  document.getElementById('prop-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    openPropSectionManager(e.currentTarget, 'note', () => showNoteSlideover(noteId, afterSave));
   };
 
   // Inline prop panel
-  bindInlinePropPanel('note', noteId, {
-    category: (valEl) => {
-      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => {
-        await patchNote({ category_id: val ? parseInt(val) : null });
-        showNoteSlideover(noteId, afterSave);
-      });
-    },
-    project: (valEl) => {
-      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
-        await patchNote({ project_id: val ? parseInt(val) : null });
-        showNoteSlideover(noteId, afterSave);
-      });
-    },
-    goal: (valEl) => {
-      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => {
-        await patchNote({ goal_id: val ? parseInt(val) : null });
-        showNoteSlideover(noteId, afterSave);
-      });
-    },
-  }, () => showNoteSlideover(noteId, afterSave));
+  bindInlinePropPanel('note', noteId, noteInlinePropEditFns, () => showNoteSlideover(noteId, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="note"]'));
 
   document.getElementById('note-export-btn').onclick = () => showJSONModal(`/api/export/note/${noteId}`, `note-${noteId}.json`);
@@ -9501,13 +9589,23 @@ async function showSprintSlideover(sprintId, afterSave) {
 
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
 
-  const sprintBuiltinDefs = [
-    { key: 'project', label: 'Project', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+  const sprintSections = getPropSections('sprint');
+  const sprintIsInHead = (k) => sprintSections.heading.includes(k);
+  const SPRINT_CHIP_KEYS = ['status','dates','project'];
+  const sprintExtraHeadKeys = sprintSections.heading.filter(k => !SPRINT_CHIP_KEYS.includes(k));
+
+  const allSprintBuiltinDefs = [
+    { key: 'status',  label: 'Status',    icon: pIco('<circle cx="12" cy="12" r="10"/>'),
+      renderValue: () => `<span>${s.status || 'planned'}</span>` },
+    { key: 'dates',   label: 'Dates',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+      renderValue: () => { const dr = s.start_date && s.end_date ? `${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}` : fmtDate(s.start_date||s.end_date)||''; return dr ? `<span>${dr}</span>` : ''; } },
+    { key: 'project', label: 'Project',   icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
       renderValue: () => projName ? `<span>${projName}</span>` : '' },
-    { key: 'points', label: 'Capacity (pts)', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
+    { key: 'points',  label: 'Capacity (pts)', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
       renderValue: () => s.story_points != null ? `<span>${s.story_points}</span>` : '' },
   ];
-  const sprintInlinePropPanel = buildInlinePropPanel('sprint', sprintId, sprintBuiltinDefs);
+  const sprintBodyDefs = allSprintBuiltinDefs.filter(d => sprintSections.body.includes(d.key));
+  const sprintInlinePropPanel = buildInlinePropPanel('sprint', sprintId, sprintBodyDefs);
 
   const projCrumb = projName
     ? `<div class="detail-bc-prefix"><span class="bc-part bc-proj" data-proj-id="${s.project_id}" style="cursor:pointer">${projName}</span></div>`
@@ -9538,18 +9636,10 @@ async function showSprintSlideover(sprintId, afterSave) {
     </div>
 
     <div class="prop-chips" id="prop-chips">
-      <button class="prop-chip" id="chip-status" data-key="status">
-        <span class="chip-label">Status</span>
-        <span class="chip-value">${s.status || 'planned'}</span>
-      </button>
-      <button class="prop-chip" id="chip-dates" data-key="dates">
-        <span class="chip-label">Dates</span>
-        <span class="chip-value" id="chip-dates-val">${dateRange}</span>
-      </button>
-      <button class="prop-chip" id="chip-project" data-key="project">
-        <span class="chip-label">Project</span>
-        <span class="chip-value" id="chip-project-val">${projName || '—'}</span>
-      </button>
+      ${sprintIsInHead('status') ? `<button class="prop-chip" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value">${s.status || 'planned'}</span></button>` : ''}
+      ${sprintIsInHead('dates') ? `<button class="prop-chip" id="chip-dates" data-key="dates"><span class="chip-label">Dates</span><span class="chip-value" id="chip-dates-val">${dateRange}</span></button>` : ''}
+      ${sprintIsInHead('project') ? `<button class="prop-chip" id="chip-project" data-key="project"><span class="chip-label">Project</span><span class="chip-value" id="chip-project-val">${projName || '—'}</span></button>` : ''}
+      ${sprintExtraHeadKeys.map(k => { const def = allSprintBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
 
@@ -9602,59 +9692,57 @@ async function showSprintSlideover(sprintId, afterSave) {
   document.querySelector('.bc-proj')?.addEventListener('click', () => { closeSlideover(); renderView('project-detail', s.project_id); });
 
   // Prop chips
-  document.getElementById('chip-status').onclick = (e) => {
+  document.getElementById('chip-status')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openValuePicker(e.currentTarget, SPRINT_STATUSES.map(v => ({ value: v, label: v })), async (val) => {
-      document.getElementById('chip-status').querySelector('.chip-value').textContent = val;
+      const el = document.getElementById('chip-status'); if (el) el.querySelector('.chip-value').textContent = val;
       await patchSprint({ status: val });
     });
-  };
-  document.getElementById('chip-dates').onclick = (e) => {
+  });
+  document.getElementById('chip-dates')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openDateRangePickerGlobal(e.currentTarget, stripDate(s.start_date), stripDate(s.end_date), async (start, end) => {
       await patchSprint({ start_date: start || null, end_date: end || null });
-      const v = document.getElementById('chip-dates-val');
-      if (v) v.textContent = start && end ? `${fmtDate(start)} → ${fmtDate(end)}` : fmtDate(start || end) || '—';
+      const v = document.getElementById('chip-dates-val'); if (v) v.textContent = start && end ? `${fmtDate(start)} → ${fmtDate(end)}` : fmtDate(start || end) || '—';
     });
-  };
-  document.getElementById('chip-project').onclick = (e) => {
+  });
+  document.getElementById('chip-project')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
-      document.getElementById('chip-project-val').textContent = val ? allProjects.find(p => String(p.id) === String(val))?.title || val : '—';
+      const v = document.getElementById('chip-project-val'); if (v) v.textContent = val ? allProjects.find(p => String(p.id) === String(val))?.title || val : '—';
       await patchSprint({ project_id: val ? parseInt(val) : null });
     });
-  };
+  });
 
-  // ··· More
-  document.getElementById('prop-chips-more').onclick = (e) => {
-    e.stopPropagation();
-    openFormSlideover('Sprint Properties', `<div class="prop-panel">
-      <div class="prop-panel-row"><div class="prop-panel-label">Capacity (Story Points)</div>
-        <div class="prop-panel-value"><input type="number" id="pp-sp" value="${s.story_points != null ? s.story_points : ''}" min="0" style="width:80px;font-size:13px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg-card);color:var(--text-primary)"/></div></div>
-    </div>`);
-    document.getElementById('pp-sp')?.addEventListener('blur', async () => {
-      const val = parseInt(document.getElementById('pp-sp').value);
-      await patchSprint({ story_points: isNaN(val) ? null : val });
-    });
-  };
-
-  // Inline prop panel
-  bindInlinePropPanel('sprint', sprintId, {
-    project: (valEl) => {
-      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
-        await patchSprint({ project_id: val ? parseInt(val) : null });
-        showSprintSlideover(sprintId, afterSave);
-      });
-    },
-    points: (valEl) => {
+  const sprintInlinePropEditFns = {
+    status:  (valEl) => { openValuePicker(valEl, SPRINT_STATUSES.map(v => ({ value: v, label: v })), async (val) => { await patchSprint({ status: val }); showSprintSlideover(sprintId, afterSave); }); },
+    dates:   (valEl) => { openDateRangePickerGlobal(valEl, stripDate(s.start_date), stripDate(s.end_date), async (start, end) => { await patchSprint({ start_date: start||null, end_date: end||null }); showSprintSlideover(sprintId, afterSave); }); },
+    project: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))], async (val) => { await patchSprint({ project_id: val ? parseInt(val) : null }); showSprintSlideover(sprintId, afterSave); }); },
+    points:  (valEl) => {
       const inp = document.createElement('input');
       inp.type = 'number'; inp.min = '0'; inp.style.cssText = 'width:80px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
       inp.value = s.story_points || '';
       valEl.innerHTML = ''; valEl.appendChild(inp); inp.focus();
-      inp.onblur = async () => { await patchSprint({ story_points: parseInt(inp.value) || null }); };
+      inp.onblur = async () => { await patchSprint({ story_points: parseInt(inp.value) || null }); showSprintSlideover(sprintId, afterSave); };
       inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); };
     },
-  }, () => showSprintSlideover(sprintId, afterSave));
+  };
+
+  sprintExtraHeadKeys.forEach(k => {
+    const el = document.getElementById(`chip-extra-${k}`);
+    if (!el) return;
+    const fn = sprintInlinePropEditFns[k];
+    if (fn) el.addEventListener('click', (e) => { e.stopPropagation(); fn(el.querySelector('.chip-value')); });
+  });
+
+  // ··· Section manager
+  document.getElementById('prop-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    openPropSectionManager(e.currentTarget, 'sprint', () => showSprintSlideover(sprintId, afterSave));
+  };
+
+  // Inline prop panel
+  bindInlinePropPanel('sprint', sprintId, sprintInlinePropEditFns, () => showSprintSlideover(sprintId, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="sprint"]'));
 
   // Task rows
@@ -9770,13 +9858,23 @@ async function showResourceSlideover(resource, afterSave) {
   const goalName = goals.find(g => String(g.id) === String(r.goal_id))?.title || null;
   const fileName = r.file_path ? r.file_path.split('/').pop() : '';
 
-  const resBuiltinDefs = [
+  const resSections = getPropSections('resource');
+  const resIsInHead = (k) => resSections.heading.includes(k);
+  const RES_CHIP_KEYS = ['type','url','project','goal'];
+  const resExtraHeadKeys = resSections.heading.filter(k => !RES_CHIP_KEYS.includes(k));
+
+  const allResBuiltinDefs = [
+    { key: 'type',    label: 'Type',    icon: pIco('<path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z"/>'),
+      renderValue: () => r.resource_type ? `<span>${r.resource_type}</span>` : '' },
+    { key: 'url',     label: 'URL',     icon: pIco('<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>'),
+      renderValue: () => rawUrl ? `<span>${rawUrl.replace(/^https?:\/\//,'')}</span>` : '' },
     { key: 'project', label: 'Project', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
       renderValue: () => projName ? `<span>${projName}</span>` : '' },
-    { key: 'goal', label: 'Goal', icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+    { key: 'goal',    label: 'Goal',    icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
       renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
   ];
-  const resInlinePropPanel = buildInlinePropPanel('resource', resId, resBuiltinDefs);
+  const resBodyDefs = allResBuiltinDefs.filter(d => resSections.body.includes(d.key));
+  const resInlinePropPanel = buildInlinePropPanel('resource', resId, resBodyDefs);
 
   const body = `
     <div class="detail-title-area">
@@ -9784,22 +9882,12 @@ async function showResourceSlideover(resource, afterSave) {
     </div>
 
     <div class="prop-chips" id="prop-chips">
-      <button class="prop-chip" id="chip-type" data-key="type">
-        <span class="chip-label">Type</span>
-        <span class="chip-value" id="chip-type-val">${r.resource_type || '—'}</span>
-      </button>
-      <button class="prop-chip${rawUrl ? '' : ' chip-empty'}" id="chip-url" data-key="url">
-        <span class="chip-label">URL</span>
-        <span class="chip-value" id="chip-url-val">${rawUrl ? `<a href="${rawUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;display:inline-block;vertical-align:bottom">${rawUrl.replace(/^https?:\/\//,'')}</a>` : '—'}</span>
-      </button>
-      <button class="prop-chip" id="chip-project" data-key="project">
-        <span class="chip-label">Project</span>
-        <span class="chip-value" id="chip-project-val">${projName || '—'}</span>
-      </button>
-      <button class="prop-chip" id="chip-goal" data-key="goal">
-        <span class="chip-label">Goal</span>
-        <span class="chip-value" id="chip-goal-val">${goalName || '—'}</span>
-      </button>
+      ${resIsInHead('type') ? `<button class="prop-chip" id="chip-type" data-key="type"><span class="chip-label">Type</span><span class="chip-value" id="chip-type-val">${r.resource_type || '—'}</span></button>` : ''}
+      ${resIsInHead('url') ? `<button class="prop-chip${rawUrl ? '' : ' chip-empty'}" id="chip-url" data-key="url"><span class="chip-label">URL</span><span class="chip-value" id="chip-url-val">${rawUrl ? `<a href="${rawUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;display:inline-block;vertical-align:bottom">${rawUrl.replace(/^https?:\/\//,'')}</a>` : '—'}</span></button>` : ''}
+      ${resIsInHead('project') ? `<button class="prop-chip" id="chip-project" data-key="project"><span class="chip-label">Project</span><span class="chip-value" id="chip-project-val">${projName || '—'}</span></button>` : ''}
+      ${resIsInHead('goal') ? `<button class="prop-chip" id="chip-goal" data-key="goal"><span class="chip-label">Goal</span><span class="chip-value" id="chip-goal-val">${goalName || '—'}</span></button>` : ''}
+      ${resExtraHeadKeys.map(k => { const def = allResBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
+      <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
 
     ${resInlinePropPanel}
@@ -9847,70 +9935,75 @@ async function showResourceSlideover(resource, afterSave) {
   });
 
   // Prop chips
-  document.getElementById('chip-type').onclick = (e) => {
+  document.getElementById('chip-type')?.addEventListener('click', (e) => {
     e.stopPropagation();
     const typeInp = document.createElement('input');
-    typeInp.type = 'text';
-    typeInp.value = r.resource_type || '';
-    typeInp.placeholder = 'e.g. link, book, tool…';
+    typeInp.type = 'text'; typeInp.value = r.resource_type || ''; typeInp.placeholder = 'e.g. link, book, tool…';
     typeInp.style.cssText = 'font-size:12px;padding:3px 6px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text-primary);width:120px';
-    const chip = document.getElementById('chip-type');
-    const valSpan = chip.querySelector('.chip-value');
+    const chip = document.getElementById('chip-type'); const valSpan = chip.querySelector('.chip-value');
     valSpan.innerHTML = ''; valSpan.appendChild(typeInp); typeInp.focus();
-    typeInp.onblur = async () => {
-      const v2 = typeInp.value.trim();
-      valSpan.textContent = v2 || '—';
-      if (v2 !== (r.resource_type || '')) await patchResource({ resource_type: v2 || null });
-    };
-    typeInp.onkeydown = (ke) => { if (ke.key === 'Enter') typeInp.blur(); if (ke.key === 'Escape') { valSpan.textContent = r.resource_type || '—'; } };
-  };
-  document.getElementById('chip-url').onclick = (e) => {
+    typeInp.onblur = async () => { const v2 = typeInp.value.trim(); valSpan.textContent = v2 || '—'; if (v2 !== (r.resource_type || '')) await patchResource({ resource_type: v2 || null }); };
+    typeInp.onkeydown = (ke) => { if (ke.key === 'Enter') typeInp.blur(); if (ke.key === 'Escape') valSpan.textContent = r.resource_type || '—'; };
+  });
+  document.getElementById('chip-url')?.addEventListener('click', (e) => {
     e.stopPropagation();
     const urlInp = document.createElement('input');
-    urlInp.type = 'url';
-    urlInp.value = rawUrl;
-    urlInp.placeholder = 'https://…';
+    urlInp.type = 'url'; urlInp.value = rawUrl; urlInp.placeholder = 'https://…';
     urlInp.style.cssText = 'font-size:12px;padding:3px 6px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text-primary);width:200px';
-    const chip = document.getElementById('chip-url');
-    const valSpan = chip.querySelector('.chip-value');
+    const chip = document.getElementById('chip-url'); const valSpan = chip.querySelector('.chip-value');
     valSpan.innerHTML = ''; valSpan.appendChild(urlInp); urlInp.focus();
-    urlInp.onblur = async () => {
-      const v2 = urlInp.value.trim();
-      valSpan.innerHTML = v2 ? `<a href="${v2}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none">${v2.replace(/^https?:\/\//,'')}</a>` : '—';
-      if (v2 !== rawUrl) await patchResource({ url: v2 || null });
-    };
+    urlInp.onblur = async () => { const v2 = urlInp.value.trim(); valSpan.innerHTML = v2 ? `<a href="${v2}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none">${v2.replace(/^https?:\/\//,'')}</a>` : '—'; if (v2 !== rawUrl) await patchResource({ url: v2 || null }); };
     urlInp.onkeydown = (ke) => { if (ke.key === 'Enter') urlInp.blur(); };
-  };
-  document.getElementById('chip-project').onclick = (e) => {
+  });
+  document.getElementById('chip-project')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
-      document.getElementById('chip-project-val').textContent = val ? projects.find(p => String(p.id) === String(val))?.title || '—' : '—';
+      const v = document.getElementById('chip-project-val'); if (v) v.textContent = val ? projects.find(p => String(p.id) === String(val))?.title || '—' : '—';
       await patchResource({ project_id: val ? parseInt(val) : null });
     });
-  };
-  document.getElementById('chip-goal').onclick = (e) => {
+  });
+  document.getElementById('chip-goal')?.addEventListener('click', (e) => {
     e.stopPropagation();
     openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => {
-      document.getElementById('chip-goal-val').textContent = val ? goals.find(g => String(g.id) === String(val))?.title || '—' : '—';
+      const v = document.getElementById('chip-goal-val'); if (v) v.textContent = val ? goals.find(g => String(g.id) === String(val))?.title || '—' : '—';
       await patchResource({ goal_id: val ? parseInt(val) : null });
     });
+  });
+
+  const resInlinePropEditFns = {
+    type:    (valEl) => {
+      const inp = document.createElement('input'); inp.type = 'text'; inp.value = r.resource_type || ''; inp.placeholder = 'e.g. link, book…';
+      inp.style.cssText = 'font-size:12px;padding:3px 6px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text);width:120px';
+      valEl.innerHTML = ''; valEl.appendChild(inp); inp.focus();
+      inp.onblur = async () => { await patchResource({ resource_type: inp.value.trim() || null }); showResourceSlideover({ id: resId }, afterSave); };
+      inp.onkeydown = ke => { if (ke.key === 'Enter') inp.blur(); };
+    },
+    url:     (valEl) => {
+      const inp = document.createElement('input'); inp.type = 'url'; inp.value = rawUrl; inp.placeholder = 'https://…';
+      inp.style.cssText = 'font-size:12px;padding:3px 6px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text);width:200px';
+      valEl.innerHTML = ''; valEl.appendChild(inp); inp.focus();
+      inp.onblur = async () => { await patchResource({ url: inp.value.trim() || null }); showResourceSlideover({ id: resId }, afterSave); };
+      inp.onkeydown = ke => { if (ke.key === 'Enter') inp.blur(); };
+    },
+    project: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => { await patchResource({ project_id: val ? parseInt(val) : null }); showResourceSlideover({ id: resId }, afterSave); }); },
+    goal:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => { await patchResource({ goal_id: val ? parseInt(val) : null }); showResourceSlideover({ id: resId }, afterSave); }); },
+  };
+
+  resExtraHeadKeys.forEach(k => {
+    const el = document.getElementById(`chip-extra-${k}`);
+    if (!el) return;
+    const fn = resInlinePropEditFns[k];
+    if (fn) el.addEventListener('click', (e) => { e.stopPropagation(); fn(el.querySelector('.chip-value')); });
+  });
+
+  // ··· Section manager
+  document.getElementById('prop-chips-more').onclick = (e) => {
+    e.stopPropagation();
+    openPropSectionManager(e.currentTarget, 'resource', () => showResourceSlideover({ id: resId }, afterSave));
   };
 
   // Inline prop panel
-  bindInlinePropPanel('resource', resId, {
-    project: (valEl) => {
-      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
-        await patchResource({ project_id: val ? parseInt(val) : null });
-        showResourceSlideover({ id: resId }, afterSave);
-      });
-    },
-    goal: (valEl) => {
-      openValuePicker(valEl, [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => {
-        await patchResource({ goal_id: val ? parseInt(val) : null });
-        showResourceSlideover({ id: resId }, afterSave);
-      });
-    },
-  }, () => showResourceSlideover({ id: resId }, afterSave));
+  bindInlinePropPanel('resource', resId, resInlinePropEditFns, () => showResourceSlideover({ id: resId }, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="resource"]'));
 
   // File upload
