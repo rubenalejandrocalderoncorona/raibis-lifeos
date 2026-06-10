@@ -225,6 +225,8 @@ let currentParams = null;
 let navHistory = []; // [{view, params, label}]
 let allTags = [];
 let allCategories = [];
+// Single slot for the active view's propDefsChanged callback — replaced on each view mount
+let _viewPropDefsCallback = null;
 let allTasksCache = [];
 let expandedTasks = new Set();
 let tasksViewMode = localStorage.getItem('tasksViewMode') || 'list';
@@ -3869,7 +3871,7 @@ async function renderTasks() {
           ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${t.id}" title="Toggle subtasks">${chevronSvg}</span>`
           : `<span class="task-add-sub-btn" data-add-sub-id="${t.id}" title="Add subtask">${chevronSvg}</span>`;
         const titleCell = `<td><div class="task-title-cell" style="padding-left:${depth*20}px">${toggleBtn}<span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span><span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div></td>`;
-        const customCols = getCustomPropDefs('task').map(def => customPropCell('task', t.id, def)).join('');
+        const customCols = getCustomPropDefs('task').filter(d => propVisible('table', d.key)).map(def => customPropCell('task', t.id, def)).join('');
         html += `<tr class="task-table-row" data-task-id="${t.id}" style="position:relative">
           ${titleCell}${visibleCols.map(c => c.cell(t)).join('')}${customCols}
           <td><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></td>
@@ -3887,7 +3889,7 @@ async function renderTasks() {
       return html;
     }
 
-    const customHeaders = getCustomPropDefs('task').map(d => `<th>${d.label}</th>`).join('');
+    const customHeaders = getCustomPropDefs('task').filter(d => propVisible('table', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = `<th>Title</th>` + visibleCols.map(c => `<th>${c.header}</th>`).join('') + customHeaders + '<th></th>' + addPropColumnHeader('task');
     return `<div class="notion-table-wrap"><table class="notion-table">
       <thead><tr>${headers}</tr></thead>
@@ -4030,6 +4032,7 @@ async function renderTasks() {
   }
 
   render();
+  _viewPropDefsCallback = (entity) => { if (entity === 'task') render(); };
 
   function bindTasksContentEvents() {
     bindCtxHandles();
@@ -4233,7 +4236,7 @@ async function renderProjects() {
     const rows = list.map(p => {
       const prog = p.progress || {};
       const pct = prog.pct || 0;
-      const customCols = getCustomPropDefs('project').map(def => customPropCell('project', p.id, def)).join('');
+      const customCols = getCustomPropDefs('project').filter(d => entityPropVisible('project', d.key)).map(def => customPropCell('project', p.id, def)).join('');
       return `<tr>
         <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span></td>
         <td><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-proj-id="${p.id}">${p.title}</span><span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></td>
@@ -4248,7 +4251,7 @@ async function renderProjects() {
         </td>
       </tr>`;
     }).join('');
-    const customHeaders = getCustomPropDefs('project').map(d => `<th>${d.label}</th>`).join('');
+    const customHeaders = getCustomPropDefs('project').filter(d => entityPropVisible('project', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
       '<th class="ctx-handle-th"></th>',
       '<th>Title</th>',
@@ -4455,6 +4458,7 @@ async function renderProjects() {
     }
   }
   render();
+  _viewPropDefsCallback = (entity) => { if (entity === 'project') render(); };
 
   function bindProjEvents() {
     bindCtxHandles();
@@ -4623,6 +4627,7 @@ async function renderGoals() {
     }
   }
   render();
+  _viewPropDefsCallback = (entity) => { if (entity === 'goal') render(); };
 
   function buildGoalCard(g) {
     const prog = g.progress || {};
@@ -4663,7 +4668,7 @@ async function renderGoals() {
     const rows = list.map(g => {
       const prog = g.progress || {};
       const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
-      const customCols = getCustomPropDefs('goal').map(def => customPropCell('goal', g.id, def)).join('');
+      const customCols = getCustomPropDefs('goal').filter(d => entityPropVisible('goal', d.key)).map(def => customPropCell('goal', g.id, def)).join('');
       return `<tr>
         <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span></td>
         <td><span style="cursor:pointer;color:var(--accent)" class="goal-nav-link" data-goal-id="${g.id}">${g.title}</span><span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></td>
@@ -4678,7 +4683,7 @@ async function renderGoals() {
         </td>
       </tr>`;
     }).join('');
-    const customHeaders = getCustomPropDefs('goal').map(d => `<th>${d.label}</th>`).join('');
+    const customHeaders = getCustomPropDefs('goal').filter(d => entityPropVisible('goal', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
       '<th class="ctx-handle-th"></th>',
       '<th>Title</th>',
@@ -4904,6 +4909,7 @@ async function renderNotes() {
     injectCommentBadges('note', list.map(n => n.id));
   }
   render();
+  _viewPropDefsCallback = (entity) => { if (entity === 'note') render(); };
 
   function buildNoteCard(n) {
     const vis = (key) => entityPropVisible('note', key);
@@ -4931,7 +4937,7 @@ async function renderNotes() {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
     const vis = (key) => entityPropVisible('note', key);
     const rows = list.map(n => {
-      const customCols = getCustomPropDefs('note').map(def => customPropCell('note', n.id, def)).join('');
+      const customCols = getCustomPropDefs('note').filter(d => entityPropVisible('note', d.key)).map(def => customPropCell('note', n.id, def)).join('');
       return `<tr class="note-card" data-note-id="${n.id}" style="cursor:pointer">
         <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span></td>
         <td><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></td>
@@ -4942,7 +4948,7 @@ async function renderNotes() {
         <td onclick="event.stopPropagation()"></td>
       </tr>`;
     }).join('');
-    const customHeaders = getCustomPropDefs('note').map(d => `<th>${d.label}</th>`).join('');
+    const customHeaders = getCustomPropDefs('note').filter(d => entityPropVisible('note', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
       '<th class="ctx-handle-th"></th>',
       '<th>Title</th>',
@@ -5031,7 +5037,7 @@ async function renderSprints() {
     const rows = list.map(s => {
       const prog = s.progress || {};
       const pct = prog.pct || 0;
-      const customCols = getCustomPropDefs('sprint').map(def => customPropCell('sprint', s.id, def)).join('');
+      const customCols = getCustomPropDefs('sprint').filter(d => entityPropVisible('sprint', d.key)).map(def => customPropCell('sprint', s.id, def)).join('');
       return `<tr class="sprint-row" data-sprint-id="${s.id}" style="cursor:pointer">
         <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span></td>
         <td><span class="sprint-detail-link" data-sprint-id="${s.id}" style="color:var(--accent);cursor:pointer">${s.title}</span><span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></td>
@@ -5049,7 +5055,7 @@ async function renderSprints() {
         </td>
       </tr>`;
     }).join('');
-    const customHeaders = getCustomPropDefs('sprint').map(d => `<th>${d.label}</th>`).join('');
+    const customHeaders = getCustomPropDefs('sprint').filter(d => entityPropVisible('sprint', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
       '<th class="ctx-handle-th"></th>',
       '<th>Title</th>',
@@ -5154,6 +5160,7 @@ async function renderSprints() {
     if (sprintsViewMode === 'table') { bindAddPropBtn('sprint', render); bindCustomPropCells(); }
   }
   render();
+  _viewPropDefsCallback = (entity) => { if (entity === 'sprint') render(); };
 
   function bindSprintEvents() {
     bindCtxHandles();
@@ -5934,6 +5941,7 @@ async function renderResources() {
     injectCommentBadges('resource', list.map(r => r.id));
   }
   render();
+  _viewPropDefsCallback = (entity) => { if (entity === 'resource') render(); };
 
   function buildTable(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">⬡</div><div class="empty-state-text">No resources yet</div></div>`;
@@ -5944,7 +5952,7 @@ async function renderResources() {
         ? `<a href="${rawUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${rawUrl.length > 40 ? rawUrl.slice(0,40) + '…' : rawUrl}</a>`
         : (r.body ? r.body.slice(0,60) + '…' : '—');
       const linked = r.goal_title || r.project_title || r.task_title || '—';
-      const customCols = getCustomPropDefs('resource').map(def => customPropCell('resource', r.id, def)).join('');
+      const customCols = getCustomPropDefs('resource').filter(d => entityPropVisible('resource', d.key)).map(def => customPropCell('resource', r.id, def)).join('');
       return `<tr class="res-row" data-res-id="${r.id}" style="cursor:pointer">
         <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions">⠿</span></td>
         <td><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${r.title}<span class="comment-badge" data-comment-for="${r.id}" data-comment-entity="resource" style="display:none"></span></td>
@@ -5955,7 +5963,7 @@ async function renderResources() {
         <td onclick="event.stopPropagation()"></td>
       </tr>`;
     }).join('');
-    const customHeaders = getCustomPropDefs('resource').map(d => `<th>${d.label}</th>`).join('');
+    const customHeaders = getCustomPropDefs('resource').filter(d => entityPropVisible('resource', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
       '<th class="ctx-handle-th"></th>',
       '<th>Title</th>',
@@ -7226,11 +7234,12 @@ async function showTaskSlideover(taskId) {
         showTaskSlideover(taskId);
       }, { multiSelect: true, allowCreate: true, selectedIds: curIds });
     },
-    category: (valEl) => {
-      const cats = (allCategories||TASK_CATEGORIES.map((n,i)=>({id:i+1,name:n}))).map(c => ({ value: c.id, label: c.name }));
+    category: async (valEl) => {
+      try { allCategories = await api('GET', '/api/categories'); } catch(e) {}
+      const cats = (allCategories.length ? allCategories : TASK_CATEGORIES.map((n,i)=>({id:i+1,name:n}))).map(c => ({ value: c.id, label: c.name }));
       openCombo(valEl, cats, task.category_id, async ({ value, label, create }) => {
         if (create) {
-          try { const nc = await api('POST', '/api/categories', { name: create }); await patchTask({ category_id: nc.id }); } catch(err) {}
+          try { const nc = await api('POST', '/api/categories', { name: create }); allCategories.push(nc); await patchTask({ category_id: nc.id }); } catch(err) {}
         } else {
           await patchTask({ category_id: value ? parseInt(value) : null });
         }
@@ -9273,7 +9282,7 @@ async function showProjectSlideover(project, goals, afterSave) {
     due:      (valEl) => { openDateRangePickerGlobal(valEl, stripDate(p.start_date), stripDate(p.due_date), async (start, end) => { await patchProject({ start_date: start||null, due_date: end||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     goal:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(goals||[]).map(g => ({ value: g.id, label: g.title }))], async (val) => { await patchProject({ goal_id: val ? parseInt(val) : null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: ids }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
-    category: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchProject({ category_id: val ? parseInt(val) : null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchProject({ category_id: val ? parseInt(val) : null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     macro:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => { await patchProject({ macro_area: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     kanban:   (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...KANBAN_COLS.map(k => ({ value: k, label: k }))], async (val) => { await patchProject({ kanban_col: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     archived: (valEl) => { patchProject({ archived: !p.archived }).then(() => showProjectSlideover({ id: projectId }, goals, afterSave)); },
@@ -9464,7 +9473,7 @@ async function showGoalSlideover(goal, afterSave) {
     type:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_TYPES.map(t => ({ value: t, label: t }))], async (val) => { await patchGoal({ type: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
     year:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_YEARS.map(y => ({ value: y, label: y }))], async (val) => { await patchGoal({ year: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
     tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: ids }); showGoalSlideover({ id: goalId }, afterSave); }); },
-    category: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchGoal({ category_id: val ? parseInt(val) : null }); showGoalSlideover({ id: goalId }, afterSave); }); },
+    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchGoal({ category_id: val ? parseInt(val) : null }); showGoalSlideover({ id: goalId }, afterSave); }); },
     due:      (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(g.due_date), async (val) => { await patchGoal({ due_date: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
     metrics:  (valEl) => {
       valEl.innerHTML = `<div style="display:flex;flex-direction:column;gap:4px">
@@ -9820,7 +9829,7 @@ async function showNoteSlideover(noteId, afterSave) {
     project:  (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => { await patchNote({ project_id: val ? parseInt(val) : null }); showNoteSlideover(noteId, afterSave); }); },
     goal:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => { await patchNote({ goal_id: val ? parseInt(val) : null }); showNoteSlideover(noteId, afterSave); }); },
     tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: ids }); showNoteSlideover(noteId, afterSave); }); },
-    category: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchNote({ category_id: val ? parseInt(val) : null }); showNoteSlideover(noteId, afterSave); }); },
+    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchNote({ category_id: val ? parseInt(val) : null }); showNoteSlideover(noteId, afterSave); }); },
   };
 
   noteExtraHeadKeys.forEach(k => {
@@ -10956,6 +10965,11 @@ async function openRaibisSettings(defaultTab = 'apps') {
     };
   }
 }
+
+/* ─── Global propDefsChanged relay → active view re-render ─────────── */
+document.addEventListener('propDefsChanged', (e) => {
+  if (_viewPropDefsCallback) _viewPropDefsCallback(e.detail.entity);
+});
 
 /* ─── Init ───────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
