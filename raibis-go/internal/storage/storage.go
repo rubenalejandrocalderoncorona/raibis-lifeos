@@ -61,6 +61,8 @@ type Storage interface {
 	SetProperty(entityType string, entityID int64, key, value string) error
 	// DeleteProperty removes a property key from an entity.
 	DeleteProperty(entityType string, entityID int64, key string) error
+	// DeletePropertyKey removes a property key from ALL records of an entity type.
+	DeletePropertyKey(entityType, key string) error
 	// ListProperties returns all properties for an entity as a map.
 	ListProperties(entityType string, entityID int64) (map[string]string, error)
 

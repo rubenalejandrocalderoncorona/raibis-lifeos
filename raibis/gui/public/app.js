@@ -1293,6 +1293,7 @@ function addPropColumnHeader(entity) {
 
 // ── showAddOptionsPanel ────────────────────────────────────────────────────
 // After naming a select/multi_select prop, lets user add options before saving.
+// Options are optional — clicking "Create" with no options saves the prop as free-text.
 function showAddOptionsPanel(anchorBtn, key, name, type, entity, onAdd) {
   document.getElementById('add-prop-opts-picker')?.remove();
   const opts = [];
@@ -1300,10 +1301,24 @@ function showAddOptionsPanel(anchorBtn, key, name, type, entity, onAdd) {
   panel.id = 'add-prop-opts-picker';
   panel.className = 'prop-vis-panel';
 
+  const saveAndClose = () => {
+    const defs = getCustomPropDefs(entity);
+    defs.push({ key, label: name, type, options: opts });
+    setCustomPropDefs(entity, defs);
+    if (entity === 'task') {
+      ['board','table','list','kanban','cards'].forEach(vm => { const v=getTaskVisProps(vm); if(!v.includes(key)) setTaskVisProps(vm,[...v,key]); });
+    } else {
+      const v = getEntityVisProps(entity); if (!v.includes(key)) setEntityVisProps(entity, [...v, key]);
+    }
+    panel.remove();
+    onAdd();
+    document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
+  };
+
   const renderPanel = () => {
     panel.innerHTML = `
-      <div style="padding:6px 10px 4px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">Options for "${name}"</div>
-      <div id="opts-list" style="padding:0 8px;max-height:180px;overflow-y:auto">
+      <div style="padding:6px 10px 4px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">Options for "${name}" <span style="font-weight:400;opacity:.7">(optional)</span></div>
+      <div style="padding:0 8px;max-height:180px;overflow-y:auto">
         ${opts.map((o,i) => `<div style="display:flex;align-items:center;gap:4px;padding:2px 0">
           <span class="multi-chip" style="flex:1;background:var(--accent-glow);font-size:12px">${o}</span>
           <button data-del-idx="${i}" style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;line-height:1">×</button>
@@ -1316,7 +1331,7 @@ function showAddOptionsPanel(anchorBtn, key, name, type, entity, onAdd) {
       </div>
       <div style="padding:0 8px 8px;display:flex;justify-content:flex-end;gap:6px">
         <button id="add-opt-cancel" class="btn btn-sm btn-ghost">Cancel</button>
-        <button id="add-opt-done" class="btn btn-sm btn-primary" ${opts.length===0?'disabled':''}>Create</button>
+        <button id="add-opt-done" class="btn btn-sm btn-primary">Create${opts.length ? ` (${opts.length})` : ''}</button>
       </div>`;
     panel.querySelectorAll('[data-del-idx]').forEach(btn => {
       btn.onclick = (e) => { e.stopPropagation(); opts.splice(Number(btn.dataset.delIdx), 1); renderPanel(); };
@@ -1330,21 +1345,7 @@ function showAddOptionsPanel(anchorBtn, key, name, type, entity, onAdd) {
     document.getElementById('add-opt-add').onclick = (e) => { e.stopPropagation(); addOpt(); };
     document.getElementById('add-opt-input').onkeydown = (e) => { if (e.key==='Enter'){e.preventDefault();addOpt();} if(e.key==='Escape'){panel.remove();} };
     document.getElementById('add-opt-cancel').onclick = (e) => { e.stopPropagation(); panel.remove(); };
-    document.getElementById('add-opt-done').onclick = (e) => {
-      e.stopPropagation();
-      if (!opts.length) return;
-      const defs = getCustomPropDefs(entity);
-      defs.push({ key, label: name, type, options: opts });
-      setCustomPropDefs(entity, defs);
-      if (entity === 'task') {
-        ['board','table','list','kanban'].forEach(vm => { const v=getTaskVisProps(vm); if(!v.includes(key)) setTaskVisProps(vm,[...v,key]); });
-      } else {
-        const v = getEntityVisProps(entity); if (!v.includes(key)) setEntityVisProps(entity, [...v, key]);
-      }
-      panel.remove();
-      onAdd();
-      document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
-    };
+    document.getElementById('add-opt-done').onclick = (e) => { e.stopPropagation(); saveAndClose(); };
     requestAnimationFrame(() => document.getElementById('add-opt-input')?.focus());
   };
 
@@ -1357,6 +1358,13 @@ function showAddOptionsPanel(anchorBtn, key, name, type, entity, onAdd) {
     if (cr.right > window.innerWidth - 8) panel.style.left = (window.innerWidth - cr.width - 8) + 'px';
     if (cr.bottom > window.innerHeight - 8) panel.style.top = (rect.top - cr.height - 4) + 'px';
   });
+  setTimeout(() => {
+    document.addEventListener('click', function outsideOpts(ev) {
+      if (!panel.contains(ev.target) && !anchorBtn.contains(ev.target)) {
+        panel.remove(); document.removeEventListener('click', outsideOpts);
+      }
+    });
+  }, 0);
 }
 
 // ── showAddRelationPanel ───────────────────────────────────────────────────
@@ -1408,7 +1416,7 @@ function showAddRelationPanel(anchorBtn, key, name, entity, onAdd) {
         }
       }
       if (entity === 'task') {
-        ['board','table','list','kanban'].forEach(vm => { const v=getTaskVisProps(vm); if(!v.includes(key)) setTaskVisProps(vm,[...v,key]); });
+        ['board','table','list','kanban','cards'].forEach(vm => { const v=getTaskVisProps(vm); if(!v.includes(key)) setTaskVisProps(vm,[...v,key]); });
       } else {
         const v = getEntityVisProps(entity); if (!v.includes(key)) setEntityVisProps(entity, [...v, key]);
       }
@@ -1427,6 +1435,13 @@ function showAddRelationPanel(anchorBtn, key, name, entity, onAdd) {
     if (cr.right > window.innerWidth - 8) panel.style.left = (window.innerWidth - cr.width - 8) + 'px';
     if (cr.bottom > window.innerHeight - 8) panel.style.top = (rect.top - cr.height - 4) + 'px';
   });
+  setTimeout(() => {
+    document.addEventListener('click', function outsideRel(ev) {
+      if (!panel.contains(ev.target) && !anchorBtn.contains(ev.target)) {
+        panel.remove(); document.removeEventListener('click', outsideRel);
+      }
+    });
+  }, 0);
 }
 
 function bindAddPropBtn(entity, onAdd) {
@@ -1519,7 +1534,7 @@ function bindAddPropBtn(entity, onAdd) {
             setCustomPropDefs(entity, defs);
             // Auto-add to visible sets so new props appear immediately in filter panel
             if (entity === 'task') {
-              ['board','table','list','kanban'].forEach(vm => { const v=getTaskVisProps(vm); if(!v.includes(key)) setTaskVisProps(vm,[...v,key]); });
+              ['board','table','list','kanban','cards'].forEach(vm => { const v=getTaskVisProps(vm); if(!v.includes(key)) setTaskVisProps(vm,[...v,key]); });
             } else {
               const v = getEntityVisProps(entity); if (!v.includes(key)) setEntityVisProps(entity, [...v, key]);
             }
@@ -1550,6 +1565,34 @@ function bindAddPropBtn(entity, onAdd) {
       });
     };
   });
+}
+
+// ── renderCustomPropChips ─────────────────────────────────────────────────
+// Returns an HTML string of visible custom prop chips for card/list/kanban views.
+// For tasks: uses propVisible(viewMode, key). For others: entityPropVisible(entity, key).
+function renderCustomPropChips(entity, recordId, viewMode) {
+  const defs = getCustomPropDefs(entity);
+  if (!defs.length) return '';
+  const isVisible = entity === 'task'
+    ? (key) => propVisible(viewMode || 'cards', key)
+    : (key) => entityPropVisible(entity, key);
+  const vals = getCustomPropValues(entity, recordId);
+  const chips = defs.filter(d => isVisible(d.key)).map(def => {
+    const val = vals[def.key] ?? '';
+    if (!val && val !== false && val !== 0) return '';
+    let display = '';
+    if (def.type === 'checkbox') {
+      display = val ? '✓' : '✗';
+    } else if (def.type === 'multi_select') {
+      try { const a = JSON.parse(val); display = Array.isArray(a) ? a.join(', ') : val; } catch { display = val; }
+    } else {
+      display = String(val);
+    }
+    if (!display) return '';
+    return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${def.label}: ${display}"><span style="color:var(--text-muted)">${def.label}:</span> ${display}</span>`;
+  }).filter(Boolean);
+  if (!chips.length) return '';
+  return `<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:4px">${chips.join('')}</div>`;
 }
 
 function bindCustomPropCells() {
@@ -1878,17 +1921,41 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
     chk.onchange = () => setCustomPropValue(chk.dataset.entity, chk.dataset.recordId, chk.dataset.propKey, chk.checked);
   });
 
-  // Wire delete buttons (remove custom prop def + values)
+  // Wire delete buttons (remove custom prop def + values from all records)
   panel.querySelectorAll('.icp-del-btn').forEach(btn => {
-    btn.onclick = (e) => {
+    btn.onclick = async (e) => {
       e.stopPropagation();
       const key = btn.dataset.propKey;
-      if (!confirm(`Remove property "${key}"?`)) return;
+      const def = getCustomPropDefs(entity).find(d => d.key === key);
+      const label = def ? def.label : key;
+      if (!confirm(`Remove property "${label}" from all ${entity}s? This cannot be undone.`)) return;
+      // Remove def
       const defs = getCustomPropDefs(entity).filter(d => d.key !== key);
       setCustomPropDefs(entity, defs);
-      // Remove from order
+      // Remove from prop order
       const ord = getEntityPropOrder(entity);
       if (ord) setEntityPropOrder(entity, ord.filter(k => k !== key));
+      // Remove from all visibility sets
+      if (entity === 'task') {
+        ['board','table','list','kanban','cards'].forEach(vm => {
+          const v = getTaskVisProps(vm); setTaskVisProps(vm, v.filter(k => k !== key));
+        });
+      } else {
+        const v = getEntityVisProps(entity); setEntityVisProps(entity, v.filter(k => k !== key));
+      }
+      // Sweep localStorage: remove key from every customPropVals_${entity}_* entry
+      const prefix = `customPropVals_${entity}_`;
+      Object.keys(localStorage).forEach(lsKey => {
+        if (lsKey.startsWith(prefix)) {
+          try {
+            const vals = JSON.parse(localStorage.getItem(lsKey) || '{}');
+            if (key in vals) { delete vals[key]; localStorage.setItem(lsKey, JSON.stringify(vals)); }
+          } catch {}
+        }
+      });
+      // Bulk delete from DB (all records of this entity type)
+      try { await api('DELETE', `/api/properties?entity_type=${entity}&key=${encodeURIComponent(key)}`); } catch(err) {}
+      document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
       onRerender();
     };
   });
@@ -2500,6 +2567,7 @@ function taskRowHtml(task, showProject, indent, viewMode) {
     <div class="task-content">
       <div class="${titleCls}"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${task.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${task.title} <span class="comment-badge" data-comment-for="${task.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div>
       <div class="task-meta-row">${projBadge}${dueBadge}${catChip}${tagChips}${statusChip}${priorityChip}${storyPts}</div>
+      ${renderCustomPropChips('task', task.id, vm)}
     </div>
     <span class="task-row-due-right">${vis('due_date') && task.due_date ? fmtDate(task.due_date) : ''}</span>
   </li>`;
@@ -3833,6 +3901,7 @@ async function renderTasks() {
         </div>
         ${projLine}
         ${meta.length ? `<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:6px">${meta.join('')}</div>` : ''}
+        ${renderCustomPropChips('task', t.id, 'cards')}
       </div>`;
     }).join('');
     return `<div class="task-cards-grid">${cards}</div>`;
@@ -3971,6 +4040,7 @@ async function renderTasks() {
         return `<div class="kanban-card" data-task-id="${t.id}" style="cursor:grab">
           <div class="kanban-card-header"><div class="kanban-card-title">${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></div>
           ${projLine}${metaLine}
+          ${renderCustomPropChips('task', t.id, 'kanban')}
         </div>`;
       }).join('');
       const label = colKey.replace(/_/g,' ');
@@ -4222,6 +4292,7 @@ async function renderProjects() {
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>` : ''}
       ${activeTasks ? `<div style="margin-top:8px">${activeTasks}</div>` : ''}
+      ${renderCustomPropChips('project', p.id, 'cards')}
     </div>`;
   }
 
@@ -4302,6 +4373,7 @@ async function renderProjects() {
             <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${pct}% · ${prog.done||0}/${prog.total||0}</div>
           </div>` : ''}
+          ${renderCustomPropChips('project', p.id, 'kanban')}
         </div>`;
       }).join('');
       const label = colKey.replace(/_/g,' ');
@@ -4654,6 +4726,7 @@ async function renderGoals() {
         <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0} tasks</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>` : ''}
+      ${renderCustomPropChips('goal', g.id, 'cards')}
     </div>`;
   }
 
@@ -4734,6 +4807,7 @@ async function renderGoals() {
             <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${pct}% · ${prog.done||0}/${prog.total||0}</div>
           </div>` : ''}
+          ${renderCustomPropChips('goal', g.id, 'kanban')}
         </div>`;
       }).join('');
       const label = colKey.replace(/_/g,' ');
@@ -4890,6 +4964,7 @@ async function renderNotes() {
         ${vis('date') && fmtDate(n.note_date) ? `<span class="entity-list-meta">${fmtDate(n.note_date)}</span>` : ''}
         ${vis('category') && n.category_name ? `<span class="entity-list-meta">${n.category_name}</span>` : ''}
         ${vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : ''}
+        ${renderCustomPropChips('note', n.id, 'list')}
       </div>`;
     }).join('')}</div>`;
   }
@@ -4930,6 +5005,7 @@ async function renderNotes() {
         ${vis('category') && n.category_name ? `<span>· ${n.category_name}</span>` : ''}
         ${tagChips}
       </div>
+      ${renderCustomPropChips('note', n.id, 'cards')}
     </div>`;
   }
 

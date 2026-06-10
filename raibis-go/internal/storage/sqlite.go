@@ -784,6 +784,17 @@ func (s *sqliteStorage) DeleteProperty(entityType string, entityID int64, key st
 	return err
 }
 
+// DeletePropertyKey removes a custom property key from ALL records of an entity type.
+func (s *sqliteStorage) DeletePropertyKey(entityType, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`DELETE FROM entity_properties WHERE entity_type=? AND key=?`,
+		entityType, key,
+	)
+	return err
+}
+
 func (s *sqliteStorage) ListProperties(entityType string, entityID int64) (map[string]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

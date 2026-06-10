@@ -2713,6 +2713,20 @@ func propertiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc
 		q := r.URL.Query()
 		entityType := q.Get("entity_type")
 		entityIDStr := q.Get("entity_id")
+		// Bulk DELETE: entity_type + key, no entity_id required
+		if r.Method == http.MethodDelete && entityIDStr == "" {
+			key := q.Get("key")
+			if entityType == "" || key == "" {
+				errJSON(w, 400, "entity_type and key are required")
+				return
+			}
+			if err := store.DeletePropertyKey(entityType, key); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+			return
+		}
 		entityID, err := strconv.ParseInt(entityIDStr, 10, 64)
 		if err != nil || entityType == "" {
 			errJSON(w, 400, "entity_type and entity_id are required")
