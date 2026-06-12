@@ -1839,6 +1839,29 @@ func resourceHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			return
 		}
 		switch r.Method {
+		case http.MethodGet:
+			var res struct {
+				ID           int64   `json:"id"`
+				Title        string  `json:"title"`
+				URL          string  `json:"url"`
+				Body         string  `json:"body"`
+				ResourceType string  `json:"resource_type"`
+				GoalID       *int64  `json:"goal_id"`
+				ProjectID    *int64  `json:"project_id"`
+				TaskID       *int64  `json:"task_id"`
+			}
+			var goalID, projectID, taskID sql.NullInt64
+			row := db.QueryRow(`SELECT id, title, COALESCE(url,''), COALESCE(body,''), resource_type,
+				goal_id, project_id, task_id FROM resources WHERE id=?`, id)
+			if err := row.Scan(&res.ID, &res.Title, &res.URL, &res.Body, &res.ResourceType,
+				&goalID, &projectID, &taskID); err != nil {
+				errJSON(w, 404, "resource not found")
+				return
+			}
+			if goalID.Valid    { res.GoalID    = &goalID.Int64 }
+			if projectID.Valid { res.ProjectID = &projectID.Int64 }
+			if taskID.Valid    { res.TaskID    = &taskID.Int64 }
+			writeJSON(w, 200, res)
 		case http.MethodPatch:
 			var body struct {
 				Title        string  `json:"title"`

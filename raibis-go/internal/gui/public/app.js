@@ -1337,16 +1337,16 @@ function showAddOptionsPanel(anchorBtn, key, name, type, entity, onAdd) {
       btn.onclick = (e) => { e.stopPropagation(); opts.splice(Number(btn.dataset.delIdx), 1); renderPanel(); };
     });
     const addOpt = () => {
-      const inp = document.getElementById('add-opt-input');
+      const inp = panel.querySelector('#add-opt-input');
       const v = inp.value.trim();
       if (!v || opts.includes(v)) { inp.style.borderColor='var(--danger)'; return; }
-      opts.push(v); inp.value=''; renderPanel(); document.getElementById('add-opt-input').focus();
+      opts.push(v); inp.value=''; renderPanel(); panel.querySelector('#add-opt-input').focus();
     };
-    document.getElementById('add-opt-add').onclick = (e) => { e.stopPropagation(); addOpt(); };
-    document.getElementById('add-opt-input').onkeydown = (e) => { if (e.key==='Enter'){e.preventDefault();addOpt();} if(e.key==='Escape'){panel.remove();} };
-    document.getElementById('add-opt-cancel').onclick = (e) => { e.stopPropagation(); panel.remove(); };
-    document.getElementById('add-opt-done').onclick = (e) => { e.stopPropagation(); saveAndClose(); };
-    requestAnimationFrame(() => document.getElementById('add-opt-input')?.focus());
+    panel.querySelector('#add-opt-add').onclick = (e) => { e.stopPropagation(); addOpt(); };
+    panel.querySelector('#add-opt-input').onkeydown = (e) => { if (e.key==='Enter'){e.preventDefault();addOpt();} if(e.key==='Escape'){panel.remove();} };
+    panel.querySelector('#add-opt-cancel').onclick = (e) => { e.stopPropagation(); panel.remove(); };
+    panel.querySelector('#add-opt-done').onclick = (e) => { e.stopPropagation(); saveAndClose(); };
+    requestAnimationFrame(() => panel.querySelector('#add-opt-input')?.focus());
   };
 
   renderPanel();
@@ -1398,9 +1398,9 @@ function showAddRelationPanel(anchorBtn, key, name, entity, onAdd) {
     panel.querySelectorAll('.rel-ent-pick').forEach(row => {
       row.onclick = (e) => { e.stopPropagation(); relatedEntity = row.dataset.ent; renderPanel(); };
     });
-    document.getElementById('rel-bilateral').onchange = (e) => { bilateral = e.target.checked; };
-    document.getElementById('rel-cancel').onclick = (e) => { e.stopPropagation(); panel.remove(); };
-    document.getElementById('rel-create').onclick = (e) => {
+    panel.querySelector('#rel-bilateral').onchange = (e) => { bilateral = e.target.checked; };
+    panel.querySelector('#rel-cancel').onclick = (e) => { e.stopPropagation(); panel.remove(); };
+    panel.querySelector('#rel-create').onclick = (e) => {
       e.stopPropagation();
       const defs = getCustomPropDefs(entity);
       defs.push({ key, label: name, type: 'relation', relatedEntity, bilateral });
@@ -1876,7 +1876,7 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
           popup.querySelectorAll('[data-opt]').forEach(row => {
             row.onclick = (ev) => { ev.stopPropagation(); const o = row.dataset.opt; if (sel.has(o)) sel.delete(o); else sel.add(o); renderMs(); };
           });
-          const doneBtn = document.getElementById('custom-ms-done');
+          const doneBtn = popup.querySelector('#custom-ms-done');
           if (doneBtn) doneBtn.onclick = (ev) => { ev.stopPropagation(); popup.remove(); setCustomPropValue(entity, recordId, key, JSON.stringify([...sel])); onRerender(); };
         };
         renderMs();
@@ -4969,11 +4969,41 @@ async function renderNotes() {
     }).join('')}</div>`;
   }
 
+  function buildNoteKanbanView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
+    const vis = (key) => entityPropVisible('note', key);
+    const categories = [...new Set(list.map(n => n.category_name || 'Uncategorized'))].sort();
+    const grouped = {};
+    categories.forEach(c => { grouped[c] = []; });
+    list.forEach(n => { (grouped[n.category_name || 'Uncategorized'] ||= []).push(n); });
+    const colsHtml = categories.map(cat => {
+      const items = grouped[cat] || [];
+      const cards = items.map(n => {
+        const tagChips = vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : '';
+        return `<div class="kanban-card note-card" data-note-id="${n.id}" style="cursor:pointer">
+          <div class="kanban-card-title">${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
+            ${vis('date') && n.note_date ? `<span>${fmtDate(n.note_date)}</span>` : ''}
+            ${tagChips}
+          </div>
+          ${renderCustomPropChips('note', n.id, 'kanban')}
+        </div>`;
+      }).join('');
+      return `<div class="kanban-col" data-col="${cat}">
+        <div class="kanban-col-header"><span>${cat}</span><span class="kanban-count">${items.length}</span></div>
+        <div class="kanban-col-body">${cards || '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No notes</div>'}</div>
+      </div>`;
+    }).join('');
+    const boardStyle = `display:grid;grid-template-columns:repeat(${categories.length},minmax(240px,1fr));gap:var(--space-4);align-items:start;padding-bottom:16px`;
+    return `<div style="overflow-x:auto;width:100%"><div class="kanban-board" style="${boardStyle}">${colsHtml}</div></div>`;
+  }
+
   function render() {
     const list = getFiltered();
     let html;
     if (notesViewMode === 'table') html = buildNoteTable(list);
     else if (notesViewMode === 'list') html = buildNoteListView(list);
+    else if (notesViewMode === 'kanban') html = buildNoteKanbanView(list);
     else html = list.length
       ? `<div style="display:grid;gap:12px">${list.map(buildNoteCard).join('')}</div>`
       : `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
