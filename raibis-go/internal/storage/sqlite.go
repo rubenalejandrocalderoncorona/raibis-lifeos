@@ -151,6 +151,19 @@ func applyMigrations(db *sql.DB) error {
 			created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_comments_entity ON comments(entity_type, entity_id)`,
+
+		// ── entity_children: generic parent→child hierarchy ─────────────────
+		`CREATE TABLE IF NOT EXISTS entity_children (
+			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+			parent_entity_type TEXT NOT NULL,
+			parent_entity_id   INTEGER NOT NULL,
+			child_entity_type  TEXT NOT NULL,
+			child_entity_id    INTEGER NOT NULL,
+			position           INTEGER NOT NULL DEFAULT 0,
+			created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(parent_entity_type, parent_entity_id, child_entity_type, child_entity_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_entity_children_parent ON entity_children(parent_entity_type, parent_entity_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -230,6 +243,10 @@ func (s *sqliteStorage) ListTasks(f domain.TaskFilter) ([]*domain.Task, error) {
 	if f.CategoryID != nil {
 		q += ` AND t.category_id = ?`
 		args = append(args, *f.CategoryID)
+	}
+	if f.ParentTaskID != nil {
+		q += ` AND t.parent_task_id = ?`
+		args = append(args, *f.ParentTaskID)
 	}
 	if f.TopLevelOnly {
 		q += ` AND t.parent_task_id IS NULL`
@@ -1122,4 +1139,48 @@ func (s *sqliteStorage) CountComments(entityType string, entityID int64) (int, e
 		entityType, entityID,
 	).Scan(&n)
 	return n, err
+}
+
+func (s *sqliteStorage) GetEntityChildren(parentType string, parentID int64) ([]*domain.EntityChild, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT id, child_entity_type, child_entity_id, position FROM entity_children
+		 WHERE parent_entity_type=? AND parent_entity_id=? ORDER BY position, id`,
+		parentType, parentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var children []*domain.EntityChild
+	for rows.Next() {
+		c := &domain.EntityChild{ParentEntityType: parentType, ParentEntityID: parentID}
+		if err := rows.Scan(&c.ID, &c.ChildEntityType, &c.ChildEntityID, &c.Position); err != nil {
+			return nil, err
+		}
+		children = append(children, c)
+	}
+	return children, rows.Err()
+}
+
+func (s *sqliteStorage) AddEntityChild(parentType string, parentID int64, childType string, childID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO entity_children(parent_entity_type, parent_entity_id, child_entity_type, child_entity_id)
+		 VALUES(?,?,?,?)`,
+		parentType, parentID, childType, childID,
+	)
+	return err
+}
+
+func (s *sqliteStorage) RemoveEntityChild(parentType string, parentID int64, childType string, childID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`DELETE FROM entity_children WHERE parent_entity_type=? AND parent_entity_id=? AND child_entity_type=? AND child_entity_id=?`,
+		parentType, parentID, childType, childID,
+	)
+	return err
 }

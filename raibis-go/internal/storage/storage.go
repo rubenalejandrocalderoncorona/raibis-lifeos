@@ -80,4 +80,9 @@ type Storage interface {
 	CreateComment(c *domain.Comment) (int64, error)
 	ListComments(entityType string, entityID int64) ([]*domain.Comment, error)
 	CountComments(entityType string, entityID int64) (int, error)
+
+	// ── Entity children (generic parent→child hierarchy) ──────────────────
+	GetEntityChildren(parentType string, parentID int64) ([]*domain.EntityChild, error)
+	AddEntityChild(parentType string, parentID int64, childType string, childID int64) error
+	RemoveEntityChild(parentType string, parentID int64, childType string, childID int64) error
 }

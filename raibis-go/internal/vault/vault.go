@@ -226,7 +226,7 @@ func buildFrontmatter(props map[string]any) string {
 			if val == "" {
 				continue
 			}
-			if strings.ContainsAny(val, ":\n\"'#") {
+			if strings.ContainsAny(val, ":\n\"'#[]") {
 				escaped := strings.ReplaceAll(val, `"`, `\"`)
 				escaped = strings.ReplaceAll(escaped, "\n", `\n`)
 				sb.WriteString(fmt.Sprintf("%s: \"%s\"\n", k, escaped))

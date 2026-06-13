@@ -40,6 +40,7 @@ type TaskFilter struct {
 	GoalID       *int64
 	ProjectID    *int64
 	SprintID     *int64
+	ParentTaskID *int64 // filter to children of a specific task
 	Status       *Status
 	CategoryID   *int64
 	TopLevelOnly bool // WHERE parent_task_id IS NULL

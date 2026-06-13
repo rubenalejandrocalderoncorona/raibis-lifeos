@@ -1585,6 +1585,8 @@ function renderCustomPropChips(entity, recordId, viewMode) {
       display = val ? '✓' : '✗';
     } else if (def.type === 'multi_select') {
       try { const a = JSON.parse(val); display = Array.isArray(a) ? a.join(', ') : val; } catch { display = val; }
+    } else if (def.type === 'relation') {
+      display = String(val).replace(/^\[\[|\]\]$/g, '');
     } else {
       display = String(val);
     }
@@ -1641,7 +1643,7 @@ function bindCustomPropCells() {
           popup.querySelectorAll('[data-opt]').forEach(row => {
             row.onclick = (ev) => { ev.stopPropagation(); const o = row.dataset.opt; if (sel.has(o)) sel.delete(o); else sel.add(o); renderMs(); };
           });
-          const db = document.getElementById('custom-ms-done');
+          const db = popup.querySelector('#custom-ms-done');
           if (db) db.onclick = (ev) => { ev.stopPropagation(); popup.remove(); const v=JSON.stringify([...sel]); setCustomPropValue(entity,recordId,propKey,v); cell.innerHTML=([...sel].map(v=>`<span style="font-size:11px;background:var(--accent-glow);border-radius:3px;padding:1px 5px;margin-right:2px">${v}</span>`).join(''))||'—'; };
         };
         renderMs();
@@ -1780,7 +1782,7 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
             return `<a href="${val}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);text-decoration:underline;font-size:12px" onclick="event.stopPropagation()">${val}</a>`;
           }
           if (custom.type === 'relation') {
-            return `<span style="font-size:12px;color:var(--text-primary)">${val}</span>`;
+            return `<span style="font-size:12px;color:var(--text-primary)">${val.replace(/^\[\[|\]\]$/g, '')}</span>`;
           }
           return `<span style="font-size:12px">${String(val).replace(/</g,'&lt;')}</span>`;
         })();
@@ -1836,7 +1838,6 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
     const def = defs.find(d => d.key === key);
     if (!def) return;
     if (def.type === 'checkbox') return; // handled by input directly
-    if (def.type === 'url') return; // anchor handles its own click
     valEl.onclick = (e) => {
       e.stopPropagation();
       if (valEl.querySelector('input,textarea')) return;
@@ -1894,7 +1895,7 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
           openValuePicker(valEl, opts, (val) => {
             const found = list.find(it => String(it.id) === val);
             const display = found ? (found.title || found.name || val) : val;
-            setCustomPropValue(entity, recordId, key, display);
+            setCustomPropValue(entity, recordId, key, `[[${display}]]`);
             onRerender();
           });
         }).catch(() => {});
@@ -3275,6 +3276,109 @@ document.addEventListener('keydown', (e) => {
     if (inp) inp.focus();
   }
 });
+
+/* ─── Sub-items Section (generic parent→child hierarchy) ────────────── */
+
+const SUB_ITEM_TYPES = [
+  { value: 'task',    label: 'Task'    },
+  { value: 'goal',    label: 'Goal'    },
+  { value: 'project', label: 'Project' },
+  { value: 'note',    label: 'Note'    },
+];
+
+function buildSubItemsSection(entityType, entityId) {
+  const typeOpts = SUB_ITEM_TYPES.map(t =>
+    `<option value="${t.value}">${t.label}</option>`
+  ).join('');
+  return `
+    <div class="subtask-section" id="sub-items-sec-${entityType}-${entityId}">
+      <div class="subtask-section-title">
+        <span>Sub-items</span>
+        <div style="display:flex;gap:6px;align-items:center">
+          <select id="sub-item-type-${entityType}-${entityId}" class="form-control"
+            style="font-size:11px;padding:2px 6px;height:24px;min-width:80px">
+            ${typeOpts}
+          </select>
+          <button class="btn btn-sm btn-ghost" id="add-sub-item-btn-${entityType}-${entityId}">+ Add</button>
+        </div>
+      </div>
+      <div id="sub-items-list-${entityType}-${entityId}" style="margin-top:6px">
+        <div style="color:var(--text-muted);font-size:12px">Loading…</div>
+      </div>
+    </div>`;
+}
+
+async function refreshSubItemsList(entityType, entityId) {
+  const container = document.getElementById(`sub-items-list-${entityType}-${entityId}`);
+  if (!container) return;
+  let children = [];
+  try { children = await api('GET', `/api/children/${entityType}/${entityId}`); } catch(e) {}
+  if (!Array.isArray(children) || !children.length) {
+    container.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:4px 0">No sub-items yet</div>';
+    return;
+  }
+  container.innerHTML = children.map(c =>
+    `<div class="subtask-row" style="cursor:pointer" data-sub-type="${c.child_entity_type}" data-sub-id="${c.child_entity_id}">
+      <span style="font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px;color:var(--text-muted);flex-shrink:0">${c.child_entity_type}</span>
+      <span class="subtask-title">${c.child_title || '—'}</span>
+      <button class="btn btn-sm btn-ghost sub-item-unlink-btn"
+        data-sub-type="${c.child_entity_type}" data-sub-id="${c.child_entity_id}"
+        title="Unlink" style="opacity:0.5;flex-shrink:0">×</button>
+    </div>`
+  ).join('');
+  container.querySelectorAll('.sub-item-unlink-btn').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      try { await api('DELETE', `/api/children/${entityType}/${entityId}/${btn.dataset.subType}/${btn.dataset.subId}`); } catch(err) {}
+      await refreshSubItemsList(entityType, entityId);
+    };
+  });
+  container.querySelectorAll('[data-sub-type]').forEach(row => {
+    row.onclick = (e) => {
+      if (e.target.closest('.sub-item-unlink-btn')) return;
+      const t = row.dataset.subType, id = parseInt(row.dataset.subId);
+      if (t === 'task')    showTaskSlideover(id);
+      else if (t === 'goal')    showGoalSlideover({ id }, null);
+      else if (t === 'project') showProjectSlideover({ id }, null, null);
+      else if (t === 'note')    showNoteSlideover(id, null);
+    };
+  });
+}
+
+async function initSubItemsSection(entityType, entityId) {
+  await refreshSubItemsList(entityType, entityId);
+  const addBtn = document.getElementById(`add-sub-item-btn-${entityType}-${entityId}`);
+  if (!addBtn) return;
+  addBtn.onclick = async (e) => {
+    e.stopPropagation();
+    const sel = document.getElementById(`sub-item-type-${entityType}-${entityId}`);
+    const childType = sel ? sel.value : 'task';
+    const title = prompt(`New ${childType} title:`);
+    if (!title?.trim()) return;
+    try {
+      let newId;
+      if (childType === 'task') {
+        const t = await api('POST', '/api/tasks', { title: title.trim(), status: 'todo', priority: 'medium' });
+        newId = t.id;
+      } else if (childType === 'goal') {
+        const g = await api('POST', '/api/goals', { title: title.trim(), status: 'active' });
+        newId = g.id;
+      } else if (childType === 'project') {
+        const p = await api('POST', '/api/projects', { title: title.trim(), status: 'active' });
+        newId = p.id;
+      } else if (childType === 'note') {
+        const n = await api('POST', '/api/notes', { title: title.trim(), body: '' });
+        newId = n.id;
+      }
+      if (newId) {
+        await api('POST', `/api/children/${entityType}/${entityId}`, {
+          child_entity_type: childType, child_entity_id: newId
+        });
+        await refreshSubItemsList(entityType, entityId);
+      }
+    } catch(err) { console.error('Sub-item creation failed:', err); }
+  };
+}
 
 /* ─── Comment Section ────────────────────────────────────────────────── */
 
@@ -7080,6 +7184,7 @@ async function showTaskSlideover(taskId) {
       <div class="subtask-section-title"><span>Resources (${(task.resources||[]).length})</span></div>
       <div>${resourcesHtml}</div>
     </div>
+    ${buildSubItemsSection('task', taskId)}
     ${buildCommentSection('task', taskId)}
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <button class="btn btn-ghost btn-sm" id="task-export-btn">Export JSON</button>
@@ -7378,6 +7483,7 @@ async function showTaskSlideover(taskId) {
   };
   bindInlinePropPanel('task', taskId, taskInlinePropEditFns, () => showTaskSlideover(taskId));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="task"]'));
+  initSubItemsSection('task', taskId);
   // Persists to localStorage under `storageKey`.
   function openEditableValueCombo(anchorEl, valuesArray, storageKey, currentVal, onSelect) {
     closeCombo();
@@ -9310,6 +9416,8 @@ async function showProjectSlideover(project, goals, afterSave) {
       <ul class="task-list" id="proj-task-list">${taskRows}</ul>
     </div>
 
+    ${buildSubItemsSection('project', projectId)}
+
     ${buildCommentSection('project', projectId)}
 
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
@@ -9409,6 +9517,7 @@ async function showProjectSlideover(project, goals, afterSave) {
   // Inline prop panel
   bindInlinePropPanel('project', projectId, projInlinePropEditFns, () => showProjectSlideover({ id: projectId }, goals, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
+  initSubItemsSection('project', projectId);
 
   // Task rows click → task sideview
   document.querySelectorAll('#proj-task-list [data-task-id]').forEach(el => {
@@ -9503,6 +9612,8 @@ async function showGoalSlideover(goal, afterSave) {
       </div>
       <div id="goal-proj-list">${projRows}</div>
     </div>
+
+    ${buildSubItemsSection('goal', goalId)}
 
     ${buildCommentSection('goal', goalId)}
 
@@ -9613,6 +9724,7 @@ async function showGoalSlideover(goal, afterSave) {
   // Inline prop panel
   bindInlinePropPanel('goal', goalId, goalInlinePropEditFns, () => showGoalSlideover({ id: goalId }, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="goal"]'));
+  initSubItemsSection('goal', goalId);
 
   // Project cards nav
   document.querySelectorAll('#goal-proj-list [data-proj-id]').forEach(el => {
@@ -9856,6 +9968,8 @@ async function showNoteSlideover(noteId, afterSave) {
       <textarea id="detail-body" style="width:100%;min-height:200px">${n.body || ''}</textarea>
     </div>
 
+    ${buildSubItemsSection('note', noteId)}
+
     ${buildCommentSection('note', noteId)}
 
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
@@ -9954,6 +10068,7 @@ async function showNoteSlideover(noteId, afterSave) {
   // Inline prop panel
   bindInlinePropPanel('note', noteId, noteInlinePropEditFns, () => showNoteSlideover(noteId, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="note"]'));
+  initSubItemsSection('note', noteId);
 
   document.getElementById('note-export-btn').onclick = () => showJSONModal(`/api/export/note/${noteId}`, `note-${noteId}.json`);
   document.getElementById('note-delete-btn').onclick = () => deleteEntity('note', noteId);
@@ -10302,6 +10417,8 @@ async function showResourceSlideover(resource, afterSave) {
       </div>
     </div>
 
+    ${buildSubItemsSection('resource', resId)}
+
     ${buildCommentSection('resource', resId)}
 
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
@@ -10397,6 +10514,7 @@ async function showResourceSlideover(resource, afterSave) {
   // Inline prop panel
   bindInlinePropPanel('resource', resId, resInlinePropEditFns, () => showResourceSlideover({ id: resId }, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="resource"]'));
+  initSubItemsSection('resource', resId);
 
   // File upload
   const fileInput = document.getElementById('rs-file-input');

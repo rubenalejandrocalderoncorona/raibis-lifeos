@@ -3593,6 +3593,7 @@ body.kanban-dragging-active * {
   user-select: none;
 }
 .inline-prop-row:hover .inline-prop-drag-handle { opacity: 0.45; }
+.inline-prop-row:hover .prop-del-btn { opacity: 0.6 !important; }
 .inline-prop-drag-handle:hover { opacity: 0.9 !important; }
 .inline-prop-drag-handle:active { cursor: grabbing; }
 .inline-prop-label {

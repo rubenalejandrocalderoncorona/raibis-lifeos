@@ -206,6 +206,9 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Comments
 	mux.HandleFunc("/api/comments", withCORS(commentsHandler(store)))
 
+	// Entity children (generic parent→child hierarchy)
+	mux.HandleFunc("/api/children/", withCORS(entityChildrenHandler(store, v)))
+
 	// Properties (icon + custom key-value pairs per entity)
 	mux.HandleFunc("/api/properties", withCORS(propertiesHandler(store, v)))
 
@@ -415,6 +418,12 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 			go func() {
 				if err := vlt.WriteEntityMD("task", created.ID, mergeFMWithProps(taskFM(created), store, "task", created.ID), taskLinksBody(created, store)); err != nil {
 					log.Printf("vault: write task %d: %v", created.ID, err)
+				}
+				// Re-sync parent task so its ## Subtasks section stays up-to-date
+				if created.ParentTaskID != nil {
+					if pt, err := store.GetTask(*created.ParentTaskID); err == nil {
+						_ = vlt.WriteEntityMD("task", pt.ID, mergeFMWithProps(taskFM(pt), store, "task", pt.ID), taskLinksBody(pt, store))
+					}
 				}
 			}()
 			writeJSON(w, 201, created)
@@ -647,6 +656,12 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 				if err := vlt.WriteEntityMD("task", updated.ID, mergeFMWithProps(taskFM(updated), store, "task", updated.ID), taskLinksBody(updated, store)); err != nil {
 					log.Printf("vault: update task %d: %v", updated.ID, err)
 				}
+				// Keep parent task's ## Subtasks section in sync
+				if updated.ParentTaskID != nil {
+					if pt, err := store.GetTask(*updated.ParentTaskID); err == nil {
+						_ = vlt.WriteEntityMD("task", pt.ID, mergeFMWithProps(taskFM(pt), store, "task", pt.ID), taskLinksBody(pt, store))
+					}
+				}
 			}()
 			writeJSON(w, 200, updated)
 
@@ -728,7 +743,7 @@ func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 			}
 			created, _ := store.GetGoal(id)
 			go func() {
-				if err := vlt.WriteEntityMD("goal", created.ID, mergeFMWithProps(goalFM(created), store, "goal", created.ID), ""); err != nil {
+				if err := vlt.WriteEntityMD("goal", created.ID, mergeFMWithProps(goalFM(created), store, "goal", created.ID), childrenLinksBody("goal", created.ID, store)); err != nil {
 					log.Printf("vault: write goal %d: %v", created.ID, err)
 				}
 			}()
@@ -877,7 +892,7 @@ func goalHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.Ha
 			updated, _ := store.GetGoal(id)
 			updated.Tags, _ = store.GetEntityTags("goal", id)
 			go func() {
-				if err := vlt.WriteEntityMD("goal", updated.ID, mergeFMWithProps(goalFM(updated), store, "goal", updated.ID), ""); err != nil {
+				if err := vlt.WriteEntityMD("goal", updated.ID, mergeFMWithProps(goalFM(updated), store, "goal", updated.ID), childrenLinksBody("goal", updated.ID, store)); err != nil {
 					log.Printf("vault: update goal %d: %v", updated.ID, err)
 				}
 			}()
@@ -948,7 +963,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 			}
 			created, _ := store.GetProject(id)
 			go func() {
-				if err := vlt.WriteEntityMD("project", created.ID, mergeFMWithProps(projectFM(created), store, "project", created.ID), projectLinksBody(created, store)); err != nil {
+				if err := vlt.WriteEntityMD("project", created.ID, mergeFMWithProps(projectFM(created), store, "project", created.ID), projectLinksBody(created, store)+childrenLinksBody("project", created.ID, store)); err != nil {
 					log.Printf("vault: write project %d: %v", created.ID, err)
 				}
 			}()
@@ -1077,7 +1092,7 @@ func projectHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http
 			updated, _ := store.GetProject(id)
 			updated.Tags, _ = store.GetEntityTags("project", id)
 			go func() {
-				if err := vlt.WriteEntityMD("project", updated.ID, mergeFMWithProps(projectFM(updated), store, "project", updated.ID), projectLinksBody(updated, store)); err != nil {
+				if err := vlt.WriteEntityMD("project", updated.ID, mergeFMWithProps(projectFM(updated), store, "project", updated.ID), projectLinksBody(updated, store)+childrenLinksBody("project", updated.ID, store)); err != nil {
 					log.Printf("vault: update project %d: %v", updated.ID, err)
 				}
 			}()
@@ -2731,6 +2746,105 @@ func commentsHandler(store storage.Storage) http.HandlerFunc {
 	}
 }
 
+// entityChildrenHandler handles GET/POST/DELETE for /api/children/{parentType}/{parentID}
+// and DELETE for /api/children/{parentType}/{parentID}/{childType}/{childID}
+func entityChildrenHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
+	// resolveTitle fetches a display title for a child entity.
+	resolveTitle := func(entityType string, entityID int64) string {
+		switch entityType {
+		case "task":
+			if t, err := store.GetTask(entityID); err == nil {
+				return t.Title
+			}
+		case "goal":
+			if g, err := store.GetGoal(entityID); err == nil {
+				return g.Title
+			}
+		case "project":
+			if p, err := store.GetProject(entityID); err == nil {
+				return p.Title
+			}
+		case "note":
+			if n, err := store.GetNote(entityID); err == nil {
+				if n.Title != "" {
+					return n.Title
+				}
+				return fmt.Sprintf("note-%d", entityID)
+			}
+		}
+		return fmt.Sprintf("%s-%d", entityType, entityID)
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Path: /api/children/{parentType}/{parentID}[/{childType}/{childID}]
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/children/"), "/"), "/")
+		if len(parts) < 2 {
+			errJSON(w, 400, "path must be /api/children/{parentType}/{parentID}")
+			return
+		}
+		parentType := parts[0]
+		parentID, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			errJSON(w, 400, "invalid parent id")
+			return
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			children, err := store.GetEntityChildren(parentType, parentID)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			for _, c := range children {
+				c.ChildTitle = resolveTitle(c.ChildEntityType, c.ChildEntityID)
+			}
+			if children == nil {
+				children = []*domain.EntityChild{}
+			}
+			writeJSON(w, 200, children)
+
+		case http.MethodPost:
+			var body struct {
+				ChildType string `json:"child_entity_type"`
+				ChildID   int64  `json:"child_entity_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			if err := store.AddEntityChild(parentType, parentID, body.ChildType, body.ChildID); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			go resyncEntityVault(parentType, parentID, store, vlt)
+			writeJSON(w, 201, map[string]string{"ok": "linked"})
+
+		case http.MethodDelete:
+			// /api/children/{parentType}/{parentID}/{childType}/{childID}
+			if len(parts) < 4 {
+				errJSON(w, 400, "path must be /api/children/{parentType}/{parentID}/{childType}/{childID}")
+				return
+			}
+			childType := parts[2]
+			childID, err := strconv.ParseInt(parts[3], 10, 64)
+			if err != nil {
+				errJSON(w, 400, "invalid child id")
+				return
+			}
+			if err := store.RemoveEntityChild(parentType, parentID, childType, childID); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			go resyncEntityVault(parentType, parentID, store, vlt)
+			writeJSON(w, 200, map[string]string{"ok": "unlinked"})
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
 func propertiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -3602,6 +3716,9 @@ func taskFM(t *domain.Task) map[string]any {
 	if t.SprintID != nil {
 		fm["sprint_id"] = *t.SprintID
 	}
+	if t.ParentTaskID != nil {
+		fm["parent_task_id"] = *t.ParentTaskID
+	}
 	if t.DueDate != nil {
 		fm["due_date"] = t.DueDate.Format("2006-01-02")
 	}
@@ -3739,6 +3856,23 @@ func taskLinksBody(t *domain.Task, store storage.Storage) string {
 			lines = append(lines, fmt.Sprintf("[[sprint-%d|%s]]", sp.ID, sp.Title))
 		}
 	}
+	if t.ParentTaskID != nil {
+		if pt, err := store.GetTask(*t.ParentTaskID); err == nil {
+			lines = append(lines, fmt.Sprintf("parent: [[task-%d|%s]]", pt.ID, pt.Title))
+		}
+	}
+	// Subtasks as a checklist
+	subtasks, err := store.ListTasks(domain.TaskFilter{ParentTaskID: &t.ID})
+	if err == nil && len(subtasks) > 0 {
+		lines = append(lines, "\n## Subtasks")
+		for _, s := range subtasks {
+			check := " "
+			if s.Status == domain.StatusDone {
+				check = "x"
+			}
+			lines = append(lines, fmt.Sprintf("- [%s] [[task-%d|%s]]", check, s.ID, s.Title))
+		}
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -3756,6 +3890,62 @@ func sprintLinksBody(s *domain.Sprint, store storage.Storage) string {
 		return fmt.Sprintf("[[project-%d|%s]]", p.ID, p.Title)
 	}
 	return ""
+}
+
+// childrenLinksBody appends a ## Sub-items section of [[wikilinks]] for any
+// entity children registered in the entity_children table.
+func childrenLinksBody(entityType string, entityID int64, store storage.Storage) string {
+	children, err := store.GetEntityChildren(entityType, entityID)
+	if err != nil || len(children) == 0 {
+		return ""
+	}
+	var lines []string
+	lines = append(lines, "\n## Sub-items")
+	for _, c := range children {
+		var title string
+		switch c.ChildEntityType {
+		case "task":
+			if t, err := store.GetTask(c.ChildEntityID); err == nil {
+				title = t.Title
+			}
+		case "goal":
+			if g, err := store.GetGoal(c.ChildEntityID); err == nil {
+				title = g.Title
+			}
+		case "project":
+			if p, err := store.GetProject(c.ChildEntityID); err == nil {
+				title = p.Title
+			}
+		case "note":
+			if n, err := store.GetNote(c.ChildEntityID); err == nil {
+				title = n.Title
+			}
+		}
+		if title == "" {
+			title = fmt.Sprintf("%s-%d", c.ChildEntityType, c.ChildEntityID)
+		}
+		lines = append(lines, fmt.Sprintf("- [[%s-%d|%s]]", c.ChildEntityType, c.ChildEntityID, title))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// resyncEntityVault re-writes the vault MD for any supported entity type.
+// Called in goroutines after child-link mutations to keep the ## Sub-items section fresh.
+func resyncEntityVault(entityType string, entityID int64, store storage.Storage, vlt *vault.Vault) {
+	switch entityType {
+	case "goal":
+		if g, err := store.GetGoal(entityID); err == nil {
+			_ = vlt.WriteEntityMD("goal", g.ID, mergeFMWithProps(goalFM(g), store, "goal", g.ID), childrenLinksBody("goal", g.ID, store))
+		}
+	case "project":
+		if p, err := store.GetProject(entityID); err == nil {
+			_ = vlt.WriteEntityMD("project", p.ID, mergeFMWithProps(projectFM(p), store, "project", p.ID), projectLinksBody(p, store)+childrenLinksBody("project", p.ID, store))
+		}
+	case "task":
+		if t, err := store.GetTask(entityID); err == nil {
+			_ = vlt.WriteEntityMD("task", t.ID, mergeFMWithProps(taskFM(t), store, "task", t.ID), taskLinksBody(t, store))
+		}
+	}
 }
 
 // mergeFMWithProps merges any stored entity_properties (excluding internal _*
