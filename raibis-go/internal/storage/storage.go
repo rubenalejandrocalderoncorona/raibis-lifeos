@@ -85,4 +85,9 @@ type Storage interface {
 	GetEntityChildren(parentType string, parentID int64) ([]*domain.EntityChild, error)
 	AddEntityChild(parentType string, parentID int64, childType string, childID int64) error
 	RemoveEntityChild(parentType string, parentID int64, childType string, childID int64) error
+
+	// ── Entity relations (bidirectional peer links) ───────────────────────
+	GetEntityRelations(entityType string, entityID int64) ([]*domain.EntityRelation, error)
+	AddEntityRelation(typeA string, idA int64, typeB string, idB int64) error
+	RemoveEntityRelation(typeA string, idA int64, typeB string, idB int64) error
 }

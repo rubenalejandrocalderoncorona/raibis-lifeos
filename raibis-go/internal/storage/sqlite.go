@@ -164,6 +164,20 @@ func applyMigrations(db *sql.DB) error {
 			UNIQUE(parent_entity_type, parent_entity_id, child_entity_type, child_entity_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_entity_children_parent ON entity_children(parent_entity_type, parent_entity_id)`,
+
+		// ── entity_relations: bidirectional peer links ──────────────────────
+		// Pairs are stored normalized: type_a+":"+id_a <= type_b+":"+id_b
+		`CREATE TABLE IF NOT EXISTS entity_relations (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			type_a     TEXT NOT NULL,
+			id_a       INTEGER NOT NULL,
+			type_b     TEXT NOT NULL,
+			id_b       INTEGER NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(type_a, id_a, type_b, id_b)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_entity_relations_a ON entity_relations(type_a, id_a)`,
+		`CREATE INDEX IF NOT EXISTS idx_entity_relations_b ON entity_relations(type_b, id_b)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -1181,6 +1195,66 @@ func (s *sqliteStorage) RemoveEntityChild(parentType string, parentID int64, chi
 	_, err := s.db.Exec(
 		`DELETE FROM entity_children WHERE parent_entity_type=? AND parent_entity_id=? AND child_entity_type=? AND child_entity_id=?`,
 		parentType, parentID, childType, childID,
+	)
+	return err
+}
+
+// normalizeRelPair returns the pair sorted so type_a:id_a <= type_b:id_b.
+func normalizeRelPair(ta string, ia int64, tb string, ib int64) (string, int64, string, int64) {
+	keyA := fmt.Sprintf("%s:%d", ta, ia)
+	keyB := fmt.Sprintf("%s:%d", tb, ib)
+	if keyA <= keyB {
+		return ta, ia, tb, ib
+	}
+	return tb, ib, ta, ia
+}
+
+func (s *sqliteStorage) GetEntityRelations(entityType string, entityID int64) ([]*domain.EntityRelation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT id,
+		        CASE WHEN type_a=? AND id_a=? THEN type_b ELSE type_a END,
+		        CASE WHEN type_a=? AND id_a=? THEN id_b   ELSE id_a  END
+		 FROM entity_relations
+		 WHERE (type_a=? AND id_a=?) OR (type_b=? AND id_b=?)
+		 ORDER BY id`,
+		entityType, entityID, entityType, entityID,
+		entityType, entityID, entityType, entityID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var rels []*domain.EntityRelation
+	for rows.Next() {
+		r := &domain.EntityRelation{}
+		if err := rows.Scan(&r.ID, &r.RelatedType, &r.RelatedID); err != nil {
+			return nil, err
+		}
+		rels = append(rels, r)
+	}
+	return rels, rows.Err()
+}
+
+func (s *sqliteStorage) AddEntityRelation(typeA string, idA int64, typeB string, idB int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ta, ia, tb, ib := normalizeRelPair(typeA, idA, typeB, idB)
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO entity_relations(type_a, id_a, type_b, id_b) VALUES(?,?,?,?)`,
+		ta, ia, tb, ib,
+	)
+	return err
+}
+
+func (s *sqliteStorage) RemoveEntityRelation(typeA string, idA int64, typeB string, idB int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ta, ia, tb, ib := normalizeRelPair(typeA, idA, typeB, idB)
+	_, err := s.db.Exec(
+		`DELETE FROM entity_relations WHERE type_a=? AND id_a=? AND type_b=? AND id_b=?`,
+		ta, ia, tb, ib,
 	)
 	return err
 }

@@ -1769,11 +1769,9 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
           }
           if (!val) return `<span class="empty">—</span>`;
           if (custom.type === 'multi_select') {
-            try {
-              const arr = JSON.parse(val);
-              if (Array.isArray(arr) && arr.length) return arr.map(v => `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${v}</span>`).join('');
-            } catch {}
-            return `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${val}</span>`;
+            const arr = (() => { try { const a = JSON.parse(val); return Array.isArray(a) ? a : (val ? [val] : []); } catch { return val ? [val] : []; } })();
+            const chips = arr.map(v => `<span class="multi-chip ms-chip" data-ms-val="${v.replace(/"/g,'&quot;')}" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px;display:inline-flex;align-items:center;gap:3px;cursor:default">${v}<span class="ms-chip-remove" data-val="${v.replace(/"/g,'&quot;')}" style="cursor:pointer;font-weight:700;opacity:0.6;font-size:12px;line-height:1" title="Remove">×</span></span>`).join('');
+            return `<div class="ms-chips-wrap" style="display:flex;flex-wrap:wrap;gap:3px;align-items:center;min-height:20px">${chips}<button class="btn btn-sm btn-ghost ms-add-btn" style="font-size:11px;padding:1px 5px;height:20px;line-height:1" title="Add option">+</button></div>`;
           }
           if (custom.type === 'select' || custom.type === 'status') {
             return `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${val}</span>`;
@@ -1859,32 +1857,7 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
         return;
       }
       if (def.type === 'multi_select') {
-        const curArr = (() => { try { const a = JSON.parse(cur); return Array.isArray(a) ? a : (cur ? [cur] : []); } catch { return cur ? [cur] : []; } })();
-        const opts = def.options || [];
-        document.getElementById('custom-ms-picker')?.remove();
-        const popup = document.createElement('div');
-        popup.id = 'custom-ms-picker';
-        popup.className = 'prop-vis-panel';
-        const sel = new Set(curArr);
-        const eyeOn = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`;
-        const renderMs = () => {
-          popup.innerHTML = `<div style="padding:4px 10px 6px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">${def.label}</div>` +
-            opts.map(o => `<div class="prop-vis-row" data-opt="${o}" style="cursor:pointer;user-select:none">
-              <span style="color:var(--text-primary);font-size:13px">${o}</span>
-              <span style="opacity:${sel.has(o)?'1':'0'}">${eyeOn}</span>
-            </div>`).join('') +
-            `<div style="padding:4px 8px 6px;text-align:right"><button id="custom-ms-done" class="btn btn-sm btn-primary" style="font-size:12px">Done</button></div>`;
-          popup.querySelectorAll('[data-opt]').forEach(row => {
-            row.onclick = (ev) => { ev.stopPropagation(); const o = row.dataset.opt; if (sel.has(o)) sel.delete(o); else sel.add(o); renderMs(); };
-          });
-          const doneBtn = popup.querySelector('#custom-ms-done');
-          if (doneBtn) doneBtn.onclick = (ev) => { ev.stopPropagation(); popup.remove(); setCustomPropValue(entity, recordId, key, JSON.stringify([...sel])); onRerender(); };
-        };
-        renderMs();
-        const rect = valEl.getBoundingClientRect();
-        popup.style.cssText = `position:fixed;z-index:9200;min-width:160px;top:${rect.bottom+4}px;left:${rect.left}px`;
-        document.body.appendChild(popup);
-        setTimeout(() => { document.addEventListener('click', function h(ev) { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', h); } }); }, 0);
+        // Handled by ms-chip-remove and ms-add-btn wired below; skip generic onclick.
         return;
       }
       if (def.type === 'relation') {
@@ -1958,6 +1931,54 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
       try { await api('DELETE', `/api/properties?entity_type=${entity}&key=${encodeURIComponent(key)}`); } catch(err) {}
       document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
       onRerender();
+    };
+  });
+
+  // Wire multi_select chip removes (× per chip)
+  panel.querySelectorAll('.ms-chip-remove').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const key = btn.closest('[data-prop-key]')?.dataset.propKey;
+      if (!key) return;
+      const cur = getCustomPropValues(entity, recordId)[key] ?? '';
+      const arr = (() => { try { const a = JSON.parse(cur); return Array.isArray(a) ? a : []; } catch { return []; } })();
+      const updated = arr.filter(v => v !== btn.dataset.val);
+      setCustomPropValue(entity, recordId, key, JSON.stringify(updated));
+      onRerender();
+    };
+  });
+
+  // Wire multi_select + button (add option from remaining)
+  panel.querySelectorAll('.ms-add-btn').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const key = btn.closest('[data-prop-key]')?.dataset.propKey;
+      if (!key) return;
+      const defs = getCustomPropDefs(entity);
+      const def = defs.find(d => d.key === key);
+      if (!def) return;
+      const cur = getCustomPropValues(entity, recordId)[key] ?? '';
+      const curArr = (() => { try { const a = JSON.parse(cur); return Array.isArray(a) ? a : []; } catch { return []; } })();
+      const opts = (def.options || []).filter(o => !curArr.includes(o));
+      if (!opts.length) return;
+      document.getElementById('custom-ms-picker')?.remove();
+      const popup = document.createElement('div');
+      popup.id = 'custom-ms-picker';
+      popup.className = 'prop-vis-panel';
+      popup.innerHTML = `<div style="padding:4px 10px 4px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">Add ${def.label}</div>` +
+        opts.map(o => `<div class="prop-vis-row ms-pick-opt" data-opt="${o}" style="cursor:pointer"><span style="font-size:13px;color:var(--text-primary)">${o}</span></div>`).join('');
+      popup.querySelectorAll('.ms-pick-opt').forEach(row => {
+        row.onclick = (ev) => {
+          ev.stopPropagation();
+          popup.remove();
+          setCustomPropValue(entity, recordId, key, JSON.stringify([...curArr, row.dataset.opt]));
+          onRerender();
+        };
+      });
+      const rect = btn.getBoundingClientRect();
+      popup.style.cssText = `position:fixed;z-index:9200;min-width:140px;top:${rect.bottom+4}px;left:${rect.left}px`;
+      document.body.appendChild(popup);
+      setTimeout(() => { document.addEventListener('click', function h(ev) { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', h); } }); }, 0);
     };
   });
 
@@ -3377,6 +3398,98 @@ async function initSubItemsSection(entityType, entityId) {
         await refreshSubItemsList(entityType, entityId);
       }
     } catch(err) { console.error('Sub-item creation failed:', err); }
+  };
+}
+
+/* ─── Relations Section (bidirectional peer links) ───────────────────── */
+
+const RELATION_ENTITY_TYPES = [
+  { value: 'task',     label: 'Task'     },
+  { value: 'goal',     label: 'Goal'     },
+  { value: 'project',  label: 'Project'  },
+  { value: 'note',     label: 'Note'     },
+  { value: 'resource', label: 'Resource' },
+  { value: 'sprint',   label: 'Sprint'   },
+];
+
+function buildRelationsSection(entityType, entityId) {
+  return `
+    <div class="subtask-section" id="relations-sec-${entityType}-${entityId}">
+      <div class="subtask-section-title">
+        <span>Relations</span>
+        <button class="btn btn-sm btn-ghost" id="add-relation-btn-${entityType}-${entityId}" style="font-size:12px">+ Add relation</button>
+      </div>
+      <div id="relations-list-${entityType}-${entityId}" style="margin-top:6px">
+        <div style="color:var(--text-muted);font-size:12px">Loading…</div>
+      </div>
+    </div>`;
+}
+
+async function refreshRelationsList(entityType, entityId) {
+  const container = document.getElementById(`relations-list-${entityType}-${entityId}`);
+  if (!container) return;
+  let rels = [];
+  try { rels = await api('GET', `/api/relations/${entityType}/${entityId}`); } catch(e) {}
+  if (!Array.isArray(rels) || !rels.length) {
+    container.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:4px 0">No relations</div>';
+    return;
+  }
+  container.innerHTML = rels.map(r =>
+    `<div class="subtask-row" style="cursor:pointer" data-rel-type="${r.related_entity_type}" data-rel-id="${r.related_entity_id}">
+      <span style="font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px;color:var(--text-muted);flex-shrink:0">${r.related_entity_type}</span>
+      <span class="subtask-title">${r.related_title || '—'}</span>
+      <button class="btn btn-sm btn-ghost rel-unlink-btn"
+        data-rel-type="${r.related_entity_type}" data-rel-id="${r.related_entity_id}"
+        title="Remove" style="opacity:0.5;flex-shrink:0">×</button>
+    </div>`
+  ).join('');
+  container.querySelectorAll('.rel-unlink-btn').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      try { await api('DELETE', `/api/relations/${entityType}/${entityId}/${btn.dataset.relType}/${btn.dataset.relId}`); } catch(err) {}
+      await refreshRelationsList(entityType, entityId);
+    };
+  });
+  container.querySelectorAll('[data-rel-type]').forEach(row => {
+    row.onclick = (e) => {
+      if (e.target.closest('.rel-unlink-btn')) return;
+      const t = row.dataset.relType, id = parseInt(row.dataset.relId);
+      if (t === 'task')    showTaskSlideover(id);
+      else if (t === 'goal')    showGoalSlideover({ id }, null);
+      else if (t === 'project') showProjectSlideover({ id }, null, null);
+      else if (t === 'note')    showNoteSlideover(id, null);
+      else if (t === 'resource') showResourceSlideover({ id }, null);
+    };
+  });
+}
+
+async function initRelationsSection(entityType, entityId) {
+  await refreshRelationsList(entityType, entityId);
+  const addBtn = document.getElementById(`add-relation-btn-${entityType}-${entityId}`);
+  if (!addBtn) return;
+
+  addBtn.onclick = (e) => {
+    e.stopPropagation();
+    // Step 1: pick entity type
+    openValuePicker(addBtn, RELATION_ENTITY_TYPES, async (relType) => {
+      // Step 2: pick entity item from that type
+      let items = [];
+      try {
+        const res = await api('GET', `/api/${relType}s`);
+        items = Array.isArray(res) ? res : (res.tasks || res.goals || res.projects || res.notes || res.resources || res.sprints || []);
+      } catch(e) {}
+      if (!items.length) return;
+      const opts = items.map(it => ({ value: String(it.id), label: it.title || it.name || `${relType}-${it.id}` }));
+      openValuePicker(addBtn, opts, async (relId) => {
+        try {
+          await api('POST', `/api/relations/${entityType}/${entityId}`, {
+            related_entity_type: relType,
+            related_entity_id: parseInt(relId)
+          });
+          await refreshRelationsList(entityType, entityId);
+        } catch(err) { console.error('Failed to add relation:', err); }
+      });
+    });
   };
 }
 
@@ -7185,6 +7298,7 @@ async function showTaskSlideover(taskId) {
       <div>${resourcesHtml}</div>
     </div>
     ${buildSubItemsSection('task', taskId)}
+    ${buildRelationsSection('task', taskId)}
     ${buildCommentSection('task', taskId)}
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <button class="btn btn-ghost btn-sm" id="task-export-btn">Export JSON</button>
@@ -7484,6 +7598,7 @@ async function showTaskSlideover(taskId) {
   bindInlinePropPanel('task', taskId, taskInlinePropEditFns, () => showTaskSlideover(taskId));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="task"]'));
   initSubItemsSection('task', taskId);
+  initRelationsSection('task', taskId);
   // Persists to localStorage under `storageKey`.
   function openEditableValueCombo(anchorEl, valuesArray, storageKey, currentVal, onSelect) {
     closeCombo();
@@ -9418,6 +9533,8 @@ async function showProjectSlideover(project, goals, afterSave) {
 
     ${buildSubItemsSection('project', projectId)}
 
+    ${buildRelationsSection('project', projectId)}
+
     ${buildCommentSection('project', projectId)}
 
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
@@ -9518,6 +9635,7 @@ async function showProjectSlideover(project, goals, afterSave) {
   bindInlinePropPanel('project', projectId, projInlinePropEditFns, () => showProjectSlideover({ id: projectId }, goals, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
   initSubItemsSection('project', projectId);
+  initRelationsSection('project', projectId);
 
   // Task rows click → task sideview
   document.querySelectorAll('#proj-task-list [data-task-id]').forEach(el => {
@@ -9614,6 +9732,8 @@ async function showGoalSlideover(goal, afterSave) {
     </div>
 
     ${buildSubItemsSection('goal', goalId)}
+
+    ${buildRelationsSection('goal', goalId)}
 
     ${buildCommentSection('goal', goalId)}
 
@@ -9725,6 +9845,7 @@ async function showGoalSlideover(goal, afterSave) {
   bindInlinePropPanel('goal', goalId, goalInlinePropEditFns, () => showGoalSlideover({ id: goalId }, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="goal"]'));
   initSubItemsSection('goal', goalId);
+  initRelationsSection('goal', goalId);
 
   // Project cards nav
   document.querySelectorAll('#goal-proj-list [data-proj-id]').forEach(el => {
@@ -9970,6 +10091,8 @@ async function showNoteSlideover(noteId, afterSave) {
 
     ${buildSubItemsSection('note', noteId)}
 
+    ${buildRelationsSection('note', noteId)}
+
     ${buildCommentSection('note', noteId)}
 
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
@@ -10069,6 +10192,7 @@ async function showNoteSlideover(noteId, afterSave) {
   bindInlinePropPanel('note', noteId, noteInlinePropEditFns, () => showNoteSlideover(noteId, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="note"]'));
   initSubItemsSection('note', noteId);
+  initRelationsSection('note', noteId);
 
   document.getElementById('note-export-btn').onclick = () => showJSONModal(`/api/export/note/${noteId}`, `note-${noteId}.json`);
   document.getElementById('note-delete-btn').onclick = () => deleteEntity('note', noteId);
@@ -10419,6 +10543,8 @@ async function showResourceSlideover(resource, afterSave) {
 
     ${buildSubItemsSection('resource', resId)}
 
+    ${buildRelationsSection('resource', resId)}
+
     ${buildCommentSection('resource', resId)}
 
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
@@ -10515,6 +10641,7 @@ async function showResourceSlideover(resource, afterSave) {
   bindInlinePropPanel('resource', resId, resInlinePropEditFns, () => showResourceSlideover({ id: resId }, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="resource"]'));
   initSubItemsSection('resource', resId);
+  initRelationsSection('resource', resId);
 
   // File upload
   const fileInput = document.getElementById('rs-file-input');
