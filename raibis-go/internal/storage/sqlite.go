@@ -178,6 +178,9 @@ func applyMigrations(db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_entity_relations_a ON entity_relations(type_a, id_a)`,
 		`CREATE INDEX IF NOT EXISTS idx_entity_relations_b ON entity_relations(type_b, id_b)`,
+
+		// ── tasks: pomodoro checkbox ────────────────────────────────────────
+		`ALTER TABLE tasks ADD COLUMN pomodoro INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -209,14 +212,14 @@ func (s *sqliteStorage) CreateTask(t *domain.Task) (int64, error) {
 		    (goal_id, project_id, sprint_id, parent_task_id, title, description,
 		     status, priority, start_date, due_date, estimated_mins, logged_mins,
 		     category, category_id, focus_block, focus_block_start, recur_interval, recur_unit,
-		     story_points, pomodoros_planned, pomodoros_finished)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		     story_points, pomodoros_planned, pomodoros_finished, pomodoro)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.GoalID, t.ProjectID, t.SprintID, t.ParentTaskID,
 		t.Title, t.Description,
 		string(t.Status), string(t.Priority),
 		nullTime(t.StartDate), nullTime(t.DueDate), t.EstimatedMin, t.LoggedMins,
 		t.Category, t.CategoryID, t.FocusBlock, t.FocusBlockStart, t.RecurInterval, t.RecurUnit,
-		t.StoryPoints, t.PomodorosPlanned, t.PomodorosFinished,
+		t.StoryPoints, t.PomodorosPlanned, t.PomodorosFinished, t.Pomodoro,
 	)
 	if err != nil {
 		return 0, err
@@ -301,7 +304,7 @@ func (s *sqliteStorage) UpdateTask(t *domain.Task) error {
 		    title=?, description=?, status=?, priority=?,
 		    start_date=?, due_date=?, estimated_mins=?, logged_mins=?,
 		    category=?, category_id=?, focus_block=?, focus_block_start=?, recur_interval=?, recur_unit=?,
-		    story_points=?, pomodoros_planned=?, pomodoros_finished=?,
+		    story_points=?, pomodoros_planned=?, pomodoros_finished=?, pomodoro=?,
 		    updated_at=datetime('now')
 		 WHERE id=?`,
 		t.GoalID, t.ProjectID, t.SprintID, t.ParentTaskID,
@@ -309,7 +312,7 @@ func (s *sqliteStorage) UpdateTask(t *domain.Task) error {
 		string(t.Status), string(t.Priority),
 		nullTime(t.StartDate), nullTime(t.DueDate), t.EstimatedMin, t.LoggedMins,
 		t.Category, t.CategoryID, t.FocusBlock, t.FocusBlockStart, t.RecurInterval, t.RecurUnit,
-		t.StoryPoints, t.PomodorosPlanned, t.PomodorosFinished,
+		t.StoryPoints, t.PomodorosPlanned, t.PomodorosFinished, t.Pomodoro,
 		t.ID,
 	)
 	return err
@@ -330,7 +333,8 @@ SELECT t.id, t.goal_id, t.project_id, t.sprint_id, t.parent_task_id,
        COALESCE(t.category,''), t.category_id, t.focus_block, t.focus_block_start,
        t.recur_interval, t.recur_unit, t.story_points,
        t.pomodoros_planned, t.pomodoros_finished,
-       COALESCE(c.name,'') AS category_name
+       COALESCE(c.name,'') AS category_name,
+       COALESCE(t.pomodoro, 0)
 FROM tasks t
 LEFT JOIN categories c ON t.category_id = c.id`
 
@@ -869,6 +873,7 @@ func scanTask(sc scanner) (*domain.Task, error) {
 		pomodorosFinished     sql.NullInt64
 		categoryID            sql.NullInt64
 		goalID                sql.NullInt64
+		pomodoro              int
 	)
 	err := sc.Scan(
 		&t.ID, &goalID, &t.ProjectID, &t.SprintID, &t.ParentTaskID,
@@ -878,7 +883,7 @@ func scanTask(sc scanner) (*domain.Task, error) {
 		&t.Category, &categoryID, &focusBlock, &focusBlockStart,
 		&recurInterval, &recurUnit, &storyPoints,
 		&pomodorosPlanned, &pomodorosFinished,
-		&t.CategoryName,
+		&t.CategoryName, &pomodoro,
 	)
 	if err != nil {
 		return nil, err
@@ -924,6 +929,7 @@ func scanTask(sc scanner) (*domain.Task, error) {
 		v := int(pomodorosFinished.Int64)
 		t.PomodorosFinished = &v
 	}
+	t.Pomodoro = pomodoro != 0
 	t.CreatedAt, _ = parseTime(createdAt)
 	t.UpdatedAt, _ = parseTime(updatedAt)
 	return t, nil

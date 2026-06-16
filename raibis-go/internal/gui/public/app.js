@@ -1911,37 +1911,35 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
 
   // Wire delete buttons (remove custom prop def + values from all records)
   panel.querySelectorAll('.icp-del-btn').forEach(btn => {
-    btn.onclick = async (e) => {
+    btn.onclick = (e) => {
       e.stopPropagation();
       const key = btn.dataset.propKey;
-      // Remove def
-      const defs = getCustomPropDefs(entity).filter(d => d.key !== key);
-      setCustomPropDefs(entity, defs);
-      // Remove from prop order
-      const ord = getEntityPropOrder(entity);
-      if (ord) setEntityPropOrder(entity, ord.filter(k => k !== key));
-      // Remove from all visibility sets
-      if (entity === 'task') {
-        ['board','table','list','kanban','cards'].forEach(vm => {
-          const v = getTaskVisProps(vm); setTaskVisProps(vm, v.filter(k => k !== key));
-        });
-      } else {
-        const v = getEntityVisProps(entity); setEntityVisProps(entity, v.filter(k => k !== key));
-      }
-      // Sweep localStorage: remove key from every customPropVals_${entity}_* entry
-      const prefix = `customPropVals_${entity}_`;
-      Object.keys(localStorage).forEach(lsKey => {
-        if (lsKey.startsWith(prefix)) {
-          try {
-            const vals = JSON.parse(localStorage.getItem(lsKey) || '{}');
-            if (key in vals) { delete vals[key]; localStorage.setItem(lsKey, JSON.stringify(vals)); }
-          } catch {}
+      const defLabel = getCustomPropDefs(entity).find(d => d.key === key)?.label || key;
+      showConfirmModal(`Delete property "<b>${defLabel}</b>"?<br><span style="font-size:12px;color:var(--text-muted)">This removes it from all ${entity}s.</span>`, async () => {
+        const defs = getCustomPropDefs(entity).filter(d => d.key !== key);
+        setCustomPropDefs(entity, defs);
+        const ord = getEntityPropOrder(entity);
+        if (ord) setEntityPropOrder(entity, ord.filter(k => k !== key));
+        if (entity === 'task') {
+          ['board','table','list','kanban','cards'].forEach(vm => {
+            const v = getTaskVisProps(vm); setTaskVisProps(vm, v.filter(k => k !== key));
+          });
+        } else {
+          const v = getEntityVisProps(entity); setEntityVisProps(entity, v.filter(k => k !== key));
         }
+        const prefix = `customPropVals_${entity}_`;
+        Object.keys(localStorage).forEach(lsKey => {
+          if (lsKey.startsWith(prefix)) {
+            try {
+              const vals = JSON.parse(localStorage.getItem(lsKey) || '{}');
+              if (key in vals) { delete vals[key]; localStorage.setItem(lsKey, JSON.stringify(vals)); }
+            } catch {}
+          }
+        });
+        try { await api('DELETE', `/api/properties?entity_type=${entity}&key=${encodeURIComponent(key)}`); } catch(err) {}
+        document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
+        onRerender();
       });
-      // Bulk delete from DB (all records of this entity type)
-      try { await api('DELETE', `/api/properties?entity_type=${entity}&key=${encodeURIComponent(key)}`); } catch(err) {}
-      document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
-      onRerender();
     };
   });
 
@@ -3010,6 +3008,30 @@ function openPropSectionManager(anchorEl, entity, onSave) {
 
 // ── openValuePicker ──────────────────────────────────────────────────────────
 // Shows a simple floating list of options anchored to anchorEl.
+// ── clampPopup ────────────────────────────────────────────────────────────────
+// Positions a fixed popup anchored below anchorEl, then clamps it to the
+// viewport so it never overflows right/bottom/left edges.
+function clampPopup(popup, anchorEl) {
+  const rect = anchorEl.getBoundingClientRect();
+  popup.style.top = `${rect.bottom + 4}px`;
+  popup.style.left = `${rect.left}px`;
+  popup.style.visibility = 'hidden';
+  document.body.appendChild(popup);
+  requestAnimationFrame(() => {
+    const cr = popup.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let left = rect.left;
+    if (left + cr.width > vw - 8) left = vw - cr.width - 8;
+    if (left < 8) left = 8;
+    let top = rect.bottom + 4;
+    if (top + cr.height > vh - 8) top = rect.top - cr.height - 4;
+    if (top < 8) top = 8;
+    popup.style.left = left + 'px';
+    popup.style.top = top + 'px';
+    popup.style.visibility = '';
+  });
+}
+
 // options: [{ value, label }] or [string]
 // onSelect(value) is called on pick.
 function openValuePicker(anchorEl, options, onSelect) {
@@ -3022,14 +3044,8 @@ function openValuePicker(anchorEl, options, onSelect) {
     const l = typeof o === 'string' ? o : o.label;
     return `<div class="prop-vis-row value-pick-item" data-val="${String(v).replace(/"/g,'&quot;')}" style="cursor:pointer">${l}</div>`;
   }).join('');
-  const rect = anchorEl.getBoundingClientRect();
-  popup.style.cssText = `position:fixed;z-index:9100;min-width:160px;top:${rect.bottom+4}px;left:${rect.left}px`;
-  document.body.appendChild(popup);
-  requestAnimationFrame(() => {
-    const cr = popup.getBoundingClientRect();
-    if (cr.right > window.innerWidth - 8) popup.style.left = (window.innerWidth - cr.width - 8) + 'px';
-    if (cr.bottom > window.innerHeight - 8) popup.style.top = (rect.top - cr.height - 4) + 'px';
-  });
+  popup.style.cssText = `position:fixed;z-index:9100;min-width:160px;max-width:280px`;
+  clampPopup(popup, anchorEl);
   popup.querySelectorAll('.value-pick-item').forEach(el => {
     el.onclick = (e) => { e.stopPropagation(); popup.remove(); onSelect(el.dataset.val); };
   });
@@ -3131,9 +3147,8 @@ function openMultiSelectPicker(anchorEl, def, entity, recordId, key, onRerender)
             renderPicker();
           };
         });
-        const r = btn.getBoundingClientRect();
-        cp.style.cssText = `position:fixed;z-index:9400;min-width:110px;top:${r.bottom+4}px;left:${r.left}px`;
-        document.body.appendChild(cp);
+        cp.style.cssText = `position:fixed;z-index:9400;min-width:110px`;
+        clampPopup(cp, btn);
         setTimeout(() => document.addEventListener('click', function h(ev) { if (!cp.contains(ev.target)) { cp.remove(); document.removeEventListener('click', h); } }), 0);
       };
     });
@@ -3161,14 +3176,8 @@ function openMultiSelectPicker(anchorEl, def, entity, recordId, key, onRerender)
   }
 
   renderPicker();
-  const rect = anchorEl.getBoundingClientRect();
-  popup.style.cssText = `position:fixed;z-index:9200;min-width:220px;max-height:340px;overflow-y:auto;top:${rect.bottom+4}px;left:${rect.left}px`;
-  document.body.appendChild(popup);
-  requestAnimationFrame(() => {
-    const cr = popup.getBoundingClientRect();
-    if (cr.right > window.innerWidth - 8) popup.style.left = (window.innerWidth - cr.width - 8) + 'px';
-    if (cr.bottom > window.innerHeight - 8) popup.style.top = (rect.top - cr.height - 4) + 'px';
-  });
+  popup.style.cssText = `position:fixed;z-index:9200;min-width:220px;max-height:340px;overflow-y:auto`;
+  clampPopup(popup, anchorEl);
   setTimeout(() => document.addEventListener('click', function h(ev) { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', h); } }), 0);
 }
 
@@ -3211,13 +3220,8 @@ function openTagsPicker(anchorEl, selectedIds, onCommit) {
   }
 
   renderTagsPicker();
-  const rect = anchorEl.getBoundingClientRect();
-  popup.style.cssText = `position:fixed;z-index:9100;min-width:200px;max-height:320px;overflow-y:auto;top:${rect.bottom+4}px;left:${rect.left}px`;
-  document.body.appendChild(popup);
-  requestAnimationFrame(() => {
-    const cr = popup.getBoundingClientRect();
-    if (cr.right > window.innerWidth - 8) popup.style.left = (window.innerWidth - cr.width - 8) + 'px';
-  });
+  popup.style.cssText = `position:fixed;z-index:9100;min-width:200px;max-height:320px;overflow-y:auto`;
+  clampPopup(popup, anchorEl);
   setTimeout(() => {
     document.addEventListener('click', function handler(ev) {
       if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', handler); }
@@ -3326,13 +3330,34 @@ function showContextMenu(entityType, entityId, anchorEl) {
   }, 0);
 }
 
+function showConfirmModal(message, onConfirm) {
+  document.getElementById('_confirm-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = '_confirm-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = `
+    <div style="background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:24px 28px;min-width:280px;max-width:400px;box-shadow:var(--shadow-float)">
+      <div style="font-size:14px;color:var(--color-text);margin-bottom:20px;line-height:1.5">${message}</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button id="_confirm-cancel" class="btn btn-ghost btn-sm">Cancel</button>
+        <button id="_confirm-ok" class="btn btn-primary btn-sm" style="background:var(--color-danger);border-color:var(--color-danger)">Delete</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  document.getElementById('_confirm-cancel').onclick = close;
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+  document.getElementById('_confirm-ok').onclick = () => { close(); onConfirm(); };
+}
+
 async function deleteEntity(entityType, entityId) {
   const apiPath = ENTITY_API_MAP[entityType];
   if (!apiPath) return;
-  if (!confirm(`Move this ${entityType} to trash?`)) return;
-  await api('DELETE', `/api/${apiPath}/${entityId}`);
-  closeSlideover();
-  renderCurrentView();
+  showConfirmModal(`Delete this ${entityType}?`, async () => {
+    await api('DELETE', `/api/${apiPath}/${entityId}`);
+    closeSlideover();
+    renderCurrentView();
+  });
 }
 
 async function duplicateEntity(entityType, entityId) {
@@ -5641,18 +5666,18 @@ async function renderSprints() {
     document.querySelectorAll('.sprint-detail-link').forEach(el => {
       el.onclick = (e) => { e.stopPropagation(); renderView('sprint-detail', el.dataset.sprintId); };
     });
-    // Whole card click → sprint detail (ignore clicks on buttons)
+    // Whole card click → sideview (ignore title and buttons)
     document.querySelectorAll('.card[data-sprint-id]').forEach(card => {
       card.onclick = (e) => {
-        if (e.target.closest('button') || e.target.closest('.ctx-handle')) return;
-        renderView('sprint-detail', card.dataset.sprintId);
+        if (e.target.closest('button') || e.target.closest('.ctx-handle') || e.target.closest('.sprint-detail-link')) return;
+        showSprintSlideover(card.dataset.sprintId, render);
       };
     });
-    // Table row click → sprint detail (ignore clicks on buttons)
+    // Table row click → sideview (ignore title and buttons)
     document.querySelectorAll('tr.sprint-row[data-sprint-id]').forEach(row => {
       row.onclick = (e) => {
-        if (e.target.closest('button') || e.target.closest('.ctx-handle')) return;
-        renderView('sprint-detail', row.dataset.sprintId);
+        if (e.target.closest('button') || e.target.closest('.ctx-handle') || e.target.closest('.sprint-detail-link')) return;
+        showSprintSlideover(row.dataset.sprintId, render);
       };
     });
     document.querySelectorAll('.sprint-status-btn').forEach(el => {
@@ -7429,11 +7454,18 @@ async function showTaskSlideover(taskId) {
       <div id="subtask-list"></div>
     </div>
     <div class="subtask-section">
-      <div class="subtask-section-title">
-        <span>Pomodoros · ${pomDone}/${pomPlanned}</span>
-        <button class="btn btn-sm btn-ghost" id="log-pom-btn">+ Log Pomodoro</button>
+      <div class="subtask-section-title" style="align-items:center">
+        <span>Pomodoro</span>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;font-weight:400">
+          <input type="checkbox" id="task-pomodoro-toggle" ${task.pomodoro ? 'checked' : ''} style="width:15px;height:15px;cursor:pointer;accent-color:var(--accent)">
+          <span style="color:var(--text-muted)">${task.pomodoro ? 'Tracked in Pomodoro view' : 'Enable for Pomodoro view'}</span>
+        </label>
       </div>
-      <div class="pomodoro-track">${pomDots}</div>
+      ${task.pomodoro ? `<div class="subtask-section-title" style="margin-top:6px">
+        <span style="font-size:12px;color:var(--text-muted)">Sessions · ${pomDone}/${pomPlanned}</span>
+        <button class="btn btn-sm btn-ghost" id="log-pom-btn">+ Log</button>
+      </div>
+      <div class="pomodoro-track">${pomDots}</div>` : ''}
     </div>
     <div class="subtask-section" style="margin-top:20px">
       <div class="subtask-section-title"><span>Notes (${(task.notes||[]).length})</span>
@@ -8056,10 +8088,17 @@ async function showTaskSlideover(taskId) {
     });
   };
 
-  document.getElementById('log-pom-btn').onclick = async () => {
-    await patchTask({ pomodoros_finished: pomDone + 1 });
+  document.getElementById('task-pomodoro-toggle').onchange = async (e) => {
+    await patchTask({ pomodoro: e.target.checked });
     showTaskSlideover(taskId);
   };
+
+  if (task.pomodoro) {
+    document.getElementById('log-pom-btn').onclick = async () => {
+      await patchTask({ pomodoros_finished: pomDone + 1 });
+      showTaskSlideover(taskId);
+    };
+  }
 
   document.getElementById('add-note-to-task-btn').onclick = async (e) => {
     const btn = e.currentTarget;
@@ -8913,7 +8952,7 @@ async function renderPomodoro() {
       </div>
     </div>`;
   }
-  const pomTasks = allTasksCache.filter(t => (t.pomodoros_planned || 0) > 0 || (t.pomodoros_finished || 0) > 0);
+  const pomTasks = allTasksCache.filter(t => t.pomodoro);
 
   document.getElementById('main-content').innerHTML = `<div class="view pom-view">
     <div class="view-header">
@@ -9069,7 +9108,7 @@ async function renderPomodoro() {
           `<span>Focus: </span><span>${pomState.taskTitle}</span>`;
         refreshPicker(); // re-render to update selected highlight
         // Refresh stats table
-        const freshTasks = allTasksCache.filter(t => (t.pomodoros_planned||0)>0 || (t.pomodoros_finished||0)>0);
+        const freshTasks = allTasksCache.filter(t => t.pomodoro);
         document.getElementById('pom-stats-table-wrap').innerHTML = renderPomStatsTable(freshTasks);
       };
     });
@@ -9116,7 +9155,7 @@ async function renderPomodoro() {
         api('PATCH', `/api/tasks/${pomState.taskId}`, { pomodoros_finished: cur + 1 }).catch(()=>{});
         if (t) t.pomodoros_finished = cur + 1;
         // Refresh stats table & picker
-        const freshTasks = allTasksCache.filter(tt => (tt.pomodoros_planned||0)>0 || (tt.pomodoros_finished||0)>0);
+        const freshTasks = allTasksCache.filter(tt => tt.pomodoro);
         const wrap = document.getElementById('pom-stats-table-wrap');
         if (wrap) wrap.innerHTML = renderPomStatsTable(freshTasks);
         refreshPicker();
@@ -11135,6 +11174,10 @@ async function openRaibisSettings(defaultTab = 'apps') {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
           raibis
         </div>
+        <button class="settings-tab${defaultTab==='data'?' active':''}" data-stab="data">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+          Data
+        </button>
         <button class="settings-tab${defaultTab==='vault'?' active':''}" data-stab="vault">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
           Vault
@@ -11185,7 +11228,10 @@ async function openRaibisSettings(defaultTab = 'apps') {
     const title = document.getElementById('_settings-title');
     body.innerHTML = `<div style="color:var(--text-muted);font-size:13px;text-align:center;padding:32px 0">Loading…</div>`;
 
-    if (tab === 'vault') {
+    if (tab === 'data') {
+      title.textContent = 'Data Management';
+      await renderDataTab(body);
+    } else if (tab === 'vault') {
       title.textContent = 'Vault';
       await renderVaultTab(body);
     } else if (tab === 'apps') {
@@ -11195,6 +11241,76 @@ async function openRaibisSettings(defaultTab = 'apps') {
       title.textContent = 'App Integrations';
       await renderIntegrationsTab(body);
     }
+  }
+
+  async function renderDataTab(body) {
+    const ENTITY_TYPES = [
+      { key: 'tasks',      label: 'Tasks',      api: 'tasks',      titleKey: 'title',  createFn: () => { overlay.remove(); showNewTaskModal({}, renderCurrentView); } },
+      { key: 'goals',      label: 'Goals',      api: 'goals',      titleKey: 'title',  createFn: () => { overlay.remove(); showGoalModal(null, renderCurrentView); } },
+      { key: 'projects',   label: 'Projects',   api: 'projects',   titleKey: 'title',  createFn: () => { overlay.remove(); showProjectModal(null, [], renderCurrentView); } },
+      { key: 'notes',      label: 'Notes',      api: 'notes',      titleKey: 'title',  createFn: () => { overlay.remove(); showNoteModal(null, renderCurrentView); } },
+      { key: 'resources',  label: 'Resources',  api: 'resources',  titleKey: 'title',  createFn: () => { overlay.remove(); showResourceModal({}, renderCurrentView); } },
+      { key: 'sprints',    label: 'Sprints',    api: 'sprints',    titleKey: 'title',  createFn: null },
+      { key: 'habits',     label: 'Habits',     api: 'habits',     titleKey: 'name',   createFn: () => { overlay.remove(); showHabitModal(null); } },
+    ];
+
+    let activeType = ENTITY_TYPES[0];
+
+    async function loadEntities(type) {
+      activeType = type;
+      body.innerHTML = `
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">
+          ${ENTITY_TYPES.map(t => `<button class="btn btn-sm ${t.key===type.key?'btn-primary':'btn-ghost'}" data-dtype="${t.key}">${t.label}</button>`).join('')}
+        </div>
+        <div id="_data-content" style="color:var(--text-muted);font-size:13px;padding:16px 0">Loading…</div>`;
+
+      body.querySelectorAll('[data-dtype]').forEach(btn => {
+        btn.onclick = () => loadEntities(ENTITY_TYPES.find(t => t.key === btn.dataset.dtype));
+      });
+
+      const content = body.querySelector('#_data-content');
+      try {
+        let items = await api('GET', `/api/${type.api}`);
+        if (!Array.isArray(items)) items = items[type.key] || [];
+        if (!items.length) {
+          content.innerHTML = `
+            <div style="text-align:center;padding:24px 0">
+              <div style="color:var(--text-muted);margin-bottom:12px">No ${type.label.toLowerCase()} yet.</div>
+              ${type.createFn ? `<button class="btn btn-primary btn-sm" id="_data-create">+ New ${type.label.replace(/s$/,'')}</button>` : ''}
+            </div>`;
+        } else {
+          content.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <span style="font-size:12px;color:var(--text-muted)">${items.length} ${type.label.toLowerCase()}</span>
+              ${type.createFn ? `<button class="btn btn-primary btn-sm" id="_data-create">+ New ${type.label.replace(/s$/,'')}</button>` : ''}
+            </div>
+            <div style="display:flex;flex-direction:column;gap:4px">
+              ${items.map(item => `
+                <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--color-border);border-radius:var(--radius-md);background:var(--color-surface)">
+                  <span style="flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item[type.titleKey] || '(untitled)'}</span>
+                  <button class="btn btn-sm btn-ghost _data-del" data-id="${item.id}" style="color:var(--color-danger);flex-shrink:0">Delete</button>
+                </div>`).join('')}
+            </div>`;
+        }
+        content.querySelectorAll('._data-del').forEach(btn => {
+          btn.onclick = () => {
+            const id = btn.dataset.id;
+            const name = btn.closest('div[style]').querySelector('span').textContent;
+            showConfirmModal(`Delete "${name}"?`, async () => {
+              await api('DELETE', `/api/${type.api}/${id}`);
+              renderCurrentView();
+              loadEntities(type);
+            });
+          };
+        });
+        const createBtn = content.querySelector('#_data-create');
+        if (createBtn && type.createFn) createBtn.onclick = type.createFn;
+      } catch(e) {
+        content.innerHTML = `<div style="color:var(--color-danger);font-size:13px">Failed to load ${type.label.toLowerCase()}.</div>`;
+      }
+    }
+
+    await loadEntities(activeType);
   }
 
   async function renderVaultTab(body) {

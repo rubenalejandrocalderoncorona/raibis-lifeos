@@ -370,6 +370,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				StoryPoints       *int   `json:"story_points"`
 				PomodorosPlanned  *int   `json:"pomodoros_planned"`
 				PomodorosFinished *int   `json:"pomodoros_finished"`
+				Pomodoro          bool   `json:"pomodoro"`
 			}
 			if err := readJSON(r, &body); err != nil {
 				errJSON(w, 400, "invalid JSON: "+err.Error())
@@ -395,6 +396,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				StoryPoints:       body.StoryPoints,
 				PomodorosPlanned:  body.PomodorosPlanned,
 				PomodorosFinished: body.PomodorosFinished,
+				Pomodoro:          body.Pomodoro,
 			}
 			if body.Status != "" {
 				t.Status = domain.Status(body.Status)
@@ -650,6 +652,9 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 			if v, ok := body["pomodoros_finished"].(float64); ok {
 				iv := int(v)
 				t.PomodorosFinished = &iv
+			}
+			if v, ok := body["pomodoro"].(bool); ok {
+				t.Pomodoro = v
 			}
 			if err := svc.Update(t); err != nil {
 				errJSON(w, 500, err.Error())
