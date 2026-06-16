@@ -3601,9 +3601,8 @@ body.kanban-dragging-active * {
 .inline-prop-drag-handle:hover { opacity: 0.9 !important; }
 .inline-prop-drag-handle:active { cursor: grabbing; }
 .inline-prop-label {
-  width: 130px;
-  min-width: 80px;
-  max-width: 130px;
+  width: var(--prop-label-w, 130px);
+  min-width: 60px;
   flex-shrink: 0;
   font-size: 12.5px;
   color: var(--text-muted);
@@ -3617,6 +3616,30 @@ body.kanban-dragging-active * {
 }
 .inline-prop-label svg { opacity: 0.55; flex-shrink: 0; }
 .inline-prop-label-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.prop-label-resizer {
+  width: 6px;
+  min-width: 6px;
+  cursor: col-resize;
+  flex-shrink: 0;
+  align-self: stretch;
+  position: relative;
+  opacity: 0;
+  transition: opacity 80ms;
+  z-index: 1;
+}
+.prop-label-resizer::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 15%;
+  bottom: 15%;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  transform: translateX(-50%);
+}
+.inline-prop-row:hover .prop-label-resizer { opacity: 0.35; }
+.prop-label-resizer:hover { opacity: 1 !important; }
 .inline-prop-value {
   flex: 1;
   min-width: 0;

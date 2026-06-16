@@ -23,6 +23,13 @@ type EntityRelation struct {
 	RelatedTitle string `json:"related_title,omitempty"` // denormalized, set by server
 }
 
+// ResourceLink is a minimal resource record used for vault link generation.
+type ResourceLink struct {
+	ID    int64  `json:"id"`
+	Title string `json:"title"`
+	URL   string `json:"url,omitempty"`
+}
+
 // EntityChild represents a parent→child link between any two entities.
 // Children of the same type automatically inherit the parent type's custom prop definitions.
 type EntityChild struct {

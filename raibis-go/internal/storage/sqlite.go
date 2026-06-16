@@ -1258,3 +1258,23 @@ func (s *sqliteStorage) RemoveEntityRelation(typeA string, idA int64, typeB stri
 	)
 	return err
 }
+
+func (s *sqliteStorage) ListResourcesByTask(taskID int64) ([]*domain.ResourceLink, error) {
+	rows, err := s.db.Query(
+		`SELECT id, title, COALESCE(url,'') FROM resources WHERE task_id=? ORDER BY created_at DESC`,
+		taskID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.ResourceLink
+	for rows.Next() {
+		r := &domain.ResourceLink{}
+		if err := rows.Scan(&r.ID, &r.Title, &r.URL); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

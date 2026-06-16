@@ -3997,6 +3997,22 @@ func taskLinksBody(t *domain.Task, store storage.Storage) string {
 			lines = append(lines, fmt.Sprintf("- [%s] [[task-%d|%s]]", check, s.ID, s.Title))
 		}
 	}
+	// Linked notes
+	notes, _ := store.ListNotes(nil, &t.ID, nil)
+	if len(notes) > 0 {
+		lines = append(lines, "\n## Linked Notes")
+		for _, n := range notes {
+			lines = append(lines, fmt.Sprintf("- [[note-%d|%s]]", n.ID, n.Title))
+		}
+	}
+	// Linked resources
+	resources, _ := store.ListResourcesByTask(t.ID)
+	if len(resources) > 0 {
+		lines = append(lines, "\n## Linked Resources")
+		for _, r := range resources {
+			lines = append(lines, fmt.Sprintf("- [[resource-%d|%s]]", r.ID, r.Title))
+		}
+	}
 	return strings.Join(lines, "\n")
 }
 

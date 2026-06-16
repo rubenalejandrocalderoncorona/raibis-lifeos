@@ -1236,6 +1236,13 @@ async function getConnectedPropTypes() {
   } catch { return []; }
 }
 
+function getPropLabelWidth() {
+  return parseInt(localStorage.getItem('propLabelWidth') || '130', 10);
+}
+function setPropLabelWidth(w) {
+  localStorage.setItem('propLabelWidth', String(Math.max(60, Math.min(280, w))));
+}
+
 function getCustomPropDefs(entity) {
   const stored = localStorage.getItem(`customPropDefs_${entity}`);
   return stored ? JSON.parse(stored) : [];
@@ -1769,8 +1776,14 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
           }
           if (custom.type === 'multi_select') {
             const arr = (() => { try { const a = JSON.parse(val); return Array.isArray(a) ? a : (val ? [val] : []); } catch { return val ? [val] : []; } })();
-            const chips = arr.map(v => `<span class="multi-chip ms-chip" data-ms-val="${v.replace(/"/g,'&quot;')}" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px;display:inline-flex;align-items:center;gap:3px;cursor:default">${v}<span class="ms-chip-remove" data-val="${v.replace(/"/g,'&quot;')}" style="cursor:pointer;font-weight:700;opacity:0.6;font-size:12px;line-height:1" title="Remove">×</span></span>`).join('');
-            return `<div class="ms-chips-wrap" style="display:flex;flex-wrap:wrap;gap:3px;align-items:center;min-height:20px">${chips}<button class="btn btn-sm btn-ghost ms-add-btn" style="font-size:11px;padding:1px 5px;height:20px;line-height:1" title="Add option">+</button></div>`;
+            const optColors = custom.optionColors || {};
+            const chips = arr.map(v => {
+              const color = optColors[v] || '';
+              const chipClass = color ? `multi-chip color-${color} ms-chip` : `multi-chip ms-chip`;
+              const chipStyle = color ? '' : 'style="background:var(--accent-glow);color:var(--text-primary);font-size:11px;display:inline-flex;align-items:center;gap:3px;cursor:default"';
+              return `<span class="${chipClass}" data-ms-val="${v.replace(/"/g,'&quot;')}" ${chipStyle}>${v}<span class="ms-chip-remove" data-val="${v.replace(/"/g,'&quot;')}" style="cursor:pointer;font-weight:700;opacity:0.6;font-size:12px;line-height:1" title="Remove">×</span></span>`;
+            }).join('');
+            return `<div class="ms-chips-wrap" style="display:flex;flex-wrap:wrap;gap:3px;align-items:center;min-height:20px">${chips}<button class="btn btn-sm btn-ghost ms-add-btn" data-prop-key="${key}" style="font-size:11px;padding:1px 5px;height:20px;line-height:1" title="Add option">+</button></div>`;
           }
           if (!val) return `<span class="empty">—</span>`;
           if (custom.type === 'select' || custom.type === 'status') {
@@ -1788,6 +1801,7 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
     return `<div class="inline-prop-row" data-prop-key="${key}" data-is-custom="${isCustom}">
       <span class="inline-prop-drag-handle" title="Drag to reorder">⠿</span>
       <div class="inline-prop-label">${iconHtml}<span class="inline-prop-label-text">${labelText}</span></div>
+      <div class="prop-label-resizer" title="Drag to resize columns"></div>
       <div class="inline-prop-value${!valHtml || valHtml.includes('class="empty"') ? ' empty' : ''}" data-prop-key="${key}">${valHtml}</div>
       ${isCustom ? `<button class="prop-del-btn btn btn-sm btn-ghost icp-del-btn" data-entity="${entity}" data-prop-key="${key}" title="Remove property" style="font-size:13px">×</button>` : ''}
     </div>`;
@@ -1799,7 +1813,7 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
     </span>
   </div>`;
 
-  return `<div class="inline-prop-panel" data-entity="${entity}" data-record-id="${recordId || ''}">${rows}${addBtnHtml}</div>`;
+  return `<div class="inline-prop-panel" data-entity="${entity}" data-record-id="${recordId || ''}" style="--prop-label-w:${getPropLabelWidth()}px">${rows}${addBtnHtml}</div>`;
 }
 
 // ── bindInlinePropPanel ───────────────────────────────────────────────────
@@ -1945,37 +1959,16 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
     };
   });
 
-  // Wire multi_select + button (add option from remaining)
+  // Wire multi_select + button — opens full tag-like picker
   panel.querySelectorAll('.ms-add-btn').forEach(btn => {
     btn.onclick = (e) => {
       e.stopPropagation();
-      const key = btn.closest('[data-prop-key]')?.dataset.propKey;
+      const key = btn.dataset.propKey || btn.closest('[data-prop-key]')?.dataset.propKey;
       if (!key) return;
       const defs = getCustomPropDefs(entity);
       const def = defs.find(d => d.key === key);
       if (!def) return;
-      const cur = getCustomPropValues(entity, recordId)[key] ?? '';
-      const curArr = (() => { try { const a = JSON.parse(cur); return Array.isArray(a) ? a : []; } catch { return []; } })();
-      const opts = (def.options || []).filter(o => !curArr.includes(o));
-      if (!opts.length) return;
-      document.getElementById('custom-ms-picker')?.remove();
-      const popup = document.createElement('div');
-      popup.id = 'custom-ms-picker';
-      popup.className = 'prop-vis-panel';
-      popup.innerHTML = `<div style="padding:4px 10px 4px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">Add ${def.label}</div>` +
-        opts.map(o => `<div class="prop-vis-row ms-pick-opt" data-opt="${o}" style="cursor:pointer"><span style="font-size:13px;color:var(--text-primary)">${o}</span></div>`).join('');
-      popup.querySelectorAll('.ms-pick-opt').forEach(row => {
-        row.onclick = (ev) => {
-          ev.stopPropagation();
-          popup.remove();
-          setCustomPropValue(entity, recordId, key, JSON.stringify([...curArr, row.dataset.opt]));
-          onRerender();
-        };
-      });
-      const rect = btn.getBoundingClientRect();
-      popup.style.cssText = `position:fixed;z-index:9200;min-width:140px;top:${rect.bottom+4}px;left:${rect.left}px`;
-      document.body.appendChild(popup);
-      setTimeout(() => { document.addEventListener('click', function h(ev) { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', h); } }); }, 0);
+      openMultiSelectPicker(btn, def, entity, recordId, key, onRerender);
     };
   });
 
@@ -1984,6 +1977,9 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
 
   // Wire drag-to-reorder
   bindPropPanelDrag(panel, entity, onRerender);
+
+  // Wire label column resizer
+  bindPropLabelResizer(panel);
 }
 
 // ── bindPropPanelDrag ─────────────────────────────────────────────────────
@@ -2050,6 +2046,32 @@ function bindPropPanelDrag(panelEl, entity, onRerender) {
         dragRow = null; placeholder = null;
       };
 
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+}
+
+// ── bindPropLabelResizer ──────────────────────────────────────────────────────
+// Wires all .prop-label-resizer elements inside panelEl to drag-resize the label column.
+function bindPropLabelResizer(panelEl) {
+  panelEl.querySelectorAll('.prop-label-resizer').forEach(resizer => {
+    resizer.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = getPropLabelWidth();
+      const onMove = (mv) => {
+        const newW = Math.max(60, Math.min(280, startW + mv.clientX - startX));
+        panelEl.style.setProperty('--prop-label-w', newW + 'px');
+      };
+      const onUp = (ev) => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        const finalW = Math.max(60, Math.min(280, startW + ev.clientX - startX));
+        setPropLabelWidth(finalW);
+        document.querySelectorAll('.inline-prop-panel').forEach(p => p.style.setProperty('--prop-label-w', finalW + 'px'));
+      };
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
     });
@@ -3016,6 +3038,138 @@ function openValuePicker(anchorEl, options, onSelect) {
       if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', handler); }
     });
   }, 0);
+}
+
+// ── openMultiSelectPicker ─────────────────────────────────────────────────────
+// Full tag-like picker for multi_select custom props.
+// Supports toggling existing options, creating new ones, and assigning colors.
+const MS_COLORS = ['blue','green','red','yellow','purple','cyan','orange','pink'];
+
+function openMultiSelectPicker(anchorEl, def, entity, recordId, key, onRerender) {
+  document.getElementById('ms-picker-popup')?.remove();
+  const popup = document.createElement('div');
+  popup.id = 'ms-picker-popup';
+  popup.className = 'prop-vis-panel';
+
+  const cur = getCustomPropValues(entity, recordId)[key] ?? '';
+  let sel = new Set((() => { try { const a = JSON.parse(cur); return Array.isArray(a) ? a : (cur ? [cur] : []); } catch { return cur ? [cur] : []; } })());
+  let filter = '';
+  const opts = def.options ? [...def.options] : [];
+  const optColors = Object.assign({}, def.optionColors || {});
+
+  function saveDefsColors() {
+    const defs = getCustomPropDefs(entity);
+    const idx = defs.findIndex(d => d.key === key);
+    if (idx >= 0) { defs[idx].options = opts; defs[idx].optionColors = optColors; setCustomPropDefs(entity, defs); }
+  }
+
+  function renderPicker() {
+    const filtered = opts.filter(o => o.toLowerCase().includes(filter.toLowerCase()));
+    const exactMatch = opts.some(o => o.toLowerCase() === filter.toLowerCase().trim());
+    const createLabel = filter.trim();
+
+    popup.innerHTML =
+      `<div style="padding:5px 8px;border-bottom:1px solid var(--border)">
+        <input id="ms-picker-inp" class="form-input" placeholder="Search or create…" value="${filter.replace(/"/g,'&quot;')}"
+          style="width:100%;font-size:12px;padding:3px 6px;height:26px;box-sizing:border-box">
+       </div>` +
+      filtered.map(o => {
+        const isSelected = sel.has(o);
+        const color = optColors[o];
+        const chipHtml = color
+          ? `<span class="multi-chip color-${color}" style="font-size:11px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${o}</span>`
+          : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${o}</span>`;
+        return `<div class="prop-vis-row ms-picker-opt" data-opt="${o.replace(/"/g,'&quot;')}"
+          style="display:flex;align-items:center;gap:5px;cursor:pointer;padding-right:4px">
+          ${chipHtml}
+          <button class="ms-color-btn btn btn-sm btn-ghost" data-opt="${o.replace(/"/g,'&quot;')}"
+            title="Color" style="padding:0 4px;font-size:10px;opacity:0.5;flex-shrink:0">●</button>
+          ${isSelected ? `<span style="color:var(--accent);font-size:13px;flex-shrink:0">✓</span>` : `<span style="width:13px;flex-shrink:0"></span>`}
+        </div>`;
+      }).join('') +
+      (!exactMatch && createLabel
+        ? `<div class="prop-vis-row ms-picker-create" style="cursor:pointer;color:var(--accent);font-size:12px">+ Create "<b>${createLabel}</b>"</div>`
+        : '') +
+      `<div style="padding:5px 8px;border-top:1px solid var(--border)">
+        <button id="ms-picker-done" class="btn btn-sm btn-primary" style="width:100%">Done</button>
+       </div>`;
+
+    const inp = popup.querySelector('#ms-picker-inp');
+    inp.oninput = () => { filter = inp.value; renderPicker(); };
+    inp.onclick = e => e.stopPropagation();
+    inp.focus();
+
+    popup.querySelectorAll('.ms-picker-opt').forEach(row => {
+      row.onclick = (e) => {
+        if (e.target.closest('.ms-color-btn')) return;
+        e.stopPropagation();
+        const o = row.dataset.opt;
+        if (sel.has(o)) sel.delete(o); else sel.add(o);
+        renderPicker();
+      };
+    });
+
+    popup.querySelectorAll('.ms-color-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        document.getElementById('ms-cpicker')?.remove();
+        const o = btn.dataset.opt;
+        const cp = document.createElement('div');
+        cp.id = 'ms-cpicker';
+        cp.className = 'prop-vis-panel';
+        cp.innerHTML = MS_COLORS.map(c =>
+          `<div class="prop-vis-row ms-cpick-item" data-color="${c}" style="cursor:pointer">
+            <span class="multi-chip color-${c}" style="font-size:11px">${c}</span>
+           </div>`
+        ).join('');
+        cp.querySelectorAll('.ms-cpick-item').forEach(ci => {
+          ci.onclick = (ev) => {
+            ev.stopPropagation();
+            optColors[o] = ci.dataset.color;
+            saveDefsColors();
+            cp.remove();
+            renderPicker();
+          };
+        });
+        const r = btn.getBoundingClientRect();
+        cp.style.cssText = `position:fixed;z-index:9400;min-width:110px;top:${r.bottom+4}px;left:${r.left}px`;
+        document.body.appendChild(cp);
+        setTimeout(() => document.addEventListener('click', function h(ev) { if (!cp.contains(ev.target)) { cp.remove(); document.removeEventListener('click', h); } }), 0);
+      };
+    });
+
+    const createEl = popup.querySelector('.ms-picker-create');
+    if (createEl) {
+      createEl.onclick = (e) => {
+        e.stopPropagation();
+        const newOpt = filter.trim();
+        if (!newOpt || opts.includes(newOpt)) return;
+        opts.push(newOpt);
+        sel.add(newOpt);
+        saveDefsColors();
+        filter = '';
+        renderPicker();
+      };
+    }
+
+    popup.querySelector('#ms-picker-done').onclick = (e) => {
+      e.stopPropagation();
+      popup.remove();
+      setCustomPropValue(entity, recordId, key, JSON.stringify([...sel]));
+      onRerender();
+    };
+  }
+
+  renderPicker();
+  const rect = anchorEl.getBoundingClientRect();
+  popup.style.cssText = `position:fixed;z-index:9200;min-width:220px;max-height:340px;overflow-y:auto;top:${rect.bottom+4}px;left:${rect.left}px`;
+  document.body.appendChild(popup);
+  requestAnimationFrame(() => {
+    const cr = popup.getBoundingClientRect();
+    if (cr.right > window.innerWidth - 8) popup.style.left = (window.innerWidth - cr.width - 8) + 'px';
+    if (cr.bottom > window.innerHeight - 8) popup.style.top = (rect.top - cr.height - 4) + 'px';
+  });
+  setTimeout(() => document.addEventListener('click', function h(ev) { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', h); } }), 0);
 }
 
 // ── openTagsPicker ────────────────────────────────────────────────────────────
@@ -7112,18 +7266,23 @@ async function showTaskSlideover(taskId) {
 
   const tagPicker = null; // legacy — tags now handled via combobox chip
 
-  const notesHtml = (task.notes || []).map(n =>
-    `<div class="note-card" style="margin-bottom:8px">
-      <div class="note-title">${n.title || 'Note'}</div>
-      <div class="note-body-preview">${n.body || ''}</div>
-    </div>`).join('') || '<div style="color:var(--text-muted);font-size:13px">No linked notes</div>';
+  const notesHtml = (task.notes || []).length
+    ? (task.notes || []).map(n =>
+        `<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border)">
+          <span style="flex:1;font-size:13px;cursor:pointer;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" class="linked-note-title" data-note-id="${n.id}">${n.title || 'Note'}</span>
+          <button class="btn btn-sm btn-ghost note-unlink-btn" data-note-id="${n.id}" title="Unlink" style="flex-shrink:0;font-size:12px;opacity:0.5">×</button>
+        </div>`).join('')
+    : '<div style="color:var(--text-muted);font-size:13px">No linked notes</div>';
 
-  const resourcesHtml = (task.resources || []).map(r =>
-    `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
-      <span style="font-size:12px;color:var(--accent)">${r.resource_type || 'link'}</span>
-      <span>${r.title}</span>
-      ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" style="font-size:12px;color:var(--text-muted)">↗</a>` : ''}
-    </div>`).join('') || '<div style="color:var(--text-muted);font-size:13px">No linked resources</div>';
+  const resourcesHtml = (task.resources || []).length
+    ? (task.resources || []).map(r =>
+        `<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border)">
+          <span style="font-size:11px;color:var(--accent);flex-shrink:0">${r.resource_type || 'link'}</span>
+          <span style="flex:1;font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.title}</span>
+          ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" style="font-size:12px;color:var(--text-muted);flex-shrink:0">↗</a>` : ''}
+          <button class="btn btn-sm btn-ghost resource-unlink-btn" data-resource-id="${r.id}" title="Unlink" style="flex-shrink:0;font-size:12px;opacity:0.5">×</button>
+        </div>`).join('')
+    : '<div style="color:var(--text-muted);font-size:13px">No linked resources</div>';
 
   // ── Breadcrumb — walk the full ancestor chain ──────────────────────────
   // Levels: Goal → Project → ancestor tasks → (current task title shown as heading)
@@ -7291,7 +7450,9 @@ async function showTaskSlideover(taskId) {
       <div>${notesHtml}</div>
     </div>
     <div class="subtask-section" style="margin-top:20px">
-      <div class="subtask-section-title"><span>Resources (${(task.resources||[]).length})</span></div>
+      <div class="subtask-section-title"><span>Resources (${(task.resources||[]).length})</span>
+        <button class="btn btn-sm btn-ghost" id="add-resource-to-task-btn">+ Add</button>
+      </div>
       <div>${resourcesHtml}</div>
     </div>
     ${buildSubItemsSection('task', taskId)}
@@ -7908,10 +8069,52 @@ async function showTaskSlideover(taskId) {
     showTaskSlideover(taskId);
   };
 
-  document.getElementById('add-note-to-task-btn').onclick = () => {
-    closeSlideover();
-    showNoteModal({ task_id: parseInt(taskId) });
+  document.getElementById('add-note-to-task-btn').onclick = async (e) => {
+    try {
+      const allNotes = await api('GET', '/api/notes');
+      const linked = new Set((task.notes || []).map(n => String(n.id)));
+      const available = allNotes.filter(n => !linked.has(String(n.id)));
+      if (!available.length) { alert('No unlinked notes available. Create a note first.'); return; }
+      openValuePicker(e.currentTarget, available.map(n => ({ value: String(n.id), label: n.title || 'Note' })), async (val) => {
+        await api('PATCH', `/api/notes/${val}`, { task_id: parseInt(taskId) });
+        showTaskSlideover(taskId);
+      });
+    } catch {}
   };
+
+  document.getElementById('add-resource-to-task-btn').onclick = async (e) => {
+    try {
+      const allRes = await api('GET', '/api/resources');
+      const linked = new Set((task.resources || []).map(r => String(r.id)));
+      const available = allRes.filter(r => !linked.has(String(r.id)));
+      if (!available.length) { alert('No unlinked resources available. Create a resource first.'); return; }
+      openValuePicker(e.currentTarget, available.map(r => ({ value: String(r.id), label: r.title || 'Resource' })), async (val) => {
+        await api('PATCH', `/api/resources/${val}`, { task_id: parseInt(taskId) });
+        showTaskSlideover(taskId);
+      });
+    } catch {}
+  };
+
+  document.querySelectorAll('.note-unlink-btn').forEach(btn => {
+    btn.onclick = async () => {
+      await api('PATCH', `/api/notes/${btn.dataset.noteId}`, { task_id: null });
+      showTaskSlideover(taskId);
+    };
+  });
+
+  document.querySelectorAll('.resource-unlink-btn').forEach(btn => {
+    btn.onclick = async () => {
+      await api('PATCH', `/api/resources/${btn.dataset.resourceId}`, { task_id: null });
+      showTaskSlideover(taskId);
+    };
+  });
+
+  document.querySelectorAll('.linked-note-title').forEach(el => {
+    el.onclick = async () => {
+      const n = await api('GET', `/api/notes/${el.dataset.noteId}`).catch(() => null);
+      if (n) showNoteSlideover(n.id, () => showTaskSlideover(taskId));
+    };
+  });
 
   document.getElementById('task-export-btn').onclick = () =>
     showJSONModal(`/api/export/task/${taskId}`, `task-${task.title.replace(/\s+/g,'-')}.json`);

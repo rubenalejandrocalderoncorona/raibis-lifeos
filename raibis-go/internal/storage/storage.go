@@ -90,4 +90,7 @@ type Storage interface {
 	GetEntityRelations(entityType string, entityID int64) ([]*domain.EntityRelation, error)
 	AddEntityRelation(typeA string, idA int64, typeB string, idB int64) error
 	RemoveEntityRelation(typeA string, idA int64, typeB string, idB int64) error
+
+	// ── Resources (lightweight, for vault link generation) ────────────────
+	ListResourcesByTask(taskID int64) ([]*domain.ResourceLink, error)
 }
