@@ -2616,12 +2616,12 @@ function taskRowHtml(task, showProject, indent, viewMode) {
 function buildTaskTreeRows(tasks, allTasks, depth, showProject, viewMode) {
   let html = '';
   for (const t of tasks) {
-    html += taskRowHtml(t, showProject && depth === 0, depth, viewMode);
+    html += taskRowHtml(t, showProject, depth, viewMode);
     const isExpanded = expandedTasks.has(String(t.id));
     const children = allTasks.filter(s => s.parent_task_id === t.id);
     if (isExpanded) {
       if (children.length > 0) {
-        html += buildTaskTreeRows(children, allTasks, depth + 1, false, viewMode);
+        html += buildTaskTreeRows(children, allTasks, depth + 1, showProject, viewMode);
       }
       html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
         <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px;opacity:0.6">+ Add Subtask</button>
@@ -3615,17 +3615,18 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
     relsByType[r.related_entity_type].push(r);
   });
 
-  // Backward compat: include FK-linked notes/resources and scalar FKs for task entities
-  if (entityType === 'task') {
-    ['notes','resources'].forEach((field) => {
-      const ct = field === 'notes' ? 'note' : 'resource';
-      const existing = new Set((relsByType[ct] || []).map(r => String(r.related_entity_id)));
-      (entityData?.[field] || []).filter(item => !existing.has(String(item.id))).forEach(item => {
-        if (!relsByType[ct]) relsByType[ct] = [];
-        relsByType[ct].push({ id: null, related_entity_type: ct, related_entity_id: item.id, related_title: item.title || item.name, is_fk: true });
-      });
+  // Backward compat: FK-linked notes/resources for ALL entity types (task, project, goal, etc.)
+  ['notes','resources'].forEach((field) => {
+    const ct = field === 'notes' ? 'note' : 'resource';
+    const existing = new Set((relsByType[ct] || []).map(r => String(r.related_entity_id)));
+    (entityData?.[field] || []).filter(item => !existing.has(String(item.id))).forEach(item => {
+      if (!relsByType[ct]) relsByType[ct] = [];
+      relsByType[ct].push({ id: null, related_entity_type: ct, related_entity_id: item.id, related_title: item.title || item.name, is_fk: true });
     });
-    // Scalar FK fields: goal_id, project_id, sprint_id
+  });
+
+  // Task-specific: scalar FK fields goal_id, project_id, sprint_id
+  if (entityType === 'task') {
     const scalarFKs = [
       { field: 'goal_id',    ct: 'goal',    titleKey: '_goalTitle'   },
       { field: 'project_id', ct: 'project', titleKey: '_projTitle'   },
@@ -3653,7 +3654,7 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
         <span>${label} (${items.length})</span>
         <div style="display:flex;gap:4px;align-items:center">
           <button class="btn btn-sm btn-ghost ev-add-btn" data-child-type="${view.childType}">+ Add</button>
-          <button class="btn btn-sm btn-ghost ev-rm-btn" data-child-type="${view.childType}" title="Remove this view" style="opacity:0.45;font-size:15px;line-height:1">⊗</button>
+          <button class="btn btn-sm btn-ghost ev-rm-btn" data-child-type="${view.childType}" title="Remove this view" style="opacity:0.5;padding:3px 5px;color:var(--color-text-secondary)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg></button>
         </div>
       </div>
       <div class="ev-items">
@@ -3691,9 +3692,13 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
       e.stopPropagation();
       const { childType: ct, childId: cid, isFk, fkField } = btn.dataset;
       if (isFk === 'true') {
-        if (ct === 'note')     await api('PATCH', `/api/notes/${cid}`, { task_id: null }).catch(() => {});
-        if (ct === 'resource') await api('PATCH', `/api/resources/${cid}`, { task_id: null }).catch(() => {});
-        if (fkField && entityType === 'task') {
+        if (ct === 'note') {
+          const fkKey = `${entityType}_id`;
+          await api('PATCH', `/api/notes/${cid}`, { [fkKey]: null }).catch(() => {});
+        } else if (ct === 'resource') {
+          const fkKey = `${entityType}_id`;
+          await api('PATCH', `/api/resources/${cid}`, { [fkKey]: null }).catch(() => {});
+        } else if (fkField && entityType === 'task') {
           await api('PATCH', `/api/tasks/${entityId}`, { [fkField]: null }).catch(() => {});
         }
       } else {
@@ -6812,24 +6817,26 @@ async function renderProjectDetail(projectId) {
   const notes = p.notes || [];
   const resources = p.resources || [];
 
-  // Compute sub_task_count for each task from the tasks array itself
+  // Load all tasks so child lookups work even for subtasks without project_id
+  try {
+    const all = await api('GET', '/api/tasks?all=1');
+    allTasksCache = Array.isArray(all) ? all : allTasksCache;
+    allTasksFull = allTasksCache;
+  } catch(e) {}
+
+  // Compute sub_task_count from the full task cache (subtasks may not carry project_id)
   tasks.forEach(t => {
-    t.sub_task_count = tasks.filter(s => s.parent_task_id === t.id).length;
+    t.sub_task_count = allTasksCache.filter(s => s.parent_task_id === t.id).length;
   });
 
-  // Merge project tasks into allTasksCache for subtask lookups
-  tasks.forEach(t => {
-    if (!allTasksCache.find(x => x.id === t.id)) allTasksCache.push(t);
-  });
-
-  function buildTaskTreeRows(taskList, allTasks, depth) {
+  function buildTaskTreeRows(taskList, depth) {
     let html = '';
     for (const t of taskList) {
       html += taskRowHtml(t, false, depth);
       const isExp = expandedTasks.has(String(t.id));
-      const children = allTasks.filter(s => s.parent_task_id === t.id);
+      const children = allTasksCache.filter(s => s.parent_task_id === t.id);
       if (isExp && children.length > 0) {
-        html += buildTaskTreeRows(children, allTasks, depth + 1);
+        html += buildTaskTreeRows(children, depth + 1);
         html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
           <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px">+ Add Subtask</button>
         </li>`;
@@ -6842,7 +6849,7 @@ async function renderProjectDetail(projectId) {
     if (!tasks.length) return `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No tasks</div></div>`;
     const taskIds = new Set(tasks.map(t => t.id));
     const topLevel = tasks.filter(t => !t.parent_task_id || !taskIds.has(t.parent_task_id));
-    return '<ul class="task-list">' + buildTaskTreeRows(topLevel, tasks, 0) + '</ul>';
+    return '<ul class="task-list">' + buildTaskTreeRows(topLevel, 0) + '</ul>';
   }
 
   function renderTaskList() {

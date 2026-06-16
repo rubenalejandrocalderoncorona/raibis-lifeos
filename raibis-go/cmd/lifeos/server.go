@@ -1902,16 +1902,8 @@ func resourceHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 			if taskID.Valid    { res.TaskID    = &taskID.Int64 }
 			writeJSON(w, 200, res)
 		case http.MethodPatch:
-			var body struct {
-				Title        string  `json:"title"`
-				URL          string  `json:"url"`
-				Body         string  `json:"body"`
-				ResourceType string  `json:"resource_type"`
-				GoalID       *int64  `json:"goal_id"`
-				ProjectID    *int64  `json:"project_id"`
-				TaskID       *int64  `json:"task_id"`
-			}
-			if err := readJSON(r, &body); err != nil {
+			var bodyMap map[string]any
+			if err := readJSON(r, &bodyMap); err != nil {
 				errJSON(w, 400, "invalid JSON: "+err.Error())
 				return
 			}
@@ -1932,30 +1924,42 @@ func resourceHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				errJSON(w, 404, "resource not found")
 				return
 			}
-			if body.Title != "" {
-				cur.title = body.Title
+			if v, ok := bodyMap["title"].(string); ok && v != "" {
+				cur.title = v
 			}
-			if body.URL != "" {
-				cur.url = body.URL
+			if v, ok := bodyMap["url"].(string); ok && v != "" {
+				cur.url = v
 			}
-			if body.Body != "" {
-				cur.body = body.Body
+			if v, ok := bodyMap["body"].(string); ok && v != "" {
+				cur.body = v
 			}
-			if body.ResourceType != "" {
-				cur.resourceType = body.ResourceType
+			if v, ok := bodyMap["resource_type"].(string); ok && v != "" {
+				cur.resourceType = v
 			}
-			// FK fields always overwrite (allow explicit null via pointer)
+			// FK fields: explicit null clears; numeric value sets
 			goalID := cur.goalID
-			if body.GoalID != nil {
-				goalID = sql.NullInt64{Int64: *body.GoalID, Valid: true}
+			if val, ok := bodyMap["goal_id"]; ok {
+				if val == nil {
+					goalID = sql.NullInt64{}
+				} else if fv, ok := val.(float64); ok {
+					goalID = sql.NullInt64{Int64: int64(fv), Valid: true}
+				}
 			}
 			projectID := cur.projectID
-			if body.ProjectID != nil {
-				projectID = sql.NullInt64{Int64: *body.ProjectID, Valid: true}
+			if val, ok := bodyMap["project_id"]; ok {
+				if val == nil {
+					projectID = sql.NullInt64{}
+				} else if fv, ok := val.(float64); ok {
+					projectID = sql.NullInt64{Int64: int64(fv), Valid: true}
+				}
 			}
 			taskID := cur.taskID
-			if body.TaskID != nil {
-				taskID = sql.NullInt64{Int64: *body.TaskID, Valid: true}
+			if val, ok := bodyMap["task_id"]; ok {
+				if val == nil {
+					taskID = sql.NullInt64{}
+				} else if fv, ok := val.(float64); ok {
+					taskID = sql.NullInt64{Int64: int64(fv), Valid: true}
+				}
 			}
 			if _, err := db.Exec(
 				`UPDATE resources SET title=?, url=?, body=?, resource_type=?,
