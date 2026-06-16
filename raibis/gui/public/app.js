@@ -3330,6 +3330,19 @@ function showContextMenu(entityType, entityId, anchorEl) {
   }, 0);
 }
 
+function showToast(msg, type = 'info') {
+  const el = document.createElement('div');
+  const colors = { info: 'var(--color-surface)', success: '#1a4731', error: '#4a1515' };
+  const borders = { info: 'var(--color-border)', success: '#2d6a4f', error: '#7f1d1d' };
+  el.style.cssText = `position:fixed;bottom:24px;right:24px;z-index:99999;padding:10px 16px;border-radius:var(--radius-md);
+    background:${colors[type]||colors.info};border:1px solid ${borders[type]||borders.info};
+    color:var(--color-text);font-size:13px;box-shadow:var(--shadow-float);max-width:320px;
+    transition:opacity .3s;pointer-events:none`;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, 3000);
+}
+
 function showConfirmModal(message, onConfirm) {
   document.getElementById('_confirm-overlay')?.remove();
   const overlay = document.createElement('div');
@@ -3406,7 +3419,7 @@ function openMoveToPanel(entityType, entityId, anchorEl) {
         await api('DELETE', `/api/${srcPath}/${entityId}`);
         closeSlideover();
         renderCurrentView();
-      } catch (ex) { alert('Move failed: ' + ex.message); }
+      } catch (ex) { showToast('Move failed: ' + ex.message, 'error'); }
     };
   });
   setTimeout(() => {
@@ -4269,12 +4282,12 @@ async function renderDashboard() {
     dailyInput.oninput = () => localStorage.setItem('daily_note_draft', dailyInput.value);
     document.getElementById('daily-note-save-btn').onclick = async () => {
       const text = dailyInput.value.trim();
-      if (!text) { alert('Write something first'); return; }
+      if (!text) { showToast('Write something first', 'error'); return; }
       const dateStr = new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
       await api('POST', '/api/notes', { title: `Daily Note — ${dateStr}`, body: text });
       localStorage.removeItem('daily_note_draft');
       dailyInput.value = '';
-      alert('Note saved!');
+      showToast('Note saved!', 'success');
       renderDashboard();
     };
     document.getElementById('daily-note-clear-btn').onclick = () => {
@@ -5924,22 +5937,24 @@ async function renderSprintDetail(sprintId) {
   const prog = sprint.progress || {};
   const pct = prog.pct || 0;
 
-  // Compute sub_task_count for each task from the tasks array
+  // Load all tasks so toggle reveals subtasks that don't carry sprint_id
+  let allTasks = [];
+  try { allTasks = await api('GET', '/api/tasks?all=1'); allTasksCache = allTasks; allTasksFull = allTasks; } catch(e) {}
+  const unassigned = allTasks.filter(t => !t.sprint_id && !t.parent_task_id);
+
+  // Compute sub_task_count from full cache
   tasks.forEach(t => {
-    t.sub_task_count = tasks.filter(s => s.parent_task_id === t.id).length;
+    t.sub_task_count = allTasksCache.filter(s => s.parent_task_id === t.id).length;
   });
 
-  // Merge tasks into cache for subtask lookups
-  tasks.forEach(t => { if (!allTasksCache.find(x => x.id === t.id)) allTasksCache.push(t); });
-
-  function buildSprintTaskTree(taskList, allTasks, depth) {
+  function buildSprintTaskTree(taskList, depth) {
     let html = '';
     for (const t of taskList) {
       html += taskRowHtml(t, true, depth);
       const isExp = expandedTasks.has(String(t.id));
-      const children = allTasks.filter(s => s.parent_task_id === t.id);
+      const children = allTasksCache.filter(s => s.parent_task_id === t.id);
       if (isExp && children.length > 0) {
-        html += buildSprintTaskTree(children, allTasks, depth + 1);
+        html += buildSprintTaskTree(children, depth + 1);
         html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
           <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px">+ Add Subtask</button>
         </li>`;
@@ -5951,13 +5966,8 @@ async function renderSprintDetail(sprintId) {
   const taskIds = new Set(tasks.map(t => t.id));
   const topLevel = tasks.filter(t => !t.parent_task_id || !taskIds.has(t.parent_task_id));
   const taskListHtml = tasks.length
-    ? `<ul class="task-list">${buildSprintTaskTree(topLevel, tasks, 0)}</ul>`
-    : `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No tasks in this sprint yet</div></div>`;
-
-  // Fetch all tasks for the assign/unassign panels
-  let allTasks = [];
-  try { allTasks = await api('GET', '/api/tasks?all=1'); allTasksCache = allTasks; allTasksFull = allTasks; } catch(e) {}
-  const unassigned = allTasks.filter(t => !t.sprint_id && !t.parent_task_id); // top-level unassigned tasks only
+    ? `<ul class="task-list">${buildSprintTaskTree(topLevel, 0)}</ul>`
+    : `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No tasks in this sprint yet</div></div>`; // top-level unassigned tasks only
 
   const nextStatus = sprint.status === 'planned' ? 'active' : sprint.status === 'active' ? 'completed' : null;
   const nextLabel = sprint.status === 'planned' ? 'Start Sprint' : sprint.status === 'active' ? 'Complete Sprint' : null;
@@ -6981,9 +6991,16 @@ async function renderGoalDetail(goalId) {
   const notes = g.notes || [];
   const resources = g.resources || [];
 
-  // Compute sub_task_count for each task from the tasks array
+  // Load all tasks so toggle reveals subtasks that don't carry goal_id
+  try {
+    const all = await api('GET', '/api/tasks?all=1');
+    allTasksCache = Array.isArray(all) ? all : allTasksCache;
+    allTasksFull = allTasksCache;
+  } catch(e) {}
+
+  // Compute sub_task_count from full cache
   tasks.forEach(t => {
-    t.sub_task_count = tasks.filter(s => s.parent_task_id === t.id).length;
+    t.sub_task_count = allTasksCache.filter(s => s.parent_task_id === t.id).length;
   });
 
   const projCards = projects.map(p => {
@@ -7001,17 +7018,14 @@ async function renderGoalDetail(goalId) {
     </div>`;
   }).join('') || `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No projects</div></div>`;
 
-  // Merge goal tasks into cache for subtask lookups
-  tasks.forEach(t => { if (!allTasksCache.find(x => x.id === t.id)) allTasksCache.push(t); });
-
-  function buildGoalTaskTreeRows(taskList, allTasks, depth) {
+  function buildGoalTaskTreeRows(taskList, depth) {
     let html = '';
     for (const t of taskList) {
       html += taskRowHtml(t, false, depth);
       const isExp = expandedTasks.has(String(t.id));
-      const children = allTasks.filter(s => s.parent_task_id === t.id);
+      const children = allTasksCache.filter(s => s.parent_task_id === t.id);
       if (isExp && children.length > 0) {
-        html += buildGoalTaskTreeRows(children, allTasks, depth + 1);
+        html += buildGoalTaskTreeRows(children, depth + 1);
         html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
           <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px">+ Add Subtask</button>
         </li>`;
@@ -7023,7 +7037,7 @@ async function renderGoalDetail(goalId) {
   const taskIds = new Set(tasks.map(t => t.id));
   const topLevelTasks = tasks.filter(t => !t.parent_task_id || !taskIds.has(t.parent_task_id));
   const taskRows = tasks.length
-    ? '<ul class="task-list">' + buildGoalTaskTreeRows(topLevelTasks, tasks, 0) + '</ul>'
+    ? '<ul class="task-list">' + buildGoalTaskTreeRows(topLevelTasks, 0) + '</ul>'
     : `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No direct tasks</div></div>`;
 
   const noteCards = notes.map(n => `<div class="note-card clickable-note" data-note-id="${n.id}" style="cursor:pointer">
@@ -9680,7 +9694,7 @@ async function showNewTaskModal(presets, afterSave) {
   });
   document.getElementById('modal-save-btn').onclick = async () => {
     const data = collectTaskForm();
-    if (!data.title) { alert('Title is required'); return; }
+    if (!data.title) { showToast('Title is required', 'error'); return; }
     const newTask = await api('POST', '/api/tasks', data);
     // Save custom prop values if any were filled
     if (newTask && newTask.id) {
@@ -9707,7 +9721,7 @@ async function showEditTaskModal(task) {
   });
   document.getElementById('modal-save-btn').onclick = async () => {
     const data = collectTaskForm();
-    if (!data.title) { alert('Title is required'); return; }
+    if (!data.title) { showToast('Title is required', 'error'); return; }
     await api('PATCH', `/api/tasks/${task.id}`, data);
     // Save custom prop values
     getCustomPropDefs('task').forEach(def => {
@@ -9801,7 +9815,7 @@ async function showGoalModal(goal, afterSave) {
       current_value: parseFloat(document.getElementById('g-cv').value) || 0,
       target: parseFloat(document.getElementById('g-target').value) || 0,
     };
-    if (!data.title) { alert('Title is required'); return; }
+    if (!data.title) { showToast('Title is required', 'error'); return; }
     let savedId = v.id;
     if (v.id) await api('PATCH', `/api/goals/${v.id}`, data);
     else { const r = await api('POST', '/api/goals', data); savedId = r?.id; }
@@ -10316,7 +10330,7 @@ async function showProjectModal(project, goals, afterSave) {
       start_date: isRange ? (document.getElementById('p-start')?.value || null) : null,
       due_date: isRange ? (document.getElementById('p-due-range')?.value || null) : (document.getElementById('p-due')?.value || null),
     };
-    if (!data.title) { alert('Title is required'); return; }
+    if (!data.title) { showToast('Title is required', 'error'); return; }
     let savedId = v.id;
     if (v.id) await api('PATCH', `/api/projects/${v.id}`, data);
     else { const r = await api('POST', '/api/projects', data); savedId = r?.id; }
@@ -10392,12 +10406,12 @@ async function showNoteModal(note, afterSave) {
       ...(v.project_id && { project_id: parseInt(v.project_id) }),
       ...(v.goal_id && { goal_id: parseInt(v.goal_id) }),
     };
-    if (!data.title) { alert('Title is required'); return; }
+    if (!data.title) { showToast('Title is required', 'error'); return; }
     try {
       await api('POST', '/api/notes', data);
       closeFormSlideover();
       if (afterSave) afterSave(); else renderNotes();
-    } catch(err) { alert('Error saving note: ' + (err.message || String(err))); }
+    } catch(err) { showToast('Error saving note: ' + (err.message || String(err)), 'error'); }
   };
 }
 
@@ -10829,7 +10843,7 @@ function showSprintModal(projects, sprint) {
       end_date: document.getElementById('sp-end').value || null,
       story_points: spVal !== '' ? parseInt(spVal, 10) : null,
     };
-    if (!data.title) { alert('Title is required'); return; }
+    if (!data.title) { showToast('Title is required', 'error'); return; }
     if (s.id) {
       await api('PATCH', `/api/sprints/${s.id}`, data);
     } else {
@@ -11096,7 +11110,7 @@ async function showResourceModal(presets, afterSave) {
   document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
   document.getElementById('modal-save-btn').onclick = async () => {
     const title = document.getElementById('rs-title').value.trim();
-    if (!title) { alert('Title is required'); return; }
+    if (!title) { showToast('Title is required', 'error'); return; }
     const data = {
       title,
       resource_type: document.getElementById('rs-type').value || 'note',
@@ -11111,7 +11125,7 @@ async function showResourceModal(presets, afterSave) {
       closeFormSlideover();
       if (afterSave) afterSave();
     } catch(e) {
-      alert('Failed to create resource: ' + e.message);
+      showToast('Failed to create resource: ' + e.message, 'error');
     }
   };
 }
@@ -11136,7 +11150,7 @@ function showCategoryModal(cat) {
       name: document.getElementById('c-name').value.trim(),
       color: document.getElementById('c-color').value,
     };
-    if (!data.name) { alert('Name is required'); return; }
+    if (!data.name) { showToast('Name is required', 'error'); return; }
     if (v.id) await api('PATCH', `/api/categories/${v.id}`, data);
     else await api('POST', '/api/categories', data);
     closeModal();
@@ -11174,7 +11188,7 @@ function showTagModal(tag) {
       name: document.getElementById('tg-name').value.trim(),
       color: document.getElementById('tg-color').value,
     };
-    if (!data.name) { alert('Name is required'); return; }
+    if (!data.name) { showToast('Name is required', 'error'); return; }
     if (v.id) await api('PATCH', `/api/tags/${v.id}`, data);
     else await api('POST', '/api/tags', data);
     closeModal();
@@ -11557,7 +11571,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
           await api('PUT', '/api/apps', allApps);
           const badge = document.getElementById(`save-badge-${btn.dataset.appId}`);
           if (badge) { badge.classList.add('visible'); setTimeout(() => badge.classList.remove('visible'), 2000); }
-        } catch(e) { alert('Save failed: ' + e.message); }
+        } catch(e) { showToast('Save failed: ' + e.message, 'error'); }
       };
     });
 
@@ -11568,7 +11582,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
         try {
           await api('PUT', '/api/apps', allApps);
           await renderAppsTab(body);
-        } catch(e) { alert('Delete failed: ' + e.message); }
+        } catch(e) { showToast('Delete failed: ' + e.message, 'error'); }
       };
     });
 
@@ -11582,7 +11596,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
       card.querySelector('.app-save-btn').onclick = async () => {
         const allApps = getAppsFromDOM();
         try { await api('PUT', '/api/apps', allApps); await renderAppsTab(body); }
-        catch(e) { alert('Save failed: ' + e.message); }
+        catch(e) { showToast('Save failed: ' + e.message, 'error'); }
       };
       card.querySelector('.app-del-btn').onclick = () => card.remove();
     };
@@ -11702,7 +11716,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
           await api('PUT', '/api/integrations', updated);
           _connectedPropTypesCache = null; // invalidate cache
           await renderIntegrationsTab(body);
-        } catch(e) { alert('Delete failed: ' + e.message); }
+        } catch(e) { showToast('Delete failed: ' + e.message, 'error'); }
       };
     });
 
@@ -11746,7 +11760,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
       const fieldPath = document.getElementById('_intg-field-path').value.trim();
       const fieldType = document.getElementById('_intg-field-type').value;
       const label = document.getElementById('_intg-label').value.trim();
-      if (!name || !endpoint || !fieldPath) { alert('Name, endpoint, and field path are required.'); return; }
+      if (!name || !endpoint || !fieldPath) { showToast('Name, endpoint, and field path are required', 'error'); return; }
       const app = apps.find(a => a.id === appId);
       const autoLabel = label || (app ? `${app.name}: ${name}` : name);
       // Probe once to detect is_list before saving
@@ -11765,7 +11779,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
         await api('PUT', '/api/integrations', [...integrations, newIntg]);
         _connectedPropTypesCache = null; // invalidate cache
         await renderIntegrationsTab(body);
-      } catch(e) { alert('Save failed: ' + e.message); }
+      } catch(e) { showToast('Save failed: ' + e.message, 'error'); }
     };
   }
 }
@@ -11898,13 +11912,13 @@ function showQuickNoteModal() {
     const note_date = document.getElementById('qn-date').value || null;
     const category_id = document.getElementById('qn-category').value
       ? parseInt(document.getElementById('qn-category').value) : null;
-    if (!title && !body) { alert('Please enter a title or note content'); return; }
+    if (!title && !body) { showToast('Please enter a title or note content', 'error'); return; }
     try {
       await api('POST', '/api/notes', { title: title || 'Quick Note', body, note_date, category_id });
       closeModal();
       if (window.__showToast) window.__showToast('Note saved');
       if (currentView === 'notes') renderNotes();
-    } catch(e) { alert('Error saving note: ' + (e.message || e)); }
+    } catch(e) { showToast('Error saving note: ' + (e.message || e), 'error'); }
   };
 }
 
