@@ -3615,7 +3615,7 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
     relsByType[r.related_entity_type].push(r);
   });
 
-  // Backward compat: include FK-linked notes/resources for task entities
+  // Backward compat: include FK-linked notes/resources and scalar FKs for task entities
   if (entityType === 'task') {
     ['notes','resources'].forEach((field) => {
       const ct = field === 'notes' ? 'note' : 'resource';
@@ -3624,6 +3624,22 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
         if (!relsByType[ct]) relsByType[ct] = [];
         relsByType[ct].push({ id: null, related_entity_type: ct, related_entity_id: item.id, related_title: item.title || item.name, is_fk: true });
       });
+    });
+    // Scalar FK fields: goal_id, project_id, sprint_id
+    const scalarFKs = [
+      { field: 'goal_id',    ct: 'goal',    titleKey: '_goalTitle'   },
+      { field: 'project_id', ct: 'project', titleKey: '_projTitle'   },
+      { field: 'sprint_id',  ct: 'sprint',  titleKey: '_sprintTitle' },
+    ];
+    scalarFKs.forEach(({ field, ct, titleKey }) => {
+      const fkId = entityData?.[field];
+      if (!fkId) return;
+      const existing = new Set((relsByType[ct] || []).map(r => String(r.related_entity_id)));
+      if (!existing.has(String(fkId))) {
+        if (!relsByType[ct]) relsByType[ct] = [];
+        relsByType[ct].push({ id: null, related_entity_type: ct, related_entity_id: fkId,
+          related_title: entityData?.[titleKey] || `${ct} ${fkId}`, is_fk: true, fk_field: field });
+      }
     });
   }
 
@@ -3647,6 +3663,7 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
             <button class="btn btn-sm btn-ghost ev-unlink-btn"
               data-rel-id="${r.id || ''}" data-child-type="${r.related_entity_type}"
               data-child-id="${r.related_entity_id}" data-is-fk="${r.is_fk || ''}"
+              data-fk-field="${r.fk_field || ''}"
               style="opacity:0.5;flex-shrink:0">×</button>
           </div>`).join('')
         : `<div style="color:var(--text-muted);font-size:12px;padding:4px 0">No linked ${label.toLowerCase()}</div>`}
@@ -3672,10 +3689,13 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
   container.querySelectorAll('.ev-unlink-btn').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
-      const { childType: ct, childId: cid, isFk } = btn.dataset;
+      const { childType: ct, childId: cid, isFk, fkField } = btn.dataset;
       if (isFk === 'true') {
         if (ct === 'note')     await api('PATCH', `/api/notes/${cid}`, { task_id: null }).catch(() => {});
         if (ct === 'resource') await api('PATCH', `/api/resources/${cid}`, { task_id: null }).catch(() => {});
+        if (fkField && entityType === 'task') {
+          await api('PATCH', `/api/tasks/${entityId}`, { [fkField]: null }).catch(() => {});
+        }
       } else {
         await api('DELETE', `/api/relations/${entityType}/${entityId}/${ct}/${cid}`).catch(() => {});
       }
@@ -4672,7 +4692,9 @@ async function renderTasks() {
       btn.onclick = async (e) => {
         e.stopPropagation();
         const parentId = parseInt(btn.dataset.parentId);
-        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+        const pt = allTasksFull.find(t => t.id === parentId);
+        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium',
+          goal_id: pt?.goal_id || null, project_id: pt?.project_id || null, sprint_id: pt?.sprint_id || null }, async () => {
           allTasksFull = await api('GET', '/api/tasks?all=1');
           allTasksCache = allTasksFull;
           const parent = allTasksFull.find(t => t.id === parentId);
@@ -7318,17 +7340,19 @@ async function showTaskSlideover(taskId) {
   const subtasks = task.sub_tasks || [];
   const tags = task.tags || [];
 
-  // Fetch projects and goals for comboboxes; always refresh allTasksCache for correct child lookups
-  let allProjects = [], allGoals = [];
+  // Fetch projects, goals, sprints for comboboxes; always refresh allTasksCache for correct child lookups
+  let allProjects = [], allGoals = [], allSprintsLocal = [];
   try {
     const results = await Promise.all([
       api('GET', '/api/projects'),
       api('GET', '/api/goals'),
       api('GET', '/api/tasks?all=1'),
+      api('GET', '/api/sprints'),
     ]);
     [allProjects, allGoals] = results;
     allTasksCache = results[2];
     allTasksFull = allTasksCache;
+    allSprintsLocal = results[3] || [];
   } catch(e) {}
 
   const pomPlanned = task.pomodoros_planned || 0;
@@ -7425,7 +7449,9 @@ async function showTaskSlideover(taskId) {
       btn.onclick = (e) => {
         e.stopPropagation();
         const parentId = parseInt(btn.dataset.parentId);
-        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+        const pt = allTasksCache.find(t => t.id === parentId);
+        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium',
+          goal_id: pt?.goal_id || null, project_id: pt?.project_id || null, sprint_id: pt?.sprint_id || null }, async () => {
           allTasksCache = await api('GET', '/api/tasks?all=1');
           allTasksFull = allTasksCache;
           renderSubtaskTable();
@@ -7522,6 +7548,7 @@ async function showTaskSlideover(taskId) {
   const catName = allCategories ? (allCategories.find(c => String(c.id) === String(task.category_id)) || {}).name : task.category_id;
   const projName = allProjects.find(p => String(p.id) === String(task.project_id)) ? allProjects.find(p => String(p.id) === String(task.project_id)).title : null;
   const goalName = allGoals.find(g => String(g.id) === String(task.goal_id)) ? allGoals.find(g => String(g.id) === String(task.goal_id)).title : null;
+  const sprintName = allSprintsLocal.find(s => String(s.id) === String(task.sprint_id))?.title || null;
 
   // ── Inline prop panel (built-in extra props + custom props) ──────────────
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
@@ -7910,13 +7937,40 @@ async function showTaskSlideover(taskId) {
       inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); };
     },
     recur: (valEl) => {
-      // Open the full more-panel for recurring (reuse existing ··· click)
-      document.getElementById('prop-chips-more')?.click();
+      const iv = task.recur_interval || 0;
+      const unit = (task.recur_unit || 'days').toLowerCase();
+      const popup = document.createElement('div');
+      popup.className = 'combo-popover';
+      popup.style.cssText = 'padding:14px;min-width:215px';
+      popup.innerHTML = `
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:10px">
+          <input type="checkbox" id="_recur-on" ${iv > 0 ? 'checked' : ''} style="width:auto">
+          <span style="font-size:13px">Repeating task</span>
+        </label>
+        <div id="_recur-flds" style="display:${iv > 0 ? 'flex' : 'none'};gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+          <span style="font-size:12px;color:var(--text-muted)">Every</span>
+          <input type="number" id="_recur-n" value="${iv || 1}" min="1" style="width:52px">
+          <select id="_recur-u">${['days','weeks','months','years'].map(u => `<option value="${u}" ${unit===u?'selected':''}>${u}</option>`).join('')}</select>
+        </div>
+        <button class="btn btn-primary btn-sm" id="_recur-save" style="width:100%">Save</button>`;
+      clampPopup(popup, valEl);
+      popup.querySelector('#_recur-on').onchange = e => {
+        popup.querySelector('#_recur-flds').style.display = e.target.checked ? 'flex' : 'none';
+      };
+      popup.querySelector('#_recur-save').onclick = async () => {
+        const on = popup.querySelector('#_recur-on').checked;
+        const n = on ? (parseInt(popup.querySelector('#_recur-n').value) || 1) : 0;
+        const u = on ? popup.querySelector('#_recur-u').value : '';
+        popup.remove();
+        await patchTask({ recur_interval: n, recur_unit: u });
+      };
+      const dismiss = e => { if (!popup.contains(e.target)) { popup.remove(); document.removeEventListener('mousedown', dismiss); } };
+      setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
     },
   };
   bindInlinePropPanel('task', taskId, taskInlinePropEditFns, () => showTaskSlideover(taskId));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="task"]'));
-  initEntityViewsSection('task', taskId, task);
+  initEntityViewsSection('task', taskId, { ...task, _goalTitle: goalName, _projTitle: projName, _sprintTitle: sprintName });
   // Persists to localStorage under `storageKey`.
   function openEditableValueCombo(anchorEl, valuesArray, storageKey, currentVal, onSelect) {
     closeCombo();
@@ -8217,7 +8271,8 @@ async function showTaskSlideover(taskId) {
   document.getElementById('detail-desc').onblur = (e) => patchTask({ description: e.target.value });
 
   document.getElementById('add-subtask-btn').onclick = () => {
-    showNewTaskModal({ parent_task_id: parseInt(taskId), status: 'todo', priority: 'medium' }, async () => {
+    showNewTaskModal({ parent_task_id: parseInt(taskId), status: 'todo', priority: 'medium',
+      goal_id: task.goal_id || null, project_id: task.project_id || null, sprint_id: task.sprint_id || null }, async () => {
       allTasksCache = await api('GET', '/api/tasks?all=1');
       allTasksFull = allTasksCache;
       renderSubtaskTable();
@@ -9354,7 +9409,9 @@ function bindTaskListEvents() {
         ce.stopPropagation();
         li.remove();
         btn.classList.remove('expanded');
-        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+        const pt = (allTasksCache || []).find(t => t.id === parentId);
+        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium',
+          goal_id: pt?.goal_id || null, project_id: pt?.project_id || null, sprint_id: pt?.sprint_id || null }, async () => {
           expandedTasks.add(String(parentId));
           renderDashboard();
         });
@@ -9426,7 +9483,9 @@ function bindDetailTaskEvents(onRefresh) {
         ce.stopPropagation();
         li.remove();
         btn.classList.remove('expanded');
-        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+        const pt = (allTasksCache || []).find(t => t.id === parentId);
+        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium',
+          goal_id: pt?.goal_id || null, project_id: pt?.project_id || null, sprint_id: pt?.sprint_id || null }, async () => {
           allTasksCache = await api('GET', '/api/tasks?all=1');
           expandedTasks.add(String(parentId));
           if (onRefresh) onRefresh();
@@ -9446,7 +9505,9 @@ function bindDetailTaskEvents(onRefresh) {
     btn.onclick = async (e) => {
       e.stopPropagation();
       const parentId = parseInt(btn.dataset.parentId);
-      showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium' }, async () => {
+      const pt = (allTasksCache || []).find(t => t.id === parentId);
+      showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium',
+        goal_id: pt?.goal_id || null, project_id: pt?.project_id || null, sprint_id: pt?.sprint_id || null }, async () => {
         allTasksCache = await api('GET', '/api/tasks?all=1');
         if (onRefresh) onRefresh();
       });
