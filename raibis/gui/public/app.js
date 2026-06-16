@@ -3577,6 +3577,164 @@ async function initSubItemsSection(entityType, entityId) {
   };
 }
 
+/* ─── Entity Views System ────────────────────────────────────────────── */
+// Replaces hardcoded Notes/Resources/Relations sections.
+// Config per entity type stored in localStorage.
+
+const EV_LABELS = {note:'Notes',resource:'Resources',task:'Tasks',goal:'Goals',project:'Projects',sprint:'Sprints',habit:'Habits'};
+const EV_APIS   = {note:'notes',resource:'resources',task:'tasks',goal:'goals',project:'projects',sprint:'sprints',habit:'habits'};
+const EV_ALL_TYPES = ['note','resource','task','goal','project','sprint','habit'];
+
+function getBottomViews(entityType) {
+  const s = localStorage.getItem(`entityViews_${entityType}`);
+  if (s) try { return JSON.parse(s); } catch {}
+  return [{ childType: 'note', mode: 'list' }, { childType: 'resource', mode: 'list' }];
+}
+function setBottomViews(entityType, views) {
+  localStorage.setItem(`entityViews_${entityType}`, JSON.stringify(views));
+}
+
+function buildEntityViewsSection(entityType, entityId) {
+  return `<div id="ev-container-${entityType}-${entityId}" class="ev-container">
+    <div style="color:var(--text-muted);font-size:12px;padding:8px 0">Loading…</div>
+  </div>`;
+}
+
+async function initEntityViewsSection(entityType, entityId, entityData) {
+  const container = document.getElementById(`ev-container-${entityType}-${entityId}`);
+  if (!container) return;
+
+  let allRels = [];
+  try { allRels = await api('GET', `/api/relations/${entityType}/${entityId}`); } catch {}
+  allRels = Array.isArray(allRels) ? allRels : [];
+
+  // Group relations by child type
+  const relsByType = {};
+  allRels.forEach(r => {
+    if (!relsByType[r.related_entity_type]) relsByType[r.related_entity_type] = [];
+    relsByType[r.related_entity_type].push(r);
+  });
+
+  // Backward compat: include FK-linked notes/resources for task entities
+  if (entityType === 'task') {
+    ['notes','resources'].forEach((field) => {
+      const ct = field === 'notes' ? 'note' : 'resource';
+      const existing = new Set((relsByType[ct] || []).map(r => String(r.related_entity_id)));
+      (entityData?.[field] || []).filter(item => !existing.has(String(item.id))).forEach(item => {
+        if (!relsByType[ct]) relsByType[ct] = [];
+        relsByType[ct].push({ id: null, related_entity_type: ct, related_entity_id: item.id, related_title: item.title || item.name, is_fk: true });
+      });
+    });
+  }
+
+  const views = getBottomViews(entityType);
+
+  function renderBlock(view) {
+    const label = EV_LABELS[view.childType] || view.childType;
+    const items = relsByType[view.childType] || [];
+    return `<div class="subtask-section ev-block" data-child-type="${view.childType}" style="margin-top:16px">
+      <div class="subtask-section-title">
+        <span>${label} (${items.length})</span>
+        <div style="display:flex;gap:4px;align-items:center">
+          <button class="btn btn-sm btn-ghost ev-add-btn" data-child-type="${view.childType}">+ Add</button>
+          <button class="btn btn-sm btn-ghost ev-rm-btn" data-child-type="${view.childType}" title="Remove this view" style="opacity:0.45;font-size:15px;line-height:1">⊗</button>
+        </div>
+      </div>
+      <div class="ev-items">
+        ${items.length ? items.map(r => `
+          <div class="subtask-row ev-item-row" style="cursor:pointer" data-child-type="${r.related_entity_type}" data-child-id="${r.related_entity_id}">
+            <span class="subtask-title">${r.related_title || '(untitled)'}</span>
+            <button class="btn btn-sm btn-ghost ev-unlink-btn"
+              data-rel-id="${r.id || ''}" data-child-type="${r.related_entity_type}"
+              data-child-id="${r.related_entity_id}" data-is-fk="${r.is_fk || ''}"
+              style="opacity:0.5;flex-shrink:0">×</button>
+          </div>`).join('')
+        : `<div style="color:var(--text-muted);font-size:12px;padding:4px 0">No linked ${label.toLowerCase()}</div>`}
+      </div>
+    </div>`;
+  }
+
+  container.innerHTML = `
+    ${views.map(renderBlock).join('')}
+    <div style="margin-top:10px">
+      <button class="btn btn-sm btn-ghost ev-addview-btn" style="width:100%">+ Add view</button>
+    </div>`;
+
+  // Remove a view from config
+  container.querySelectorAll('.ev-rm-btn').forEach(btn => {
+    btn.onclick = () => {
+      setBottomViews(entityType, getBottomViews(entityType).filter(v => v.childType !== btn.dataset.childType));
+      initEntityViewsSection(entityType, entityId, entityData);
+    };
+  });
+
+  // Unlink an item
+  container.querySelectorAll('.ev-unlink-btn').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const { childType: ct, childId: cid, isFk } = btn.dataset;
+      if (isFk === 'true') {
+        if (ct === 'note')     await api('PATCH', `/api/notes/${cid}`, { task_id: null }).catch(() => {});
+        if (ct === 'resource') await api('PATCH', `/api/resources/${cid}`, { task_id: null }).catch(() => {});
+      } else {
+        await api('DELETE', `/api/relations/${entityType}/${entityId}/${ct}/${cid}`).catch(() => {});
+      }
+      initEntityViewsSection(entityType, entityId, entityData);
+    };
+  });
+
+  // Open item in sideview on row click
+  container.querySelectorAll('.ev-item-row').forEach(row => {
+    row.onclick = (e) => {
+      if (e.target.closest('.ev-unlink-btn')) return;
+      const t = row.dataset.childType, id = parseInt(row.dataset.childId);
+      if (t === 'task')     showTaskSlideover(id);
+      else if (t === 'goal')     showGoalSlideover({ id }, null);
+      else if (t === 'project')  showProjectSlideover({ id }, null, null);
+      else if (t === 'note')     showNoteSlideover(id, null);
+      else if (t === 'resource') showResourceSlideover({ id }, null);
+    };
+  });
+
+  // Add link to an existing entity
+  container.querySelectorAll('.ev-add-btn').forEach(btn => {
+    btn.onclick = async (e) => {
+      const anchor = e.currentTarget;
+      const ct = btn.dataset.childType;
+      const apiPath = EV_APIS[ct];
+      if (!apiPath) return;
+      try {
+        let all = await api('GET', `/api/${apiPath}`);
+        if (!Array.isArray(all)) all = [];
+        const linkedIds = new Set((relsByType[ct] || []).map(r => String(r.related_entity_id)));
+        const available = all.filter(item => !linkedIds.has(String(item.id)));
+        if (!available.length) return;
+        openValuePicker(anchor, available.map(item => ({
+          value: String(item.id), label: item.title || item.name || '(untitled)'
+        })), async (val) => {
+          await api('POST', `/api/relations/${entityType}/${entityId}`, {
+            related_entity_type: ct, related_entity_id: parseInt(val)
+          });
+          initEntityViewsSection(entityType, entityId, entityData);
+        });
+      } catch(err) { console.error('ev-add:', err); }
+    };
+  });
+
+  // Add a new view type
+  container.querySelector('.ev-addview-btn').onclick = (e) => {
+    const used = new Set(getBottomViews(entityType).map(v => v.childType));
+    const available = EV_ALL_TYPES.filter(t => t !== entityType && !used.has(t));
+    if (!available.length) return;
+    openValuePicker(e.currentTarget, available.map(t => ({ value: t, label: EV_LABELS[t] || t })), (val) => {
+      const v = getBottomViews(entityType);
+      v.push({ childType: val, mode: 'list' });
+      setBottomViews(entityType, v);
+      initEntityViewsSection(entityType, entityId, entityData);
+    });
+  };
+}
+
 /* ─── Relations Section (bidirectional peer links) ───────────────────── */
 
 const RELATION_ENTITY_TYPES = [
@@ -5634,10 +5792,10 @@ async function renderSprints() {
     return `<div class="entity-list-view">${list.map(s => {
       const prog = s.progress || {};
       const pct = prog.pct || 0;
-      return `<div class="entity-list-row sprint-detail-link" data-sprint-id="${s.id}">
+      return `<div class="entity-list-row sprint-list-row" data-sprint-id="${s.id}">
         <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
         <span class="list-icon-slot" data-icon-entity="sprint" data-icon-id="${s.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
-        <span class="entity-list-title">${s.title}<span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></span>
+        <span class="entity-list-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)">${s.title}<span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></span>
         ${vis('status') ? statusBadge(s.status) : ''}
         ${vis('project') && s.project_title ? `<span class="entity-list-meta">${s.project_title}</span>` : ''}
         ${vis('dates') ? `<span class="entity-list-meta">${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</span>` : ''}
@@ -5680,6 +5838,13 @@ async function renderSprints() {
         showSprintSlideover(row.dataset.sprintId, render);
       };
     });
+    // List row click → sideview (title click handled by sprint-detail-link)
+    document.querySelectorAll('.sprint-list-row[data-sprint-id]').forEach(row => {
+      row.onclick = (e) => {
+        if (e.target.closest('button') || e.target.closest('.ctx-handle') || e.target.closest('.sprint-detail-link')) return;
+        showSprintSlideover(row.dataset.sprintId, render);
+      };
+    });
     document.querySelectorAll('.sprint-status-btn').forEach(el => {
       el.onclick = async () => {
         const nextStatus = el.dataset.next;
@@ -5690,19 +5855,21 @@ async function renderSprints() {
       };
     });
     document.querySelectorAll('.sprint-prev-status-btn').forEach(el => {
-      el.onclick = async (e) => {
+      el.onclick = (e) => {
         e.stopPropagation();
         const prevStatus = el.dataset.prev;
-        if (!confirm(`Revert sprint to "${prevStatus}"?`)) return;
-        await api('PATCH', `/api/sprints/${el.dataset.sprintId}`, { status: prevStatus });
-        renderSprints();
+        showConfirmModal(`Revert sprint to "${prevStatus}"?`, async () => {
+          await api('PATCH', `/api/sprints/${el.dataset.sprintId}`, { status: prevStatus });
+          renderSprints();
+        });
       };
     });
     document.querySelectorAll('.sprint-del-btn').forEach(el => {
-      el.onclick = async () => {
-        if (!confirm('Delete this sprint?')) return;
-        await api('DELETE', `/api/sprints/${el.dataset.sprintId}`);
-        renderSprints();
+      el.onclick = () => {
+        showConfirmModal('Delete this sprint?', async () => {
+          await api('DELETE', `/api/sprints/${el.dataset.sprintId}`);
+          renderSprints();
+        });
       };
     });
     // ctx-handle for sprint rows handled by global delegation
@@ -7283,23 +7450,6 @@ async function showTaskSlideover(taskId) {
 
   const tagPicker = null; // legacy — tags now handled via combobox chip
 
-  const notesHtml = (task.notes || []).length
-    ? (task.notes || []).map(n =>
-        `<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border)">
-          <span style="flex:1;font-size:13px;cursor:pointer;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" class="linked-note-title" data-note-id="${n.id}">${n.title || 'Note'}</span>
-          <button class="btn btn-sm btn-ghost note-unlink-btn" data-note-id="${n.id}" title="Unlink" style="flex-shrink:0;font-size:12px;opacity:0.5">×</button>
-        </div>`).join('')
-    : '<div style="color:var(--text-muted);font-size:13px">No linked notes</div>';
-
-  const resourcesHtml = (task.resources || []).length
-    ? (task.resources || []).map(r =>
-        `<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border)">
-          <span style="font-size:11px;color:var(--accent);flex-shrink:0">${r.resource_type || 'link'}</span>
-          <span style="flex:1;font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.title}</span>
-          ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" style="font-size:12px;color:var(--text-muted);flex-shrink:0">↗</a>` : ''}
-          <button class="btn btn-sm btn-ghost resource-unlink-btn" data-resource-id="${r.id}" title="Unlink" style="flex-shrink:0;font-size:12px;opacity:0.5">×</button>
-        </div>`).join('')
-    : '<div style="color:var(--text-muted);font-size:13px">No linked resources</div>';
 
   // ── Breadcrumb — walk the full ancestor chain ──────────────────────────
   // Levels: Goal → Project → ancestor tasks → (current task title shown as heading)
@@ -7467,20 +7617,7 @@ async function showTaskSlideover(taskId) {
       </div>
       <div class="pomodoro-track">${pomDots}</div>` : ''}
     </div>
-    <div class="subtask-section" style="margin-top:20px">
-      <div class="subtask-section-title"><span>Notes (${(task.notes||[]).length})</span>
-        <button class="btn btn-sm btn-ghost" id="add-note-to-task-btn">+ Add</button>
-      </div>
-      <div>${notesHtml}</div>
-    </div>
-    <div class="subtask-section" style="margin-top:20px">
-      <div class="subtask-section-title"><span>Resources (${(task.resources||[]).length})</span>
-        <button class="btn btn-sm btn-ghost" id="add-resource-to-task-btn">+ Add</button>
-      </div>
-      <div>${resourcesHtml}</div>
-    </div>
-    ${buildSubItemsSection('task', taskId)}
-    ${buildRelationsSection('task', taskId)}
+    ${buildEntityViewsSection('task', taskId)}
     ${buildCommentSection('task', taskId)}
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <button class="btn btn-ghost btn-sm" id="task-export-btn">Export JSON</button>
@@ -7779,8 +7916,7 @@ async function showTaskSlideover(taskId) {
   };
   bindInlinePropPanel('task', taskId, taskInlinePropEditFns, () => showTaskSlideover(taskId));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="task"]'));
-  initSubItemsSection('task', taskId);
-  initRelationsSection('task', taskId);
+  initEntityViewsSection('task', taskId, task);
   // Persists to localStorage under `storageKey`.
   function openEditableValueCombo(anchorEl, valuesArray, storageKey, currentVal, onSelect) {
     closeCombo();
@@ -8099,55 +8235,6 @@ async function showTaskSlideover(taskId) {
       showTaskSlideover(taskId);
     };
   }
-
-  document.getElementById('add-note-to-task-btn').onclick = async (e) => {
-    const btn = e.currentTarget;
-    try {
-      const allNotes = await api('GET', '/api/notes');
-      const linked = new Set((task.notes || []).map(n => String(n.id)));
-      const available = allNotes.filter(n => !linked.has(String(n.id)));
-      if (!available.length) return;
-      openValuePicker(btn, available.map(n => ({ value: String(n.id), label: n.title || 'Note' })), async (val) => {
-        await api('PATCH', `/api/notes/${val}`, { task_id: parseInt(taskId) });
-        showTaskSlideover(taskId);
-      });
-    } catch(err) { console.error('add-note-to-task', err); }
-  };
-
-  document.getElementById('add-resource-to-task-btn').onclick = async (e) => {
-    const btn = e.currentTarget;
-    try {
-      const allRes = await api('GET', '/api/resources');
-      const linked = new Set((task.resources || []).map(r => String(r.id)));
-      const available = allRes.filter(r => !linked.has(String(r.id)));
-      if (!available.length) return;
-      openValuePicker(btn, available.map(r => ({ value: String(r.id), label: r.title || 'Resource' })), async (val) => {
-        await api('PATCH', `/api/resources/${val}`, { task_id: parseInt(taskId) });
-        showTaskSlideover(taskId);
-      });
-    } catch(err) { console.error('add-resource-to-task', err); }
-  };
-
-  document.querySelectorAll('.note-unlink-btn').forEach(btn => {
-    btn.onclick = async () => {
-      await api('PATCH', `/api/notes/${btn.dataset.noteId}`, { task_id: null });
-      showTaskSlideover(taskId);
-    };
-  });
-
-  document.querySelectorAll('.resource-unlink-btn').forEach(btn => {
-    btn.onclick = async () => {
-      await api('PATCH', `/api/resources/${btn.dataset.resourceId}`, { task_id: null });
-      showTaskSlideover(taskId);
-    };
-  });
-
-  document.querySelectorAll('.linked-note-title').forEach(el => {
-    el.onclick = async () => {
-      const n = await api('GET', `/api/notes/${el.dataset.noteId}`).catch(() => null);
-      if (n) showNoteSlideover(n.id, () => showTaskSlideover(taskId));
-    };
-  });
 
   document.getElementById('task-export-btn').onclick = () =>
     showJSONModal(`/api/export/task/${taskId}`, `task-${task.title.replace(/\s+/g,'-')}.json`);
@@ -9764,9 +9851,7 @@ async function showProjectSlideover(project, goals, afterSave) {
       <ul class="task-list" id="proj-task-list">${taskRows}</ul>
     </div>
 
-    ${buildSubItemsSection('project', projectId)}
-
-    ${buildRelationsSection('project', projectId)}
+    ${buildEntityViewsSection('project', projectId)}
 
     ${buildCommentSection('project', projectId)}
 
@@ -9867,8 +9952,7 @@ async function showProjectSlideover(project, goals, afterSave) {
   // Inline prop panel
   bindInlinePropPanel('project', projectId, projInlinePropEditFns, () => showProjectSlideover({ id: projectId }, goals, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
-  initSubItemsSection('project', projectId);
-  initRelationsSection('project', projectId);
+  initEntityViewsSection('project', projectId, p);
 
   // Task rows click → task sideview
   document.querySelectorAll('#proj-task-list [data-task-id]').forEach(el => {
@@ -9964,9 +10048,7 @@ async function showGoalSlideover(goal, afterSave) {
       <div id="goal-proj-list">${projRows}</div>
     </div>
 
-    ${buildSubItemsSection('goal', goalId)}
-
-    ${buildRelationsSection('goal', goalId)}
+    ${buildEntityViewsSection('goal', goalId)}
 
     ${buildCommentSection('goal', goalId)}
 
@@ -10077,8 +10159,7 @@ async function showGoalSlideover(goal, afterSave) {
   // Inline prop panel
   bindInlinePropPanel('goal', goalId, goalInlinePropEditFns, () => showGoalSlideover({ id: goalId }, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="goal"]'));
-  initSubItemsSection('goal', goalId);
-  initRelationsSection('goal', goalId);
+  initEntityViewsSection('goal', goalId, g);
 
   // Project cards nav
   document.querySelectorAll('#goal-proj-list [data-proj-id]').forEach(el => {
@@ -10322,9 +10403,7 @@ async function showNoteSlideover(noteId, afterSave) {
       <textarea id="detail-body" style="width:100%;min-height:200px">${n.body || ''}</textarea>
     </div>
 
-    ${buildSubItemsSection('note', noteId)}
-
-    ${buildRelationsSection('note', noteId)}
+    ${buildEntityViewsSection('note', noteId)}
 
     ${buildCommentSection('note', noteId)}
 
@@ -10424,8 +10503,7 @@ async function showNoteSlideover(noteId, afterSave) {
   // Inline prop panel
   bindInlinePropPanel('note', noteId, noteInlinePropEditFns, () => showNoteSlideover(noteId, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="note"]'));
-  initSubItemsSection('note', noteId);
-  initRelationsSection('note', noteId);
+  initEntityViewsSection('note', noteId, n);
 
   document.getElementById('note-export-btn').onclick = () => showJSONModal(`/api/export/note/${noteId}`, `note-${noteId}.json`);
   document.getElementById('note-delete-btn').onclick = () => deleteEntity('note', noteId);
@@ -10774,9 +10852,7 @@ async function showResourceSlideover(resource, afterSave) {
       </div>
     </div>
 
-    ${buildSubItemsSection('resource', resId)}
-
-    ${buildRelationsSection('resource', resId)}
+    ${buildEntityViewsSection('resource', resId)}
 
     ${buildCommentSection('resource', resId)}
 
@@ -10873,8 +10949,7 @@ async function showResourceSlideover(resource, afterSave) {
   // Inline prop panel
   bindInlinePropPanel('resource', resId, resInlinePropEditFns, () => showResourceSlideover({ id: resId }, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="resource"]'));
-  initSubItemsSection('resource', resId);
-  initRelationsSection('resource', resId);
+  initEntityViewsSection('resource', resId, r);
 
   // File upload
   const fileInput = document.getElementById('rs-file-input');
