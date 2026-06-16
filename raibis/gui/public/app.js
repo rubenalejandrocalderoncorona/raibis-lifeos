@@ -5412,7 +5412,7 @@ async function renderNotes() {
     const vis = (key) => entityPropVisible('note', key);
     const rows = list.map(n => {
       const customCols = getCustomPropDefs('note').filter(d => entityPropVisible('note', d.key)).map(def => customPropCell('note', n.id, def)).join('');
-      return `<tr class="note-card" data-note-id="${n.id}" style="cursor:pointer">
+      return `<tr class="note-item" data-note-id="${n.id}" style="cursor:pointer">
         <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span></td>
         <td><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></td>
         ${vis('date')     ? `<td>${fmtDate(n.note_date) || '—'}</td>` : ''}
@@ -5639,20 +5639,20 @@ async function renderSprints() {
   function bindSprintEvents() {
     bindCtxHandles();
     document.querySelectorAll('.sprint-detail-link').forEach(el => {
-      el.onclick = (e) => { e.stopPropagation(); showSprintSlideover(el.dataset.sprintId, render); };
+      el.onclick = (e) => { e.stopPropagation(); renderView('sprint-detail', el.dataset.sprintId); };
     });
-    // Whole card click → sprint sideview (ignore clicks on buttons)
+    // Whole card click → sprint detail (ignore clicks on buttons)
     document.querySelectorAll('.card[data-sprint-id]').forEach(card => {
       card.onclick = (e) => {
         if (e.target.closest('button') || e.target.closest('.ctx-handle')) return;
-        showSprintSlideover(card.dataset.sprintId, render);
+        renderView('sprint-detail', card.dataset.sprintId);
       };
     });
-    // Table row click → sprint sideview (ignore clicks on buttons)
+    // Table row click → sprint detail (ignore clicks on buttons)
     document.querySelectorAll('tr.sprint-row[data-sprint-id]').forEach(row => {
       row.onclick = (e) => {
         if (e.target.closest('button') || e.target.closest('.ctx-handle')) return;
-        showSprintSlideover(row.dataset.sprintId, render);
+        renderView('sprint-detail', row.dataset.sprintId);
       };
     });
     document.querySelectorAll('.sprint-status-btn').forEach(el => {
@@ -6698,13 +6698,6 @@ async function renderProjectDetail(projectId) {
       </div>
       ${buildInlinePropPanel('project', projectId, [])}
     </div>
-    <div class="widget" style="margin-top:16px">
-      <div class="widget-header">
-        <span class="widget-title">Properties</span>
-        <button class="btn btn-sm btn-ghost" id="pd-add-prop-btn">+ Add</button>
-      </div>
-      <div id="pd-props-list"></div>
-    </div>
     ${buildCommentSection('project', projectId)}
   </div>`;
 
@@ -6751,7 +6744,6 @@ async function renderProjectDetail(projectId) {
     };
   });
   bindDetailTaskEvents(() => renderProjectDetail(projectId));
-  bindPropertiesWidget('project', projectId, 'pd-props-list', 'pd-add-prop-btn');
   bindInlinePropPanel('project', projectId, {}, () => renderProjectDetail(projectId));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
 }
@@ -8070,29 +8062,31 @@ async function showTaskSlideover(taskId) {
   };
 
   document.getElementById('add-note-to-task-btn').onclick = async (e) => {
+    const btn = e.currentTarget;
     try {
       const allNotes = await api('GET', '/api/notes');
       const linked = new Set((task.notes || []).map(n => String(n.id)));
       const available = allNotes.filter(n => !linked.has(String(n.id)));
-      if (!available.length) { alert('No unlinked notes available. Create a note first.'); return; }
-      openValuePicker(e.currentTarget, available.map(n => ({ value: String(n.id), label: n.title || 'Note' })), async (val) => {
+      if (!available.length) return;
+      openValuePicker(btn, available.map(n => ({ value: String(n.id), label: n.title || 'Note' })), async (val) => {
         await api('PATCH', `/api/notes/${val}`, { task_id: parseInt(taskId) });
         showTaskSlideover(taskId);
       });
-    } catch {}
+    } catch(err) { console.error('add-note-to-task', err); }
   };
 
   document.getElementById('add-resource-to-task-btn').onclick = async (e) => {
+    const btn = e.currentTarget;
     try {
       const allRes = await api('GET', '/api/resources');
       const linked = new Set((task.resources || []).map(r => String(r.id)));
       const available = allRes.filter(r => !linked.has(String(r.id)));
-      if (!available.length) { alert('No unlinked resources available. Create a resource first.'); return; }
-      openValuePicker(e.currentTarget, available.map(r => ({ value: String(r.id), label: r.title || 'Resource' })), async (val) => {
+      if (!available.length) return;
+      openValuePicker(btn, available.map(r => ({ value: String(r.id), label: r.title || 'Resource' })), async (val) => {
         await api('PATCH', `/api/resources/${val}`, { task_id: parseInt(taskId) });
         showTaskSlideover(taskId);
       });
-    } catch {}
+    } catch(err) { console.error('add-resource-to-task', err); }
   };
 
   document.querySelectorAll('.note-unlink-btn').forEach(btn => {
