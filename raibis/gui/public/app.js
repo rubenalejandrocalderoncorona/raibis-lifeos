@@ -1767,12 +1767,12 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
             return `<input type="checkbox" class="icp-check" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" ${val?'checked':''}
               style="cursor:pointer;accent-color:var(--accent)" onclick="event.stopPropagation()">`;
           }
-          if (!val) return `<span class="empty">—</span>`;
           if (custom.type === 'multi_select') {
             const arr = (() => { try { const a = JSON.parse(val); return Array.isArray(a) ? a : (val ? [val] : []); } catch { return val ? [val] : []; } })();
             const chips = arr.map(v => `<span class="multi-chip ms-chip" data-ms-val="${v.replace(/"/g,'&quot;')}" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px;display:inline-flex;align-items:center;gap:3px;cursor:default">${v}<span class="ms-chip-remove" data-val="${v.replace(/"/g,'&quot;')}" style="cursor:pointer;font-weight:700;opacity:0.6;font-size:12px;line-height:1" title="Remove">×</span></span>`).join('');
             return `<div class="ms-chips-wrap" style="display:flex;flex-wrap:wrap;gap:3px;align-items:center;min-height:20px">${chips}<button class="btn btn-sm btn-ghost ms-add-btn" style="font-size:11px;padding:1px 5px;height:20px;line-height:1" title="Add option">+</button></div>`;
           }
+          if (!val) return `<span class="empty">—</span>`;
           if (custom.type === 'select' || custom.type === 'status') {
             return `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${val}</span>`;
           }
@@ -1787,9 +1787,9 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
     const isCustom = !!custom;
     return `<div class="inline-prop-row" data-prop-key="${key}" data-is-custom="${isCustom}">
       <span class="inline-prop-drag-handle" title="Drag to reorder">⠿</span>
-      <div class="inline-prop-label">${iconHtml}${labelText}</div>
+      <div class="inline-prop-label">${iconHtml}<span class="inline-prop-label-text">${labelText}</span></div>
       <div class="inline-prop-value${!valHtml || valHtml.includes('class="empty"') ? ' empty' : ''}" data-prop-key="${key}">${valHtml}</div>
-      ${isCustom ? `<button class="prop-del-btn btn btn-sm btn-ghost icp-del-btn" data-entity="${entity}" data-prop-key="${key}" title="Remove property" style="opacity:0;font-size:13px">×</button>` : ''}
+      ${isCustom ? `<button class="prop-del-btn btn btn-sm btn-ghost icp-del-btn" data-entity="${entity}" data-prop-key="${key}" title="Remove property" style="font-size:13px">×</button>` : ''}
     </div>`;
   }).filter(Boolean).join('');
 
@@ -1900,9 +1900,6 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
     btn.onclick = async (e) => {
       e.stopPropagation();
       const key = btn.dataset.propKey;
-      const def = getCustomPropDefs(entity).find(d => d.key === key);
-      const label = def ? def.label : key;
-      if (!confirm(`Remove property "${label}" from all ${entity}s? This cannot be undone.`)) return;
       // Remove def
       const defs = getCustomPropDefs(entity).filter(d => d.key !== key);
       setCustomPropDefs(entity, defs);
@@ -5174,7 +5171,7 @@ async function renderNotes() {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
     const vis = (key) => entityPropVisible('note', key);
     return `<div class="entity-list-view">${list.map(n => {
-      return `<div class="entity-list-row note-card" data-note-id="${n.id}">
+      return `<div class="entity-list-row note-item" data-note-id="${n.id}">
         <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
         <span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
         <span class="entity-list-title">${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></span>
@@ -5289,7 +5286,7 @@ async function renderNotes() {
 
   function bindNoteEvents() {
     bindCtxHandles();
-    document.querySelectorAll('.note-card').forEach(el => {
+    document.querySelectorAll('.note-card, .note-item').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.ctx-handle, .note-json-btn')) return;
         const n = notes.find(x => String(x.id) === el.dataset.noteId);
