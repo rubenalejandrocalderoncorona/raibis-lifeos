@@ -1179,19 +1179,21 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 
 		case http.MethodPost:
 			var body struct {
-				Title     string `json:"title"`
-				ProjectID int64  `json:"project_id"`
-				StartDate string `json:"start_date"`
-				EndDate   string `json:"end_date"`
+				Title       string `json:"title"`
+				ProjectID   int64  `json:"project_id"`
+				StartDate   string `json:"start_date"`
+				EndDate     string `json:"end_date"`
+				StoryPoints *int   `json:"story_points"`
 			}
-			if err := readJSON(r, &body); err != nil || body.Title == "" || body.ProjectID == 0 {
-				errJSON(w, 400, "title and project_id are required")
+			if err := readJSON(r, &body); err != nil || body.Title == "" {
+				errJSON(w, 400, "title is required")
 				return
 			}
 			sp := &domain.Sprint{
-				ProjectID: body.ProjectID,
-				Title:     body.Title,
-				Status:    domain.Status("planned"),
+				ProjectID:   body.ProjectID,
+				Title:       body.Title,
+				Status:      domain.Status("planned"),
+				StoryPoints: body.StoryPoints,
 			}
 			if body.StartDate != "" {
 				if t, err := time.Parse("2006-01-02", body.StartDate); err == nil {
@@ -2682,9 +2684,13 @@ func listSprints(store storage.Storage, svc service.TaskService, dbPath string, 
 	var out []sprintOut
 	for rows.Next() {
 		var so sprintOut
-		if err := rows.Scan(&so.ID, &so.ProjectID, &so.Title, &so.Status,
+		var projID sql.NullInt64
+		if err := rows.Scan(&so.ID, &projID, &so.Title, &so.Status,
 			&so.StartDate, &so.EndDate, &so.ProjectTitle); err != nil {
 			continue
+		}
+		if projID.Valid {
+			so.ProjectID = projID.Int64
 		}
 		tasks, _ := svc.List(domain.TaskFilter{SprintID: &so.ID})
 		for _, t := range tasks {

@@ -71,13 +71,14 @@ CREATE TABLE IF NOT EXISTS projects (
 -- ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS sprints (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    project_id  INTEGER REFERENCES projects(id) ON DELETE CASCADE,
     title       TEXT    NOT NULL,
     goal        TEXT,
     start_date  DATE,
     end_date    DATE,
     status      TEXT    NOT NULL DEFAULT 'planned',
-    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    story_points INTEGER
 );
 
 -- ─────────────────────────────────────────

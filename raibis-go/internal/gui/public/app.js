@@ -32,27 +32,99 @@ const EMOJI_DATA = {
 };
 
 const ICON_DATA = [
-  { name:'task',      svg:'<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>' },
-  { name:'goal',      svg:'<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>' },
-  { name:'project',   svg:'<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>' },
-  { name:'note',      svg:'<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>' },
-  { name:'sprint',    svg:'<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>' },
-  { name:'star',      svg:'<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>' },
-  { name:'heart',     svg:'<path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>' },
-  { name:'flag',      svg:'<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>' },
-  { name:'bookmark',  svg:'<path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>' },
-  { name:'link',      svg:'<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>' },
-  { name:'calendar',  svg:'<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>' },
-  { name:'clock',     svg:'<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>' },
-  { name:'folder',    svg:'<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>' },
-  { name:'brain',     svg:'<path d="M9.5 2a2.5 2.5 0 01.5 5M9.5 2a2.5 2.5 0 00-.5 5"/><path d="M6 5a6 6 0 00-3 10.5M18 5a6 6 0 013 10.5"/><path d="M9 10v4M15 10v4"/><path d="M9 14a3 3 0 006 0"/>' },
-  { name:'chart',     svg:'<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>' },
-  { name:'code',      svg:'<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>' },
-  { name:'settings',  svg:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>' },
-  { name:'layers',    svg:'<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>' },
-  { name:'users',     svg:'<path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>' },
-  { name:'map',       svg:'<polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/>' },
-  { name:'home',      svg:'<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>' },
+  // ── Core entities ───────────────────────────────────────────────────────
+  { name:'task',         svg:'<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>' },
+  { name:'goal',         svg:'<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>' },
+  { name:'project',      svg:'<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>' },
+  { name:'note',         svg:'<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>' },
+  { name:'sprint',       svg:'<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>' },
+  // ── Common actions ──────────────────────────────────────────────────────
+  { name:'star',         svg:'<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>' },
+  { name:'heart',        svg:'<path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>' },
+  { name:'flag',         svg:'<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>' },
+  { name:'bookmark',     svg:'<path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>' },
+  { name:'check',        svg:'<polyline points="20 6 9 17 4 12"/>' },
+  { name:'check-circle', svg:'<path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>' },
+  { name:'x-circle',     svg:'<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>' },
+  { name:'plus-circle',  svg:'<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>' },
+  { name:'alert',        svg:'<path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>' },
+  { name:'info',         svg:'<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>' },
+  // ── Organization ────────────────────────────────────────────────────────
+  { name:'link',         svg:'<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>' },
+  { name:'calendar',     svg:'<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>' },
+  { name:'clock',        svg:'<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>' },
+  { name:'folder',       svg:'<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>' },
+  { name:'folder-open',  svg:'<path d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"/>' },
+  { name:'inbox',        svg:'<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z"/>' },
+  { name:'archive',      svg:'<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>' },
+  { name:'tag',          svg:'<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>' },
+  { name:'filter',       svg:'<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>' },
+  { name:'sort',         svg:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>' },
+  { name:'list',         svg:'<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3" y2="6"/><line x1="3" y1="12" x2="3" y2="12"/><line x1="3" y1="18" x2="3" y2="18"/>' },
+  { name:'grid',         svg:'<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>' },
+  { name:'table',        svg:'<rect x="2" y="3" width="20" height="18" rx="2"/><line x1="2" y1="9" x2="22" y2="9"/><line x1="2" y1="15" x2="22" y2="15"/><line x1="12" y1="3" x2="12" y2="21"/>' },
+  // ── People & Communication ───────────────────────────────────────────────
+  { name:'users',        svg:'<path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>' },
+  { name:'user',         svg:'<path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/>' },
+  { name:'message',      svg:'<path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>' },
+  { name:'mail',         svg:'<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>' },
+  { name:'phone',        svg:'<path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 10.8a19.79 19.79 0 01-3.07-8.63A2 2 0 012 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.91 9.91a16 16 0 006.72 6.72l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/>' },
+  { name:'share',        svg:'<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>' },
+  // ── Analytics & Data ────────────────────────────────────────────────────
+  { name:'chart',        svg:'<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>' },
+  { name:'chart-line',   svg:'<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>' },
+  { name:'pie-chart',    svg:'<path d="M21.21 15.89A10 10 0 118 2.83"/><path d="M22 12A10 10 0 0012 2v10z"/>' },
+  { name:'trending-up',  svg:'<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>' },
+  { name:'activity',     svg:'<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>' },
+  { name:'database',     svg:'<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>' },
+  // ── Technology ──────────────────────────────────────────────────────────
+  { name:'code',         svg:'<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>' },
+  { name:'code-branch',  svg:'<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 01-9 9"/>' },
+  { name:'terminal',     svg:'<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>' },
+  { name:'package',      svg:'<line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 002 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>' },
+  { name:'git-branch',   svg:'<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 01-9 9"/>' },
+  { name:'server',       svg:'<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>' },
+  { name:'cpu',          svg:'<rect x="9" y="9" width="6" height="6"/><rect x="2" y="2" width="20" height="20" rx="2"/><line x1="9" y1="2" x2="9" y2="6"/><line x1="15" y1="2" x2="15" y2="6"/><line x1="9" y1="18" x2="9" y2="22"/><line x1="15" y1="18" x2="15" y2="22"/><line x1="2" y1="9" x2="6" y2="9"/><line x1="2" y1="15" x2="6" y2="15"/><line x1="18" y1="9" x2="22" y2="9"/><line x1="18" y1="15" x2="22" y2="15"/>' },
+  { name:'wifi',         svg:'<path d="M5 12.55a11 11 0 0114.08 0"/><path d="M1.42 9a16 16 0 0121.16 0"/><path d="M8.53 16.11a6 16 0 016.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>' },
+  // ── Settings & Tools ────────────────────────────────────────────────────
+  { name:'settings',     svg:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>' },
+  { name:'tool',         svg:'<path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>' },
+  { name:'sliders',      svg:'<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>' },
+  { name:'lock',         svg:'<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>' },
+  { name:'unlock',       svg:'<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 019.9-1"/>' },
+  { name:'key',          svg:'<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>' },
+  // ── Navigation ──────────────────────────────────────────────────────────
+  { name:'layers',       svg:'<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>' },
+  { name:'map',          svg:'<polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/>' },
+  { name:'home',         svg:'<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>' },
+  { name:'compass',      svg:'<circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>' },
+  { name:'external-link',svg:'<path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>' },
+  // ── Productivity ────────────────────────────────────────────────────────
+  { name:'brain',        svg:'<path d="M9.5 2a2.5 2.5 0 01.5 5M9.5 2a2.5 2.5 0 00-.5 5"/><path d="M6 5a6 6 0 00-3 10.5M18 5a6 6 0 013 10.5"/><path d="M9 10v4M15 10v4"/><path d="M9 14a3 3 0 006 0"/>' },
+  { name:'lightbulb',    svg:'<line x1="9" y1="18" x2="15" y2="18"/><line x1="10" y1="22" x2="14" y2="22"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0018 8 6 6 0 006 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 018.91 14"/>' },
+  { name:'target',       svg:'<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>' },
+  { name:'award',        svg:'<circle cx="12" cy="8" r="6"/><path d="M15.477 12.89L17 22l-5-3-5 3 1.523-9.11"/>' },
+  { name:'trending',     svg:'<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>' },
+  { name:'zap',          svg:'<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>' },
+  { name:'refresh',      svg:'<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>' },
+  { name:'repeat',       svg:'<polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/>' },
+  // ── Finance & Business ───────────────────────────────────────────────────
+  { name:'dollar',       svg:'<line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>' },
+  { name:'credit-card',  svg:'<rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>' },
+  { name:'briefcase',    svg:'<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/>' },
+  { name:'shopping-bag', svg:'<path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/>' },
+  // ── Health & Life ───────────────────────────────────────────────────────
+  { name:'activity-hr',  svg:'<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>' },
+  { name:'sun',          svg:'<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>' },
+  { name:'moon',         svg:'<path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>' },
+  { name:'droplet',      svg:'<path d="M12 2.69l5.66 5.66a8 8 0 11-11.31 0z"/>' },
+  { name:'feather',      svg:'<path d="M20.24 12.24a6 6 0 00-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" y1="8" x2="2" y2="22"/><line x1="17.5" y1="15" x2="9" y2="15"/>' },
+  // ── Media ───────────────────────────────────────────────────────────────
+  { name:'image',        svg:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>' },
+  { name:'video',        svg:'<polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/>' },
+  { name:'music',        svg:'<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>' },
+  { name:'mic',          svg:'<path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>' },
+  { name:'camera',       svg:'<path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/>' },
 ];
 
 let _iconPickerEl = null; // singleton picker DOM element
@@ -922,9 +994,9 @@ function openPropManager(btnEl, entity) {
           const pt = CUSTOM_PROP_TYPES.find(p => p.type === d.type);
           const ov = overrides[d.key] || {};
           const iconHtml = ov.icon
-            ? `<span style="font-size:13px">${ov.icon}</span>`
+            ? renderEntityIcon(ov.icon, 14)
             : d.icon
-              ? `<span style="font-size:13px">${d.icon}</span>`
+              ? renderEntityIcon(d.icon, 14)
               : (pt ? typeSvg(pt.icon) : '');
           const labelText = ov.label || d.label;
           return `<div class="prop-mgr-row" data-key="${d.key}">
@@ -1086,43 +1158,46 @@ function openAllPropsEditorModal(entity) {
   customDefs.forEach(d => { iconState[d.key] = (overrides[d.key] || {}).icon || d.icon || ''; });
 
   const iconBtnHtml = (k, icon) =>
-    `<button class="pae-icon-btn btn btn-sm" data-key="${k}" title="Pick icon"
-      style="width:32px;height:32px;font-size:17px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);padding:0">
-      ${icon ? renderEntityIcon(icon, 18) : '<span style="font-size:13px;color:var(--text-dim)">+</span>'}
+    `<button class="pae-icon-btn" data-key="${k}" title="Pick icon"
+      style="width:36px;height:36px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);cursor:pointer;flex-shrink:0;transition:border-color 120ms">
+      ${icon ? renderEntityIcon(icon, 18) : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>'}
     </button>`;
+
+  const rowStyle = 'display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--color-border)';
 
   const builtinRows = builtinKeys.map(k => {
     const ov = overrides[k] || {};
-    return `<tr style="border-bottom:1px solid var(--border)">
-      <td style="width:40px;padding:4px 6px 4px 0">${iconBtnHtml(k, iconState[k])}</td>
-      <td style="padding:4px 6px">
+    return `<div style="${rowStyle}">
+      ${iconBtnHtml(k, iconState[k])}
+      <div style="flex:1;min-width:0">
         <input class="pae-label" data-key="${k}" type="text" value="${escHtml(ov.label || k)}"
-          style="width:100%;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text);padding:3px 6px;font-size:13px" />
-      </td>
-      <td style="width:60px;text-align:right;font-size:10px;color:var(--text-dim);padding:4px 0 4px 6px">built-in</td>
-    </tr>`;
+          style="width:100%;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);color:var(--text);padding:5px 8px;font-size:13px;box-sizing:border-box" />
+      </div>
+      <span style="width:52px;text-align:right;font-size:10px;color:var(--text-muted);flex-shrink:0;font-weight:500;letter-spacing:.03em;text-transform:uppercase">built-in</span>
+    </div>`;
   }).join('');
 
   const customRows = customDefs.map(d => {
     const ov = overrides[d.key] || {};
-    return `<tr style="border-bottom:1px solid var(--border)">
-      <td style="width:40px;padding:4px 6px 4px 0">${iconBtnHtml(d.key, iconState[d.key])}</td>
-      <td style="padding:4px 6px">
+    return `<div style="${rowStyle}">
+      ${iconBtnHtml(d.key, iconState[d.key])}
+      <div style="flex:1;min-width:0">
         <input class="pae-label" data-key="${d.key}" type="text" value="${escHtml(ov.label || d.label)}"
-          style="width:100%;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text);padding:3px 6px;font-size:13px" />
-      </td>
-      <td style="width:60px;text-align:right;font-size:10px;color:var(--text-dim);padding:4px 0 4px 6px">${d.type}</td>
-    </tr>`;
+          style="width:100%;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);color:var(--text);padding:5px 8px;font-size:13px;box-sizing:border-box" />
+      </div>
+      <span style="width:52px;text-align:right;font-size:10px;color:var(--text-muted);flex-shrink:0;font-weight:500;letter-spacing:.03em;text-transform:uppercase">${d.type}</span>
+    </div>`;
   }).join('');
 
+  const sectionHead = (label) =>
+    `<div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);padding:12px 0 4px">${label}</div>`;
+
   const body = `
-    <div style="display:flex;flex-direction:column;gap:0;padding:4px 0">
-      ${builtinKeys.length ? `<div style="font-size:11px;color:var(--text-dim);font-weight:600;text-transform:uppercase;padding:4px 0 6px">Built-in</div>` : ''}
-      ${builtinRows ? `<table style="width:100%;border-collapse:collapse">${builtinRows}</table>` : ''}
-      ${customDefs.length ? `<div style="font-size:11px;color:var(--text-dim);font-weight:600;text-transform:uppercase;padding:12px 0 6px">Custom</div>` : ''}
-      ${customRows ? `<table style="width:100%;border-collapse:collapse">${customRows}</table>` : ''}
-      ${!builtinKeys.length && !customDefs.length ? '<div style="color:var(--text-dim);font-size:13px;padding:8px 0">No properties</div>' : ''}
-      <div class="form-actions" style="margin-top:12px">
+    <div style="display:flex;flex-direction:column;padding:4px 0">
+      ${builtinKeys.length ? sectionHead('Built-in') + builtinRows : ''}
+      ${customDefs.length ? sectionHead('Custom') + customRows : ''}
+      ${!builtinKeys.length && !customDefs.length ? '<div style="color:var(--text-muted);font-size:13px;padding:12px 0;text-align:center">No properties defined yet.</div>' : ''}
+      <div class="form-actions" style="margin-top:16px">
         <button class="btn btn-ghost" id="pae-cancel">Cancel</button>
         <button class="btn btn-primary" id="pae-save">Save all</button>
       </div>
@@ -1137,7 +1212,7 @@ function openAllPropsEditorModal(entity) {
       const k = btn.dataset.key;
       showIconPicker(btn, entity, null, iconState[k], (icon) => {
         iconState[k] = icon;
-        btn.innerHTML = icon ? renderEntityIcon(icon, 18) : '<span style="font-size:13px;color:var(--text-dim)">+</span>';
+        btn.innerHTML = icon ? renderEntityIcon(icon, 18) : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
       });
     });
   });
@@ -2085,10 +2160,10 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
     const ov = overrides[key] || {};
     const labelText = ov.label || (builtin ? builtin.label : custom.label);
     const iconHtml = ov.icon
-      ? `<span style="font-size:13px;line-height:1">${ov.icon}</span>`
+      ? renderEntityIcon(ov.icon, 14)
       : builtin
         ? (builtin.icon || '')
-        : (custom.icon ? `<span style="font-size:13px;line-height:1">${custom.icon}</span>` : propTypeIcon(custom.type));
+        : (custom.icon ? renderEntityIcon(custom.icon, 14) : propTypeIcon(custom.type));
     const valHtml = builtin
       ? (builtin.renderValue ? builtin.renderValue() : '<span class="empty">—</span>')
       : (() => {
@@ -3216,14 +3291,11 @@ async function loadCustomEntityTypes() {
 
 function renderCustomEntityNav() {
   const container = document.getElementById('custom-entities-nav');
-  const label = document.getElementById('custom-entities-section-label');
   if (!container) return;
   if (!customEntityTypes.length) {
-    container.innerHTML = '';
-    if (label) label.style.display = 'none';
+    container.innerHTML = '<div style="font-size:11px;color:var(--text-muted);padding:2px 0 0 2px;cursor:pointer" onclick="openRaibisSettings(\'data\')">No custom types yet</div>';
     return;
   }
-  if (label) label.style.display = '';
   container.innerHTML = customEntityTypes.map(t => `
     <a class="nav-item" data-view="custom:${escHtml(t.name)}" href="#">
       <span class="nav-icon" style="font-size:16px">${t.icon || '📁'}</span>
@@ -12586,13 +12658,14 @@ async function openRaibisSettings(defaultTab = 'apps') {
       <div style="border-top:1px solid var(--color-border);padding-top:14px">
         <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">Define New Type</div>
         <div style="display:flex;flex-direction:column;gap:8px">
-          <div style="display:flex;gap:8px">
+          <div style="display:flex;gap:8px;align-items:flex-end">
             <div class="form-group" style="flex:2;margin:0"><label class="form-label" style="font-size:11px">Slug (e.g. "repository")</label>
               <input type="text" id="_cet-name" placeholder="repository" style="width:100%" /></div>
             <div class="form-group" style="flex:2;margin:0"><label class="form-label" style="font-size:11px">Display Name</label>
               <input type="text" id="_cet-display" placeholder="Repository" style="width:100%" /></div>
-            <div class="form-group" style="flex:0 0 64px;margin:0"><label class="form-label" style="font-size:11px">Icon</label>
-              <input type="text" id="_cet-icon" placeholder="📁" style="width:100%;text-align:center" maxlength="4" /></div>
+            <div class="form-group" style="flex:0 0 auto;margin:0"><label class="form-label" style="font-size:11px;display:block;margin-bottom:4px">Icon</label>
+              <button id="_cet-icon-btn" style="width:40px;height:36px;display:flex;align-items:center;justify-content:center;font-size:20px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);cursor:pointer" title="Pick icon">📁</button>
+            </div>
           </div>
           <div>
             <label class="form-label" style="font-size:11px;margin-bottom:6px;display:block">Properties</label>
@@ -12662,19 +12735,36 @@ async function openRaibisSettings(defaultTab = 'apps') {
       propDefsRows.push({ key: '', label: '', type: 'text' });
       renderPropDefsUI();
     };
+
+    // Wire icon picker for entity type icon button
+    let cetIconSelected = '📁';
+    const cetIconBtn = cetSection.querySelector('#_cet-icon-btn');
+    if (cetIconBtn) {
+      cetIconBtn.onclick = (e) => {
+        e.stopPropagation();
+        showIconPicker(cetIconBtn, null, null, cetIconSelected, (icon) => {
+          cetIconSelected = icon || '📁';
+          cetIconBtn.innerHTML = cetIconSelected.startsWith('__svg:')
+            ? renderEntityIcon(cetIconSelected, 20)
+            : `<span style="font-size:20px">${cetIconSelected}</span>`;
+        });
+      };
+    }
+
     cetSection.querySelector('#_cet-create').onclick = async () => {
       const name = (cetSection.querySelector('#_cet-name').value || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
       const display_name = (cetSection.querySelector('#_cet-display').value || '').trim();
-      const icon = (cetSection.querySelector('#_cet-icon').value || '📁').trim() || '📁';
+      const icon = cetIconSelected || '📁';
       if (!name || !display_name) { showToast('Name and display name are required', 'error'); return; }
       const prop_defs = JSON.stringify(propDefsRows.filter(r => r.key));
       try {
         await api('POST', '/api/custom-types', { name, display_name, icon, prop_defs });
         showToast(`Type "${display_name}" created`);
         propDefsRows = [];
+        cetIconSelected = '📁';
+        if (cetIconBtn) cetIconBtn.innerHTML = '<span style="font-size:20px">📁</span>';
         cetSection.querySelector('#_cet-name').value = '';
         cetSection.querySelector('#_cet-display').value = '';
-        cetSection.querySelector('#_cet-icon').value = '';
         renderPropDefsUI();
         await renderCetList();
       } catch(err) { showToast('Failed: ' + (err.message || err), 'error'); }
@@ -12830,14 +12920,20 @@ async function openRaibisSettings(defaultTab = 'apps') {
           </div>
           <div class="settings-body" style="padding:16px 20px;display:flex;flex-direction:column;gap:12px">
             <div class="auto-form-group">
-              <label class="auto-form-label">Sprint Name</label>
+              <label class="auto-form-label">Sprint Name <span style="color:var(--color-danger)">*</span></label>
               <input class="auto-form-input" id="_sc-title" placeholder="Sprint 1…">
             </div>
-            <div class="auto-form-group">
-              <label class="auto-form-label">Project</label>
-              <select class="auto-form-select" id="_sc-project" style="width:100%">
-                <option value="">Loading projects…</option>
-              </select>
+            <div style="display:flex;gap:10px">
+              <div class="auto-form-group" style="flex:2;margin:0">
+                <label class="auto-form-label">Project <span style="font-size:10px;color:var(--text-muted)">(optional)</span></label>
+                <select class="auto-form-select" id="_sc-project" style="width:100%">
+                  <option value="">— no project —</option>
+                </select>
+              </div>
+              <div class="auto-form-group" style="flex:1;margin:0">
+                <label class="auto-form-label">Capacity (pts)</label>
+                <input class="auto-form-input" id="_sc-points" type="number" min="0" placeholder="e.g. 40">
+              </div>
             </div>
             <div style="display:flex;gap:8px;margin-top:4px">
               <button class="btn btn-primary btn-sm" id="_sc-save">Create Sprint</button>
@@ -12851,19 +12947,22 @@ async function openRaibisSettings(defaultTab = 'apps') {
     modalEl.querySelector('#_sc-close').onclick = close;
     modalEl.querySelector('#_sc-cancel').onclick = close;
     modalEl.addEventListener('click', e => { if (e.target === modalEl) close(); });
-    // Load projects
+    // Load projects (optional)
     api('GET', '/api/projects').then(projects => {
       const sel = modalEl.querySelector('#_sc-project');
-      sel.innerHTML = `<option value="">— select project —</option>` +
+      sel.innerHTML = `<option value="">— no project —</option>` +
         (projects || []).map(p => `<option value="${p.id}">${escHtml(p.title)}</option>`).join('');
     }).catch(() => {});
     modalEl.querySelector('#_sc-save').onclick = async () => {
       const title = modalEl.querySelector('#_sc-title').value.trim();
-      const projectId = parseInt(modalEl.querySelector('#_sc-project').value);
       if (!title) { showToast('Sprint name is required', 'error'); return; }
-      if (!projectId) { showToast('Select a project', 'error'); return; }
+      const projectId = parseInt(modalEl.querySelector('#_sc-project').value) || 0;
+      const ptsRaw = modalEl.querySelector('#_sc-points').value.trim();
+      const payload = { title };
+      if (projectId) payload.project_id = projectId;
+      if (ptsRaw !== '') payload.story_points = parseInt(ptsRaw) || 0;
       try {
-        await api('POST', '/api/sprints', { title, project_id: projectId });
+        await api('POST', '/api/sprints', payload);
         showToast('Sprint created', 'success');
         close();
         onCreated?.();

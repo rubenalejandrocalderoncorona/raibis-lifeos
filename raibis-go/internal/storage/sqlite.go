@@ -236,6 +236,61 @@ func applyMigrations(db *sql.DB) error {
 			return fmt.Errorf("migration failed %q: %w", preview, err)
 		}
 	}
+	return migrateSprintsProjectIdNullable(db)
+}
+
+// migrateSprintsProjectIdNullable rebuilds the sprints table so that
+// project_id is nullable. This lets sprints exist without a parent project.
+// Idempotent: checks the NOT NULL flag first and skips if already nullable.
+func migrateSprintsProjectIdNullable(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(sprints)`)
+	if err != nil {
+		return nil // non-fatal; table may not exist yet
+	}
+	defer rows.Close()
+	needsMigration := false
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dflt, pk sql.NullString
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			continue
+		}
+		if name == "project_id" && notNull == 1 {
+			needsMigration = true
+			break
+		}
+	}
+	rows.Close()
+	if !needsMigration {
+		return nil
+	}
+	stmts := []string{
+		`CREATE TABLE sprints_proj_nullable (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			project_id   INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+			title        TEXT    NOT NULL,
+			goal         TEXT,
+			start_date   DATE,
+			end_date     DATE,
+			status       TEXT    NOT NULL DEFAULT 'planned',
+			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			story_points INTEGER
+		)`,
+		`INSERT INTO sprints_proj_nullable
+		    SELECT id, project_id, title, goal, start_date, end_date, status, created_at,
+		           CASE WHEN typeof(story_points)='integer' THEN story_points ELSE NULL END
+		    FROM sprints`,
+		`DROP TABLE sprints`,
+		`ALTER TABLE sprints_proj_nullable RENAME TO sprints`,
+		`CREATE INDEX IF NOT EXISTS idx_sprints_project ON sprints(project_id)`,
+	}
+	for _, s := range stmts {
+		if _, err := db.Exec(s); err != nil {
+			return fmt.Errorf("sprints nullable migration: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -544,10 +599,14 @@ LEFT JOIN categories c ON p.category_id = c.id`
 func (s *sqliteStorage) CreateSprint(sp *domain.Sprint) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var projID interface{}
+	if sp.ProjectID != 0 {
+		projID = sp.ProjectID
+	}
 	res, err := s.db.Exec(
 		`INSERT INTO sprints (project_id, title, goal, start_date, end_date, status, story_points)
 		 VALUES (?,?,?,?,?,?,?)`,
-		sp.ProjectID, sp.Title, sp.Goal,
+		projID, sp.Title, sp.Goal,
 		nullTime(sp.StartDate), nullTime(sp.EndDate), string(sp.Status), sp.StoryPoints,
 	)
 	if err != nil {
@@ -1100,10 +1159,14 @@ func scanNote(sc scanner) (*domain.Note, error) {
 func scanSprint(sc scanner) (*domain.Sprint, error) {
 	sp := &domain.Sprint{}
 	var createdAt, status string
+	var projectID sql.NullInt64
 	var startDate, endDate sql.NullString
 	var storyPoints sql.NullInt64
-	err := sc.Scan(&sp.ID, &sp.ProjectID, &sp.Title, &sp.Goal,
+	err := sc.Scan(&sp.ID, &projectID, &sp.Title, &sp.Goal,
 		&startDate, &endDate, &status, &createdAt, &storyPoints)
+	if projectID.Valid {
+		sp.ProjectID = projectID.Int64
+	}
 	if err != nil {
 		return nil, err
 	}
