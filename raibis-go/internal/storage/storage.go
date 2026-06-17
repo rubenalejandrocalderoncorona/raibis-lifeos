@@ -93,4 +93,11 @@ type Storage interface {
 
 	// ── Resources (lightweight, for vault link generation) ────────────────
 	ListResourcesByTask(taskID int64) ([]*domain.ResourceLink, error)
+
+	// ── Automations ───────────────────────────────────────────────────────
+	CreateAutomation(a *domain.Automation) (int64, error)
+	GetAutomation(id int64) (*domain.Automation, error)
+	ListAutomations(entityType string) ([]*domain.Automation, error)
+	UpdateAutomation(a *domain.Automation) error
+	DeleteAutomation(id int64) error
 }

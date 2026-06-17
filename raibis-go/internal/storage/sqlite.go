@@ -181,6 +181,22 @@ func applyMigrations(db *sql.DB) error {
 
 		// ── tasks: pomodoro checkbox ────────────────────────────────────────
 		`ALTER TABLE tasks ADD COLUMN pomodoro INTEGER NOT NULL DEFAULT 0`,
+
+		// ── automations ─────────────────────────────────────────────────────
+		`CREATE TABLE IF NOT EXISTS automations (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			name           TEXT    NOT NULL,
+			description    TEXT    NOT NULL DEFAULT '',
+			entity_type    TEXT    NOT NULL DEFAULT 'task',
+			enabled        INTEGER NOT NULL DEFAULT 1,
+			trigger_type   TEXT    NOT NULL,
+			trigger_config TEXT    NOT NULL DEFAULT '{}',
+			action_type    TEXT    NOT NULL,
+			action_config  TEXT    NOT NULL DEFAULT '{}',
+			created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_automations_entity ON automations(entity_type)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -1283,4 +1299,100 @@ func (s *sqliteStorage) ListResourcesByTask(taskID int64) ([]*domain.ResourceLin
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ── Automations ───────────────────────────────────────────────────────────────
+
+func (s *sqliteStorage) CreateAutomation(a *domain.Automation) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(
+		`INSERT INTO automations (name, description, entity_type, enabled, trigger_type, trigger_config, action_type, action_config)
+		 VALUES (?,?,?,?,?,?,?,?)`,
+		a.Name, a.Description, a.EntityType, boolToInt(a.Enabled),
+		a.TriggerType, a.TriggerConfig, a.ActionType, a.ActionConfig,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *sqliteStorage) GetAutomation(id int64) (*domain.Automation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	row := s.db.QueryRow(
+		`SELECT id, name, description, entity_type, enabled, trigger_type, trigger_config, action_type, action_config, created_at, updated_at
+		 FROM automations WHERE id = ?`, id)
+	return scanAutomation(row)
+}
+
+func (s *sqliteStorage) ListAutomations(entityType string) ([]*domain.Automation, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	q := `SELECT id, name, description, entity_type, enabled, trigger_type, trigger_config, action_type, action_config, created_at, updated_at
+	      FROM automations`
+	var args []any
+	if entityType != "" {
+		q += ` WHERE entity_type = ?`
+		args = append(args, entityType)
+	}
+	q += ` ORDER BY id ASC`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.Automation
+	for rows.Next() {
+		a, err := scanAutomation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStorage) UpdateAutomation(a *domain.Automation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`UPDATE automations SET name=?, description=?, entity_type=?, enabled=?, trigger_type=?, trigger_config=?, action_type=?, action_config=?, updated_at=CURRENT_TIMESTAMP
+		 WHERE id=?`,
+		a.Name, a.Description, a.EntityType, boolToInt(a.Enabled),
+		a.TriggerType, a.TriggerConfig, a.ActionType, a.ActionConfig, a.ID,
+	)
+	return err
+}
+
+func (s *sqliteStorage) DeleteAutomation(id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM automations WHERE id=?`, id)
+	return err
+}
+
+type automationScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAutomation(row automationScanner) (*domain.Automation, error) {
+	a := &domain.Automation{}
+	var enabled int
+	err := row.Scan(&a.ID, &a.Name, &a.Description, &a.EntityType, &enabled,
+		&a.TriggerType, &a.TriggerConfig, &a.ActionType, &a.ActionConfig,
+		&a.CreatedAt, &a.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	a.Enabled = enabled != 0
+	return a, nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

@@ -215,6 +215,10 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Properties (icon + custom key-value pairs per entity)
 	mux.HandleFunc("/api/properties", withCORS(propertiesHandler(store, v)))
 
+	// Automations
+	mux.HandleFunc("/api/automations", withCORS(automationsHandler(store)))
+	mux.HandleFunc("/api/automations/", withCORS(automationHandler(store)))
+
 	// Server config (vault path, db path)
 	mux.HandleFunc("/api/config", withCORS(configHandler(v, dbPath)))
 
@@ -561,6 +565,7 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 				errJSON(w, 404, "task not found")
 				return
 			}
+			prevStatus := t.Status
 			var body map[string]any
 			if err := readJSON(r, &body); err != nil {
 				errJSON(w, 400, "invalid JSON")
@@ -662,6 +667,7 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 			}
 			updated, _ := svc.Get(id)
 			updated.Tags, _ = store.GetEntityTags("task", id)
+			go runAutomations(store, svc, updated, prevStatus)
 			go func(oldPID *int64) {
 				if err := vlt.WriteEntityMD("task", updated.ID, mergeFMWithProps(taskFM(updated), store, "task", updated.ID), taskLinksBody(updated, store)+relationsLinksBody("task", updated.ID, store)); err != nil {
 					log.Printf("vault: update task %d: %v", updated.ID, err)
@@ -4163,5 +4169,245 @@ func configHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
 			"vault_path": v.Root,
 			"db_path":    dbPath,
 		})
+	}
+}
+
+// ── Automations ───────────────────────────────────────────────────────────────
+
+func automationsHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			et := r.URL.Query().Get("entity_type")
+			list, err := store.ListAutomations(et)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			if list == nil {
+				list = []*domain.Automation{}
+			}
+			writeJSON(w, 200, list)
+		case http.MethodPost:
+			var a domain.Automation
+			if err := readJSON(r, &a); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			if a.TriggerConfig == "" {
+				a.TriggerConfig = "{}"
+			}
+			if a.ActionConfig == "" {
+				a.ActionConfig = "{}"
+			}
+			id, err := store.CreateAutomation(&a)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			created, _ := store.GetAutomation(id)
+			writeJSON(w, 201, created)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func automationHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := strings.TrimPrefix(r.URL.Path, "/api/automations/")
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			errJSON(w, 400, "invalid id")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			a, err := store.GetAutomation(id)
+			if err != nil {
+				errJSON(w, 404, "automation not found")
+				return
+			}
+			writeJSON(w, 200, a)
+		case http.MethodPatch:
+			a, err := store.GetAutomation(id)
+			if err != nil {
+				errJSON(w, 404, "automation not found")
+				return
+			}
+			var body map[string]any
+			if err := readJSON(r, &body); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			if v, ok := body["name"].(string); ok {
+				a.Name = v
+			}
+			if v, ok := body["description"].(string); ok {
+				a.Description = v
+			}
+			if v, ok := body["entity_type"].(string); ok {
+				a.EntityType = v
+			}
+			if v, ok := body["enabled"].(bool); ok {
+				a.Enabled = v
+			}
+			if v, ok := body["trigger_type"].(string); ok {
+				a.TriggerType = v
+			}
+			if v, ok := body["trigger_config"].(string); ok {
+				a.TriggerConfig = v
+			}
+			if v, ok := body["action_type"].(string); ok {
+				a.ActionType = v
+			}
+			if v, ok := body["action_config"].(string); ok {
+				a.ActionConfig = v
+			}
+			if err := store.UpdateAutomation(a); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			updated, _ := store.GetAutomation(id)
+			writeJSON(w, 200, updated)
+		case http.MethodDelete:
+			if err := store.DeleteAutomation(id); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// runAutomations executes all enabled automations that match the given trigger.
+// Called after a task is updated. event is "status_changed" etc.
+// prevStatus is the status before the update.
+func runAutomations(store storage.Storage, svc service.TaskService, t *domain.Task, prevStatus domain.Status) {
+	if t.Status != domain.Status("done") || prevStatus == domain.Status("done") {
+		return
+	}
+
+	// Run DB-stored automations for entity_type=task, trigger_type=property_changed.
+	// Track whether any DB automation handled recurrence for this task specifically,
+	// so the fallback recur_interval logic knows not to double-create.
+	automations, err := store.ListAutomations("task")
+	if err != nil {
+		return
+	}
+	dbHandledRecur := false
+	for _, a := range automations {
+		if !a.Enabled {
+			continue
+		}
+		if a.TriggerType != "property_changed" {
+			continue
+		}
+		var tc map[string]any
+		if err := json.Unmarshal([]byte(a.TriggerConfig), &tc); err != nil {
+			continue
+		}
+		// Match: property == "status" and to_value == "done" and entity_id matches (or wildcard)
+		if tc["property"] != "status" || tc["to_value"] != "done" {
+			continue
+		}
+		if eid, ok := tc["entity_id"].(float64); ok && int64(eid) != t.ID {
+			continue
+		}
+		// If this automation targets this task specifically and creates a copy, mark handled
+		if eid, ok := tc["entity_id"].(float64); ok && int64(eid) == t.ID && a.ActionType == "add_item" {
+			dbHandledRecur = true
+		}
+		// Execute action
+		var ac map[string]any
+		if err := json.Unmarshal([]byte(a.ActionConfig), &ac); err != nil {
+			continue
+		}
+		switch a.ActionType {
+		case "edit_property":
+			field, _ := ac["field"].(string)
+			value, _ := ac["value"].(string)
+			if field != "" && value != "" {
+				cur, _ := store.GetTask(t.ID)
+				if cur != nil {
+					_ = field
+					_ = value
+					// For future use: apply field update to the task
+				}
+			}
+		case "add_item":
+			if ac["template"] == "copy_current" {
+				newTask := *t
+				newTask.ID = 0
+				newTask.Status = domain.Status("todo")
+				newTask.LoggedMins = 0
+				newTask.PomodorosFinished = nil
+				if fov, ok := ac["field_overrides"].(map[string]any); ok {
+					if s, ok := fov["status"].(string); ok {
+						newTask.Status = domain.Status(s)
+					}
+				}
+				if ddo, ok := ac["due_date_offset"].(map[string]any); ok {
+					iv := 1
+					unit := "days"
+					if v, ok := ddo["interval"].(float64); ok {
+						iv = int(v)
+					}
+					if v, ok := ddo["unit"].(string); ok {
+						unit = v
+					}
+					if t.DueDate != nil {
+						var next time.Time
+						switch strings.ToLower(unit) {
+						case "days":
+							next = t.DueDate.AddDate(0, 0, iv)
+						case "weeks":
+							next = t.DueDate.AddDate(0, 0, iv*7)
+						case "months":
+							next = t.DueDate.AddDate(0, iv, 0)
+						case "years":
+							next = t.DueDate.AddDate(iv, 0, 0)
+						default:
+							next = t.DueDate.AddDate(0, 0, iv)
+						}
+						newTask.DueDate = &next
+					}
+				}
+				if _, err := svc.Create(&newTask); err != nil {
+					log.Printf("automations: add_item for task %d: %v", t.ID, err)
+				}
+			}
+		}
+	}
+
+	// Fallback: if task has recur_interval set but no DB automation handled it,
+	// use the built-in recurrence logic for backward compatibility.
+	if !dbHandledRecur && t.RecurInterval != nil && *t.RecurInterval > 0 {
+		newTask := *t
+		newTask.ID = 0
+		newTask.Status = domain.Status("todo")
+		newTask.LoggedMins = 0
+		newTask.PomodorosFinished = nil
+		if t.DueDate != nil {
+			var next time.Time
+			switch strings.ToLower(t.RecurUnit) {
+			case "days":
+				next = t.DueDate.AddDate(0, 0, *t.RecurInterval)
+			case "weeks":
+				next = t.DueDate.AddDate(0, 0, *t.RecurInterval*7)
+			case "months":
+				next = t.DueDate.AddDate(0, *t.RecurInterval, 0)
+			case "years":
+				next = t.DueDate.AddDate(*t.RecurInterval, 0, 0)
+			default:
+				next = t.DueDate.AddDate(0, 0, *t.RecurInterval)
+			}
+			newTask.DueDate = &next
+		}
+		if _, err := svc.Create(&newTask); err != nil {
+			log.Printf("automations: recur fallback for task %d: %v", t.ID, err)
+		}
 	}
 }
