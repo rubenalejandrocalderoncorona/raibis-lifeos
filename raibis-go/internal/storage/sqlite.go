@@ -367,7 +367,7 @@ func (s *sqliteStorage) DeleteTask(id int64) error {
 // taskSelectCols is the shared SELECT + JOIN for GetTask and ListTasks.
 const taskSelectCols = `
 SELECT t.id, t.goal_id, t.project_id, t.sprint_id, t.parent_task_id,
-       t.title, t.description, t.status, t.priority, t.start_date, t.due_date,
+       t.title, COALESCE(t.description,''), t.status, t.priority, t.start_date, t.due_date,
        t.estimated_mins, t.logged_mins, t.created_at, t.updated_at,
        COALESCE(t.category,''), t.category_id, t.focus_block, t.focus_block_start,
        t.recur_interval, t.recur_unit, t.story_points,
@@ -448,7 +448,7 @@ func (s *sqliteStorage) DeleteGoal(id int64) error {
 }
 
 const goalSelectCols = `
-SELECT g.id, g.title, g.description, g.status, g.created_at,
+SELECT g.id, g.title, COALESCE(g.description,''), g.status, g.created_at,
        COALESCE(g.type,''), COALESCE(g.year,''),
        g.start_date, g.due_date, g.start_value, g.current_value, g.target,
        g.category_id, COALESCE(c.name,'') AS category_name
@@ -530,7 +530,7 @@ func (s *sqliteStorage) DeleteProject(id int64) error {
 }
 
 const projSelectCols = `
-SELECT p.id, p.goal_id, p.title, p.description, p.status, p.created_at,
+SELECT p.id, p.goal_id, p.title, COALESCE(p.description,''), p.status, p.created_at,
        COALESCE(g.title,'') AS goal_title,
        COALESCE(p.macro_area,''), COALESCE(p.kanban_col,''), p.archived,
        p.category_id, COALESCE(c.name,'') AS category_name,
@@ -687,7 +687,7 @@ func (s *sqliteStorage) DeleteNote(id int64) error {
 }
 
 const noteSelectCols = `
-SELECT n.id, n.title, n.file_path, n.goal_id, n.task_id, n.project_id, n.created_at, n.updated_at,
+SELECT n.id, COALESCE(n.title,''), n.file_path, n.goal_id, n.task_id, n.project_id, n.created_at, n.updated_at,
        n.category_id, COALESCE(c.name,'') AS category_name,
        n.archived, n.note_date, COALESCE(n.body,'')
 FROM notes n
