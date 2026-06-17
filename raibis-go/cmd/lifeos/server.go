@@ -184,8 +184,12 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	mux.HandleFunc("/api/quick-capture", withCORS(captureHandler(svc)))
 	mux.HandleFunc("/api/dashboard", withCORS(dashboardHandler(svc, store, dbPath)))
 
-	// Export
+	// Export — single entity by id: /api/export/{entity}/{id}; bulk: /api/export
 	mux.HandleFunc("/api/export/", withCORS(exportHandler(store, v, dbPath)))
+	mux.HandleFunc("/api/export", withCORS(bulkExportHandler(store, v, dbPath)))
+
+	// Data management — clean slate
+	mux.HandleFunc("/api/data/purge", withCORS(purgeAllHandler(store, v)))
 
 	// Search & Version
 	mux.HandleFunc("/api/search", withCORS(searchHandler(store, dbPath)))
@@ -2398,6 +2402,139 @@ func exportHandler(store storage.Storage, v *vault.Vault, dbPath string) http.Ha
 		default:
 			errJSON(w, 400, "unknown entity: "+entity)
 		}
+	}
+}
+
+// bulkExportHandler returns all (or selected) entity data as a single JSON object.
+// GET /api/export?entities=tasks,goals,projects,sprints,notes,resources
+// Omitting the query param exports everything.
+func bulkExportHandler(store storage.Storage, v *vault.Vault, dbPath string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		want := map[string]bool{}
+		if sel := r.URL.Query().Get("entities"); sel != "" {
+			for _, e := range strings.Split(sel, ",") {
+				want[strings.TrimSpace(e)] = true
+			}
+		}
+		all := len(want) == 0
+		out := map[string]any{}
+
+		if all || want["tasks"] {
+			items, _ := store.ListTasks(domain.TaskFilter{})
+			for _, t := range items {
+				t.Tags, _ = store.GetEntityTags("task", t.ID)
+			}
+			out["tasks"] = items
+		}
+		if all || want["goals"] {
+			items, _ := store.ListGoals("")
+			for _, g := range items {
+				g.Tags, _ = store.GetEntityTags("goal", g.ID)
+			}
+			out["goals"] = items
+		}
+		if all || want["projects"] {
+			items, _ := store.ListProjects("")
+			for _, p := range items {
+				p.Tags, _ = store.GetEntityTags("project", p.ID)
+			}
+			out["projects"] = items
+		}
+		if all || want["sprints"] {
+			// ListSprints requires a projectID; fetch all via raw query
+			var sprints []map[string]any
+			if db, err := openRawDB(dbPath); err == nil {
+				defer db.Close()
+				srows, err := db.Query(`SELECT id, project_id, title, COALESCE(goal,''), COALESCE(start_date,''), COALESCE(end_date,''), status, created_at FROM sprints ORDER BY created_at DESC`)
+				if err == nil {
+					defer srows.Close()
+					for srows.Next() {
+						var id, projID int64
+						var title, goal, start, end, status, createdAt string
+						if srows.Scan(&id, &projID, &title, &goal, &start, &end, &status, &createdAt) == nil {
+							sprints = append(sprints, map[string]any{"id": id, "project_id": projID, "title": title, "goal": goal, "start_date": start, "end_date": end, "status": status, "created_at": createdAt})
+						}
+					}
+				}
+			}
+			if sprints == nil {
+				sprints = []map[string]any{}
+			}
+			out["sprints"] = sprints
+		}
+		if all || want["notes"] {
+			items, _ := store.ListNotes(nil, nil, nil)
+			for _, n := range items {
+				n.Tags, _ = store.GetEntityTags("note", n.ID)
+				if n.FilePath != nil {
+					n.Body, _ = v.ReadFile(*n.FilePath)
+				}
+			}
+			out["notes"] = items
+		}
+		if all || want["resources"] {
+			if db, err := openRawDB(dbPath); err == nil {
+				defer db.Close()
+				rows, err := db.Query(`
+					SELECT r.id, r.title, COALESCE(r.url,''), COALESCE(r.file_path,''),
+					       r.resource_type, COALESCE(r.body,''),
+					       COALESCE(t.title,''), COALESCE(p.title,''), COALESCE(g.title,''),
+					       r.created_at
+					FROM resources r
+					LEFT JOIN tasks    t ON r.task_id    = t.id
+					LEFT JOIN projects p ON r.project_id = p.id
+					LEFT JOIN goals    g ON r.goal_id    = g.id
+					ORDER BY r.created_at DESC`)
+				if err == nil {
+					defer rows.Close()
+					var resList []map[string]any
+					for rows.Next() {
+						var id int64
+						var title, url, filePath, rtype, body, taskTitle, projTitle, goalTitle, createdAt string
+						if rows.Scan(&id, &title, &url, &filePath, &rtype, &body, &taskTitle, &projTitle, &goalTitle, &createdAt) == nil {
+							resList = append(resList, map[string]any{
+								"id": id, "title": title, "url": url, "file_path": filePath,
+								"resource_type": rtype, "body": body,
+								"task_title": taskTitle, "project_title": projTitle, "goal_title": goalTitle,
+								"created_at": createdAt,
+							})
+						}
+					}
+					out["resources"] = resList
+				}
+			}
+		}
+		if all || want["automations"] {
+			items, _ := store.ListAutomations("")
+			out["automations"] = items
+		}
+		writeJSON(w, 200, out)
+	}
+}
+
+// purgeAllHandler deletes all user data from the DB and the vault's raibis/ directory.
+// DELETE /api/data/purge
+func purgeAllHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if err := store.PurgeAll(); err != nil {
+			errJSON(w, 500, "purge failed: "+err.Error())
+			return
+		}
+		// Remove all vault entity files
+		raibisDir := filepath.Join(v.Root, "raibis")
+		_ = os.RemoveAll(raibisDir)
+		// Remove notes and resources markdown files
+		_ = os.RemoveAll(filepath.Join(v.Root, "notes"))
+		_ = os.RemoveAll(filepath.Join(v.Root, "resources"))
+		writeJSON(w, 200, map[string]bool{"ok": true})
 	}
 }
 

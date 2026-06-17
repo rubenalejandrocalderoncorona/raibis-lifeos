@@ -1407,3 +1407,22 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
+
+func (s *sqliteStorage) PurgeAll() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Delete in dependency order (children before parents) to avoid FK issues.
+	tables := []string{
+		"entity_tags", "entity_properties", "entity_children", "entity_relations",
+		"comments", "automations", "pomodoro_sessions",
+		"habits", "notes", "resources",
+		"tasks", "sprints", "projects", "goals",
+		"tags", "categories",
+	}
+	for _, t := range tables {
+		if _, err := s.db.Exec("DELETE FROM " + t); err != nil { //nolint:gosec — table name is a hardcoded string literal
+			return fmt.Errorf("purge %s: %w", t, err)
+		}
+	}
+	return nil
+}

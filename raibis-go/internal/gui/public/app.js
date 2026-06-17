@@ -2685,6 +2685,7 @@ function closeModal() {
 function openSlideover(title, bodyHTML) {
   document.getElementById('slideover-title').textContent = title;
   document.getElementById('slideover-body').innerHTML = bodyHTML;
+  setSlideoverExport(null, null); // reset export button
   const panel = document.getElementById('slideover');
   panel.classList.add('open');
   document.getElementById('modal-backdrop').classList.add('open');
@@ -2696,6 +2697,38 @@ function openSlideover(title, bodyHTML) {
       closeFormSlideover();
     }
   };
+}
+
+function setSlideoverExport(entity, id) {
+  const btn = document.getElementById('slideover-export');
+  if (!btn) return;
+  if (!entity || !id) { btn.style.display = 'none'; return; }
+  btn.style.display = '';
+  btn.onclick = () => downloadEntityJson(entity, id);
+}
+
+function downloadEntityJson(entity, id, filename) {
+  api('GET', `/api/export/${entity}/${id}`).then(data => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || `${entity}-${id}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }).catch(() => showToast('Export failed', 'error'));
+}
+
+function downloadJson(data, filename) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 function closeSlideover() {
@@ -7658,6 +7691,7 @@ async function showTaskSlideover(taskId) {
   `;
 
   openSlideover(task.title, body);
+  setSlideoverExport('task', task.id);
 
   // Render interactive subtask table now that DOM is present
   renderSubtaskTable();
@@ -9906,6 +9940,7 @@ async function showProjectSlideover(project, goals, afterSave) {
   `;
 
   openSlideover(p.title, body);
+  setSlideoverExport('project', p.id);
 
   // Icon
   const projIconAddBtn = document.getElementById('proj-icon-add-btn');
@@ -10103,6 +10138,7 @@ async function showGoalSlideover(goal, afterSave) {
   `;
 
   openSlideover(g.title, body);
+  setSlideoverExport('goal', g.id);
 
   // Icon
   const goalIconAddBtn = document.getElementById('goal-icon-add-btn');
@@ -10458,6 +10494,7 @@ async function showNoteSlideover(noteId, afterSave) {
   `;
 
   openSlideover(n.title || 'Note', body);
+  setSlideoverExport('note', n.id);
 
   // Icon
   const noteIconAddBtn = document.getElementById('note-icon-add-btn');
@@ -10648,6 +10685,7 @@ async function showSprintSlideover(sprintId, afterSave) {
   `;
 
   openSlideover(s.title, body);
+  setSlideoverExport('sprint', s.id);
 
   // Icon
   const sprintIconAddBtn = document.getElementById('sprint-icon-add-btn');
@@ -10907,6 +10945,7 @@ async function showResourceSlideover(resource, afterSave) {
   `;
 
   openSlideover(r.title || 'Resource', body);
+  setSlideoverExport('resource', r.id);
 
   // Title
   const titleTA = document.getElementById('detail-title');
@@ -11919,72 +11958,194 @@ async function openRaibisSettings(defaultTab = 'apps') {
 
   async function renderDataTab(body) {
     const ENTITY_TYPES = [
-      { key: 'tasks',      label: 'Tasks',      api: 'tasks',      titleKey: 'title',  createFn: () => { overlay.remove(); showNewTaskModal({}, renderCurrentView); } },
-      { key: 'goals',      label: 'Goals',      api: 'goals',      titleKey: 'title',  createFn: () => { overlay.remove(); showGoalModal(null, renderCurrentView); } },
-      { key: 'projects',   label: 'Projects',   api: 'projects',   titleKey: 'title',  createFn: () => { overlay.remove(); showProjectModal(null, [], renderCurrentView); } },
-      { key: 'notes',      label: 'Notes',      api: 'notes',      titleKey: 'title',  createFn: () => { overlay.remove(); showNoteModal(null, renderCurrentView); } },
-      { key: 'resources',  label: 'Resources',  api: 'resources',  titleKey: 'title',  createFn: () => { overlay.remove(); showResourceModal({}, renderCurrentView); } },
-      { key: 'sprints',    label: 'Sprints',    api: 'sprints',    titleKey: 'title',  createFn: null },
-      { key: 'habits',     label: 'Habits',     api: 'habits',     titleKey: 'name',   createFn: () => { overlay.remove(); showHabitModal(null); } },
+      { key: 'tasks',      label: 'Tasks',      api: 'tasks',      titleKey: 'title', exportKey: 'tasks',
+        createFn: () => { overlay.remove(); showNewTaskModal({}, renderCurrentView); } },
+      { key: 'goals',      label: 'Goals',      api: 'goals',      titleKey: 'title', exportKey: 'goals',
+        createFn: () => { overlay.remove(); showGoalModal(null, renderCurrentView); } },
+      { key: 'projects',   label: 'Projects',   api: 'projects',   titleKey: 'title', exportKey: 'projects',
+        createFn: () => { overlay.remove(); showProjectModal(null, [], renderCurrentView); } },
+      { key: 'notes',      label: 'Notes',      api: 'notes',      titleKey: 'title', exportKey: 'notes',
+        createFn: () => { overlay.remove(); showNoteModal(null, renderCurrentView); } },
+      { key: 'resources',  label: 'Resources',  api: 'resources',  titleKey: 'title', exportKey: 'resources',
+        createFn: () => { overlay.remove(); showResourceModal({}, renderCurrentView); } },
+      { key: 'sprints',    label: 'Sprints',    api: 'sprints',    titleKey: 'title', exportKey: 'sprints',
+        createFn: () => showSprintCreateModal(loadEntities.bind(null, ENTITY_TYPES.find(t => t.key === 'sprints'))) },
+      { key: 'habits',     label: 'Habits',     api: 'habits',     titleKey: 'name',  exportKey: 'habits',
+        createFn: () => { overlay.remove(); showHabitModal(null); } },
     ];
 
     let activeType = ENTITY_TYPES[0];
 
     async function loadEntities(type) {
       activeType = type;
+      const singularLabel = type.label.replace(/s$/, '');
       body.innerHTML = `
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
           ${ENTITY_TYPES.map(t => `<button class="btn btn-sm ${t.key===type.key?'btn-primary':'btn-ghost'}" data-dtype="${t.key}">${t.label}</button>`).join('')}
         </div>
-        <div id="_data-content" style="color:var(--text-muted);font-size:13px;padding:16px 0">Loading…</div>`;
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span id="_data-count" style="font-size:12px;color:var(--text-muted)"></span>
+          <button class="btn btn-primary btn-sm" id="_data-create">+ New ${singularLabel}</button>
+        </div>
+        <div id="_data-content" style="color:var(--text-muted);font-size:13px;padding:8px 0">Loading…</div>`;
 
       body.querySelectorAll('[data-dtype]').forEach(btn => {
         btn.onclick = () => loadEntities(ENTITY_TYPES.find(t => t.key === btn.dataset.dtype));
       });
+      const createBtn = body.querySelector('#_data-create');
+      if (createBtn) createBtn.onclick = type.createFn || (() => showToast('No create action for ' + type.label, 'info'));
 
       const content = body.querySelector('#_data-content');
+      const countEl  = body.querySelector('#_data-count');
       try {
         let items = await api('GET', `/api/${type.api}`);
         if (!Array.isArray(items)) items = items[type.key] || [];
+        countEl.textContent = `${items.length} ${type.label.toLowerCase()}`;
         if (!items.length) {
-          content.innerHTML = `
-            <div style="text-align:center;padding:24px 0">
-              <div style="color:var(--text-muted);margin-bottom:12px">No ${type.label.toLowerCase()} yet.</div>
-              ${type.createFn ? `<button class="btn btn-primary btn-sm" id="_data-create">+ New ${type.label.replace(/s$/,'')}</button>` : ''}
-            </div>`;
+          content.innerHTML = `<div style="text-align:center;padding:24px 0;color:var(--text-muted)">No ${type.label.toLowerCase()} yet.</div>`;
         } else {
           content.innerHTML = `
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-              <span style="font-size:12px;color:var(--text-muted)">${items.length} ${type.label.toLowerCase()}</span>
-              ${type.createFn ? `<button class="btn btn-primary btn-sm" id="_data-create">+ New ${type.label.replace(/s$/,'')}</button>` : ''}
-            </div>
             <div style="display:flex;flex-direction:column;gap:4px">
               ${items.map(item => `
-                <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--color-border);border-radius:var(--radius-md);background:var(--color-surface)">
-                  <span style="flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item[type.titleKey] || '(untitled)'}</span>
+                <div class="_data-row" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--color-border);border-radius:var(--radius-md);background:var(--color-surface)">
+                  <span style="flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(item[type.titleKey] || '(untitled)')}</span>
+                  <button class="btn btn-sm btn-ghost _data-export-item" data-id="${item.id}" title="Export as JSON" style="flex-shrink:0">⬇</button>
                   <button class="btn btn-sm btn-ghost _data-del" data-id="${item.id}" style="color:var(--color-danger);flex-shrink:0">Delete</button>
                 </div>`).join('')}
             </div>`;
+          content.querySelectorAll('._data-export-item').forEach(btn => {
+            btn.onclick = () => downloadEntityJson(type.exportKey.replace(/s$/, ''), btn.dataset.id,
+              `${type.exportKey.replace(/s$/, '')}-${btn.dataset.id}.json`);
+          });
         }
         content.querySelectorAll('._data-del').forEach(btn => {
           btn.onclick = () => {
-            const id = btn.dataset.id;
-            const name = btn.closest('div[style]').querySelector('span').textContent;
+            const name = btn.closest('._data-row').querySelector('span').textContent;
             showConfirmModal(`Delete "${name}"?`, async () => {
-              await api('DELETE', `/api/${type.api}/${id}`);
+              await api('DELETE', `/api/${type.api}/${btn.dataset.id}`);
               renderCurrentView();
               loadEntities(type);
             });
           };
         });
-        const createBtn = content.querySelector('#_data-create');
-        if (createBtn && type.createFn) createBtn.onclick = type.createFn;
       } catch(e) {
         content.innerHTML = `<div style="color:var(--color-danger);font-size:13px">Failed to load ${type.label.toLowerCase()}.</div>`;
       }
     }
 
     await loadEntities(activeType);
+
+    // ── Export section ────────────────────────────────────────────────────
+    const exportSection = document.createElement('div');
+    exportSection.className = 'settings-export-section';
+    exportSection.innerHTML = `
+      <h4>Export as JSON</h4>
+      <div class="settings-export-checks">
+        ${ENTITY_TYPES.map(t => `
+          <label class="settings-export-check">
+            <input type="checkbox" value="${t.exportKey}" checked> ${t.label}
+          </label>`).join('')}
+      </div>
+      <button class="btn btn-sm" id="_export-all-btn">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Export selected
+      </button>`;
+    body.appendChild(exportSection);
+    body.querySelector('#_export-all-btn').onclick = async () => {
+      const checked = [...body.querySelectorAll('.settings-export-checks input:checked')].map(el => el.value);
+      if (!checked.length) { showToast('Select at least one entity type', 'info'); return; }
+      try {
+        const data = await api('GET', `/api/export?entities=${checked.join(',')}`);
+        downloadJson(data, `raibis-export-${new Date().toISOString().slice(0,10)}.json`);
+      } catch { showToast('Export failed', 'error'); }
+    };
+
+    // ── Danger zone ───────────────────────────────────────────────────────
+    const dangerZone = document.createElement('div');
+    dangerZone.className = 'settings-danger-zone';
+    dangerZone.innerHTML = `
+      <h4>Danger Zone</h4>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div style="font-size:12px;color:var(--color-text-secondary)">
+          Delete <strong>all data</strong> — tasks, goals, projects, notes, resources, automations — and all Obsidian vault files. This cannot be undone.
+        </div>
+        <button class="btn btn-sm" id="_clean-slate-btn" style="background:var(--color-danger,#ef4444);color:#fff;border-color:var(--color-danger,#ef4444);flex-shrink:0">
+          Clean slate
+        </button>
+      </div>`;
+    body.appendChild(dangerZone);
+    body.querySelector('#_clean-slate-btn').onclick = () => {
+      showConfirmModal('Delete ALL data and vault files? This cannot be undone.', async () => {
+        showConfirmModal('Are you absolutely sure? Type-to-confirm not required, but this is irreversible.', async () => {
+          try {
+            await api('DELETE', '/api/data/purge');
+            // Clear localStorage entity caches
+            Object.keys(localStorage).filter(k =>
+              k.startsWith('savedViews_') || k.startsWith('entityViews_') ||
+              k.startsWith('customPropDefs_') || k.startsWith('customPropVals_')
+            ).forEach(k => localStorage.removeItem(k));
+            showToast('All data deleted', 'success');
+            renderCurrentView();
+            loadEntities(activeType);
+          } catch { showToast('Purge failed', 'error'); }
+        });
+      });
+    };
+  }
+
+  function showSprintCreateModal(onCreated) {
+    const modalEl = document.createElement('div');
+    modalEl.className = 'settings-overlay';
+    modalEl.innerHTML = `
+      <div class="settings-modal" style="max-width:420px;width:92vw">
+        <div class="settings-content">
+          <div class="settings-content-header">
+            <span class="settings-content-title">New Sprint</span>
+            <button class="settings-close-btn" id="_sc-close">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div class="settings-body" style="padding:16px 20px;display:flex;flex-direction:column;gap:12px">
+            <div class="auto-form-group">
+              <label class="auto-form-label">Sprint Name</label>
+              <input class="auto-form-input" id="_sc-title" placeholder="Sprint 1…">
+            </div>
+            <div class="auto-form-group">
+              <label class="auto-form-label">Project</label>
+              <select class="auto-form-select" id="_sc-project" style="width:100%">
+                <option value="">Loading projects…</option>
+              </select>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:4px">
+              <button class="btn btn-primary btn-sm" id="_sc-save">Create Sprint</button>
+              <button class="btn btn-sm btn-ghost" id="_sc-cancel">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modalEl);
+    const close = () => modalEl.remove();
+    modalEl.querySelector('#_sc-close').onclick = close;
+    modalEl.querySelector('#_sc-cancel').onclick = close;
+    modalEl.addEventListener('click', e => { if (e.target === modalEl) close(); });
+    // Load projects
+    api('GET', '/api/projects').then(projects => {
+      const sel = modalEl.querySelector('#_sc-project');
+      sel.innerHTML = `<option value="">— select project —</option>` +
+        (projects || []).map(p => `<option value="${p.id}">${escHtml(p.title)}</option>`).join('');
+    }).catch(() => {});
+    modalEl.querySelector('#_sc-save').onclick = async () => {
+      const title = modalEl.querySelector('#_sc-title').value.trim();
+      const projectId = parseInt(modalEl.querySelector('#_sc-project').value);
+      if (!title) { showToast('Sprint name is required', 'error'); return; }
+      if (!projectId) { showToast('Select a project', 'error'); return; }
+      try {
+        await api('POST', '/api/sprints', { title, project_id: projectId });
+        showToast('Sprint created', 'success');
+        close();
+        onCreated?.();
+      } catch { showToast('Failed to create sprint', 'error'); }
+    };
   }
 
   async function renderVaultTab(body) {

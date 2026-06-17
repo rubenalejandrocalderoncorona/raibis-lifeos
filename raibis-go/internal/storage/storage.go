@@ -100,4 +100,8 @@ type Storage interface {
 	ListAutomations(entityType string) ([]*domain.Automation, error)
 	UpdateAutomation(a *domain.Automation) error
 	DeleteAutomation(id int64) error
+
+	// ── Data management ───────────────────────────────────────────────────
+	// PurgeAll deletes all user data from every entity table.
+	PurgeAll() error
 }

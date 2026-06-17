@@ -1367,8 +1367,73 @@ body.kanban-dragging-active * {
   padding: var(--space-4) var(--space-5);
   pointer-events: none; /* let clicks pass through except the close button */
 }
-.slideover-header .modal-close {
+.slideover-header .modal-close { pointer-events: all; }
+.slideover-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   pointer-events: all;
+}
+.slideover-export-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-secondary, var(--text-muted));
+  background: var(--color-surface, var(--bg-card));
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 5px);
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.slideover-export-btn:hover { border-color: var(--color-border-strong, #888); color: var(--color-text); }
+
+/* Settings danger zone + export section */
+.settings-danger-zone {
+  margin-top: 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-danger, #ef4444);
+  border-radius: var(--radius-md);
+  background: rgba(239,68,68,.04);
+}
+.settings-danger-zone h4 {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-danger, #ef4444);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: 8px;
+}
+.settings-export-section {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface, var(--bg-card));
+}
+.settings-export-section h4 {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-text-secondary, var(--text-muted));
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: 10px;
+}
+.settings-export-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.settings-export-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
 }
 .slideover-title {
   display: none;
