@@ -1289,6 +1289,17 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 					return
 				}
 			}
+			if v, ok := body["story_points"]; ok {
+				var pts *int
+				if v != nil {
+					p := int(v.(float64))
+					pts = &p
+				}
+				if err := store.UpdateSprintStoryPoints(id, pts); err != nil {
+					errJSON(w, 500, err.Error())
+					return
+				}
+			}
 			if sp, err := store.GetSprint(id); err == nil {
 				go func() {
 					if err := vlt.WriteEntityMD("sprint", sp.ID, mergeFMWithProps(sprintFM(sp), store, "sprint", sp.ID), sprintLinksBody(sp, store)); err != nil {

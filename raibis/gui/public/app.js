@@ -1011,38 +1011,56 @@ function openPropEditModal(entity, key, onSave) {
   const overrides = getPropOverrides(entity);
   const ov = overrides[key] || {};
   const currentLabel = ov.label || def.label;
-  const currentIcon = ov.icon || def.icon || '';
+  let selectedIcon = ov.icon || def.icon || '';
 
   const body = `
-    <div style="display:flex;flex-direction:column;gap:12px;padding:4px 0">
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Icon (emoji)</label>
-        <input type="text" id="pep-icon" value="${escHtml(currentIcon)}" placeholder="e.g. 📋" maxlength="4"
-          style="width:60px;font-size:18px;text-align:center;box-sizing:border-box" />
+    <div style="display:flex;flex-direction:column;gap:14px;padding:4px 0">
+      <div style="display:flex;align-items:center;gap:12px">
+        <div>
+          <label class="form-label" style="display:block;margin-bottom:4px">Icon</label>
+          <button id="pep-icon-btn" class="btn btn-sm" style="width:48px;height:48px;font-size:22px;border:2px solid var(--border);border-radius:var(--radius-md);background:var(--bg-card)">
+            ${selectedIcon ? renderEntityIcon(selectedIcon, 22) : '<span style="font-size:20px;color:var(--text-dim)">+</span>'}
+          </button>
+        </div>
+        <div style="flex:1">
+          <label class="form-label">Name</label>
+          <input type="text" id="pep-label" value="${escHtml(currentLabel)}" style="width:100%;box-sizing:border-box" />
+        </div>
       </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Name</label>
-        <input type="text" id="pep-label" value="${escHtml(currentLabel)}" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-        <button class="btn btn-primary" id="modal-save-btn">Save</button>
+      <div class="form-actions" style="margin:0">
+        <button class="btn btn-ghost" id="pep-cancel">Cancel</button>
+        <button class="btn btn-primary" id="pep-save">Save</button>
       </div>
     </div>`;
 
   openModal(`Edit: ${def.label}`, body, null);
-  document.getElementById('modal-cancel-btn').onclick = closeModal;
-  document.getElementById('modal-save-btn').onclick = () => {
+
+  // Wire icon picker button
+  document.getElementById('pep-icon-btn').onclick = (e) => {
+    e.stopPropagation();
+    showIconPicker(document.getElementById('pep-icon-btn'), entity, null, selectedIcon, (icon) => {
+      selectedIcon = icon;
+      const btn = document.getElementById('pep-icon-btn');
+      if (btn) btn.innerHTML = icon ? renderEntityIcon(icon, 22) : '<span style="font-size:20px;color:var(--text-dim)">+</span>';
+    });
+  };
+
+  document.getElementById('pep-cancel').onclick = closeModal;
+  document.getElementById('pep-save').onclick = () => {
     const newLabel = document.getElementById('pep-label').value.trim();
-    const newIcon = document.getElementById('pep-icon').value.trim();
     if (!newLabel) { showToast('Name is required', 'error'); return; }
     const ovs = getPropOverrides(entity);
-    ovs[key] = { label: newLabel, icon: newIcon };
+    ovs[key] = { label: newLabel, icon: selectedIcon };
+    if (!selectedIcon) delete ovs[key].icon;
+    if (ovs[key] && !ovs[key].label && !ovs[key].icon) delete ovs[key];
     setPropOverrides(entity, ovs);
-    // Also update def.label so it's consistent when there's no override
     const defs2 = getCustomPropDefs(entity);
     const idx = defs2.findIndex(d => d.key === key);
-    if (idx !== -1) { defs2[idx].label = newLabel; if (newIcon) defs2[idx].icon = newIcon; setCustomPropDefs(entity, defs2); }
+    if (idx !== -1) {
+      defs2[idx].label = newLabel;
+      if (selectedIcon) defs2[idx].icon = selectedIcon; else delete defs2[idx].icon;
+      setCustomPropDefs(entity, defs2);
+    }
     closeModal();
     document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
     if (onSave) onSave();
@@ -1062,73 +1080,86 @@ function openAllPropsEditorModal(entity) {
   const customDefs = getCustomPropDefs(entity);
   const overrides = getPropOverrides(entity);
 
-  const renderRows = () => {
-    const builtinRows = builtinKeys.map(k => {
-      const ov = overrides[k] || {};
-      return `<tr>
-        <td style="width:36px;text-align:center">
-          <input class="pae-icon" data-key="${k}" type="text" value="${escHtml(ov.icon || '')}" placeholder="—" maxlength="4"
-            style="width:28px;font-size:15px;text-align:center;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text);padding:2px" />
-        </td>
-        <td style="padding:0 6px">
-          <input class="pae-label" data-key="${k}" type="text" value="${escHtml(ov.label || k)}"
-            style="width:100%;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text);padding:3px 6px;font-size:13px" />
-        </td>
-        <td style="width:60px;text-align:right;font-size:10px;color:var(--text-dim)">built-in</td>
-      </tr>`;
-    }).join('');
+  // Mutable icon state (key → selected icon string)
+  const iconState = {};
+  builtinKeys.forEach(k => { iconState[k] = (overrides[k] || {}).icon || ''; });
+  customDefs.forEach(d => { iconState[d.key] = (overrides[d.key] || {}).icon || d.icon || ''; });
 
-    const customRows = customDefs.map(d => {
-      const ov = overrides[d.key] || {};
-      return `<tr>
-        <td style="width:36px;text-align:center">
-          <input class="pae-icon" data-key="${d.key}" type="text" value="${escHtml(ov.icon || d.icon || '')}" placeholder="—" maxlength="4"
-            style="width:28px;font-size:15px;text-align:center;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text);padding:2px" />
-        </td>
-        <td style="padding:0 6px">
-          <input class="pae-label" data-key="${d.key}" type="text" value="${escHtml(ov.label || d.label)}"
-            style="width:100%;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text);padding:3px 6px;font-size:13px" />
-        </td>
-        <td style="width:60px;text-align:right;font-size:10px;color:var(--text-dim)">${d.type}</td>
-      </tr>`;
-    }).join('');
+  const iconBtnHtml = (k, icon) =>
+    `<button class="pae-icon-btn btn btn-sm" data-key="${k}" title="Pick icon"
+      style="width:32px;height:32px;font-size:17px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);padding:0">
+      ${icon ? renderEntityIcon(icon, 18) : '<span style="font-size:13px;color:var(--text-dim)">+</span>'}
+    </button>`;
 
-    return `
-      <div style="display:flex;flex-direction:column;gap:0;padding:4px 0">
-        ${builtinKeys.length ? `<div style="font-size:11px;color:var(--text-dim);font-weight:600;text-transform:uppercase;padding:4px 0 2px">Built-in</div>` : ''}
-        ${builtinRows ? `<table style="width:100%;border-collapse:collapse">${builtinRows}</table>` : ''}
-        ${customDefs.length ? `<div style="font-size:11px;color:var(--text-dim);font-weight:600;text-transform:uppercase;padding:8px 0 2px">Custom</div>` : ''}
-        ${customRows ? `<table style="width:100%;border-collapse:collapse">${customRows}</table>` : ''}
-        ${!builtinKeys.length && !customDefs.length ? '<div style="color:var(--text-dim);font-size:13px;padding:8px 0">No properties</div>' : ''}
-        <div class="form-actions" style="margin-top:12px">
-          <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-          <button class="btn btn-primary" id="modal-save-btn">Save all</button>
-        </div>
-      </div>`;
-  };
+  const builtinRows = builtinKeys.map(k => {
+    const ov = overrides[k] || {};
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="width:40px;padding:4px 6px 4px 0">${iconBtnHtml(k, iconState[k])}</td>
+      <td style="padding:4px 6px">
+        <input class="pae-label" data-key="${k}" type="text" value="${escHtml(ov.label || k)}"
+          style="width:100%;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text);padding:3px 6px;font-size:13px" />
+      </td>
+      <td style="width:60px;text-align:right;font-size:10px;color:var(--text-dim);padding:4px 0 4px 6px">built-in</td>
+    </tr>`;
+  }).join('');
 
-  openModal(`Edit Properties · ${entity.charAt(0).toUpperCase()+entity.slice(1)}`, renderRows(), null);
+  const customRows = customDefs.map(d => {
+    const ov = overrides[d.key] || {};
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="width:40px;padding:4px 6px 4px 0">${iconBtnHtml(d.key, iconState[d.key])}</td>
+      <td style="padding:4px 6px">
+        <input class="pae-label" data-key="${d.key}" type="text" value="${escHtml(ov.label || d.label)}"
+          style="width:100%;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text);padding:3px 6px;font-size:13px" />
+      </td>
+      <td style="width:60px;text-align:right;font-size:10px;color:var(--text-dim);padding:4px 0 4px 6px">${d.type}</td>
+    </tr>`;
+  }).join('');
 
-  document.getElementById('modal-cancel-btn').onclick = closeModal;
-  document.getElementById('modal-save-btn').onclick = () => {
+  const body = `
+    <div style="display:flex;flex-direction:column;gap:0;padding:4px 0">
+      ${builtinKeys.length ? `<div style="font-size:11px;color:var(--text-dim);font-weight:600;text-transform:uppercase;padding:4px 0 6px">Built-in</div>` : ''}
+      ${builtinRows ? `<table style="width:100%;border-collapse:collapse">${builtinRows}</table>` : ''}
+      ${customDefs.length ? `<div style="font-size:11px;color:var(--text-dim);font-weight:600;text-transform:uppercase;padding:12px 0 6px">Custom</div>` : ''}
+      ${customRows ? `<table style="width:100%;border-collapse:collapse">${customRows}</table>` : ''}
+      ${!builtinKeys.length && !customDefs.length ? '<div style="color:var(--text-dim);font-size:13px;padding:8px 0">No properties</div>' : ''}
+      <div class="form-actions" style="margin-top:12px">
+        <button class="btn btn-ghost" id="pae-cancel">Cancel</button>
+        <button class="btn btn-primary" id="pae-save">Save all</button>
+      </div>
+    </div>`;
+
+  openModal(`Edit Properties · ${entity.charAt(0).toUpperCase()+entity.slice(1)}`, body, null);
+
+  // Wire icon picker buttons
+  document.querySelectorAll('#modal-body .pae-icon-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const k = btn.dataset.key;
+      showIconPicker(btn, entity, null, iconState[k], (icon) => {
+        iconState[k] = icon;
+        btn.innerHTML = icon ? renderEntityIcon(icon, 18) : '<span style="font-size:13px;color:var(--text-dim)">+</span>';
+      });
+    });
+  });
+
+  document.getElementById('pae-cancel').onclick = closeModal;
+  document.getElementById('pae-save').onclick = () => {
     const newOvs = { ...overrides };
     document.querySelectorAll('#modal-body .pae-label').forEach(inp => {
       const k = inp.dataset.key;
       const newLabel = inp.value.trim();
-      const iconInp = document.querySelector(`#modal-body .pae-icon[data-key="${k}"]`);
-      const newIcon = iconInp ? iconInp.value.trim() : '';
+      const newIcon = iconState[k] || '';
       if (!newOvs[k]) newOvs[k] = {};
       if (newLabel) newOvs[k].label = newLabel; else delete newOvs[k].label;
       if (newIcon) newOvs[k].icon = newIcon; else delete newOvs[k].icon;
       if (!newOvs[k].label && !newOvs[k].icon) delete newOvs[k];
     });
     setPropOverrides(entity, newOvs);
-    // Also update custom def labels
     const defs2 = getCustomPropDefs(entity);
     defs2.forEach(d => {
-      const ov = newOvs[d.key] || {};
-      if (ov.label) d.label = ov.label;
-      if (ov.icon) d.icon = ov.icon; else delete d.icon;
+      const ov2 = newOvs[d.key] || {};
+      if (ov2.label) d.label = ov2.label;
+      if (ov2.icon) d.icon = ov2.icon; else delete d.icon;
     });
     setCustomPropDefs(entity, defs2);
     closeModal();
@@ -1596,7 +1627,10 @@ function showAddRelationPanel(anchorBtn, key, name, entity, onAdd) {
   const panel = document.createElement('div');
   panel.id = 'add-prop-rel-picker';
   panel.className = 'prop-vis-panel';
-  const entities = ['task','goal','project','sprint','note','resource'];
+  const builtinEntities = ['task','goal','project','sprint','note','resource'];
+  const customEntities = customEntityTypes.map(t => ({ name: t.name, label: t.display_name || t.name }));
+  const entities = [...builtinEntities, ...customEntities.map(t => t.name)];
+  const entityLabel = (ent) => { const ct = customEntityTypes.find(t => t.name === ent); return ct ? (ct.display_name || ct.name) : ent; };
   let relatedEntity = entities[0];
   let bilateral = false;
 
@@ -1606,7 +1640,7 @@ function showAddRelationPanel(anchorBtn, key, name, entity, onAdd) {
       <div style="padding:4px 10px 6px;font-size:12px;color:var(--text-muted)">Links to which entity?</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:0 8px 8px">
         ${entities.map(ent => `<div class="prop-type-row rel-ent-pick${relatedEntity===ent?' rel-ent-active':''}" data-ent="${ent}" style="${relatedEntity===ent?'background:var(--accent);color:#fff;':''}">
-          <span style="text-transform:capitalize;font-size:13px">${ent}</span>
+          <span style="text-transform:capitalize;font-size:13px">${entityLabel(ent)}</span>
         </div>`).join('')}
       </div>
       <div style="padding:0 8px 8px;display:flex;align-items:center;gap:8px">
@@ -1906,6 +1940,12 @@ function bindCustomPropCells() {
                 return { id: String(id), label: it ? (it.title || it.name || String(id)) : String(id) };
               });
               setCustomPropValue(entity, recordId, propKey, JSON.stringify(newItems));
+              // Sprint FK auto-assignment
+              if (relEntity === 'sprint' && (entity === 'task' || entity === 'goal' || entity === 'project')) {
+                const spId = multiIds.length > 0 ? parseInt(multiIds[0]) : null;
+                const patchPath = entity === 'task' ? `/api/tasks/${recordId}` : `/api/${entity}s/${recordId}`;
+                api('PATCH', patchPath, { sprint_id: spId }).catch(() => {});
+              }
               if (def.bilateral) {
                 const revKey = `${entity}_${propKey}`;
                 let sourceTitle = String(recordId);
@@ -2177,6 +2217,12 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
                 return { id: String(id), label: it ? (it.title || it.name || String(id)) : String(id) };
               });
               setCustomPropValue(entity, recordId, key, JSON.stringify(newItems));
+              // Sprint FK auto-assignment: if relation targets sprint, set sprint_id on the entity
+              if (relEntity === 'sprint' && (entity === 'task' || entity === 'goal' || entity === 'project')) {
+                const spId = multiIds.length > 0 ? parseInt(multiIds[0]) : null;
+                const patchPath = entity === 'task' ? `/api/tasks/${recordId}` : `/api/${entity}s/${recordId}`;
+                api('PATCH', patchPath, { sprint_id: spId }).catch(() => {});
+              }
               // Bilateral sync
               if (def.bilateral) {
                 const revKey = `${entity}_${key}`;
@@ -5141,7 +5187,7 @@ async function renderTasks() {
       const meta = [statusBadge(t.status), priorityBadge(t.priority), dueLine, tags, storyPts].filter(Boolean);
       return `<div class="task-card-item" data-task-id="${t.id}" style="cursor:pointer">
         <div class="kanban-card-header">
-          <div class="kanban-card-title">${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div>
+          <div class="kanban-card-title"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div>
           <span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span>
         </div>
         ${projLine}
@@ -5184,7 +5230,7 @@ async function renderTasks() {
         const toggleBtn = hasChildren
           ? `<span class="task-toggle-arrow ${isExpanded ? 'expanded' : ''}" data-toggle-id="${t.id}" title="Toggle subtasks">${chevronSvg}</span>`
           : `<span class="task-add-sub-btn" data-add-sub-id="${t.id}" title="Add subtask">${chevronSvg}</span>`;
-        const titleCell = `<td><div class="task-title-cell" style="padding-left:${depth*20}px">${toggleBtn}<span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span><span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div></td>`;
+        const titleCell = `<td><div class="task-title-cell" style="padding-left:${depth*20}px">${toggleBtn}<span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span><span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div></td>`;
         const customCols = getCustomPropDefs('task').filter(d => propVisible('table', d.key)).map(def => customPropCell('task', t.id, def)).join('');
         html += `<tr class="task-table-row" data-task-id="${t.id}" style="position:relative">
           ${titleCell}${visibleCols.map(c => c.cell(t)).join('')}${customCols}
@@ -5283,7 +5329,7 @@ async function renderTasks() {
         const metaLine = [statusLine, dueLine, tagLine, storyPts].some(Boolean)
           ? `<div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">${statusLine}${dueLine}${tagLine}${storyPts}</div>` : '';
         return `<div class="kanban-card" data-task-id="${t.id}" style="cursor:grab">
-          <div class="kanban-card-header"><div class="kanban-card-title">${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></div>
+          <div class="kanban-card-header"><div class="kanban-card-title"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span>${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></div>
           ${projLine}${metaLine}
           ${renderCustomPropChips('task', t.id, 'kanban')}
         </div>`;
@@ -5524,7 +5570,7 @@ async function renderProjects() {
       const customCols = getCustomPropDefs('project').filter(d => entityPropVisible('project', d.key)).map(def => customPropCell('project', p.id, def)).join('');
       return `<tr>
         <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span></td>
-        <td><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-proj-id="${p.id}">${p.title}</span><span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></td>
+        <td><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-proj-id="${p.id}">${p.title}</span><span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></td>
         ${vis('status')   ? `<td>${statusBadge(p.status)}</td>` : ''}
         ${vis('goal')     ? `<td>${p.goal_title || '—'}</td>` : ''}
         ${vis('area')     ? `<td>${p.macro_area ? p.macro_area.split('(')[0].trim() : '—'}</td>` : ''}

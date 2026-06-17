@@ -602,6 +602,13 @@ func (s *sqliteStorage) UpdateSprintStatus(id int64, status string) error {
 	return err
 }
 
+func (s *sqliteStorage) UpdateSprintStoryPoints(id int64, pts *int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE sprints SET story_points=? WHERE id=?`, pts, id)
+	return err
+}
+
 // ── Notes ─────────────────────────────────────────────────────────────────────
 
 func (s *sqliteStorage) CreateNote(n *domain.Note) (int64, error) {
