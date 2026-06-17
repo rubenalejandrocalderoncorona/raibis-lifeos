@@ -915,14 +915,23 @@ function openPropManager(btnEl, entity) {
 
   function render() {
     const defs = getCustomPropDefs(entity);
+    const overrides = getPropOverrides(entity);
     const typeSvg = (iconPath) => `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconPath}</svg>`;
     const rows = defs.length
       ? defs.map(d => {
           const pt = CUSTOM_PROP_TYPES.find(p => p.type === d.type);
+          const ov = overrides[d.key] || {};
+          const iconHtml = ov.icon
+            ? `<span style="font-size:13px">${ov.icon}</span>`
+            : d.icon
+              ? `<span style="font-size:13px">${d.icon}</span>`
+              : (pt ? typeSvg(pt.icon) : '');
+          const labelText = ov.label || d.label;
           return `<div class="prop-mgr-row" data-key="${d.key}">
-            <span class="prop-mgr-icon">${pt ? typeSvg(pt.icon) : ''}</span>
-            <span class="prop-mgr-label">${d.label}</span>
+            <span class="prop-mgr-icon">${iconHtml}</span>
+            <span class="prop-mgr-label">${escHtml(labelText)}</span>
             <span class="prop-mgr-type">${d.type}</span>
+            <button class="prop-mgr-edit" data-key="${d.key}" title="Edit" style="background:none;border:none;cursor:pointer;opacity:0;color:var(--text-muted);font-size:13px;padding:0 2px;flex-shrink:0;transition:opacity 80ms">✏</button>
             <button class="prop-mgr-del" data-key="${d.key}" title="Remove">×</button>
           </div>`;
         }).join('')
@@ -931,12 +940,19 @@ function openPropManager(btnEl, entity) {
     panel.innerHTML = `
       <div class="prop-mgr-header">
         <span>Properties · ${entity.charAt(0).toUpperCase()+entity.slice(1)}</span>
+        <button class="btn btn-sm btn-ghost" id="prop-mgr-edit-all-btn" style="font-size:11px;padding:2px 6px">Edit all</button>
         <button class="prop-mgr-close" id="prop-mgr-close-btn">×</button>
       </div>
       <div class="prop-mgr-list">${rows}</div>
       <div class="prop-mgr-footer">
         <span class="add-prop-btn prop-mgr-add-btn" data-entity="${entity}">+ Add property</span>
       </div>`;
+
+    // Show edit button on hover (CSS already handles del; add same for edit)
+    panel.querySelectorAll('.prop-mgr-row').forEach(row => {
+      row.addEventListener('mouseenter', () => { const eb = row.querySelector('.prop-mgr-edit'); if (eb) eb.style.opacity = '1'; });
+      row.addEventListener('mouseleave', () => { const eb = row.querySelector('.prop-mgr-edit'); if (eb) eb.style.opacity = '0'; });
+    });
 
     panel.querySelectorAll('.prop-mgr-del').forEach(btn => {
       btn.onclick = (e) => {
@@ -951,6 +967,19 @@ function openPropManager(btnEl, entity) {
         render();
       };
     });
+
+    panel.querySelectorAll('.prop-mgr-edit').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        openPropEditModal(entity, btn.dataset.key, render);
+      };
+    });
+
+    document.getElementById('prop-mgr-edit-all-btn').onclick = (e) => {
+      e.stopPropagation();
+      panel.remove();
+      openAllPropsEditorModal(entity);
+    };
     document.getElementById('prop-mgr-close-btn').onclick = () => panel.remove();
     bindAddPropBtn(entity, () => { render(); document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } })); });
   }
@@ -972,6 +1001,140 @@ function openPropManager(btnEl, entity) {
     }
   };
   setTimeout(() => document.addEventListener('mousedown', dismiss, true), 10);
+}
+
+// Opens a small modal to edit icon + label for a single custom prop
+function openPropEditModal(entity, key, onSave) {
+  const defs = getCustomPropDefs(entity);
+  const def = defs.find(d => d.key === key);
+  if (!def) return;
+  const overrides = getPropOverrides(entity);
+  const ov = overrides[key] || {};
+  const currentLabel = ov.label || def.label;
+  const currentIcon = ov.icon || def.icon || '';
+
+  const body = `
+    <div style="display:flex;flex-direction:column;gap:12px;padding:4px 0">
+      <div class="form-group" style="margin:0">
+        <label class="form-label">Icon (emoji)</label>
+        <input type="text" id="pep-icon" value="${escHtml(currentIcon)}" placeholder="e.g. 📋" maxlength="4"
+          style="width:60px;font-size:18px;text-align:center;box-sizing:border-box" />
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">Name</label>
+        <input type="text" id="pep-label" value="${escHtml(currentLabel)}" style="width:100%;box-sizing:border-box" />
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
+        <button class="btn btn-primary" id="modal-save-btn">Save</button>
+      </div>
+    </div>`;
+
+  openModal(`Edit: ${def.label}`, body, null);
+  document.getElementById('modal-cancel-btn').onclick = closeModal;
+  document.getElementById('modal-save-btn').onclick = () => {
+    const newLabel = document.getElementById('pep-label').value.trim();
+    const newIcon = document.getElementById('pep-icon').value.trim();
+    if (!newLabel) { showToast('Name is required', 'error'); return; }
+    const ovs = getPropOverrides(entity);
+    ovs[key] = { label: newLabel, icon: newIcon };
+    setPropOverrides(entity, ovs);
+    // Also update def.label so it's consistent when there's no override
+    const defs2 = getCustomPropDefs(entity);
+    const idx = defs2.findIndex(d => d.key === key);
+    if (idx !== -1) { defs2[idx].label = newLabel; if (newIcon) defs2[idx].icon = newIcon; setCustomPropDefs(entity, defs2); }
+    closeModal();
+    document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
+    if (onSave) onSave();
+  };
+}
+
+// Opens the full-screen property editor modal listing ALL props (built-in + custom)
+function openAllPropsEditorModal(entity) {
+  const BUILTIN_PROPS = {
+    task:    ['status','priority','due','focus','tags','category','goal','project','points','recur'],
+    goal:    ['status','type','year','tags','category','due','metrics'],
+    project: ['status','due','goal','tags','category','macro','kanban','archived'],
+    sprint:  ['status'],
+    note:    ['date','project','goal','tags','category'],
+  };
+  const builtinKeys = BUILTIN_PROPS[entity] || [];
+  const customDefs = getCustomPropDefs(entity);
+  const overrides = getPropOverrides(entity);
+
+  const renderRows = () => {
+    const builtinRows = builtinKeys.map(k => {
+      const ov = overrides[k] || {};
+      return `<tr>
+        <td style="width:36px;text-align:center">
+          <input class="pae-icon" data-key="${k}" type="text" value="${escHtml(ov.icon || '')}" placeholder="—" maxlength="4"
+            style="width:28px;font-size:15px;text-align:center;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text);padding:2px" />
+        </td>
+        <td style="padding:0 6px">
+          <input class="pae-label" data-key="${k}" type="text" value="${escHtml(ov.label || k)}"
+            style="width:100%;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text);padding:3px 6px;font-size:13px" />
+        </td>
+        <td style="width:60px;text-align:right;font-size:10px;color:var(--text-dim)">built-in</td>
+      </tr>`;
+    }).join('');
+
+    const customRows = customDefs.map(d => {
+      const ov = overrides[d.key] || {};
+      return `<tr>
+        <td style="width:36px;text-align:center">
+          <input class="pae-icon" data-key="${d.key}" type="text" value="${escHtml(ov.icon || d.icon || '')}" placeholder="—" maxlength="4"
+            style="width:28px;font-size:15px;text-align:center;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text);padding:2px" />
+        </td>
+        <td style="padding:0 6px">
+          <input class="pae-label" data-key="${d.key}" type="text" value="${escHtml(ov.label || d.label)}"
+            style="width:100%;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text);padding:3px 6px;font-size:13px" />
+        </td>
+        <td style="width:60px;text-align:right;font-size:10px;color:var(--text-dim)">${d.type}</td>
+      </tr>`;
+    }).join('');
+
+    return `
+      <div style="display:flex;flex-direction:column;gap:0;padding:4px 0">
+        ${builtinKeys.length ? `<div style="font-size:11px;color:var(--text-dim);font-weight:600;text-transform:uppercase;padding:4px 0 2px">Built-in</div>` : ''}
+        ${builtinRows ? `<table style="width:100%;border-collapse:collapse">${builtinRows}</table>` : ''}
+        ${customDefs.length ? `<div style="font-size:11px;color:var(--text-dim);font-weight:600;text-transform:uppercase;padding:8px 0 2px">Custom</div>` : ''}
+        ${customRows ? `<table style="width:100%;border-collapse:collapse">${customRows}</table>` : ''}
+        ${!builtinKeys.length && !customDefs.length ? '<div style="color:var(--text-dim);font-size:13px;padding:8px 0">No properties</div>' : ''}
+        <div class="form-actions" style="margin-top:12px">
+          <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
+          <button class="btn btn-primary" id="modal-save-btn">Save all</button>
+        </div>
+      </div>`;
+  };
+
+  openModal(`Edit Properties · ${entity.charAt(0).toUpperCase()+entity.slice(1)}`, renderRows(), null);
+
+  document.getElementById('modal-cancel-btn').onclick = closeModal;
+  document.getElementById('modal-save-btn').onclick = () => {
+    const newOvs = { ...overrides };
+    document.querySelectorAll('#modal-body .pae-label').forEach(inp => {
+      const k = inp.dataset.key;
+      const newLabel = inp.value.trim();
+      const iconInp = document.querySelector(`#modal-body .pae-icon[data-key="${k}"]`);
+      const newIcon = iconInp ? iconInp.value.trim() : '';
+      if (!newOvs[k]) newOvs[k] = {};
+      if (newLabel) newOvs[k].label = newLabel; else delete newOvs[k].label;
+      if (newIcon) newOvs[k].icon = newIcon; else delete newOvs[k].icon;
+      if (!newOvs[k].label && !newOvs[k].icon) delete newOvs[k];
+    });
+    setPropOverrides(entity, newOvs);
+    // Also update custom def labels
+    const defs2 = getCustomPropDefs(entity);
+    defs2.forEach(d => {
+      const ov = newOvs[d.key] || {};
+      if (ov.label) d.label = ov.label;
+      if (ov.icon) d.icon = ov.icon; else delete d.icon;
+    });
+    setCustomPropDefs(entity, defs2);
+    closeModal();
+    document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
+    showToast('Properties updated', 'success');
+  };
 }
 
 function bindViewTabBar(entity, onTabSwitch, onViewsChanged) {
@@ -1272,6 +1435,27 @@ function setCustomPropDefs(entity, defs) {
   localStorage.setItem(`customPropDefs_${entity}`, JSON.stringify(defs));
 }
 
+// Prop label/icon overrides (user-renamed built-in or custom props)
+function getPropOverrides(entity) {
+  const stored = localStorage.getItem(`propOverrides_${entity}`);
+  return stored ? JSON.parse(stored) : {};
+}
+function setPropOverrides(entity, overrides) {
+  localStorage.setItem(`propOverrides_${entity}`, JSON.stringify(overrides));
+}
+
+// Parse a relation value (legacy [[Title]] or new [{id,label},...] JSON)
+function parseRelationValue(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+  } catch {}
+  const m = raw.match(/^\[\[(.+)\]\]$/);
+  if (m) return [{ id: '', label: m[1] }];
+  return [];
+}
+
 function getCustomPropValues(entity, recordId) {
   const stored = localStorage.getItem(`customPropVals_${entity}_${recordId}`);
   return stored ? JSON.parse(stored) : {};
@@ -1313,6 +1497,11 @@ function customPropCell(entity, recordId, def) {
     const arr = (() => { try { const a = JSON.parse(val); return Array.isArray(a) ? a : (val ? [val] : []); } catch { return val ? [val] : []; } })();
     const oc = def.optionColors || {};
     const html = arr.length ? arr.map(v => oc[v] ? `<span class="multi-chip color-${oc[v]}" style="font-size:11px">${escHtml(v)}</span>` : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${escHtml(v)}</span>`).join('') : '—';
+    return `<td class="custom-prop-select-cell" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" style="cursor:pointer">${html}</td>`;
+  }
+  if (def.type === 'relation') {
+    const relItems = parseRelationValue(val);
+    const html = relItems.length ? relItems.map(it => `<span class="multi-chip" style="font-size:11px">${escHtml(it.label)}</span>`).join('') : '—';
     return `<td class="custom-prop-select-cell" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" style="cursor:pointer">${html}</td>`;
   }
   return `<td><span class="custom-prop-text" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" contenteditable="true" style="font-size:12px;outline:none;min-width:60px;display:inline-block">${val}</span></td>`;
@@ -1632,7 +1821,12 @@ function renderCustomPropChips(entity, recordId, viewMode) {
         ? `<span class="multi-chip color-${color}" style="font-size:10px" title="${def.label}: ${escHtml(val)}">${escHtml(val)}</span>`
         : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:10px" title="${def.label}: ${escHtml(val)}">${escHtml(val)}</span>`;
     }
-    const display = def.type === 'relation' ? String(val).replace(/^\[\[|\]\]$/g, '') : String(val);
+    if (def.type === 'relation') {
+      const relItems = parseRelationValue(val);
+      if (!relItems.length) return '';
+      return relItems.map(it => `<span class="multi-chip" style="font-size:10px" title="${def.label}: ${escHtml(it.label)}">${escHtml(it.label)}</span>`).join('');
+    }
+    const display = String(val);
     if (!display) return '';
     return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${def.label}: ${display}"><span style="color:var(--text-muted)">${def.label}:</span> ${escHtml(display)}</span>`;
   }).filter(Boolean);
@@ -1694,6 +1888,53 @@ function bindCustomPropCells() {
         popup.style.cssText = `position:fixed;z-index:9200;min-width:160px;top:${r.bottom+4}px;left:${r.left}px`;
         document.body.appendChild(popup);
         setTimeout(() => { document.addEventListener('click', function h(ev) { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', h); } }); }, 0);
+      } else if (def.type === 'relation') {
+        const relEntity = def.relatedEntity || 'task';
+        const relPath = relEntity === 'task' ? '/api/tasks?all=1' : `/api/${relEntity}s`;
+        api('GET', relPath).then(async raw => {
+          const list = Array.isArray(raw) ? raw : (raw?.tasks || raw?.goals || raw?.projects || raw?.notes || raw?.resources || raw?.sprints || []);
+          const currentItems = parseRelationValue(curVal);
+          const curIds = currentItems.map(x => x.id).filter(Boolean);
+          openCombo(
+            cell,
+            list.map(it => ({ value: String(it.id), label: it.title || it.name || String(it.id) })),
+            null,
+            async ({ multiIds }) => {
+              if (!multiIds) return;
+              const newItems = multiIds.map(id => {
+                const it = list.find(x => String(x.id) === String(id));
+                return { id: String(id), label: it ? (it.title || it.name || String(id)) : String(id) };
+              });
+              setCustomPropValue(entity, recordId, propKey, JSON.stringify(newItems));
+              if (def.bilateral) {
+                const revKey = `${entity}_${propKey}`;
+                let sourceTitle = String(recordId);
+                try {
+                  const src = await api('GET', entity === 'task' ? `/api/tasks/${recordId}` : `/api/${entity}s/${recordId}`);
+                  sourceTitle = src.title || src.name || String(recordId);
+                } catch {}
+                const newIdSet = new Set(multiIds.map(String));
+                const oldIdSet = new Set(curIds.map(String));
+                for (const id of newIdSet) {
+                  if (!oldIdSet.has(id)) {
+                    const rv = getCustomPropValues(relEntity, parseInt(id));
+                    let ra = parseRelationValue(rv[revKey] ?? '');
+                    if (!ra.some(x => x.id === String(recordId))) { ra.push({ id: String(recordId), label: sourceTitle }); setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(ra)); }
+                  }
+                }
+                for (const id of oldIdSet) {
+                  if (id && !newIdSet.has(id)) {
+                    const rv = getCustomPropValues(relEntity, parseInt(id));
+                    let ra = parseRelationValue(rv[revKey] ?? '').filter(x => x.id !== String(recordId));
+                    setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(ra));
+                  }
+                }
+              }
+              cell.innerHTML = newItems.length ? newItems.map(it => `<span class="multi-chip" style="font-size:11px">${escHtml(it.label)}</span>`).join('') : '—';
+            },
+            { multiSelect: true, selectedIds: curIds }
+          );
+        }).catch(() => {});
       } else {
         openSingleSelectPicker(cell, def, entity, recordId, propKey, () => {
           const newDef = getCustomPropDefs(entity).find(d => d.key === propKey);
@@ -1795,15 +2036,19 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
     return `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${pt.icon}</svg>`;
   };
 
+  const overrides = getPropOverrides(entity);
   const rows = orderedKeys.map(key => {
     const builtin = builtinDefs.find(d => d.key === key);
     const custom = customDefs.find(d => d.key === key);
     if (!builtin && !custom) return '';
 
-    const labelText = builtin ? builtin.label : custom.label;
-    const iconHtml = builtin
-      ? (builtin.icon || '')
-      : propTypeIcon(custom.type);
+    const ov = overrides[key] || {};
+    const labelText = ov.label || (builtin ? builtin.label : custom.label);
+    const iconHtml = ov.icon
+      ? `<span style="font-size:13px;line-height:1">${ov.icon}</span>`
+      : builtin
+        ? (builtin.icon || '')
+        : (custom.icon ? `<span style="font-size:13px;line-height:1">${custom.icon}</span>` : propTypeIcon(custom.type));
     const valHtml = builtin
       ? (builtin.renderValue ? builtin.renderValue() : '<span class="empty">—</span>')
       : (() => {
@@ -1834,7 +2079,10 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
             return `<a href="${val}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);text-decoration:underline;font-size:12px" onclick="event.stopPropagation()">${val}</a>`;
           }
           if (custom.type === 'relation') {
-            return `<span style="font-size:12px;color:var(--text-primary)">${val.replace(/^\[\[|\]\]$/g, '')}</span>`;
+            const relItems = parseRelationValue(val);
+            return relItems.length
+              ? relItems.map(it => `<span class="multi-chip" style="font-size:11px">${escHtml(it.label)}</span>`).join('')
+              : '<span class="empty">—</span>';
           }
           return `<span style="font-size:12px">${String(val).replace(/</g,'&lt;')}</span>`;
         })();
@@ -1913,15 +2161,56 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
       }
       if (def.type === 'relation') {
         const relEntity = def.relatedEntity || 'task';
-        api('GET', `/api/${relEntity}s`).then(items => {
-          const list = Array.isArray(items) ? items : (items.tasks || items.goals || items.projects || items.notes || items.resources || items.sprints || []);
-          const opts = [{ value: '', label: '— clear —' }, ...list.map(it => ({ value: String(it.id), label: it.title || it.name || String(it.id) }))];
-          openValuePicker(valEl, opts, (val) => {
-            const found = list.find(it => String(it.id) === val);
-            const display = found ? (found.title || found.name || val) : val;
-            setCustomPropValue(entity, recordId, key, `[[${display}]]`);
-            onRerender();
-          });
+        const relPath = relEntity === 'task' ? '/api/tasks?all=1' : `/api/${relEntity}s`;
+        api('GET', relPath).then(async raw => {
+          const list = Array.isArray(raw) ? raw : (raw?.tasks || raw?.goals || raw?.projects || raw?.notes || raw?.resources || raw?.sprints || []);
+          const currentItems = parseRelationValue(cur);
+          const curIds = currentItems.map(x => x.id).filter(Boolean);
+          openCombo(
+            valEl,
+            list.map(it => ({ value: String(it.id), label: it.title || it.name || String(it.id) })),
+            null,
+            async ({ multiIds }) => {
+              if (!multiIds) return;
+              const newItems = multiIds.map(id => {
+                const it = list.find(x => String(x.id) === String(id));
+                return { id: String(id), label: it ? (it.title || it.name || String(id)) : String(id) };
+              });
+              setCustomPropValue(entity, recordId, key, JSON.stringify(newItems));
+              // Bilateral sync
+              if (def.bilateral) {
+                const revKey = `${entity}_${key}`;
+                let sourceTitle = String(recordId);
+                try {
+                  const srcPath = entity === 'task' ? `/api/tasks/${recordId}` : `/api/${entity}s/${recordId}`;
+                  const src = await api('GET', srcPath);
+                  sourceTitle = src.title || src.name || String(recordId);
+                } catch {}
+                const newIdSet = new Set(multiIds.map(String));
+                const oldIdSet = new Set(curIds.map(String));
+                for (const id of newIdSet) {
+                  if (!oldIdSet.has(id)) {
+                    const revVals = getCustomPropValues(relEntity, parseInt(id));
+                    let revArr = parseRelationValue(revVals[revKey] ?? '');
+                    if (!revArr.some(x => x.id === String(recordId))) {
+                      revArr.push({ id: String(recordId), label: sourceTitle });
+                      setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
+                    }
+                  }
+                }
+                for (const id of oldIdSet) {
+                  if (id && !newIdSet.has(id)) {
+                    const revVals = getCustomPropValues(relEntity, parseInt(id));
+                    let revArr = parseRelationValue(revVals[revKey] ?? '');
+                    revArr = revArr.filter(x => x.id !== String(recordId));
+                    setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
+                  }
+                }
+              }
+              onRerender();
+            },
+            { multiSelect: true, selectedIds: curIds }
+          );
         }).catch(() => {});
         return;
       }
@@ -7685,6 +7974,97 @@ function openSingleDatePickerGlobal(anchorEl, currentVal, onChange) {
   openDateRangePickerGlobal(anchorEl, currentVal, null, (start) => onChange(start || null), true);
 }
 
+/* ─── Combo Popover (global) ─────────────────────────────────────────── */
+let _comboEl = null;
+function closeCombo() {
+  if (_comboEl) { _comboEl.remove(); _comboEl = null; }
+  document.removeEventListener('mousedown', _comboOutside);
+}
+function _comboOutside(e) {
+  if (_comboEl && !_comboEl.contains(e.target)) closeCombo();
+}
+function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
+  closeCombo();
+  const { allowCreate = false, multiSelect = false, selectedIds = [] } = opts;
+  let filter = '';
+  let focusIdx = -1;
+  let localSelected = new Set(selectedIds.map(String));
+  _comboEl = document.createElement('div');
+  _comboEl.className = 'combo-popover';
+  function render() {
+    const filtered = filter ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase())) : items;
+    const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+    const selectedChips = multiSelect && localSelected.size > 0
+      ? `<div class="combo-selected-row">${[...localSelected].map(v => {
+          const it = items.find(x => String(x.value) === v);
+          if (!it) return '';
+          const colorDot = it.color ? `<span style="width:6px;height:6px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0;margin-right:3px"></span>` : '';
+          return `<span class="combo-sel-chip" data-remove="${v.replace(/"/g,'&quot;')}">${colorDot}${it.label}<span class="combo-sel-chip-x">×</span></span>`;
+        }).join('')}</div>`
+      : '';
+    _comboEl.innerHTML = `
+      ${selectedChips}
+      <div class="combo-search-wrap">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" />
+      </div>
+      <div class="combo-list">
+        ${filtered.length ? filtered.map((it, i) => {
+          const isSel = multiSelect ? localSelected.has(String(it.value)) : String(it.value) === String(currentVal);
+          const colorDot = it.color ? `<span style="width:8px;height:8px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0"></span>` : '';
+          return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${colorDot}${it.label}${isSel && multiSelect ? '<span class="combo-item-check">✓</span>' : ''}</div>`;
+        }).join('') : '<div class="combo-empty">No results</div>'}
+        ${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Create "${filter.trim()}"</div>` : ''}
+      </div>`;
+    const inp = _comboEl.querySelector('.combo-search');
+    inp.focus();
+    inp.setSelectionRange(inp.value.length, inp.value.length);
+    inp.oninput = (e) => { filter = e.target.value; focusIdx = -1; render(); };
+    inp.onkeydown = (e) => {
+      const comboItems = _comboEl.querySelectorAll('.combo-item');
+      if (e.key === 'ArrowDown') { e.preventDefault(); focusIdx = Math.min(focusIdx + 1, comboItems.length - 1); render(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); focusIdx = Math.max(focusIdx - 1, 0); render(); }
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (focusIdx >= 0 && comboItems[focusIdx]) comboItems[focusIdx].click();
+        else if (allowCreate && filter.trim()) {
+          const exact = items.find(i => i.label.toLowerCase() === filter.trim().toLowerCase());
+          if (!exact) { onSelect({ create: filter.trim() }); closeCombo(); }
+          else { onSelect({ value: String(exact.value), label: exact.label }); closeCombo(); }
+        }
+      }
+      else if (e.key === 'Escape') closeCombo();
+    };
+    _comboEl.querySelectorAll('.combo-sel-chip').forEach(chip => {
+      chip.onclick = (e) => { e.stopPropagation(); const v = chip.dataset.remove; localSelected.delete(v); onSelect({ multiIds: [...localSelected] }); render(); };
+    });
+    _comboEl.querySelectorAll('.combo-item').forEach(el => {
+      el.onclick = async (e) => {
+        e.stopPropagation();
+        if (el.dataset.create) { await onSelect({ create: el.dataset.create }); closeCombo(); }
+        else {
+          if (multiSelect) {
+            const v = el.dataset.val;
+            if (localSelected.has(v)) localSelected.delete(v); else localSelected.add(v);
+            onSelect({ multiIds: [...localSelected] }); render();
+          } else { onSelect({ value: el.dataset.val, label: el.dataset.label }); closeCombo(); }
+        }
+      };
+    });
+  }
+  render();
+  const rect = anchorEl.getBoundingClientRect();
+  _comboEl.style.top = (rect.bottom + 4) + 'px';
+  _comboEl.style.left = rect.left + 'px';
+  document.body.appendChild(_comboEl);
+  requestAnimationFrame(() => {
+    if (!_comboEl) return;
+    const cr = _comboEl.getBoundingClientRect();
+    if (cr.right > window.innerWidth - 8) _comboEl.style.left = (window.innerWidth - cr.width - 8) + 'px';
+  });
+  setTimeout(() => document.addEventListener('mousedown', _comboOutside), 0);
+}
+
 /* ─── Task Slideover ─────────────────────────────────────────────────── */
 async function showTaskSlideover(taskId) {
   openSlideover('Task Detail', '<div class="loading">Loading…</div>');
@@ -8067,141 +8447,6 @@ async function showTaskSlideover(taskId) {
   };
 
 
-  // openCombo(anchorEl, items, currentVal, onSelect, opts)
-  // items: [{ value, label, color? }]
-  // opts: { allowCreate, multiSelect, selectedIds }
-  let _comboEl = null;
-  function closeCombo() {
-    if (_comboEl) { _comboEl.remove(); _comboEl = null; }
-    document.removeEventListener('mousedown', _comboOutside);
-  }
-  function _comboOutside(e) {
-    if (_comboEl && !_comboEl.contains(e.target)) closeCombo();
-  }
-
-  function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
-    closeCombo();
-    const { allowCreate = false, multiSelect = false, selectedIds = [] } = opts;
-    let filter = '';
-    let focusIdx = -1;
-    let localSelected = new Set(selectedIds.map(String));
-
-    _comboEl = document.createElement('div');
-    _comboEl.className = 'combo-popover';
-
-    function render() {
-      const filtered = filter
-        ? items.filter(i => i.label.toLowerCase().includes(filter.toLowerCase()))
-        : items;
-      const showCreate = allowCreate && filter.trim() && !filtered.some(i => i.label.toLowerCase() === filter.trim().toLowerCase());
-
-      // Selected chips row (multi-select only)
-      const selectedChips = multiSelect && localSelected.size > 0
-        ? `<div class="combo-selected-row">${[...localSelected].map(v => {
-            const it = items.find(x => String(x.value) === v);
-            if (!it) return '';
-            const colorDot = it.color ? `<span style="width:6px;height:6px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0;margin-right:3px"></span>` : '';
-            return `<span class="combo-sel-chip" data-remove="${v.replace(/"/g,'&quot;')}">${colorDot}${it.label}<span class="combo-sel-chip-x">×</span></span>`;
-          }).join('')}</div>`
-        : '';
-
-      _comboEl.innerHTML = `
-        ${selectedChips}
-        <div class="combo-search-wrap">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input class="combo-search" placeholder="Search…" value="${filter.replace(/"/g,'&quot;')}" />
-        </div>
-        <div class="combo-list">
-          ${filtered.length ? filtered.map((it, i) => {
-            const isSel = multiSelect ? localSelected.has(String(it.value)) : String(it.value) === String(currentVal);
-            const colorDot = it.color ? `<span style="width:8px;height:8px;border-radius:50%;background:${COLOR_HEX[it.color]||it.color};display:inline-block;flex-shrink:0"></span>` : '';
-            return `<div class="combo-item${isSel?' selected':''}${i===focusIdx?' focused':''}" data-val="${String(it.value).replace(/"/g,'&quot;')}" data-label="${it.label.replace(/"/g,'&quot;')}">${colorDot}${it.label}${isSel && multiSelect ? '<span class="combo-item-check">✓</span>' : ''}</div>`;
-          }).join('') : '<div class="combo-empty">No results</div>'}
-          ${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Create "${filter.trim()}"</div>` : ''}
-        </div>`;
-
-      const inp = _comboEl.querySelector('.combo-search');
-      inp.focus();
-      // Set cursor at end
-      inp.setSelectionRange(inp.value.length, inp.value.length);
-
-      inp.oninput = (e) => { filter = e.target.value; focusIdx = -1; render(); };
-      inp.onkeydown = (e) => {
-        const comboItems = _comboEl.querySelectorAll('.combo-item');
-        if (e.key === 'ArrowDown') { e.preventDefault(); focusIdx = Math.min(focusIdx + 1, comboItems.length - 1); render(); }
-        else if (e.key === 'ArrowUp') { e.preventDefault(); focusIdx = Math.max(focusIdx - 1, 0); render(); }
-        else if (e.key === 'Enter') {
-          e.preventDefault();
-          if (focusIdx >= 0 && comboItems[focusIdx]) {
-            comboItems[focusIdx].click();
-          } else if (allowCreate && filter.trim()) {
-            // Enter with no focused item → create if no exact match
-            const exact = items.find(i => i.label.toLowerCase() === filter.trim().toLowerCase());
-            if (!exact) {
-              onSelect({ create: filter.trim() });
-              closeCombo();
-            } else {
-              onSelect({ value: String(exact.value), label: exact.label });
-              closeCombo();
-            }
-          }
-        }
-        else if (e.key === 'Escape') closeCombo();
-      };
-
-      _comboEl.querySelectorAll('.combo-sel-chip').forEach(chip => {
-        chip.onclick = (e) => {
-          e.stopPropagation();
-          const v = chip.dataset.remove;
-          localSelected.delete(v);
-          onSelect({ multiIds: [...localSelected] });
-          render();
-        };
-      });
-
-      _comboEl.querySelectorAll('.combo-item').forEach(el => {
-        el.onclick = async (e) => {
-          e.stopPropagation();
-          if (el.dataset.create) {
-            // Create new tag/category
-            await onSelect({ create: el.dataset.create });
-            closeCombo();
-          } else {
-            if (multiSelect) {
-              const v = el.dataset.val;
-              if (localSelected.has(v)) localSelected.delete(v);
-              else localSelected.add(v);
-              onSelect({ multiIds: [...localSelected] });
-              render();
-            } else {
-              onSelect({ value: el.dataset.val, label: el.dataset.label });
-              closeCombo();
-            }
-          }
-        };
-      });
-    }
-
-    render();
-
-    // Position below anchor
-    const rect = anchorEl.getBoundingClientRect();
-    _comboEl.style.top = (rect.bottom + 4) + 'px';
-    _comboEl.style.left = rect.left + 'px';
-    document.body.appendChild(_comboEl);
-
-    // Adjust if off-screen right
-    requestAnimationFrame(() => {
-      if (!_comboEl) return;
-      const cr = _comboEl.getBoundingClientRect();
-      if (cr.right > window.innerWidth - 8) {
-        _comboEl.style.left = (window.innerWidth - cr.width - 8) + 'px';
-      }
-    });
-
-    setTimeout(() => document.addEventListener('mousedown', _comboOutside), 0);
-  }
-
   // ── Bind inline prop panel (extra built-in + custom props) ───────────────
   const taskInlinePropEditFns = {
     status: (valEl) => {
@@ -8239,8 +8484,8 @@ async function showTaskSlideover(taskId) {
     },
     category: async (valEl) => {
       try { allCategories = await api('GET', '/api/categories'); } catch(e) {}
-      const cats = (allCategories.length ? allCategories : TASK_CATEGORIES.map((n,i)=>({id:i+1,name:n}))).map(c => ({ value: c.id, label: c.name }));
-      openCombo(valEl, cats, task.category_id, async ({ value, label, create }) => {
+      const cats = [{ value: '', label: '— none —' }, ...allCategories.map(c => ({ value: String(c.id), label: c.name }))];
+      openCombo(valEl, cats, task.category_id ? String(task.category_id) : '', async ({ value, label, create }) => {
         if (create) {
           try { const nc = await api('POST', '/api/categories', { name: create }); allCategories.push(nc); await patchTask({ category_id: nc.id }); } catch(err) {}
         } else {
