@@ -4810,3 +4810,181 @@ tr:hover .ctx-handle,
   outline: none;
   cursor: pointer;
 }
+
+/* ── Notion-style Automation Form ─────────────────────────────────────────── */
+.af-form-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 4px 0;
+}
+.af-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 2px 12px;
+}
+.af-name-input {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text);
+  background: transparent;
+  border: none;
+  border-bottom: 1.5px solid transparent;
+  outline: none;
+  padding: 2px 0;
+  transition: border-color .15s;
+}
+.af-name-input:focus { border-bottom-color: var(--color-border-strong, #888); }
+.af-name-input::placeholder { color: var(--color-text-muted, var(--text-muted)); font-weight: 400; }
+.af-enabled-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.af-toggle-text {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-secondary, var(--text-muted));
+  white-space: nowrap;
+}
+.af-entity-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 10px;
+}
+.af-divider {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 10px 0;
+}
+.af-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0;
+}
+.af-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+  min-height: 26px;
+}
+.af-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.af-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--color-surface, var(--bg-card));
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 8px);
+  padding: 7px 10px;
+  flex-wrap: wrap;
+}
+.af-row:hover { border-color: var(--color-border-strong, #666); }
+.af-row-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+  opacity: .6;
+  width: 18px;
+  text-align: center;
+}
+.af-row-body {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+.af-row-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted, var(--text-muted));
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  opacity: .5;
+  flex-shrink: 0;
+  transition: opacity .15s, color .15s;
+}
+.af-row-remove:hover { opacity: 1; color: var(--color-danger, #ef4444); }
+.af-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-text-secondary, var(--text-muted));
+  background: none;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md, 8px);
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+  align-self: flex-start;
+}
+.af-add-btn:hover { border-color: var(--color-border-strong, #888); color: var(--color-text); }
+.af-connector {
+  display: flex;
+  justify-content: flex-start;
+  padding: 2px 8px;
+}
+.af-connector-line {
+  width: 2px;
+  height: 20px;
+  background: var(--color-border);
+  border-radius: 2px;
+}
+.af-logic-sel {
+  font-weight: 600 !important;
+}
+
+/* Pill-style inline selects and inputs */
+.auto-pill-sel {
+  background: var(--color-surface, var(--bg-card));
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 5px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color .15s;
+}
+.auto-pill-sel:hover,
+.auto-pill-sel:focus { border-color: var(--color-border-strong, #888); }
+.auto-pill-val {
+  background: rgba(99,102,241,.08);
+  border-color: rgba(99,102,241,.2);
+  color: var(--accent, #6366f1);
+}
+.auto-pill-sep {
+  font-size: 12px;
+  color: var(--color-text-secondary, var(--text-muted));
+  white-space: nowrap;
+}
+.auto-pill-input {
+  background: var(--color-surface, var(--bg-card));
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text);
+  font-size: 12px;
+  padding: 2px 6px;
+  outline: none;
+  min-width: 60px;
+  transition: border-color .15s;
+}
+.auto-pill-input:focus { border-color: var(--accent, #6366f1); }
+.auto-pill-num { width: 56px; text-align: center; }
+.auto-pill-type { font-weight: 600; }

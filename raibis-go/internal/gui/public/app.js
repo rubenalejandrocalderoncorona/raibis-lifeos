@@ -11270,133 +11270,118 @@ function openConnectedAppsPanel() {
   }
 }
 
+/* ─── Automations — shared helpers ────────────────────────────────────── */
+
+// Per-entity properties known to the system (for trigger/action dropdowns)
+const ENTITY_PROPS_MAP = {
+  task:    [
+    { key:'status',     label:'Status'    },
+    { key:'priority',   label:'Priority'  },
+    { key:'due_date',   label:'Due Date'  },
+    { key:'goal_id',    label:'Goal'      },
+    { key:'project_id', label:'Project'   },
+    { key:'sprint_id',  label:'Sprint'    },
+    { key:'category_id',label:'Category'  },
+  ],
+  goal:    [{ key:'status', label:'Status' }, { key:'type', label:'Type' }],
+  project: [{ key:'status', label:'Status' }, { key:'macro_area', label:'Macro Area' }],
+  sprint:  [{ key:'status', label:'Status' }],
+  note:    [{ key:'archived', label:'Archived' }],
+  resource:[{ key:'type', label:'Type' }],
+};
+
+function getEntityPropValues(entType, propKey) {
+  if (entType === 'task') {
+    if (propKey === 'status')   return TASK_STATUSES;
+    if (propKey === 'priority') return TASK_PRIORITIES;
+  }
+  if (entType === 'goal'    && propKey === 'status') return ['todo','in_progress','done','cancelled'];
+  if (entType === 'project' && propKey === 'status') return ['planning','active','on_hold','done','archived'];
+  if (entType === 'sprint'  && propKey === 'status') return ['planning','active','completed'];
+  if (propKey === 'archived') return ['true','false'];
+  return null; // free-text input
+}
+
+function parseCfgArray(s) {
+  if (!s) return [];
+  try {
+    const p = JSON.parse(s);
+    if (Array.isArray(p)) return p;
+    if (p && typeof p === 'object') return [p];
+  } catch {}
+  return [];
+}
+
+function formatTrigger(type, configStr) {
+  try {
+    const arr = parseCfgArray(configStr);
+    const t = arr[0] || {};
+    const tt = t.trigger_type || type || 'property_changed';
+    if (tt === 'property_changed') {
+      const prop = t.property || '?';
+      const val  = t.to_value  || '?';
+      return `${prop.replace(/_/g,' ')} → ${val.replace(/_/g,' ')}`;
+    }
+    if (tt === 'item_added') return 'item added';
+    if (tt === 'frequency')  return `every ${t.interval||''} ${t.unit||''}`.trim();
+    return tt;
+  } catch { return type || ''; }
+}
+
+function formatAction(type, configStr) {
+  try {
+    const arr = parseCfgArray(configStr);
+    const a = arr[0] || {};
+    const at = a.action_type || type || 'edit_property';
+    if (at === 'edit_property') return `Set ${(a.field||'?').replace(/_/g,' ')} → ${(a.value||'?').replace(/_/g,' ')}`;
+    if (at === 'add_item') {
+      if (a.due_date_offset) return `Create copy, due +${a.due_date_offset.interval}${(a.due_date_offset.unit||'')[0]||''}`;
+      return 'Create item';
+    }
+    if (at === 'notify') return 'Notify';
+    return at;
+  } catch { return type || ''; }
+}
+
 /* ─── Automations View (full page) ───────────────────────────────────── */
 
 async function renderAutomationsView() {
   const main = document.getElementById('main-content');
   main.innerHTML = `<div class="view"><div class="loading">Loading…</div></div>`;
-
   const list = await api('GET', '/api/automations').catch(() => []);
-
-  main.innerHTML = `
-    <div class="view">
-      <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
-        <div>
-          <h1 class="page-title" style="display:flex;align-items:center;gap:8px">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-            Automations
-          </h1>
-          <p style="color:var(--text-muted);font-size:13px;margin-top:4px">Rules that run automatically when triggers fire.</p>
-        </div>
-        <button class="btn btn-primary btn-sm" id="auto-new-btn">+ New rule</button>
-      </div>
-      <div id="auto-list-body">
-        ${(list && list.length > 0) ? `
-          <div style="display:flex;flex-direction:column;gap:10px">
-            ${list.map(a => `
-              <div class="auto-rule-card" data-auto-id="${a.id}">
-                <div class="auto-rule-header">
-                  <div class="auto-rule-name">${escHtml(a.name)}</div>
-                  <div style="display:flex;gap:6px;align-items:center">
-                    <label class="auto-toggle-label" title="${a.enabled ? 'Enabled' : 'Disabled'}">
-                      <input type="checkbox" class="auto-enabled-chk" data-auto-id="${a.id}" ${a.enabled ? 'checked' : ''}>
-                      <span class="auto-toggle-track"></span>
-                    </label>
-                    <button class="btn btn-sm btn-ghost auto-edit-btn" data-auto-id="${a.id}" title="Edit">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                    </button>
-                    <button class="btn btn-sm btn-ghost auto-del-btn" data-auto-id="${a.id}" title="Delete" style="color:var(--color-danger,#ef4444)">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
-                    </button>
-                  </div>
-                </div>
-                <div class="auto-rule-meta">
-                  <span class="auto-badge auto-badge-trigger">${formatTrigger(a.trigger_type, a.trigger_config)}</span>
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-muted)"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-                  <span class="auto-badge auto-badge-action">${formatAction(a.action_type, a.action_config)}</span>
-                  <span style="font-size:11px;color:var(--text-muted);margin-left:4px">[${escHtml(a.entity_type)}]</span>
-                </div>
-                ${a.description ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${escHtml(a.description)}</div>` : ''}
-              </div>
-            `).join('')}
-          </div>
-        ` : `
-          <div style="text-align:center;padding:64px 0">
-            <div style="font-size:40px;margin-bottom:14px">⚡</div>
-            <div style="font-size:15px;font-weight:600;margin-bottom:6px">No automations yet</div>
-            <div style="font-size:13px;color:var(--text-muted);margin-bottom:24px">Create a rule to automate actions when triggers fire.</div>
-            <button class="btn btn-primary btn-sm" id="auto-new-btn-empty">Create first rule</button>
-          </div>`}
-      </div>
-      <div id="auto-form-area" style="margin-top:24px"></div>
-    </div>`;
-
-  const showForm = (existing) => {
-    const formArea = document.getElementById('auto-form-area');
-    const titleEl  = null;
-    formArea.innerHTML = `<hr style="border:none;border-top:1px solid var(--color-border);margin-bottom:20px">`;
-    const formWrap = document.createElement('div');
-    formArea.appendChild(formWrap);
-    renderAutoForm(formWrap, titleEl, existing, '', () => renderAutomationsView());
-  };
-
-  document.getElementById('auto-new-btn')?.addEventListener('click', () => showForm(null));
-  document.getElementById('auto-new-btn-empty')?.addEventListener('click', () => showForm(null));
-
-  document.querySelectorAll('.auto-enabled-chk').forEach(chk => {
-    chk.onchange = async () => {
-      await api('PATCH', `/api/automations/${chk.dataset.autoId}`, { enabled: chk.checked }).catch(() => {});
-    };
-  });
-  document.querySelectorAll('.auto-del-btn').forEach(btn => {
-    btn.onclick = () => {
-      showConfirmModal('Delete this automation?', async () => {
-        await api('DELETE', `/api/automations/${btn.dataset.autoId}`).catch(() => {});
-        renderAutomationsView();
-      });
-    };
-  });
-  document.querySelectorAll('.auto-edit-btn').forEach(btn => {
-    const a = (list || []).find(x => String(x.id) === btn.dataset.autoId);
-    if (a) btn.onclick = () => showForm(a);
-  });
+  main.innerHTML = `<div class="view" id="_av-root"></div>`;
+  renderAutoListView(document.getElementById('_av-root'), list, '', () => renderAutomationsView());
 }
 
 /* ─── Automations Overlay ─────────────────────────────────────────────── */
 
-// Upsert (or delete) a recurring automation tied to a specific task.
-// Called whenever the user changes recurrence settings in the task sideview.
 async function syncRecurAutomation(taskId, taskTitle, interval, unit) {
   const list = await api('GET', '/api/automations?entity_type=task').catch(() => []);
   const existing = (list || []).find(a => {
     try {
-      const tc = JSON.parse(a.trigger_config || '{}');
-      return a.trigger_type === 'property_changed' &&
-             tc.property === 'status' && tc.to_value === 'done' &&
-             String(tc.entity_id) === String(taskId) &&
-             a.action_type === 'add_item';
+      const triggers = parseCfgArray(a.trigger_config);
+      return triggers.some(tc =>
+        (tc.trigger_type || a.trigger_type) === 'property_changed' &&
+        tc.property === 'status' && tc.to_value === 'done' &&
+        String(tc.entity_id) === String(taskId)
+      ) && parseCfgArray(a.action_config).some(ac => (ac.action_type || a.action_type) === 'add_item');
     } catch { return false; }
   });
-
   if (interval <= 0) {
     if (existing) await api('DELETE', `/api/automations/${existing.id}`).catch(() => {});
     return;
   }
-
-  const triggerConfig = JSON.stringify({ property: 'status', to_value: 'done', entity_id: taskId });
-  const actionConfig  = JSON.stringify({
-    template: 'copy_current',
+  const triggers = [{ trigger_type: 'property_changed', property: 'status', to_value: 'done', entity_id: taskId }];
+  const actions  = [{ action_type: 'add_item', template: 'copy_current',
     field_overrides: { status: 'todo' },
-    due_date_offset: { from_field: 'due_date', interval, unit: unit || 'days' },
-  });
+    due_date_offset: { from_field: 'due_date', interval, unit: unit || 'days' } }];
   const payload = {
     name: `Recurring: ${taskTitle}`,
     description: `Auto-recreate "${taskTitle}" every ${interval} ${unit || 'days'}`,
-    entity_type: 'task', enabled: true,
-    trigger_type: 'property_changed', trigger_config: triggerConfig,
-    action_type: 'add_item', action_config: actionConfig,
+    entity_type: 'task', enabled: true, trigger_logic: 'all',
+    trigger_type: 'property_changed', trigger_config: JSON.stringify(triggers),
+    action_type:  'add_item',         action_config:  JSON.stringify(actions),
   };
-
   if (existing) {
     await api('PATCH', `/api/automations/${existing.id}`, payload).catch(() => {});
   } else {
@@ -11406,30 +11391,14 @@ async function syncRecurAutomation(taskId, taskTitle, interval, unit) {
 
 async function showAutomationsOverlay(entityType) {
   document.getElementById('_automations-overlay')?.remove();
-
   const overlay = document.createElement('div');
   overlay.id = '_automations-overlay';
   overlay.className = 'settings-overlay';
-
   overlay.innerHTML = `
-    <div class="settings-modal" id="_auto-modal" style="max-width:760px;width:90vw">
-      <div class="settings-sidebar" style="min-width:160px;max-width:160px">
-        <div class="settings-sidebar-header">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-          Automations
-        </div>
-        <button class="settings-tab active" data-atab="list">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-          All Rules
-        </button>
-        <button class="settings-tab" data-atab="new">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          New Rule
-        </button>
-      </div>
-      <div class="settings-content" id="_auto-content">
+    <div class="settings-modal" id="_auto-modal" style="max-width:680px;width:92vw;min-height:500px">
+      <div class="settings-content" id="_auto-content" style="flex:1;overflow-y:auto">
         <div class="settings-content-header">
-          <span class="settings-content-title" id="_auto-title">Automation Rules</span>
+          <span class="settings-content-title" id="_auto-title">Automations</span>
           <button class="settings-close-btn" id="_auto-close">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
@@ -11438,345 +11407,329 @@ async function showAutomationsOverlay(entityType) {
           <div style="color:var(--text-muted);font-size:13px;text-align:center;padding:32px 0">Loading…</div>
         </div>
       </div>
-    </div>
-  `;
+    </div>`;
   document.body.appendChild(overlay);
-
   document.getElementById('_auto-close').onclick = () => overlay.remove();
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
   document.addEventListener('keydown', function escH(e) {
     if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escH); }
   });
 
-  overlay.querySelectorAll('.settings-tab').forEach(tab => {
-    tab.onclick = () => {
-      overlay.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      renderAutoTab(tab.dataset.atab);
-    };
+  const list = await api('GET', `/api/automations?entity_type=${entityType}`).catch(() => []);
+  const body  = document.getElementById('_auto-body');
+  if (!body) return;
+  renderAutoListView(body, list, entityType, async () => {
+    const updated = await api('GET', `/api/automations?entity_type=${entityType}`).catch(() => []);
+    renderAutoListView(body, updated, entityType, async () => {
+      const u2 = await api('GET', `/api/automations?entity_type=${entityType}`).catch(() => []);
+      renderAutoListView(body, u2, entityType, () => {});
+    });
   });
+}
 
-  await renderAutoTab('list');
-
-  async function renderAutoTab(tab) {
-    const body = document.getElementById('_auto-body');
-    const title = document.getElementById('_auto-title');
-    if (!body) return;
-
-    if (tab === 'list') {
-      title.textContent = 'Automation Rules';
-      body.innerHTML = `<div style="color:var(--text-muted);font-size:13px;text-align:center;padding:32px 0">Loading…</div>`;
-      const list = await api('GET', `/api/automations?entity_type=${entityType}`).catch(() => []);
-      if (!list || list.length === 0) {
-        body.innerHTML = `
-          <div style="text-align:center;padding:40px 0">
-            <div style="font-size:32px;margin-bottom:12px">⚡</div>
-            <div style="font-size:14px;font-weight:600;margin-bottom:6px">No automations yet</div>
-            <div style="font-size:13px;color:var(--text-muted);margin-bottom:20px">Create a rule to automate actions on ${entityType}s.</div>
-            <button class="btn btn-primary btn-sm" id="_auto-create-first">Create first rule</button>
-          </div>`;
-        document.getElementById('_auto-create-first')?.addEventListener('click', () => {
-          overlay.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-          overlay.querySelector('[data-atab="new"]').classList.add('active');
-          renderAutoTab('new');
-        });
-        return;
-      }
-      body.innerHTML = `
-        <div style="display:flex;flex-direction:column;gap:10px">
-          ${list.map(a => `
-            <div class="auto-rule-card" data-auto-id="${a.id}">
-              <div class="auto-rule-header">
-                <div class="auto-rule-name">${escHtml(a.name)}</div>
-                <div style="display:flex;gap:6px;align-items:center">
-                  <label class="auto-toggle-label" title="${a.enabled ? 'Enabled' : 'Disabled'}">
-                    <input type="checkbox" class="auto-enabled-chk" data-auto-id="${a.id}" ${a.enabled ? 'checked' : ''}>
-                    <span class="auto-toggle-track"></span>
-                  </label>
-                  <button class="btn btn-sm btn-ghost auto-edit-btn" data-auto-id="${a.id}" title="Edit">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                  </button>
-                  <button class="btn btn-sm btn-ghost auto-del-btn" data-auto-id="${a.id}" title="Delete" style="color:var(--color-danger,#ef4444)">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
-                  </button>
-                </div>
+// Renders list + inline editor inside any container
+function renderAutoListView(container, list, entityType, onMutate) {
+  const safe = list || [];
+  container.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${safe.length === 0 ? `
+        <div style="text-align:center;padding:48px 0">
+          <div style="font-size:36px;margin-bottom:12px">⚡</div>
+          <div style="font-size:14px;font-weight:600;margin-bottom:6px">No automations yet</div>
+          <div style="font-size:13px;color:var(--text-muted);margin-bottom:20px">Create a rule to automate actions when triggers fire.</div>
+          <button class="btn btn-primary btn-sm" id="_av-create-first">+ New rule</button>
+        </div>` : `
+        ${safe.map(a => `
+          <div class="auto-rule-card" data-auto-id="${a.id}">
+            <div class="auto-rule-header">
+              <div class="auto-rule-name">${escHtml(a.name)}</div>
+              <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+                <label class="auto-toggle-label">
+                  <input type="checkbox" class="auto-enabled-chk" data-auto-id="${a.id}" ${a.enabled?'checked':''}>
+                  <span class="auto-toggle-track"></span>
+                </label>
+                <button class="btn btn-sm btn-ghost auto-edit-btn" data-auto-id="${a.id}">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </button>
+                <button class="btn btn-sm btn-ghost auto-del-btn" data-auto-id="${a.id}" style="color:var(--color-danger,#ef4444)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+                </button>
               </div>
-              <div class="auto-rule-meta">
-                <span class="auto-badge auto-badge-trigger">${formatTrigger(a.trigger_type, a.trigger_config)}</span>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-muted)"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-                <span class="auto-badge auto-badge-action">${formatAction(a.action_type, a.action_config)}</span>
-              </div>
-              ${a.description ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${escHtml(a.description)}</div>` : ''}
             </div>
-          `).join('')}
-          <button class="btn btn-sm" id="_auto-add-more" style="align-self:flex-start;margin-top:6px">+ Add rule</button>
-        </div>`;
-
-      body.querySelectorAll('.auto-enabled-chk').forEach(chk => {
-        chk.onchange = async () => {
-          await api('PATCH', `/api/automations/${chk.dataset.autoId}`, { enabled: chk.checked }).catch(() => {});
-        };
-      });
-      body.querySelectorAll('.auto-del-btn').forEach(btn => {
-        btn.onclick = () => {
-          showConfirmModal('Delete this automation?', async () => {
-            await api('DELETE', `/api/automations/${btn.dataset.autoId}`).catch(() => {});
-            renderAutoTab('list');
-          });
-        };
-      });
-      body.querySelectorAll('.auto-edit-btn').forEach(btn => {
-        btn.onclick = async () => {
-          const a = list.find(x => String(x.id) === btn.dataset.autoId);
-          if (a) renderAutoForm(body, title, a, entityType, () => renderAutoTab('list'));
-        };
-      });
-      document.getElementById('_auto-add-more')?.addEventListener('click', () => {
-        overlay.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-        overlay.querySelector('[data-atab="new"]').classList.add('active');
-        renderAutoTab('new');
-      });
-
-    } else if (tab === 'new') {
-      title.textContent = 'New Automation Rule';
-      renderAutoForm(body, title, null, entityType, () => {
-        overlay.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-        overlay.querySelector('[data-atab="list"]').classList.add('active');
-        renderAutoTab('list');
-      });
-    }
-  }
-}
-
-function formatTrigger(type, configStr) {
-  try {
-    const c = JSON.parse(configStr || '{}');
-    if (type === 'property_changed') {
-      return `When ${c.property || 'property'} → ${c.to_value || '?'}`;
-    }
-    if (type === 'item_added') return 'When item added';
-    if (type === 'frequency') return `Every ${c.interval || ''} ${c.unit || ''}`.trim();
-  } catch {}
-  return type;
-}
-
-function formatAction(type, configStr) {
-  try {
-    const c = JSON.parse(configStr || '{}');
-    if (type === 'edit_property') return `Set ${c.field || 'field'} = ${c.value || '?'}`;
-    if (type === 'add_item') {
-      if (c.template === 'copy_current' && c.due_date_offset) {
-        return `Recreate with due +${c.due_date_offset.interval}${c.due_date_offset.unit?.[0] || ''}`;
-      }
-      return 'Add item';
-    }
-    if (type === 'edit_item') return `Edit ${c.field || 'field'}`;
-    if (type === 'notify') return 'Send notification';
-  } catch {}
-  return type;
-}
-
-function renderAutoForm(body, titleEl, existing, entityType, onSave) {
-  if (titleEl) titleEl.textContent = existing ? 'Edit Rule' : 'New Rule';
-
-  let tc = {}, ac = {};
-  try { tc = JSON.parse(existing?.trigger_config || '{}'); } catch {}
-  try { ac = JSON.parse(existing?.action_config || '{}'); } catch {}
-
-  const triggerType  = existing?.trigger_type  || 'property_changed';
-  const actionType   = existing?.action_type   || 'add_item';
-
-  // Build recur defaults from action_config if this is a recurring rule
-  const isRecurDefault = actionType === 'add_item' && ac.template === 'copy_current';
-  const recurInterval = ac.due_date_offset?.interval || 1;
-  const recurUnit     = ac.due_date_offset?.unit     || 'weeks';
-
-  body.innerHTML = `
-    <div style="display:flex;flex-direction:column;gap:14px;max-width:520px">
-      <div class="auto-form-group">
-        <label class="auto-form-label">Rule name</label>
-        <input class="auto-form-input" id="_af-name" type="text" placeholder="e.g. Recreate weekly review" value="${escHtml(existing?.name || '')}">
-      </div>
-      <div class="auto-form-group">
-        <label class="auto-form-label">Description <span style="color:var(--text-muted);font-weight:400">(optional)</span></label>
-        <input class="auto-form-input" id="_af-desc" type="text" placeholder="What does this rule do?" value="${escHtml(existing?.description || '')}">
-      </div>
-      <div class="auto-form-group">
-        <label class="auto-form-label">Applies to entity type</label>
-        <select class="auto-form-select" id="_af-entity">
-          ${['task','goal','project','sprint','note','resource'].map(e =>
-            `<option value="${e}" ${(existing?.entity_type||entityType)===e?'selected':''}>${e}</option>`
-          ).join('')}
-        </select>
-      </div>
-
-      <div style="padding:12px;background:var(--color-surface-raised,var(--color-surface));border:1px solid var(--color-border);border-radius:var(--radius-md)">
-        <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin-bottom:10px">Trigger</div>
-        <div class="auto-form-group">
-          <label class="auto-form-label">When…</label>
-          <select class="auto-form-select" id="_af-trigger-type">
-            <option value="property_changed" ${triggerType==='property_changed'?'selected':''}>A property is changed</option>
-            <option value="item_added"       ${triggerType==='item_added'?'selected':''}>An item/page is added</option>
-            <option value="frequency"        ${triggerType==='frequency'?'selected':''}>On a schedule (frequency)</option>
-          </select>
-        </div>
-        <div id="_af-trigger-detail" style="margin-top:8px;display:flex;flex-direction:column;gap:8px"></div>
-      </div>
-
-      <div style="padding:12px;background:var(--color-surface-raised,var(--color-surface));border:1px solid var(--color-border);border-radius:var(--radius-md)">
-        <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin-bottom:10px">Action</div>
-        <div class="auto-form-group">
-          <label class="auto-form-label">Then…</label>
-          <select class="auto-form-select" id="_af-action-type">
-            <option value="edit_property" ${actionType==='edit_property'?'selected':''}>Edit a property</option>
-            <option value="add_item"      ${actionType==='add_item'?'selected':''}>Add item / page</option>
-            <option value="edit_item"     ${actionType==='edit_item'?'selected':''}>Edit an item / page</option>
-            <option value="notify"        ${actionType==='notify'?'selected':''}>Send notification (future)</option>
-          </select>
-        </div>
-        <div id="_af-action-detail" style="margin-top:8px;display:flex;flex-direction:column;gap:8px"></div>
-      </div>
-
-      <div style="display:flex;gap:8px;margin-top:4px">
-        <button class="btn btn-primary btn-sm" id="_af-save">Save rule</button>
-        <button class="btn btn-sm btn-ghost" id="_af-cancel">Cancel</button>
-      </div>
+            <div class="auto-rule-meta">
+              <span class="auto-badge auto-badge-trigger">${formatTrigger(a.trigger_type, a.trigger_config)}</span>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-muted)"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+              <span class="auto-badge auto-badge-action">${formatAction(a.action_type, a.action_config)}</span>
+              <span style="font-size:11px;color:var(--text-muted);margin-left:2px">[${escHtml(a.entity_type)}]</span>
+            </div>
+          </div>`).join('')}
+        <button class="btn btn-sm" id="_av-create-first" style="align-self:flex-start;margin-top:4px">+ New rule</button>`}
+      <div id="_av-form-area"></div>
     </div>`;
 
-  const renderTriggerDetail = () => {
-    const tt  = document.getElementById('_af-trigger-type')?.value;
-    const box = document.getElementById('_af-trigger-detail');
-    if (!box) return;
+  container.querySelector('#_av-create-first')?.addEventListener('click', () => {
+    const area = document.getElementById('_av-form-area');
+    area.innerHTML = `<hr style="border:none;border-top:1px solid var(--color-border);margin:14px 0">`;
+    renderAutoForm(area, null, entityType, onMutate);
+  });
+  container.querySelectorAll('.auto-enabled-chk').forEach(chk => {
+    chk.onchange = async () => {
+      await api('PATCH', `/api/automations/${chk.dataset.autoId}`, { enabled: chk.checked }).catch(() => {});
+    };
+  });
+  container.querySelectorAll('.auto-del-btn').forEach(btn => {
+    btn.onclick = () => showConfirmModal('Delete this automation?', async () => {
+      await api('DELETE', `/api/automations/${btn.dataset.autoId}`).catch(() => {});
+      onMutate();
+    });
+  });
+  container.querySelectorAll('.auto-edit-btn').forEach(btn => {
+    btn.onclick = () => {
+      const a = safe.find(x => String(x.id) === btn.dataset.autoId);
+      if (!a) return;
+      const area = document.getElementById('_av-form-area');
+      area.innerHTML = `<hr style="border:none;border-top:1px solid var(--color-border);margin:14px 0">`;
+      renderAutoForm(area, a, entityType, onMutate);
+      area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+  });
+}
+
+// Notion-style automation form with many-to-many triggers + actions
+function renderAutoForm(container, existing, defEntityType, onSave) {
+  // ── State ───────────────────────────────────────────────────────────────
+  let ruleName   = existing?.name        || '';
+  let enabled    = existing?.enabled     !== false;
+  let entType    = existing?.entity_type || defEntityType || 'task';
+  let trigLogic  = existing?.trigger_logic || 'all';
+  let triggers   = parseCfgArray(existing?.trigger_config);
+  let actions    = parseCfgArray(existing?.action_config);
+  // Backward compat: if no array, use top-level type fields
+  if (!triggers.length && existing?.trigger_type) {
+    triggers = [{ trigger_type: existing.trigger_type, ...((() => { try { return JSON.parse(existing.trigger_config||'{}'); } catch { return {}; } })()) }];
+  }
+  if (!actions.length && existing?.action_type) {
+    actions = [{ action_type: existing.action_type, ...((() => { try { return JSON.parse(existing.action_config||'{}'); } catch { return {}; } })()) }];
+  }
+  if (!triggers.length) triggers = [{ trigger_type: 'property_changed', property: 'status', to_value: 'done' }];
+  if (!actions.length)  actions  = [{ action_type: 'add_item', template: 'copy_current', due_date_offset: { interval: 1, unit: 'weeks' } }];
+
+  // ── Row renderers ───────────────────────────────────────────────────────
+  function triggerRowHtml(t, i) {
+    const tt = t.trigger_type || 'property_changed';
+    const props = ENTITY_PROPS_MAP[entType] || ENTITY_PROPS_MAP.task;
+    const propKey = t.property || props[0]?.key || 'status';
+    const vals = getEntityPropValues(entType, propKey);
+    const propOpts = props.map(p => `<option value="${p.key}" ${propKey===p.key?'selected':''}>${p.label}</option>`).join('');
+    const toVal = t.to_value || '';
+
+    let bodyHtml = '';
     if (tt === 'property_changed') {
-      box.innerHTML = `
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <span style="font-size:12px;color:var(--text-muted)">Property</span>
-          <input class="auto-form-input" id="_af-tc-prop" style="width:110px" placeholder="e.g. status" value="${escHtml(tc.property||'status')}">
-          <span style="font-size:12px;color:var(--text-muted)">changes to</span>
-          <input class="auto-form-input" id="_af-tc-val" style="width:110px" placeholder="e.g. done" value="${escHtml(tc.to_value||'done')}">
-        </div>`;
+      const valControl = vals
+        ? `<select class="auto-pill-sel auto-pill-val" data-field="to_value">${vals.map(v=>`<option value="${v}" ${toVal===v?'selected':''}>${v.replace(/_/g,' ')}</option>`).join('')}</select>`
+        : `<input class="auto-pill-input" data-field="to_value" placeholder="value" value="${escHtml(toVal)}">`;
+      bodyHtml = `<select class="auto-pill-sel" data-field="property">${propOpts}</select>
+                  <span class="auto-pill-sep">is</span>${valControl}`;
     } else if (tt === 'frequency') {
-      box.innerHTML = `
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <span style="font-size:12px;color:var(--text-muted)">Every</span>
-          <input class="auto-form-input" id="_af-tc-iv" type="number" min="1" style="width:60px" value="${tc.interval||1}">
-          <select class="auto-form-select" id="_af-tc-unit" style="width:100px">
-            ${['days','weeks','months','years'].map(u=>`<option value="${u}" ${(tc.unit||'weeks')===u?'selected':''}>${u}</option>`).join('')}
-          </select>
-        </div>`;
+      bodyHtml = `<span class="auto-pill-sep">every</span>
+        <input class="auto-pill-input auto-pill-num" type="number" min="1" data-field="interval" value="${t.interval||1}">
+        <select class="auto-pill-sel" data-field="unit">${['days','weeks','months','years'].map(u=>`<option value="${u}" ${(t.unit||'weeks')===u?'selected':''}>${u}</option>`).join('')}</select>`;
     } else {
-      box.innerHTML = '';
+      bodyHtml = `<span class="auto-pill-sep" style="color:var(--text-muted)">any item is added</span>`;
     }
-  };
+    return `<div class="af-row" data-trow="${i}">
+      <div class="af-row-icon">⚡</div>
+      <select class="auto-pill-sel auto-pill-type" data-field="trigger_type">
+        <option value="property_changed" ${tt==='property_changed'?'selected':''}>Property changed</option>
+        <option value="item_added"       ${tt==='item_added'?'selected':''}>Item added</option>
+        <option value="frequency"        ${tt==='frequency'?'selected':''}>Frequency</option>
+      </select>
+      <div class="af-row-body">${bodyHtml}</div>
+      <button class="af-row-remove" title="Remove trigger"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>`;
+  }
 
-  const renderActionDetail = () => {
-    const at  = document.getElementById('_af-action-type')?.value;
-    const box = document.getElementById('_af-action-detail');
-    if (!box) return;
+  function actionRowHtml(a, i) {
+    const at = a.action_type || 'edit_property';
+    const props = ENTITY_PROPS_MAP[entType] || ENTITY_PROPS_MAP.task;
+    const fieldKey = a.field || props[0]?.key || 'status';
+    const vals = getEntityPropValues(entType, fieldKey);
+    const fieldOpts = props.map(p => `<option value="${p.key}" ${fieldKey===p.key?'selected':''}>${p.label}</option>`).join('');
+    const av = a.value || '';
+    const iv = a.due_date_offset?.interval ?? 1;
+    const un = a.due_date_offset?.unit ?? 'weeks';
+
+    let bodyHtml = '';
     if (at === 'edit_property') {
-      box.innerHTML = `
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <span style="font-size:12px;color:var(--text-muted)">Set field</span>
-          <input class="auto-form-input" id="_af-ac-field" style="width:110px" placeholder="e.g. status" value="${escHtml(ac.field||'')}">
-          <span style="font-size:12px;color:var(--text-muted)">to</span>
-          <input class="auto-form-input" id="_af-ac-value" style="width:110px" placeholder="e.g. todo" value="${escHtml(ac.value||'')}">
-        </div>`;
+      const valControl = vals
+        ? `<select class="auto-pill-sel auto-pill-val" data-field="value">${vals.map(v=>`<option value="${v}" ${av===v?'selected':''}>${v.replace(/_/g,' ')}</option>`).join('')}</select>`
+        : `<input class="auto-pill-input" data-field="value" placeholder="value" value="${escHtml(av)}">`;
+      bodyHtml = `<span class="auto-pill-sep">Set</span>
+        <select class="auto-pill-sel" data-field="field">${fieldOpts}</select>
+        <span class="auto-pill-sep">to</span>${valControl}`;
     } else if (at === 'add_item') {
-      box.innerHTML = `
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <span style="font-size:12px;color:var(--text-muted)">Template</span>
-            <select class="auto-form-select" id="_af-ac-template" style="width:160px">
-              <option value="copy_current" ${(ac.template||'copy_current')==='copy_current'?'selected':''}>Copy current item</option>
-              <option value="blank"        ${ac.template==='blank'?'selected':''}>Blank new item</option>
-            </select>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <span style="font-size:12px;color:var(--text-muted)">Advance due date by</span>
-            <input class="auto-form-input" id="_af-ac-iv" type="number" min="0" style="width:60px" value="${recurInterval}">
-            <select class="auto-form-select" id="_af-ac-unit" style="width:100px">
-              ${['days','weeks','months','years'].map(u=>`<option value="${u}" ${recurUnit===u?'selected':''}>${u}</option>`).join('')}
-            </select>
-          </div>
-        </div>`;
-    } else if (at === 'edit_item') {
-      box.innerHTML = `
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <span style="font-size:12px;color:var(--text-muted)">Set field</span>
-          <input class="auto-form-input" id="_af-ac-field" style="width:110px" placeholder="field name" value="${escHtml(ac.field||'')}">
-          <span style="font-size:12px;color:var(--text-muted)">to</span>
-          <input class="auto-form-input" id="_af-ac-value" style="width:110px" placeholder="value" value="${escHtml(ac.value||'')}">
-        </div>`;
-    } else if (at === 'notify') {
-      box.innerHTML = `<div style="font-size:12px;color:var(--text-muted);padding:4px 0">Notifications are reserved for future development.</div>`;
+      bodyHtml = `<span class="auto-pill-sep">Create copy, due +</span>
+        <input class="auto-pill-input auto-pill-num" type="number" min="0" data-field="due_date_offset.interval" value="${iv}">
+        <select class="auto-pill-sel" data-field="due_date_offset.unit">${['days','weeks','months','years'].map(u=>`<option value="${u}" ${un===u?'selected':''}>${u}</option>`).join('')}</select>`;
     } else {
-      box.innerHTML = '';
+      bodyHtml = `<span class="auto-pill-sep" style="color:var(--text-muted)">notification (coming soon)</span>`;
     }
-  };
+    return `<div class="af-row" data-arow="${i}">
+      <div class="af-row-icon">✦</div>
+      <select class="auto-pill-sel auto-pill-type" data-field="action_type">
+        <option value="edit_property" ${at==='edit_property'?'selected':''}>Set property</option>
+        <option value="add_item"      ${at==='add_item'?'selected':''}>Create item</option>
+        <option value="notify"        ${at==='notify'?'selected':''}>Notify (future)</option>
+      </select>
+      <div class="af-row-body">${bodyHtml}</div>
+      <button class="af-row-remove" title="Remove action"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>`;
+  }
 
-  renderTriggerDetail();
-  renderActionDetail();
+  // ── Render ──────────────────────────────────────────────────────────────
+  function render() {
+    const formEl = container.querySelector('.af-form-wrap') || document.createElement('div');
+    formEl.className = 'af-form-wrap';
+    formEl.innerHTML = `
+      <div class="af-header">
+        <input class="af-name-input" id="_af-name" placeholder="Automation name…" value="${escHtml(ruleName)}">
+        <label class="auto-toggle-label af-enabled-toggle">
+          <input type="checkbox" id="_af-enabled" ${enabled?'checked':''}>
+          <span class="auto-toggle-track"></span>
+          <span class="af-toggle-text">${enabled?'Active':'Inactive'}</span>
+        </label>
+      </div>
+      <div class="af-entity-row">
+        <span class="auto-pill-sep">For</span>
+        <select class="auto-pill-sel" id="_af-entity">
+          ${['task','goal','project','sprint','note','resource'].map(e=>`<option value="${e}" ${entType===e?'selected':''}>${e}s</option>`).join('')}
+        </select>
+      </div>
+      <hr class="af-divider">
+      <div class="af-section">
+        <div class="af-section-header">
+          <span class="auto-pill-sep">When</span>
+          <select class="auto-pill-sel af-logic-sel" id="_af-trig-logic">
+            <option value="all" ${trigLogic==='all'?'selected':''}>all</option>
+            <option value="any" ${trigLogic==='any'?'selected':''}>any</option>
+          </select>
+          <span class="auto-pill-sep">triggers occur</span>
+        </div>
+        <div class="af-rows" id="_af-trigger-rows">${triggers.map(triggerRowHtml).join('')}</div>
+        <button class="af-add-btn" id="_af-add-trigger">+ Add trigger</button>
+      </div>
+      <div class="af-connector"><div class="af-connector-line"></div></div>
+      <div class="af-section">
+        <div class="af-section-header"><span class="auto-pill-sep" style="font-weight:700;color:var(--color-text)">Do</span></div>
+        <div class="af-rows" id="_af-action-rows">${actions.map(actionRowHtml).join('')}</div>
+        <button class="af-add-btn" id="_af-add-action">+ Add action</button>
+      </div>
+      <hr class="af-divider">
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" id="_af-save">Save rule</button>
+        <button class="btn btn-sm btn-ghost" id="_af-cancel">Cancel</button>
+      </div>`;
 
-  document.getElementById('_af-trigger-type')?.addEventListener('change', renderTriggerDetail);
-  document.getElementById('_af-action-type')?.addEventListener('change', renderActionDetail);
+    if (!container.querySelector('.af-form-wrap')) container.appendChild(formEl);
 
-  document.getElementById('_af-cancel')?.addEventListener('click', onSave);
+    // Wire header
+    formEl.querySelector('#_af-name').oninput = e => { ruleName = e.target.value; };
+    formEl.querySelector('#_af-enabled').onchange = e => {
+      enabled = e.target.checked;
+      formEl.querySelector('.af-toggle-text').textContent = enabled ? 'Active' : 'Inactive';
+    };
+    formEl.querySelector('#_af-entity').onchange = e => { entType = e.target.value; render(); };
+    formEl.querySelector('#_af-trig-logic').onchange = e => { trigLogic = e.target.value; };
 
-  document.getElementById('_af-save')?.addEventListener('click', async () => {
-    const name       = document.getElementById('_af-name')?.value.trim();
-    const desc       = document.getElementById('_af-desc')?.value.trim();
-    const entType    = document.getElementById('_af-entity')?.value;
-    const trigType   = document.getElementById('_af-trigger-type')?.value;
-    const actType    = document.getElementById('_af-action-type')?.value;
-
-    if (!name) { showToast('Rule name is required', 'error'); return; }
-
-    // Build trigger config
-    let trigCfg = {};
-    if (trigType === 'property_changed') {
-      trigCfg = {
-        property:  document.getElementById('_af-tc-prop')?.value.trim() || 'status',
-        to_value:  document.getElementById('_af-tc-val')?.value.trim()  || 'done',
-      };
-    } else if (trigType === 'frequency') {
-      trigCfg = {
-        interval: parseInt(document.getElementById('_af-tc-iv')?.value) || 1,
-        unit:     document.getElementById('_af-tc-unit')?.value || 'weeks',
-      };
-    }
-
-    // Build action config
-    let actCfg = {};
-    if (actType === 'edit_property' || actType === 'edit_item') {
-      actCfg = {
-        field: document.getElementById('_af-ac-field')?.value.trim(),
-        value: document.getElementById('_af-ac-value')?.value.trim(),
-      };
-    } else if (actType === 'add_item') {
-      const template = document.getElementById('_af-ac-template')?.value || 'copy_current';
-      const iv       = parseInt(document.getElementById('_af-ac-iv')?.value) || 0;
-      const unit     = document.getElementById('_af-ac-unit')?.value || 'weeks';
-      actCfg = {
-        template,
-        field_overrides:  { status: 'todo' },
-        due_date_offset: iv > 0 ? { from_field: 'due_date', interval: iv, unit } : undefined,
-      };
-    }
-
-    const payload = {
-      name, description: desc || '', entity_type: entType, enabled: true,
-      trigger_type: trigType, trigger_config: JSON.stringify(trigCfg),
-      action_type:  actType,  action_config:  JSON.stringify(actCfg),
+    // Trigger row events
+    formEl.querySelector('#_af-trigger-rows').addEventListener('change', e => {
+      const row = e.target.closest('[data-trow]'); if (!row) return;
+      const i = parseInt(row.dataset.trow), field = e.target.dataset.field;
+      if (!field) return;
+      if (field.includes('.')) {
+        const [p, c] = field.split('.');
+        triggers[i][p] = { ...(triggers[i][p]||{}), [c]: e.target.type==='number' ? +e.target.value : e.target.value };
+      } else {
+        triggers[i] = { ...triggers[i], [field]: e.target.value };
+      }
+      if (field === 'trigger_type' || field === 'property') render();
+    });
+    formEl.querySelector('#_af-trigger-rows').addEventListener('click', e => {
+      const btn = e.target.closest('.af-row-remove'); if (!btn) return;
+      triggers.splice(parseInt(btn.closest('[data-trow]').dataset.trow), 1);
+      render();
+    });
+    formEl.querySelector('#_af-add-trigger').onclick = () => {
+      triggers.push({ trigger_type: 'property_changed', property: 'status', to_value: 'done' });
+      render();
     };
 
-    if (existing?.id) {
-      await api('PATCH', `/api/automations/${existing.id}`, payload).catch(e => { showToast('Save failed', 'error'); });
-    } else {
-      await api('POST', '/api/automations', payload).catch(e => { showToast('Save failed', 'error'); });
-    }
-    showToast('Automation saved', 'success');
-    onSave();
-  });
+    // Action row events
+    formEl.querySelector('#_af-action-rows').addEventListener('change', e => {
+      const row = e.target.closest('[data-arow]'); if (!row) return;
+      const i = parseInt(row.dataset.arow), field = e.target.dataset.field;
+      if (!field) return;
+      if (field.includes('.')) {
+        const [p, c] = field.split('.');
+        actions[i][p] = { ...(actions[i][p]||{}), [c]: e.target.type==='number' ? +e.target.value : e.target.value };
+      } else {
+        actions[i] = { ...actions[i], [field]: e.target.value };
+      }
+      if (field === 'action_type' || field === 'field') render();
+    });
+    formEl.querySelector('#_af-action-rows').addEventListener('click', e => {
+      const btn = e.target.closest('.af-row-remove'); if (!btn) return;
+      actions.splice(parseInt(btn.closest('[data-arow]').dataset.arow), 1);
+      render();
+    });
+    formEl.querySelector('#_af-add-action').onclick = () => {
+      actions.push({ action_type: 'edit_property', field: 'status', value: 'todo' });
+      render();
+    };
+
+    formEl.querySelector('#_af-cancel').onclick = onSave;
+    formEl.querySelector('#_af-save').onclick = async () => {
+      // Collect any unsaved text inputs
+      formEl.querySelectorAll('[data-field]').forEach(el => {
+        const row = el.closest('[data-trow]') || el.closest('[data-arow]');
+        if (!row) return;
+        const isTrig = row.dataset.trow !== undefined;
+        const i = parseInt(isTrig ? row.dataset.trow : row.dataset.arow);
+        const field = el.dataset.field;
+        if (!field || el.tagName === 'SELECT') return; // selects already handled
+        const val = el.type === 'number' ? +el.value : el.value;
+        if (isTrig) {
+          if (field.includes('.')) { const [p,c]=field.split('.'); triggers[i][p]={...(triggers[i][p]||{}),[c]:val}; }
+          else triggers[i][field] = val;
+        } else {
+          if (field.includes('.')) { const [p,c]=field.split('.'); actions[i][p]={...(actions[i][p]||{}),[c]:val}; }
+          else actions[i][field] = val;
+        }
+      });
+
+      const name = formEl.querySelector('#_af-name').value.trim();
+      if (!name) { showToast('Name is required', 'error'); return; }
+
+      const payload = {
+        name, entity_type: entType, enabled, trigger_logic: trigLogic,
+        trigger_type: triggers[0]?.trigger_type || 'property_changed',
+        trigger_config: JSON.stringify(triggers),
+        action_type: actions[0]?.action_type || 'edit_property',
+        action_config: JSON.stringify(actions),
+      };
+      try {
+        if (existing?.id) {
+          await api('PATCH', `/api/automations/${existing.id}`, payload);
+        } else {
+          await api('POST', '/api/automations', payload);
+        }
+        showToast('Automation saved', 'success');
+        onSave();
+      } catch { showToast('Save failed', 'error'); }
+    };
+  }
+
+  render();
 }
 
 /* ─── Raibis Settings Window ─────────────────────────────────────────── */

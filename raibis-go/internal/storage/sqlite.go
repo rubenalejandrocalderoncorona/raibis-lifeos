@@ -189,14 +189,17 @@ func applyMigrations(db *sql.DB) error {
 			description    TEXT    NOT NULL DEFAULT '',
 			entity_type    TEXT    NOT NULL DEFAULT 'task',
 			enabled        INTEGER NOT NULL DEFAULT 1,
-			trigger_type   TEXT    NOT NULL,
-			trigger_config TEXT    NOT NULL DEFAULT '{}',
-			action_type    TEXT    NOT NULL,
-			action_config  TEXT    NOT NULL DEFAULT '{}',
+			trigger_logic  TEXT    NOT NULL DEFAULT 'all',
+			trigger_type   TEXT    NOT NULL DEFAULT '',
+			trigger_config TEXT    NOT NULL DEFAULT '[]',
+			action_type    TEXT    NOT NULL DEFAULT '',
+			action_config  TEXT    NOT NULL DEFAULT '[]',
 			created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_automations_entity ON automations(entity_type)`,
+		// Migration: add trigger_logic to existing automations table
+		`ALTER TABLE automations ADD COLUMN trigger_logic TEXT NOT NULL DEFAULT 'all'`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -1306,11 +1309,15 @@ func (s *sqliteStorage) ListResourcesByTask(taskID int64) ([]*domain.ResourceLin
 func (s *sqliteStorage) CreateAutomation(a *domain.Automation) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	tl := a.TriggerLogic
+	if tl == "" {
+		tl = "all"
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO automations (name, description, entity_type, enabled, trigger_type, trigger_config, action_type, action_config)
-		 VALUES (?,?,?,?,?,?,?,?)`,
+		`INSERT INTO automations (name, description, entity_type, enabled, trigger_logic, trigger_type, trigger_config, action_type, action_config)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
 		a.Name, a.Description, a.EntityType, boolToInt(a.Enabled),
-		a.TriggerType, a.TriggerConfig, a.ActionType, a.ActionConfig,
+		tl, a.TriggerType, a.TriggerConfig, a.ActionType, a.ActionConfig,
 	)
 	if err != nil {
 		return 0, err
@@ -1322,7 +1329,7 @@ func (s *sqliteStorage) GetAutomation(id int64) (*domain.Automation, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row := s.db.QueryRow(
-		`SELECT id, name, description, entity_type, enabled, trigger_type, trigger_config, action_type, action_config, created_at, updated_at
+		`SELECT id, name, description, entity_type, enabled, trigger_logic, trigger_type, trigger_config, action_type, action_config, created_at, updated_at
 		 FROM automations WHERE id = ?`, id)
 	return scanAutomation(row)
 }
@@ -1330,7 +1337,7 @@ func (s *sqliteStorage) GetAutomation(id int64) (*domain.Automation, error) {
 func (s *sqliteStorage) ListAutomations(entityType string) ([]*domain.Automation, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	q := `SELECT id, name, description, entity_type, enabled, trigger_type, trigger_config, action_type, action_config, created_at, updated_at
+	q := `SELECT id, name, description, entity_type, enabled, trigger_logic, trigger_type, trigger_config, action_type, action_config, created_at, updated_at
 	      FROM automations`
 	var args []any
 	if entityType != "" {
@@ -1357,11 +1364,15 @@ func (s *sqliteStorage) ListAutomations(entityType string) ([]*domain.Automation
 func (s *sqliteStorage) UpdateAutomation(a *domain.Automation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	tl := a.TriggerLogic
+	if tl == "" {
+		tl = "all"
+	}
 	_, err := s.db.Exec(
-		`UPDATE automations SET name=?, description=?, entity_type=?, enabled=?, trigger_type=?, trigger_config=?, action_type=?, action_config=?, updated_at=CURRENT_TIMESTAMP
+		`UPDATE automations SET name=?, description=?, entity_type=?, enabled=?, trigger_logic=?, trigger_type=?, trigger_config=?, action_type=?, action_config=?, updated_at=CURRENT_TIMESTAMP
 		 WHERE id=?`,
 		a.Name, a.Description, a.EntityType, boolToInt(a.Enabled),
-		a.TriggerType, a.TriggerConfig, a.ActionType, a.ActionConfig, a.ID,
+		tl, a.TriggerType, a.TriggerConfig, a.ActionType, a.ActionConfig, a.ID,
 	)
 	return err
 }
@@ -1381,7 +1392,7 @@ func scanAutomation(row automationScanner) (*domain.Automation, error) {
 	a := &domain.Automation{}
 	var enabled int
 	err := row.Scan(&a.ID, &a.Name, &a.Description, &a.EntityType, &enabled,
-		&a.TriggerType, &a.TriggerConfig, &a.ActionType, &a.ActionConfig,
+		&a.TriggerLogic, &a.TriggerType, &a.TriggerConfig, &a.ActionType, &a.ActionConfig,
 		&a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return nil, err

@@ -4195,10 +4195,13 @@ func automationsHandler(store storage.Storage) http.HandlerFunc {
 				return
 			}
 			if a.TriggerConfig == "" {
-				a.TriggerConfig = "{}"
+				a.TriggerConfig = "[]"
 			}
 			if a.ActionConfig == "" {
-				a.ActionConfig = "{}"
+				a.ActionConfig = "[]"
+			}
+			if a.TriggerLogic == "" {
+				a.TriggerLogic = "all"
 			}
 			id, err := store.CreateAutomation(&a)
 			if err != nil {
@@ -4252,6 +4255,9 @@ func automationHandler(store storage.Storage) http.HandlerFunc {
 			if v, ok := body["enabled"].(bool); ok {
 				a.Enabled = v
 			}
+			if v, ok := body["trigger_logic"].(string); ok {
+				a.TriggerLogic = v
+			}
 			if v, ok := body["trigger_type"].(string); ok {
 				a.TriggerType = v
 			}
@@ -4285,60 +4291,116 @@ func automationHandler(store storage.Storage) http.HandlerFunc {
 // runAutomations executes all enabled automations that match the given trigger.
 // Called after a task is updated. event is "status_changed" etc.
 // prevStatus is the status before the update.
+// parseCfgArray normalises an automation config string into a slice of maps.
+// Supports both legacy single-object format and new JSON-array format.
+func parseCfgArray(s string) []map[string]any {
+	if s == "" {
+		return nil
+	}
+	// Try array first
+	var arr []map[string]any
+	if err := json.Unmarshal([]byte(s), &arr); err == nil {
+		return arr
+	}
+	// Fall back to single object
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(s), &obj); err == nil {
+		return []map[string]any{obj}
+	}
+	return nil
+}
+
 func runAutomations(store storage.Storage, svc service.TaskService, t *domain.Task, prevStatus domain.Status) {
 	if t.Status != domain.Status("done") || prevStatus == domain.Status("done") {
 		return
 	}
 
-	// Run DB-stored automations for entity_type=task, trigger_type=property_changed.
-	// Track whether any DB automation handled recurrence for this task specifically,
-	// so the fallback recur_interval logic knows not to double-create.
 	automations, err := store.ListAutomations("task")
 	if err != nil {
 		return
 	}
+
+	// matchesTrigger returns true when a single trigger object fires for this event.
+	matchesTrigger := func(tc map[string]any) bool {
+		tt, _ := tc["trigger_type"].(string)
+		if tt == "" {
+			tt = "property_changed" // legacy: assume property_changed
+		}
+		if tt != "property_changed" {
+			return false
+		}
+		if tc["property"] != "status" {
+			return false
+		}
+		if tc["to_value"] != "done" {
+			return false
+		}
+		if eid, ok := tc["entity_id"].(float64); ok && int64(eid) != t.ID {
+			return false
+		}
+		return true
+	}
+
 	dbHandledRecur := false
+
 	for _, a := range automations {
 		if !a.Enabled {
 			continue
 		}
-		if a.TriggerType != "property_changed" {
+
+		triggers := parseCfgArray(a.TriggerConfig)
+		// Backward compat: if trigger_config is empty, synthesise from trigger_type column
+		if len(triggers) == 0 && a.TriggerType != "" {
+			triggers = []map[string]any{{"trigger_type": a.TriggerType}}
+		}
+		if len(triggers) == 0 {
 			continue
 		}
-		var tc map[string]any
-		if err := json.Unmarshal([]byte(a.TriggerConfig), &tc); err != nil {
-			continue
+
+		// Evaluate trigger logic (all / any)
+		trigLogic := a.TriggerLogic
+		if trigLogic == "" {
+			trigLogic = "all"
 		}
-		// Match: property == "status" and to_value == "done" and entity_id matches (or wildcard)
-		if tc["property"] != "status" || tc["to_value"] != "done" {
-			continue
-		}
-		if eid, ok := tc["entity_id"].(float64); ok && int64(eid) != t.ID {
-			continue
-		}
-		// If this automation targets this task specifically and creates a copy, mark handled
-		if eid, ok := tc["entity_id"].(float64); ok && int64(eid) == t.ID && a.ActionType == "add_item" {
-			dbHandledRecur = true
-		}
-		// Execute action
-		var ac map[string]any
-		if err := json.Unmarshal([]byte(a.ActionConfig), &ac); err != nil {
-			continue
-		}
-		switch a.ActionType {
-		case "edit_property":
-			field, _ := ac["field"].(string)
-			value, _ := ac["value"].(string)
-			if field != "" && value != "" {
-				cur, _ := store.GetTask(t.ID)
-				if cur != nil {
-					_ = field
-					_ = value
-					// For future use: apply field update to the task
+		var matched bool
+		if trigLogic == "any" {
+			for _, tc := range triggers {
+				if matchesTrigger(tc) {
+					matched = true
+					break
 				}
 			}
-		case "add_item":
-			if ac["template"] == "copy_current" {
+		} else { // "all"
+			matched = true
+			for _, tc := range triggers {
+				if !matchesTrigger(tc) {
+					matched = false
+					break
+				}
+			}
+		}
+		if !matched {
+			continue
+		}
+
+		actions := parseCfgArray(a.ActionConfig)
+		// Backward compat: synthesise from action_type column
+		if len(actions) == 0 && a.ActionType != "" {
+			actions = []map[string]any{{"action_type": a.ActionType}}
+		}
+
+		for _, ac := range actions {
+			at, _ := ac["action_type"].(string)
+			if at == "" {
+				at = a.ActionType
+			}
+			switch at {
+			case "add_item":
+				// Always mark as handled so the fallback recur doesn't double-create.
+				dbHandledRecur = true
+				if ac["template"] != "copy_current" {
+					continue
+				}
 				newTask := *t
 				newTask.ID = 0
 				newTask.Status = domain.Status("todo")
@@ -4382,8 +4444,7 @@ func runAutomations(store storage.Storage, svc service.TaskService, t *domain.Ta
 		}
 	}
 
-	// Fallback: if task has recur_interval set but no DB automation handled it,
-	// use the built-in recurrence logic for backward compatibility.
+	// Fallback: tasks with recur_interval but no matching DB automation use built-in logic.
 	if !dbHandledRecur && t.RecurInterval != nil && *t.RecurInterval > 0 {
 		newTask := *t
 		newTask.ID = 0
