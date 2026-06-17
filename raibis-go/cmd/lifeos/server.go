@@ -4288,6 +4288,19 @@ func automationHandler(store storage.Storage) http.HandlerFunc {
 	}
 }
 
+func addDateDuration(base time.Time, interval int, unit string) time.Time {
+	switch strings.ToLower(unit) {
+	case "weeks":
+		return base.AddDate(0, 0, interval*7)
+	case "months":
+		return base.AddDate(0, interval, 0)
+	case "years":
+		return base.AddDate(interval, 0, 0)
+	default:
+		return base.AddDate(0, 0, interval)
+	}
+}
+
 // runAutomations executes all enabled automations that match the given trigger.
 // Called after a task is updated. event is "status_changed" etc.
 // prevStatus is the status before the update.
@@ -4406,39 +4419,108 @@ func runAutomations(store storage.Storage, svc service.TaskService, t *domain.Ta
 				newTask.Status = domain.Status("todo")
 				newTask.LoggedMins = 0
 				newTask.PomodorosFinished = nil
-				if fov, ok := ac["field_overrides"].(map[string]any); ok {
-					if s, ok := fov["status"].(string); ok {
-						newTask.Status = domain.Status(s)
-					}
-				}
-				if ddo, ok := ac["due_date_offset"].(map[string]any); ok {
-					iv := 1
-					unit := "days"
-					if v, ok := ddo["interval"].(float64); ok {
-						iv = int(v)
-					}
-					if v, ok := ddo["unit"].(string); ok {
-						unit = v
-					}
-					if t.DueDate != nil {
-						var next time.Time
-						switch strings.ToLower(unit) {
-						case "days":
-							next = t.DueDate.AddDate(0, 0, iv)
-						case "weeks":
-							next = t.DueDate.AddDate(0, 0, iv*7)
-						case "months":
-							next = t.DueDate.AddDate(0, iv, 0)
-						case "years":
-							next = t.DueDate.AddDate(iv, 0, 0)
-						default:
-							next = t.DueDate.AddDate(0, 0, iv)
+
+				var customProps [][2]string // [field, value] for custom properties
+
+				if overrides, ok := ac["overrides"].([]any); ok {
+					// New format: overrides array
+					for _, raw := range overrides {
+						ov, ok := raw.(map[string]any)
+						if !ok {
+							continue
 						}
-						newTask.DueDate = &next
+						field, _ := ov["field"].(string)
+						switch field {
+						case "status":
+							if v, ok := ov["value"].(string); ok && v != "" {
+								newTask.Status = domain.Status(v)
+							}
+						case "priority":
+							if v, ok := ov["value"].(string); ok {
+								newTask.Priority = domain.Priority(v)
+							}
+						case "due_date":
+							iv := 1
+							unit := "days"
+							if v, ok := ov["offset_interval"].(float64); ok {
+								iv = int(v)
+							}
+							if v, ok := ov["offset_unit"].(string); ok {
+								unit = v
+							}
+							if t.DueDate != nil {
+								next := addDateDuration(*t.DueDate, iv, unit)
+								newTask.DueDate = &next
+							}
+						case "goal_id":
+							if v, ok := ov["value"].(string); ok {
+								if id, err := strconv.ParseInt(v, 10, 64); err == nil && id > 0 {
+									newTask.GoalID = &id
+								} else {
+									newTask.GoalID = nil
+								}
+							}
+						case "project_id":
+							if v, ok := ov["value"].(string); ok {
+								if id, err := strconv.ParseInt(v, 10, 64); err == nil && id > 0 {
+									newTask.ProjectID = &id
+								} else {
+									newTask.ProjectID = nil
+								}
+							}
+						case "sprint_id":
+							if v, ok := ov["value"].(string); ok {
+								if id, err := strconv.ParseInt(v, 10, 64); err == nil && id > 0 {
+									newTask.SprintID = &id
+								} else {
+									newTask.SprintID = nil
+								}
+							}
+						case "category_id":
+							if v, ok := ov["value"].(string); ok {
+								if id, err := strconv.ParseInt(v, 10, 64); err == nil && id > 0 {
+									newTask.CategoryID = &id
+								} else {
+									newTask.CategoryID = nil
+								}
+							}
+						default:
+							if field != "" {
+								if v, ok := ov["value"].(string); ok {
+									customProps = append(customProps, [2]string{field, v})
+								}
+							}
+						}
+					}
+				} else {
+					// Old format backward compat: field_overrides + due_date_offset
+					if fov, ok := ac["field_overrides"].(map[string]any); ok {
+						if s, ok := fov["status"].(string); ok {
+							newTask.Status = domain.Status(s)
+						}
+					}
+					if ddo, ok := ac["due_date_offset"].(map[string]any); ok {
+						iv := 1
+						unit := "days"
+						if v, ok := ddo["interval"].(float64); ok {
+							iv = int(v)
+						}
+						if v, ok := ddo["unit"].(string); ok {
+							unit = v
+						}
+						if t.DueDate != nil {
+							next := addDateDuration(*t.DueDate, iv, unit)
+							newTask.DueDate = &next
+						}
 					}
 				}
-				if _, err := svc.Create(&newTask); err != nil {
+				created, err := svc.Create(&newTask)
+				if err != nil {
 					log.Printf("automations: add_item for task %d: %v", t.ID, err)
+					continue
+				}
+				for _, cp := range customProps {
+					_ = store.SetProperty("task", created.ID, cp[0], cp[1])
 				}
 			}
 		}

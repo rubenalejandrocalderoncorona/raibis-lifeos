@@ -11307,7 +11307,33 @@ function getEntityPropValues(entType, propKey) {
   if (entType === 'project' && propKey === 'status') return ['planning','active','on_hold','done','archived'];
   if (entType === 'sprint'  && propKey === 'status') return ['planning','active','completed'];
   if (propKey === 'archived') return ['true','false'];
+  // Check custom prop defs for select/status types
+  const customDefs = getCustomPropDefs(entType);
+  const def = customDefs.find(d => d.key === propKey);
+  if (def && (def.type === 'select' || def.type === 'status' || def.type === 'multi_select') && def.options?.length) {
+    return def.options;
+  }
   return null; // free-text input
+}
+
+function getAllActionProps(entType) {
+  const builtIn = ENTITY_PROPS_MAP[entType] || ENTITY_PROPS_MAP.task;
+  const custom = getCustomPropDefs(entType).map(d => ({ key: d.key, label: d.label || d.key }));
+  return [...builtIn, ...custom];
+}
+
+function normalizeAddItemAction(a) {
+  if (a.action_type !== 'add_item' || a.overrides) return a;
+  const overrides = [];
+  if (a.field_overrides && typeof a.field_overrides === 'object') {
+    for (const [field, value] of Object.entries(a.field_overrides)) {
+      overrides.push({ field, value: String(value) });
+    }
+  }
+  if (a.due_date_offset && typeof a.due_date_offset === 'object') {
+    overrides.push({ field: 'due_date', offset_interval: a.due_date_offset.interval || 1, offset_unit: a.due_date_offset.unit || 'days' });
+  }
+  return { ...a, overrides: overrides.length ? overrides : [{ field: 'status', value: 'todo' }], template: 'copy_current' };
 }
 
 function parseCfgArray(s) {
@@ -11511,24 +11537,24 @@ function renderAutoForm(container, existing, defEntityType, onSave) {
   let enabled    = existing?.enabled     !== false;
   let entType    = existing?.entity_type || defEntityType || 'task';
   let trigLogic  = existing?.trigger_logic || 'all';
-  let triggers   = parseCfgArray(existing?.trigger_config);
-  let actions    = parseCfgArray(existing?.action_config);
+  let triggers = parseCfgArray(existing?.trigger_config);
+  let actions  = parseCfgArray(existing?.action_config).map(normalizeAddItemAction);
   // Backward compat: if no array, use top-level type fields
   if (!triggers.length && existing?.trigger_type) {
     triggers = [{ trigger_type: existing.trigger_type, ...((() => { try { return JSON.parse(existing.trigger_config||'{}'); } catch { return {}; } })()) }];
   }
   if (!actions.length && existing?.action_type) {
-    actions = [{ action_type: existing.action_type, ...((() => { try { return JSON.parse(existing.action_config||'{}'); } catch { return {}; } })()) }];
+    actions = [normalizeAddItemAction({ action_type: existing.action_type, ...((() => { try { return JSON.parse(existing.action_config||'{}'); } catch { return {}; } })()) })];
   }
   // Backward compat: single-object config parsed without type key — fill from top-level
   if (triggers.length === 1 && !triggers[0].trigger_type && existing?.trigger_type) {
     triggers[0] = { trigger_type: existing.trigger_type, ...triggers[0] };
   }
   if (actions.length === 1 && !actions[0].action_type && existing?.action_type) {
-    actions[0] = { action_type: existing.action_type, ...actions[0] };
+    actions[0] = normalizeAddItemAction({ action_type: existing.action_type, ...actions[0] });
   }
   if (!triggers.length) triggers = [{ trigger_type: 'property_changed', property: 'status', to_value: 'done' }];
-  if (!actions.length)  actions  = [{ action_type: 'add_item', template: 'copy_current', due_date_offset: { interval: 1, unit: 'weeks' } }];
+  if (!actions.length)  actions  = [{ action_type: 'add_item', template: 'copy_current', overrides: [{ field: 'status', value: 'todo' }] }];
 
   // ── Row renderers ───────────────────────────────────────────────────────
   function triggerRowHtml(t, i) {
@@ -11584,9 +11610,34 @@ function renderAutoForm(container, existing, defEntityType, onSave) {
         <select class="auto-pill-sel" data-field="field">${fieldOpts}</select>
         <span class="auto-pill-sep">to</span>${valControl}`;
     } else if (at === 'add_item') {
-      bodyHtml = `<span class="auto-pill-sep">Create copy, due +</span>
-        <input class="auto-pill-input auto-pill-num" type="number" min="0" data-field="due_date_offset.interval" value="${iv}">
-        <select class="auto-pill-sel" data-field="due_date_offset.unit">${['days','weeks','months','years'].map(u=>`<option value="${u}" ${un===u?'selected':''}>${u}</option>`).join('')}</select>`;
+      const overrides = a.overrides || [];
+      const allProps = getAllActionProps(entType);
+      const overrideRowsHtml = overrides.map((ov, j) => {
+        const f = ov.field || 'status';
+        const propOpts = allProps.map(p => `<option value="${p.key}" ${f===p.key?'selected':''}>${p.label}</option>`).join('');
+        let valCtrl;
+        if (f === 'due_date') {
+          valCtrl = `<span class="auto-pill-sep">+</span>
+            <input class="auto-pill-input auto-pill-num" type="number" min="0" data-ov-interval="${j}" value="${ov.offset_interval||1}">
+            <select class="auto-pill-sel" data-ov-unit="${j}">${['days','weeks','months','years'].map(u=>`<option value="${u}" ${(ov.offset_unit||'days')===u?'selected':''}>${u}</option>`).join('')}</select>`;
+        } else {
+          const vals = getEntityPropValues(entType, f);
+          valCtrl = vals
+            ? `<select class="auto-pill-sel auto-pill-val" data-ov-value="${j}">${vals.map(v=>`<option value="${v}" ${(ov.value||'')===v?'selected':''}>${v.replace(/_/g,' ')}</option>`).join('')}</select>`
+            : `<input class="auto-pill-input" data-ov-value="${j}" placeholder="value" value="${escHtml(ov.value||'')}">`;
+        }
+        return `<div class="af-override-row" data-ov-i="${j}">
+          <span class="auto-pill-sep" style="font-size:11px">Set</span>
+          <select class="auto-pill-sel auto-pill-type" data-ov-field="${j}">${propOpts}</select>
+          <span class="auto-pill-sep" style="font-size:11px">to</span>
+          ${valCtrl}
+          <button class="af-row-remove" data-ov-del="${j}" title="Remove field"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+        </div>`;
+      }).join('');
+      bodyHtml = `<div class="af-add-item-wrap" data-arow-wrap="${i}">
+        ${overrideRowsHtml}
+        <button class="af-add-btn" data-ov-add="${i}" style="margin-top:4px;font-size:11px;padding:3px 8px">+ Add field</button>
+      </div>`;
     } else {
       bodyHtml = `<span class="auto-pill-sep" style="color:var(--text-muted)">notification (coming soon)</span>`;
     }
@@ -11683,7 +11734,15 @@ function renderAutoForm(container, existing, defEntityType, onSave) {
     // Action row events
     formEl.querySelector('#_af-action-rows').addEventListener('change', e => {
       const row = e.target.closest('[data-arow]'); if (!row) return;
-      const i = parseInt(row.dataset.arow), field = e.target.dataset.field;
+      const i = parseInt(row.dataset.arow);
+      // Override field changed — update field key and re-render
+      if (e.target.dataset.ovField !== undefined) {
+        const j = parseInt(e.target.dataset.ovField);
+        if (!actions[i].overrides) actions[i].overrides = [];
+        actions[i].overrides[j] = { field: e.target.value };
+        render(); return;
+      }
+      const field = e.target.dataset.field;
       if (!field) return;
       if (field.includes('.')) {
         const [p, c] = field.split('.');
@@ -11694,9 +11753,17 @@ function renderAutoForm(container, existing, defEntityType, onSave) {
       if (field === 'action_type' || field === 'field') render();
     });
     formEl.querySelector('#_af-action-rows').addEventListener('click', e => {
-      const btn = e.target.closest('.af-row-remove'); if (!btn) return;
-      actions.splice(parseInt(btn.closest('[data-arow]').dataset.arow), 1);
-      render();
+      const row = e.target.closest('[data-arow]'); if (!row) return;
+      const i = parseInt(row.dataset.arow);
+      // Override delete
+      const ovDel = e.target.closest('[data-ov-del]');
+      if (ovDel) { actions[i].overrides?.splice(parseInt(ovDel.dataset.ovDel), 1); render(); return; }
+      // Override add
+      const ovAdd = e.target.closest('[data-ov-add]');
+      if (ovAdd) { if (!actions[i].overrides) actions[i].overrides = []; actions[i].overrides.push({ field: 'status', value: 'todo' }); render(); return; }
+      // Action row remove (only if NOT inside an override sub-row)
+      const removeBtn = e.target.closest('.af-row-remove');
+      if (removeBtn && !removeBtn.closest('[data-ov-i]')) { actions.splice(i, 1); render(); }
     });
     formEl.querySelector('#_af-add-action').onclick = () => {
       actions.push({ action_type: 'edit_property', field: 'status', value: 'todo' });
@@ -11705,14 +11772,14 @@ function renderAutoForm(container, existing, defEntityType, onSave) {
 
     formEl.querySelector('#_af-cancel').onclick = onSave;
     formEl.querySelector('#_af-save').onclick = async () => {
-      // Collect any unsaved text inputs
+      // Collect any unsaved text inputs (trigger/action top-level fields)
       formEl.querySelectorAll('[data-field]').forEach(el => {
         const row = el.closest('[data-trow]') || el.closest('[data-arow]');
         if (!row) return;
         const isTrig = row.dataset.trow !== undefined;
         const i = parseInt(isTrig ? row.dataset.trow : row.dataset.arow);
         const field = el.dataset.field;
-        if (!field || el.tagName === 'SELECT') return; // selects already handled
+        if (!field || el.tagName === 'SELECT') return;
         const val = el.type === 'number' ? +el.value : el.value;
         if (isTrig) {
           if (field.includes('.')) { const [p,c]=field.split('.'); triggers[i][p]={...(triggers[i][p]||{}),[c]:val}; }
@@ -11721,6 +11788,24 @@ function renderAutoForm(container, existing, defEntityType, onSave) {
           if (field.includes('.')) { const [p,c]=field.split('.'); actions[i][p]={...(actions[i][p]||{}),[c]:val}; }
           else actions[i][field] = val;
         }
+      });
+      // Collect override values from add_item rows
+      formEl.querySelectorAll('[data-arow]').forEach(row => {
+        const i = parseInt(row.dataset.arow);
+        if (actions[i]?.action_type !== 'add_item') return;
+        row.querySelectorAll('[data-ov-i]').forEach(ovRow => {
+          const j = parseInt(ovRow.dataset.ovI);
+          const ov = actions[i].overrides?.[j]; if (!ov) return;
+          if (ov.field === 'due_date') {
+            const intEl = ovRow.querySelector('[data-ov-interval]');
+            const unitEl = ovRow.querySelector('[data-ov-unit]');
+            if (intEl) ov.offset_interval = parseInt(intEl.value) || 1;
+            if (unitEl) ov.offset_unit = unitEl.value;
+          } else {
+            const valEl = ovRow.querySelector('[data-ov-value]');
+            if (valEl && valEl.tagName !== 'SELECT') ov.value = valEl.value;
+          }
+        });
       });
 
       const name = formEl.querySelector('#_af-name').value.trim();

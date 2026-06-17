@@ -4260,7 +4260,7 @@ tr:hover .ctx-handle,
   transition: background 0.1s, color 0.1s;
 }
 .tb-icon-btn:hover { background: var(--bg-hover); color: var(--text-primary, var(--text)); }
-.tb-icon-btn.tb-active { color: #38bdf8; }
+.tb-icon-btn.tb-active { color: #0ea5e9; }
 .tb-icon-btn.tb-future { opacity: 0.4; cursor: default; }
 .tb-icon-btn.tb-future:hover { background: none; color: var(--text-muted); }
 
@@ -4988,3 +4988,17 @@ tr:hover .ctx-handle,
 .auto-pill-input:focus { border-color: var(--accent, #6366f1); }
 .auto-pill-num { width: 56px; text-align: center; }
 .auto-pill-type { font-weight: 600; }
+
+/* add_item override sub-rows */
+.af-add-item-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+.af-override-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
