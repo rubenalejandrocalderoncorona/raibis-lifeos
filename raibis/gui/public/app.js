@@ -1141,7 +1141,15 @@ function bindViewTabBar(entity, onTabSwitch, onViewsChanged) {
   if (tbBolt) {
     tbBolt.classList.remove('tb-future');
     tbBolt.title = 'Automations';
-    tbBolt.onclick = (e) => { e.stopPropagation(); showAutomationsOverlay(entity); };
+    const refreshBoltState = () =>
+      api('GET', `/api/automations?entity_type=${entity}`).then(list => {
+        tbBolt.classList.toggle('tb-active', !!(list && list.length > 0));
+      }).catch(() => {});
+    refreshBoltState();
+    tbBolt.onclick = (e) => {
+      e.stopPropagation();
+      showAutomationsOverlay(entity, refreshBoltState);
+    };
   }
 
   // Settings/Properties button → open property manager panel
@@ -11389,7 +11397,7 @@ async function syncRecurAutomation(taskId, taskTitle, interval, unit) {
   }
 }
 
-async function showAutomationsOverlay(entityType) {
+async function showAutomationsOverlay(entityType, onClose) {
   document.getElementById('_automations-overlay')?.remove();
   const overlay = document.createElement('div');
   overlay.id = '_automations-overlay';
@@ -11409,10 +11417,11 @@ async function showAutomationsOverlay(entityType) {
       </div>
     </div>`;
   document.body.appendChild(overlay);
-  document.getElementById('_auto-close').onclick = () => overlay.remove();
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  const close = () => { overlay.remove(); onClose?.(); };
+  document.getElementById('_auto-close').onclick = close;
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
   document.addEventListener('keydown', function escH(e) {
-    if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escH); }
+    if (e.key === 'Escape') { close(); document.removeEventListener('keydown', escH); }
   });
 
   const list = await api('GET', `/api/automations?entity_type=${entityType}`).catch(() => []);
@@ -11510,6 +11519,13 @@ function renderAutoForm(container, existing, defEntityType, onSave) {
   }
   if (!actions.length && existing?.action_type) {
     actions = [{ action_type: existing.action_type, ...((() => { try { return JSON.parse(existing.action_config||'{}'); } catch { return {}; } })()) }];
+  }
+  // Backward compat: single-object config parsed without type key — fill from top-level
+  if (triggers.length === 1 && !triggers[0].trigger_type && existing?.trigger_type) {
+    triggers[0] = { trigger_type: existing.trigger_type, ...triggers[0] };
+  }
+  if (actions.length === 1 && !actions[0].action_type && existing?.action_type) {
+    actions[0] = { action_type: existing.action_type, ...actions[0] };
   }
   if (!triggers.length) triggers = [{ trigger_type: 'property_changed', property: 'status', to_value: 'done' }];
   if (!actions.length)  actions  = [{ action_type: 'add_item', template: 'copy_current', due_date_offset: { interval: 1, unit: 'weeks' } }];

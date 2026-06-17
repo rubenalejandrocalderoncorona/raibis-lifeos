@@ -3982,22 +3982,22 @@ func taskLinksBody(t *domain.Task, store storage.Storage) string {
 	var lines []string
 	if t.GoalID != nil {
 		if g, err := store.GetGoal(*t.GoalID); err == nil {
-			lines = append(lines, fmt.Sprintf("[[goal-%d|%s]]", g.ID, g.Title))
+			lines = append(lines, fmt.Sprintf("Goal: [[goal-%d|%s]]", g.ID, g.Title))
 		}
 	}
 	if t.ProjectID != nil {
 		if p, err := store.GetProject(*t.ProjectID); err == nil {
-			lines = append(lines, fmt.Sprintf("[[project-%d|%s]]", p.ID, p.Title))
+			lines = append(lines, fmt.Sprintf("Project: [[project-%d|%s]]", p.ID, p.Title))
 		}
 	}
 	if t.SprintID != nil {
 		if sp, err := store.GetSprint(*t.SprintID); err == nil {
-			lines = append(lines, fmt.Sprintf("[[sprint-%d|%s]]", sp.ID, sp.Title))
+			lines = append(lines, fmt.Sprintf("Sprint: [[sprint-%d|%s]]", sp.ID, sp.Title))
 		}
 	}
 	if t.ParentTaskID != nil {
 		if pt, err := store.GetTask(*t.ParentTaskID); err == nil {
-			lines = append(lines, fmt.Sprintf("parent: [[task-%d|%s]]", pt.ID, pt.Title))
+			lines = append(lines, fmt.Sprintf("Parent task: [[task-%d|%s]]", pt.ID, pt.Title))
 		}
 	}
 	// Subtasks as a checklist
@@ -4034,7 +4034,7 @@ func taskLinksBody(t *domain.Task, store storage.Storage) string {
 func projectLinksBody(p *domain.Project, store storage.Storage) string {
 	if p.GoalID != nil {
 		if g, err := store.GetGoal(*p.GoalID); err == nil {
-			return fmt.Sprintf("[[goal-%d|%s]]", g.ID, g.Title)
+			return fmt.Sprintf("Goal: [[goal-%d|%s]]", g.ID, g.Title)
 		}
 	}
 	return ""
@@ -4042,7 +4042,7 @@ func projectLinksBody(p *domain.Project, store storage.Storage) string {
 
 func sprintLinksBody(s *domain.Sprint, store storage.Storage) string {
 	if p, err := store.GetProject(s.ProjectID); err == nil {
-		return fmt.Sprintf("[[project-%d|%s]]", p.ID, p.Title)
+		return fmt.Sprintf("Project: [[project-%d|%s]]", p.ID, p.Title)
 	}
 	return ""
 }

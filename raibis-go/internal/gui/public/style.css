@@ -4260,7 +4260,7 @@ tr:hover .ctx-handle,
   transition: background 0.1s, color 0.1s;
 }
 .tb-icon-btn:hover { background: var(--bg-hover); color: var(--text-primary, var(--text)); }
-.tb-icon-btn.tb-active { color: var(--accent, #5b8aff); }
+.tb-icon-btn.tb-active { color: #38bdf8; }
 .tb-icon-btn.tb-future { opacity: 0.4; cursor: default; }
 .tb-icon-btn.tb-future:hover { background: none; color: var(--text-muted); }
 
