@@ -1632,12 +1632,14 @@ func (s *sqliteStorage) PurgeAll() error {
 	}
 	for _, t := range tables {
 		if _, err := s.db.Exec("DELETE FROM " + t); err != nil { //nolint:gosec — table name is a hardcoded string literal
-			return fmt.Errorf("purge %s: %w", t, err)
+			if !strings.Contains(err.Error(), "no such table") {
+				return fmt.Errorf("purge %s: %w", t, err)
+			}
 		}
 	}
-	// Reset AUTOINCREMENT counters so IDs restart from 1 after a clean slate.
-	if _, err := s.db.Exec("DELETE FROM sqlite_sequence"); err != nil {
-		return fmt.Errorf("purge sqlite_sequence: %w", err)
-	}
+	// Best-effort: reset AUTOINCREMENT counters so IDs restart from 1.
+	// sqlite_sequence only exists after the first AUTOINCREMENT insert,
+	// so ignore "no such table" errors.
+	s.db.Exec("DELETE FROM sqlite_sequence") //nolint:errcheck
 	return nil
 }

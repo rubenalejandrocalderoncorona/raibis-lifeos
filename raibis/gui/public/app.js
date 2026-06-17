@@ -1142,10 +1142,13 @@ function bindViewTabBar(entity, onTabSwitch, onViewsChanged) {
   if (tbBolt) {
     tbBolt.classList.remove('tb-future');
     tbBolt.title = 'Automations';
-    const refreshBoltState = () =>
+    // Tasks always have the built-in Recurring automation, so bolt is always active
+    const refreshBoltState = () => {
+      if (entity === 'task') { tbBolt.classList.add('tb-active'); return; }
       api('GET', `/api/automations?entity_type=${entity}`).then(list => {
         tbBolt.classList.toggle('tb-active', !!(list && list.length > 0));
       }).catch(() => {});
+    };
     refreshBoltState();
     tbBolt.onclick = (e) => {
       e.stopPropagation();
@@ -11728,12 +11731,24 @@ async function showAutomationsOverlay(entityType, onClose) {
 // Renders list + inline editor inside any container
 function renderAutoListView(container, list, entityType, onMutate) {
   const safe = list || [];
+  // Built-in Recurring Tasks automation card (always shown for task entity)
+  const builtinCard = (entityType === 'task' || !entityType) ? `
+    <div class="auto-rule-card" style="border-color:var(--color-border-strong)">
+      <div class="auto-rule-header">
+        <div class="auto-rule-name">🔄 Recurring Tasks <span style="font-size:10px;font-weight:400;color:var(--text-muted);margin-left:4px">built-in</span></div>
+        <span style="font-size:11px;color:var(--text-muted)">Always on</span>
+      </div>
+      <div class="auto-rule-meta" style="font-size:12px;color:var(--text-muted)">
+        Tasks with a recurrence interval are automatically re-created when marked done. Set the interval in the task's edit form.
+      </div>
+    </div>` : '';
   container.innerHTML = `
     <div style="display:flex;flex-direction:column;gap:8px">
+      ${builtinCard}
       ${safe.length === 0 ? `
-        <div style="text-align:center;padding:48px 0">
-          <div style="font-size:36px;margin-bottom:12px">⚡</div>
-          <div style="font-size:14px;font-weight:600;margin-bottom:6px">No automations yet</div>
+        <div style="text-align:center;padding:${entityType === 'task' ? '24' : '48'}px 0">
+          ${entityType !== 'task' ? `<div style="font-size:36px;margin-bottom:12px">⚡</div>` : ''}
+          <div style="font-size:14px;font-weight:600;margin-bottom:6px">${entityType === 'task' ? 'No custom automations yet' : 'No automations yet'}</div>
           <div style="font-size:13px;color:var(--text-muted);margin-bottom:20px">Create a rule to automate actions when triggers fire.</div>
           <button class="btn btn-primary btn-sm" id="_av-create-first">+ New rule</button>
         </div>` : `
@@ -12184,26 +12199,30 @@ async function openRaibisSettings(defaultTab = 'apps') {
     // ── Custom Entity Types section ───────────────────────────────────────────
     const cetSection = document.createElement('div');
     cetSection.style.cssText = 'margin-bottom:20px;border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:16px;background:var(--color-surface)';
-    cetSection.innerHTML = `<h4 style="margin:0 0 12px;font-size:13px;font-weight:600">Custom Entity Types</h4><div id="_cet-list"></div>
-      <details style="margin-top:12px">
-        <summary style="cursor:pointer;font-size:12px;color:var(--text-muted);user-select:none">Define New Entity Type</summary>
-        <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
-          <div class="form-group"><label class="form-label">Name (slug, e.g. "repository")</label>
-            <input type="text" id="_cet-name" placeholder="repository" style="width:100%" /></div>
-          <div class="form-group"><label class="form-label">Display Name</label>
-            <input type="text" id="_cet-display" placeholder="Repository" style="width:100%" /></div>
-          <div class="form-group"><label class="form-label">Icon (emoji)</label>
-            <input type="text" id="_cet-icon" placeholder="📁" style="width:80px" maxlength="4" /></div>
-          <div>
-            <label class="form-label" style="margin-bottom:6px;display:block">Property Definitions</label>
-            <div id="_cet-propdefs" style="display:flex;flex-direction:column;gap:6px"></div>
-            <button class="btn btn-sm btn-ghost" id="_cet-addprop" style="margin-top:6px">+ Add Property</button>
+    cetSection.innerHTML = `
+      <h4 style="margin:0 0 12px;font-size:13px;font-weight:600">Custom Entity Types</h4>
+      <div id="_cet-list" style="margin-bottom:16px"></div>
+      <div style="border-top:1px solid var(--color-border);padding-top:14px">
+        <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">Define New Type</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;gap:8px">
+            <div class="form-group" style="flex:2;margin:0"><label class="form-label" style="font-size:11px">Slug (e.g. "repository")</label>
+              <input type="text" id="_cet-name" placeholder="repository" style="width:100%" /></div>
+            <div class="form-group" style="flex:2;margin:0"><label class="form-label" style="font-size:11px">Display Name</label>
+              <input type="text" id="_cet-display" placeholder="Repository" style="width:100%" /></div>
+            <div class="form-group" style="flex:0 0 64px;margin:0"><label class="form-label" style="font-size:11px">Icon</label>
+              <input type="text" id="_cet-icon" placeholder="📁" style="width:100%;text-align:center" maxlength="4" /></div>
           </div>
-          <div style="display:flex;gap:8px;margin-top:4px">
-            <button class="btn btn-primary btn-sm" id="_cet-create">Create Type</button>
+          <div>
+            <label class="form-label" style="font-size:11px;margin-bottom:6px;display:block">Properties</label>
+            <div id="_cet-propdefs" style="display:flex;flex-direction:column;gap:6px"></div>
+            <button class="btn btn-sm btn-ghost" id="_cet-addprop" style="margin-top:6px">+ Add property</button>
+          </div>
+          <div>
+            <button class="btn btn-primary btn-sm" id="_cet-create">Create Entity Type</button>
           </div>
         </div>
-      </details>`;
+      </div>`;
     body.prepend(cetSection);
 
     async function renderCetList() {
