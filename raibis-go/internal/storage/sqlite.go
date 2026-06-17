@@ -200,6 +200,26 @@ func applyMigrations(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_automations_entity ON automations(entity_type)`,
 		// Migration: add trigger_logic to existing automations table
 		`ALTER TABLE automations ADD COLUMN trigger_logic TEXT NOT NULL DEFAULT 'all'`,
+
+		// ── custom_entity_types: user-defined entity schemas ──────────────────
+		`CREATE TABLE IF NOT EXISTS custom_entity_types (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			name         TEXT NOT NULL UNIQUE,
+			display_name TEXT NOT NULL,
+			icon         TEXT NOT NULL DEFAULT '📁',
+			prop_defs    TEXT NOT NULL DEFAULT '[]',
+			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		// ── custom_entities: records for user-defined types ───────────────────
+		`CREATE TABLE IF NOT EXISTS custom_entities (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			type_name    TEXT NOT NULL REFERENCES custom_entity_types(name) ON DELETE CASCADE,
+			title        TEXT NOT NULL,
+			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_custom_entities_type ON custom_entities(type_name)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -1408,6 +1428,196 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// ── Custom Entity Types ────────────────────────────────────────────────────────
+
+func (s *sqliteStorage) CreateCustomEntityType(t *domain.CustomEntityType) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(
+		`INSERT INTO custom_entity_types (name, display_name, icon, prop_defs) VALUES (?,?,?,?)`,
+		t.Name, t.DisplayName, t.Icon, t.PropDefs,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *sqliteStorage) ListCustomEntityTypes() ([]*domain.CustomEntityType, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT id, name, display_name, icon, prop_defs, created_at FROM custom_entity_types ORDER BY id ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.CustomEntityType
+	for rows.Next() {
+		t := &domain.CustomEntityType{}
+		if err := rows.Scan(&t.ID, &t.Name, &t.DisplayName, &t.Icon, &t.PropDefs, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStorage) UpdateCustomEntityType(t *domain.CustomEntityType) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`UPDATE custom_entity_types SET display_name=?, icon=?, prop_defs=? WHERE name=?`,
+		t.DisplayName, t.Icon, t.PropDefs, t.Name,
+	)
+	return err
+}
+
+func (s *sqliteStorage) DeleteCustomEntityType(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM custom_entity_types WHERE name=?`, name)
+	return err
+}
+
+// ── Custom Entities ────────────────────────────────────────────────────────────
+
+func (s *sqliteStorage) CreateCustomEntity(e *domain.CustomEntity) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(
+		`INSERT INTO custom_entities (type_name, title) VALUES (?,?)`,
+		e.TypeName, e.Title,
+	)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	// Save props via entity_properties
+	for k, v := range e.Props {
+		_, perr := s.db.Exec(
+			`INSERT INTO entity_properties (entity_type, entity_id, key, value)
+			 VALUES (?,?,?,?)
+			 ON CONFLICT(entity_type, entity_id, key) DO UPDATE SET value=excluded.value`,
+			e.TypeName, id, k, v,
+		)
+		if perr != nil {
+			return id, perr
+		}
+	}
+	return id, nil
+}
+
+func (s *sqliteStorage) GetCustomEntity(typeName string, id int64) (*domain.CustomEntity, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	row := s.db.QueryRow(
+		`SELECT id, type_name, title, created_at, updated_at FROM custom_entities WHERE type_name=? AND id=?`,
+		typeName, id,
+	)
+	e := &domain.CustomEntity{}
+	if err := row.Scan(&e.ID, &e.TypeName, &e.Title, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		return nil, err
+	}
+	// Load props
+	props, err := s.listPropsNoLock(typeName, id)
+	if err != nil {
+		return nil, err
+	}
+	e.Props = props
+	return e, nil
+}
+
+func (s *sqliteStorage) ListCustomEntities(typeName string) ([]*domain.CustomEntity, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT id, type_name, title, created_at, updated_at FROM custom_entities WHERE type_name=? ORDER BY id ASC`,
+		typeName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.CustomEntity
+	for rows.Next() {
+		e := &domain.CustomEntity{}
+		if err := rows.Scan(&e.ID, &e.TypeName, &e.Title, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, err
+		}
+		props, _ := s.listPropsNoLock(e.TypeName, e.ID)
+		e.Props = props
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStorage) UpdateCustomEntity(e *domain.CustomEntity) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`UPDATE custom_entities SET title=?, updated_at=CURRENT_TIMESTAMP WHERE type_name=? AND id=?`,
+		e.Title, e.TypeName, e.ID,
+	)
+	if err != nil {
+		return err
+	}
+	// Replace props
+	if _, err := s.db.Exec(
+		`DELETE FROM entity_properties WHERE entity_type=? AND entity_id=?`,
+		e.TypeName, e.ID,
+	); err != nil {
+		return err
+	}
+	for k, v := range e.Props {
+		if _, perr := s.db.Exec(
+			`INSERT INTO entity_properties (entity_type, entity_id, key, value)
+			 VALUES (?,?,?,?)
+			 ON CONFLICT(entity_type, entity_id, key) DO UPDATE SET value=excluded.value`,
+			e.TypeName, e.ID, k, v,
+		); perr != nil {
+			return perr
+		}
+	}
+	return nil
+}
+
+func (s *sqliteStorage) DeleteCustomEntity(typeName string, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Remove associated entity_properties first
+	if _, err := s.db.Exec(`DELETE FROM entity_properties WHERE entity_type=? AND entity_id=?`, typeName, id); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM custom_entities WHERE type_name=? AND id=?`, typeName, id)
+	return err
+}
+
+// listPropsNoLock queries entity_properties without acquiring the lock (caller must hold it).
+func (s *sqliteStorage) listPropsNoLock(entityType string, entityID int64) (map[string]string, error) {
+	rows, err := s.db.Query(
+		`SELECT key, value FROM entity_properties WHERE entity_type=? AND entity_id=?`,
+		entityType, entityID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		m[k] = v
+	}
+	return m, rows.Err()
+}
+
 func (s *sqliteStorage) PurgeAll() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1418,11 +1628,16 @@ func (s *sqliteStorage) PurgeAll() error {
 		"habits", "notes", "resources",
 		"tasks", "sprints", "projects", "goals",
 		"tags", "categories",
+		"custom_entities", "custom_entity_types",
 	}
 	for _, t := range tables {
 		if _, err := s.db.Exec("DELETE FROM " + t); err != nil { //nolint:gosec — table name is a hardcoded string literal
 			return fmt.Errorf("purge %s: %w", t, err)
 		}
+	}
+	// Reset AUTOINCREMENT counters so IDs restart from 1 after a clean slate.
+	if _, err := s.db.Exec("DELETE FROM sqlite_sequence"); err != nil {
+		return fmt.Errorf("purge sqlite_sequence: %w", err)
 	}
 	return nil
 }

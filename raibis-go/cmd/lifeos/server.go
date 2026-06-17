@@ -72,8 +72,11 @@ func serve(cfg serverConfig) {
 	log.Printf("vault at %s", v.Root)
 
 	// Rebuild SQLite from vault — imports any entities missing from the index.
-	// Safe to run on every start: INSERT OR IGNORE means existing rows are untouched.
-	syncVaultToSQLite(v, cfg.dbPath)
+	// Safe to run on every start: upsert means existing rows are only overwritten when vault is newer.
+	ins, upd := syncVaultToSQLite(v, cfg.dbPath)
+	if ins+upd > 0 {
+		log.Printf("vault sync on start: %d inserted, %d updated", ins, upd)
+	}
 
 	svc := service.New(store)
 	mux := buildMux(svc, store, v, cfg.dbPath)
@@ -222,6 +225,16 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Automations
 	mux.HandleFunc("/api/automations", withCORS(automationsHandler(store)))
 	mux.HandleFunc("/api/automations/", withCORS(automationHandler(store)))
+
+	// Custom Entity Types
+	mux.HandleFunc("/api/custom-types", withCORS(customTypesHandler(store)))
+	mux.HandleFunc("/api/custom-types/", withCORS(customTypeHandler(store)))
+
+	// Custom Entities — /api/custom/{type} and /api/custom/{type}/{id}
+	mux.HandleFunc("/api/custom/", withCORS(customEntitiesHandler(store)))
+
+	// Vault sync (on-demand)
+	mux.HandleFunc("/api/sync", withCORS(vaultSyncHandler(v, dbPath)))
 
 	// Server config (vault path, db path)
 	mux.HandleFunc("/api/config", withCORS(configHandler(v, dbPath)))
@@ -2512,6 +2525,18 @@ func bulkExportHandler(store storage.Storage, v *vault.Vault, dbPath string) htt
 			items, _ := store.ListAutomations("")
 			out["automations"] = items
 		}
+		if all || want["custom"] {
+			customTypes, _ := store.ListCustomEntityTypes()
+			customOut := map[string]any{}
+			for _, ct := range customTypes {
+				entities, _ := store.ListCustomEntities(ct.Name)
+				if entities == nil {
+					entities = []*domain.CustomEntity{}
+				}
+				customOut[ct.Name] = entities
+			}
+			out["custom"] = customOut
+		}
 		writeJSON(w, 200, out)
 	}
 }
@@ -3820,11 +3845,11 @@ func integrationsProbeHandler() http.HandlerFunc {
 
 // ── Vault → SQLite startup sync ───────────────────────────────────────────────
 
-// syncVaultToSQLite scans vault entity dirs and inserts any entities that are
-// missing from SQLite (INSERT OR IGNORE). This rebuilds the index whenever
-// SQLite is deleted or entities are added directly in Obsidian.
+// syncVaultToSQLite scans vault entity dirs and upserts entities into SQLite.
+// For entities with updated_at (tasks), only overwrites when vault is newer.
+// Returns (inserted, updated) counts.
 // Dependency order: goals → projects → sprints → tasks.
-func syncVaultToSQLite(v *vault.Vault, dbPath string) {
+func syncVaultToSQLite(v *vault.Vault, dbPath string) (inserted int, updated int) {
 	db, err := openRawDB(dbPath)
 	if err != nil {
 		log.Printf("vault sync: open db: %v", err)
@@ -3832,7 +3857,49 @@ func syncVaultToSQLite(v *vault.Vault, dbPath string) {
 	}
 	defer db.Close()
 
-	n := 0
+	// Known core fields per entity type (anything else becomes an entity_property).
+	goalCoreFields := map[string]bool{
+		"id": true, "title": true, "description": true, "status": true,
+		"type": true, "year": true, "start_date": true, "due_date": true,
+		"start_value": true, "current_value": true, "target": true,
+		"created_at": true, "aliases": true,
+	}
+	projectCoreFields := map[string]bool{
+		"id": true, "title": true, "description": true, "status": true,
+		"macro_area": true, "goal_id": true, "created_at": true, "aliases": true,
+	}
+	sprintCoreFields := map[string]bool{
+		"id": true, "title": true, "goal": true, "start_date": true,
+		"end_date": true, "status": true, "project_id": true, "created_at": true, "aliases": true,
+	}
+	taskCoreFields := map[string]bool{
+		"id": true, "title": true, "description": true, "status": true,
+		"priority": true, "due_date": true, "start_date": true, "story_points": true,
+		"goal_id": true, "project_id": true, "sprint_id": true, "parent_task_id": true,
+		"created_at": true, "updated_at": true, "aliases": true,
+	}
+
+	// saveExtraProps stores any non-core frontmatter keys as entity_properties.
+	saveExtraProps := func(entityType string, entityID int64, fm map[string]string, coreFields map[string]bool) {
+		for k, v := range fm {
+			if coreFields[k] || v == "" {
+				continue
+			}
+			_, _ = db.Exec(
+				`INSERT INTO entity_properties (entity_type, entity_id, key, value)
+				 VALUES (?,?,?,?)
+				 ON CONFLICT(entity_type, entity_id, key) DO UPDATE SET value=excluded.value`,
+				entityType, entityID, k, v,
+			)
+		}
+	}
+
+	// preExists returns true if a row with the given id already exists in the table.
+	preExists := func(table string, id int64) bool {
+		var cnt int
+		_ = db.QueryRow("SELECT COUNT(*) FROM "+table+" WHERE id=?", id).Scan(&cnt) //nolint:gosec
+		return cnt > 0
+	}
 
 	// Goals
 	if files, _ := v.ScanEntityFiles("goal"); len(files) > 0 {
@@ -3841,10 +3908,18 @@ func syncVaultToSQLite(v *vault.Vault, dbPath string) {
 			if id == 0 {
 				continue
 			}
-			res, _ := db.Exec(`INSERT OR IGNORE INTO goals
+			wasNew := !preExists("goals", id)
+			_, err := db.Exec(`INSERT INTO goals
 				(id,title,description,status,type,year,start_date,due_date,
 				 start_value,current_value,target,created_at)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+				ON CONFLICT(id) DO UPDATE SET
+				  title=excluded.title, description=excluded.description,
+				  status=excluded.status, type=excluded.type, year=excluded.year,
+				  start_date=excluded.start_date, due_date=excluded.due_date,
+				  start_value=excluded.start_value, current_value=excluded.current_value,
+				  target=excluded.target
+				WHERE 1=1`,
 				id, fm["title"], nullStr(fm["description"]),
 				fmDefault(fm["status"], "active"),
 				nullStr(fm["type"]), nullStr(fm["year"]),
@@ -3853,8 +3928,13 @@ func syncVaultToSQLite(v *vault.Vault, dbPath string) {
 				fmFloat64(fm["target"]),
 				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
 			)
-			if ra, _ := res.RowsAffected(); ra > 0 {
-				n++
+			if err == nil {
+				if wasNew {
+					inserted++
+				} else {
+					updated++
+				}
+				saveExtraProps("goal", id, fm, goalCoreFields)
 			}
 		}
 	}
@@ -3866,17 +3946,28 @@ func syncVaultToSQLite(v *vault.Vault, dbPath string) {
 			if id == 0 {
 				continue
 			}
-			res, _ := db.Exec(`INSERT OR IGNORE INTO projects
+			wasNew := !preExists("projects", id)
+			_, err := db.Exec(`INSERT INTO projects
 				(id,goal_id,title,description,status,macro_area,created_at)
-				VALUES (?,?,?,?,?,?,?)`,
+				VALUES (?,?,?,?,?,?,?)
+				ON CONFLICT(id) DO UPDATE SET
+				  title=excluded.title, description=excluded.description,
+				  status=excluded.status, macro_area=excluded.macro_area,
+				  goal_id=excluded.goal_id
+				WHERE 1=1`,
 				id, fmInt64(fm["goal_id"]), fm["title"],
 				nullStr(fm["description"]),
 				fmDefault(fm["status"], "active"),
 				nullStr(fm["macro_area"]),
 				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
 			)
-			if ra, _ := res.RowsAffected(); ra > 0 {
-				n++
+			if err == nil {
+				if wasNew {
+					inserted++
+				} else {
+					updated++
+				}
+				saveExtraProps("project", id, fm, projectCoreFields)
 			}
 		}
 	}
@@ -3889,16 +3980,27 @@ func syncVaultToSQLite(v *vault.Vault, dbPath string) {
 			if id == 0 || projID == 0 {
 				continue
 			}
-			res, _ := db.Exec(`INSERT OR IGNORE INTO sprints
+			wasNew := !preExists("sprints", id)
+			_, err := db.Exec(`INSERT INTO sprints
 				(id,project_id,title,goal,start_date,end_date,status,created_at)
-				VALUES (?,?,?,?,?,?,?,?)`,
+				VALUES (?,?,?,?,?,?,?,?)
+				ON CONFLICT(id) DO UPDATE SET
+				  title=excluded.title, goal=excluded.goal,
+				  start_date=excluded.start_date, end_date=excluded.end_date,
+				  status=excluded.status, project_id=excluded.project_id
+				WHERE 1=1`,
 				id, projID, fm["title"], nullStr(fm["goal"]),
 				nullStr(fm["start_date"]), nullStr(fm["end_date"]),
 				fmDefault(fm["status"], "planned"),
 				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
 			)
-			if ra, _ := res.RowsAffected(); ra > 0 {
-				n++
+			if err == nil {
+				if wasNew {
+					inserted++
+				} else {
+					updated++
+				}
+				saveExtraProps("sprint", id, fm, sprintCoreFields)
 			}
 		}
 	}
@@ -3910,11 +4012,20 @@ func syncVaultToSQLite(v *vault.Vault, dbPath string) {
 			if id == 0 {
 				continue
 			}
-			res, _ := db.Exec(`INSERT OR IGNORE INTO tasks
+			wasNew := !preExists("tasks", id)
+			_, err := db.Exec(`INSERT INTO tasks
 				(id,goal_id,project_id,sprint_id,title,description,
 				 status,priority,due_date,start_date,story_points,
 				 created_at,updated_at)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+				ON CONFLICT(id) DO UPDATE SET
+				  title=excluded.title, description=excluded.description,
+				  status=excluded.status, priority=excluded.priority,
+				  due_date=excluded.due_date, start_date=excluded.start_date,
+				  story_points=excluded.story_points, goal_id=excluded.goal_id,
+				  project_id=excluded.project_id, sprint_id=excluded.sprint_id,
+				  updated_at=excluded.updated_at
+				WHERE excluded.updated_at >= tasks.updated_at`,
 				id,
 				fmInt64(fm["goal_id"]), fmInt64(fm["project_id"]), fmInt64(fm["sprint_id"]),
 				fm["title"], nullStr(fm["description"]),
@@ -3925,14 +4036,219 @@ func syncVaultToSQLite(v *vault.Vault, dbPath string) {
 				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
 				fmDefault(fm["updated_at"], time.Now().Format(time.RFC3339)),
 			)
-			if ra, _ := res.RowsAffected(); ra > 0 {
-				n++
+			if err == nil {
+				if wasNew {
+					inserted++
+				} else {
+					updated++
+				}
+				saveExtraProps("task", id, fm, taskCoreFields)
 			}
 		}
 	}
 
-	if n > 0 {
-		log.Printf("vault sync: imported %d entities from vault into SQLite", n)
+	return inserted, updated
+}
+
+// ── Vault Sync Handler ────────────────────────────────────────────────────────
+
+func vaultSyncHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		ins, upd := syncVaultToSQLite(v, dbPath)
+		writeJSON(w, 200, map[string]int{"inserted": ins, "updated": upd})
+	}
+}
+
+// ── Custom Entity Types Handlers ──────────────────────────────────────────────
+
+// customTypesHandler handles GET /api/custom-types and POST /api/custom-types
+func customTypesHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			types, err := store.ListCustomEntityTypes()
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			if types == nil {
+				types = []*domain.CustomEntityType{}
+			}
+			writeJSON(w, 200, types)
+
+		case http.MethodPost:
+			var t domain.CustomEntityType
+			if err := readJSON(r, &t); err != nil {
+				errJSON(w, 400, "invalid JSON: "+err.Error())
+				return
+			}
+			if t.Name == "" || t.DisplayName == "" {
+				errJSON(w, 400, "name and display_name are required")
+				return
+			}
+			if t.Icon == "" {
+				t.Icon = "📁"
+			}
+			if t.PropDefs == "" {
+				t.PropDefs = "[]"
+			}
+			id, err := store.CreateCustomEntityType(&t)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			t.ID = id
+			writeJSON(w, 201, t)
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// customTypeHandler handles PUT /api/custom-types/{name} and DELETE /api/custom-types/{name}
+func customTypeHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Extract name from path: /api/custom-types/{name}
+		parts := strings.Split(strings.TrimRight(r.URL.Path, "/"), "/")
+		if len(parts) == 0 {
+			errJSON(w, 400, "missing type name")
+			return
+		}
+		name := parts[len(parts)-1]
+		if name == "" {
+			errJSON(w, 400, "missing type name")
+			return
+		}
+
+		switch r.Method {
+		case http.MethodPut:
+			var t domain.CustomEntityType
+			if err := readJSON(r, &t); err != nil {
+				errJSON(w, 400, "invalid JSON: "+err.Error())
+				return
+			}
+			t.Name = name
+			if err := store.UpdateCustomEntityType(&t); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, t)
+
+		case http.MethodDelete:
+			if err := store.DeleteCustomEntityType(name); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// ── Custom Entities Handler ───────────────────────────────────────────────────
+
+// customEntitiesHandler handles all /api/custom/{type} and /api/custom/{type}/{id} requests.
+func customEntitiesHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Parse path: /api/custom/{type} or /api/custom/{type}/{id}
+		// Strip prefix "/api/custom/"
+		rest := strings.TrimPrefix(r.URL.Path, "/api/custom/")
+		rest = strings.TrimRight(rest, "/")
+		pathParts := strings.SplitN(rest, "/", 2)
+		typeName := pathParts[0]
+		if typeName == "" {
+			errJSON(w, 400, "missing type in path")
+			return
+		}
+
+		// Collection endpoint: /api/custom/{type}
+		if len(pathParts) == 1 {
+			switch r.Method {
+			case http.MethodGet:
+				entities, err := store.ListCustomEntities(typeName)
+				if err != nil {
+					errJSON(w, 500, err.Error())
+					return
+				}
+				if entities == nil {
+					entities = []*domain.CustomEntity{}
+				}
+				writeJSON(w, 200, entities)
+
+			case http.MethodPost:
+				var e domain.CustomEntity
+				if err := readJSON(r, &e); err != nil {
+					errJSON(w, 400, "invalid JSON: "+err.Error())
+					return
+				}
+				e.TypeName = typeName
+				if e.Props == nil {
+					e.Props = map[string]string{}
+				}
+				id, err := store.CreateCustomEntity(&e)
+				if err != nil {
+					errJSON(w, 500, err.Error())
+					return
+				}
+				e.ID = id
+				writeJSON(w, 201, e)
+
+			default:
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			}
+			return
+		}
+
+		// Individual endpoint: /api/custom/{type}/{id}
+		entityID, err := strconv.ParseInt(pathParts[1], 10, 64)
+		if err != nil {
+			errJSON(w, 400, "invalid entity id")
+			return
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			e, err := store.GetCustomEntity(typeName, entityID)
+			if err != nil {
+				errJSON(w, 404, "not found")
+				return
+			}
+			writeJSON(w, 200, e)
+
+		case http.MethodPut:
+			var e domain.CustomEntity
+			if err := readJSON(r, &e); err != nil {
+				errJSON(w, 400, "invalid JSON: "+err.Error())
+				return
+			}
+			e.TypeName = typeName
+			e.ID = entityID
+			if e.Props == nil {
+				e.Props = map[string]string{}
+			}
+			if err := store.UpdateCustomEntity(&e); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, e)
+
+		case http.MethodDelete:
+			if err := store.DeleteCustomEntity(typeName, entityID); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
 	}
 }
 

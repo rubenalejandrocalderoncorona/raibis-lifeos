@@ -101,6 +101,19 @@ type Storage interface {
 	UpdateAutomation(a *domain.Automation) error
 	DeleteAutomation(id int64) error
 
+	// ── Custom Entity Types ───────────────────────────────────────────────────
+	CreateCustomEntityType(t *domain.CustomEntityType) (int64, error)
+	ListCustomEntityTypes() ([]*domain.CustomEntityType, error)
+	UpdateCustomEntityType(t *domain.CustomEntityType) error
+	DeleteCustomEntityType(name string) error
+
+	// ── Custom Entities ───────────────────────────────────────────────────────
+	CreateCustomEntity(e *domain.CustomEntity) (int64, error)
+	GetCustomEntity(typeName string, id int64) (*domain.CustomEntity, error)
+	ListCustomEntities(typeName string) ([]*domain.CustomEntity, error)
+	UpdateCustomEntity(e *domain.CustomEntity) error
+	DeleteCustomEntity(typeName string, id int64) error
+
 	// ── Data management ───────────────────────────────────────────────────
 	// PurgeAll deletes all user data from every entity table.
 	PurgeAll() error

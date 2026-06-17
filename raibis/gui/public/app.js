@@ -219,6 +219,7 @@ async function injectListIcons(entityType, ids) {
 }
 
 /* ─── State ──────────────────────────────────────────────────────────── */
+let customEntityTypes = [];
 let currentView = 'dashboard';
 let _connectedPropTypesCache = null;
 let currentParams = null;
@@ -2821,6 +2822,14 @@ function renderView(view, params) {
   const main = document.getElementById('main-content');
   main.innerHTML = `<div class="view"><div class="loading">Loading…</div></div>`;
   updateBreadcrumb(view, params);
+
+  // Custom entity views: "custom:{typeName}"
+  if (view.startsWith('custom:')) {
+    const typeName = view.slice(7);
+    renderCustomEntityList(typeName);
+    return;
+  }
+
   switch (view) {
     case 'dashboard':       renderDashboard(); break;
     case 'tasks':           renderTasks(); break;
@@ -2841,6 +2850,221 @@ function renderView(view, params) {
     default:
       main.innerHTML = `<div class="view"><div class="empty-state"><div class="empty-state-icon">?</div><div class="empty-state-text">Unknown view</div></div></div>`;
   }
+}
+
+/* ─── Custom Entity Types ─────────────────────────────────────────────── */
+
+async function loadCustomEntityTypes() {
+  customEntityTypes = await api('GET', '/api/custom-types').catch(() => []) || [];
+  renderCustomEntityNav();
+}
+
+function renderCustomEntityNav() {
+  const container = document.getElementById('custom-entities-nav');
+  const label = document.getElementById('custom-entities-section-label');
+  if (!container) return;
+  if (!customEntityTypes.length) {
+    container.innerHTML = '';
+    if (label) label.style.display = 'none';
+    return;
+  }
+  if (label) label.style.display = '';
+  container.innerHTML = customEntityTypes.map(t => `
+    <a class="nav-item" data-view="custom:${escHtml(t.name)}" href="#">
+      <span class="nav-icon" style="font-size:16px">${t.icon || '📁'}</span>
+      <span>${escHtml(t.display_name || t.name)}</span>
+    </a>
+  `).join('');
+  container.querySelectorAll('[data-view]').forEach(a => {
+    a.onclick = e => { e.preventDefault(); renderView(a.dataset.view); };
+  });
+}
+
+async function renderCustomEntityList(typeName) {
+  const typeInfo = customEntityTypes.find(t => t.name === typeName);
+  const displayName = typeInfo ? (typeInfo.display_name || typeName) : typeName;
+  const icon = typeInfo ? (typeInfo.icon || '📁') : '📁';
+  let propDefs = [];
+  if (typeInfo && typeInfo.prop_defs) {
+    try { propDefs = JSON.parse(typeInfo.prop_defs); } catch(e) { propDefs = []; }
+  }
+
+  const main = document.getElementById('main-content');
+  try {
+    const entities = await api('GET', `/api/custom/${typeName}`);
+    const list = Array.isArray(entities) ? entities : [];
+
+    main.innerHTML = `
+      <div class="view">
+        <div class="view-header">
+          <h1 class="view-title">${icon} ${escHtml(displayName)}</h1>
+          <button class="btn btn-primary" id="custom-new-btn">+ New ${escHtml(displayName)}</button>
+        </div>
+        ${!list.length ? `<div class="empty-state"><div class="empty-state-icon">${icon}</div><div class="empty-state-text">No ${escHtml(displayName.toLowerCase())} yet.</div></div>` : `
+        <div class="entity-list">
+          ${list.map(e => {
+            const propPreview = propDefs.slice(0, 3).map(pd => {
+              const val = e.props && e.props[pd.key] ? e.props[pd.key] : '';
+              return val ? `<span style="font-size:11px;color:var(--text-muted)">${escHtml(pd.label)}: ${escHtml(val)}</span>` : '';
+            }).filter(Boolean).join(' &bull; ');
+            return `
+              <div class="entity-row" data-id="${e.id}" style="cursor:pointer">
+                <div style="flex:1;min-width:0">
+                  <div style="font-weight:500;font-size:14px">${escHtml(e.title)}</div>
+                  ${propPreview ? `<div style="margin-top:2px">${propPreview}</div>` : ''}
+                  <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${fmtDate(e.created_at)}</div>
+                </div>
+                <div style="display:flex;gap:6px;flex-shrink:0">
+                  <button class="btn btn-sm btn-ghost custom-edit-btn" data-id="${e.id}" title="Edit">Edit</button>
+                  <button class="btn btn-sm btn-ghost custom-del-btn" data-id="${e.id}" style="color:var(--color-danger)" title="Delete">Delete</button>
+                </div>
+              </div>`;
+          }).join('')}
+        </div>`}
+      </div>`;
+
+    main.querySelector('#custom-new-btn').onclick = () => openCustomEntityForm(typeName, null);
+    main.querySelectorAll('.entity-row').forEach(row => {
+      row.onclick = e => {
+        if (e.target.closest('button')) return;
+        openCustomEntitySlideover(typeName, parseInt(row.dataset.id));
+      };
+    });
+    main.querySelectorAll('.custom-edit-btn').forEach(btn => {
+      btn.onclick = e => { e.stopPropagation(); openCustomEntityForm(typeName, { id: parseInt(btn.dataset.id) }); };
+    });
+    main.querySelectorAll('.custom-del-btn').forEach(btn => {
+      btn.onclick = e => {
+        e.stopPropagation();
+        showConfirmModal(`Delete this ${escHtml(displayName)}?`, async () => {
+          await api('DELETE', `/api/custom/${typeName}/${btn.dataset.id}`);
+          renderView(currentView);
+        });
+      };
+    });
+  } catch(err) {
+    main.innerHTML = `<div class="view"><div class="empty-state"><div class="empty-state-text" style="color:var(--color-danger)">Failed to load ${escHtml(displayName)}: ${escHtml(String(err))}</div></div></div>`;
+  }
+}
+
+async function openCustomEntitySlideover(typeName, id) {
+  const typeInfo = customEntityTypes.find(t => t.name === typeName);
+  const displayName = typeInfo ? (typeInfo.display_name || typeName) : typeName;
+  let propDefs = [];
+  if (typeInfo && typeInfo.prop_defs) {
+    try { propDefs = JSON.parse(typeInfo.prop_defs); } catch(e) { propDefs = []; }
+  }
+
+  try {
+    const e = await api('GET', `/api/custom/${typeName}/${id}`);
+    const props = e.props || {};
+
+    const rows = propDefs.map(pd => `
+      <div class="slideover-field">
+        <div class="slideover-field-label">${escHtml(pd.label || pd.key)}</div>
+        <div class="slideover-field-value">${escHtml(props[pd.key] || '—')}</div>
+      </div>`).join('');
+
+    // Show any extra props not in propDefs
+    const extraRows = Object.entries(props)
+      .filter(([k]) => !propDefs.find(pd => pd.key === k))
+      .map(([k, v]) => `
+        <div class="slideover-field">
+          <div class="slideover-field-label">${escHtml(k)}</div>
+          <div class="slideover-field-value">${escHtml(v)}</div>
+        </div>`).join('');
+
+    const body = `
+      <div class="slideover-section">
+        <div class="slideover-field">
+          <div class="slideover-field-label">Title</div>
+          <div class="slideover-field-value">${escHtml(e.title)}</div>
+        </div>
+        ${rows}${extraRows}
+        <div class="slideover-field">
+          <div class="slideover-field-label">Created</div>
+          <div class="slideover-field-value">${fmtDate(e.created_at)}</div>
+        </div>
+      </div>
+      <div class="slideover-actions" style="display:flex;gap:8px;padding:12px 0">
+        <button class="btn btn-primary btn-sm" id="custom-slideover-edit">Edit</button>
+      </div>`;
+
+    openSlideover(displayName, body);
+    setSlideoverExport('custom_' + typeName, id);
+
+    document.getElementById('custom-slideover-edit').onclick = () => {
+      closeSlideover();
+      openCustomEntityForm(typeName, e);
+    };
+  } catch(err) {
+    showToast('Failed to load entity', 'error');
+  }
+}
+
+async function openCustomEntityForm(typeName, entityOrNull) {
+  const typeInfo = customEntityTypes.find(t => t.name === typeName);
+  const displayName = typeInfo ? (typeInfo.display_name || typeName) : typeName;
+  let propDefs = [];
+  if (typeInfo && typeInfo.prop_defs) {
+    try { propDefs = JSON.parse(typeInfo.prop_defs); } catch(e) { propDefs = []; }
+  }
+
+  // If given a partial entity with only id, fetch full entity
+  let entity = entityOrNull;
+  if (entity && entity.id && !entity.title) {
+    try { entity = await api('GET', `/api/custom/${typeName}/${entity.id}`); } catch(e) { entity = null; }
+  }
+
+  const isEdit = !!(entity && entity.id);
+  const props = (entity && entity.props) || {};
+
+  const propFields = propDefs.map(pd => {
+    const val = props[pd.key] || '';
+    const inputType = pd.type === 'number' ? 'number' : pd.type === 'date' ? 'date' : pd.type === 'url' ? 'url' : 'text';
+    return `
+      <div class="form-group">
+        <label class="form-label">${escHtml(pd.label || pd.key)}</label>
+        <input type="${inputType}" id="cf-${escHtml(pd.key)}" value="${escHtml(val)}" placeholder="${escHtml(pd.label || pd.key)}…" />
+      </div>`;
+  }).join('');
+
+  const formHtml = `
+    <div class="form-group">
+      <label class="form-label">Title <span style="color:var(--color-danger)">*</span></label>
+      <input type="text" id="cf-title" value="${escHtml(entity ? entity.title : '')}" placeholder="${escHtml(displayName)} title…" />
+    </div>
+    ${propFields}
+    <div class="form-actions">
+      <button class="btn btn-ghost" id="cf-cancel">Cancel</button>
+      <button class="btn btn-primary" id="cf-save">${isEdit ? 'Update' : 'Create'}</button>
+    </div>`;
+
+  openFormSlideover(isEdit ? `Edit ${displayName}` : `New ${displayName}`, formHtml);
+  requestAnimationFrame(() => document.getElementById('cf-title')?.focus());
+  document.getElementById('cf-cancel').onclick = closeFormSlideover;
+  document.getElementById('cf-save').onclick = async () => {
+    const title = document.getElementById('cf-title').value.trim();
+    if (!title) { showToast('Title is required', 'error'); return; }
+    const newProps = {};
+    propDefs.forEach(pd => {
+      const el = document.getElementById(`cf-${pd.key}`);
+      if (el) newProps[pd.key] = el.value;
+    });
+    try {
+      if (isEdit) {
+        await api('PUT', `/api/custom/${typeName}/${entity.id}`, { title, props: newProps });
+        showToast(`${displayName} updated`);
+      } else {
+        await api('POST', `/api/custom/${typeName}`, { title, props: newProps });
+        showToast(`${displayName} created`);
+      }
+      closeFormSlideover();
+      renderView(currentView);
+    } catch(err) {
+      showToast('Error: ' + (err.message || err), 'error');
+    }
+  };
 }
 
 /* ─── Context Menu ───────────────────────────────────────────────────── */
@@ -11957,6 +12181,105 @@ async function openRaibisSettings(defaultTab = 'apps') {
   }
 
   async function renderDataTab(body) {
+    // ── Custom Entity Types section ───────────────────────────────────────────
+    const cetSection = document.createElement('div');
+    cetSection.style.cssText = 'margin-bottom:20px;border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:16px;background:var(--color-surface)';
+    cetSection.innerHTML = `<h4 style="margin:0 0 12px;font-size:13px;font-weight:600">Custom Entity Types</h4><div id="_cet-list"></div>
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--text-muted);user-select:none">Define New Entity Type</summary>
+        <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
+          <div class="form-group"><label class="form-label">Name (slug, e.g. "repository")</label>
+            <input type="text" id="_cet-name" placeholder="repository" style="width:100%" /></div>
+          <div class="form-group"><label class="form-label">Display Name</label>
+            <input type="text" id="_cet-display" placeholder="Repository" style="width:100%" /></div>
+          <div class="form-group"><label class="form-label">Icon (emoji)</label>
+            <input type="text" id="_cet-icon" placeholder="📁" style="width:80px" maxlength="4" /></div>
+          <div>
+            <label class="form-label" style="margin-bottom:6px;display:block">Property Definitions</label>
+            <div id="_cet-propdefs" style="display:flex;flex-direction:column;gap:6px"></div>
+            <button class="btn btn-sm btn-ghost" id="_cet-addprop" style="margin-top:6px">+ Add Property</button>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:4px">
+            <button class="btn btn-primary btn-sm" id="_cet-create">Create Type</button>
+          </div>
+        </div>
+      </details>`;
+    body.prepend(cetSection);
+
+    async function renderCetList() {
+      const list = document.getElementById('_cet-list');
+      if (!list) return;
+      const types = await api('GET', '/api/custom-types').catch(() => []) || [];
+      customEntityTypes = types;
+      renderCustomEntityNav();
+      if (!types.length) {
+        list.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">No custom entity types defined yet.</div>';
+        return;
+      }
+      list.innerHTML = types.map(t => `
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--color-border)">
+          <span style="font-size:16px">${t.icon || '📁'}</span>
+          <span style="flex:1;font-size:13px;font-weight:500">${escHtml(t.display_name)}</span>
+          <span style="font-size:11px;color:var(--text-muted)">${escHtml(t.name)}</span>
+          <button class="btn btn-sm btn-ghost _cet-del" data-name="${escHtml(t.name)}" style="color:var(--color-danger)">Delete</button>
+        </div>`).join('');
+      list.querySelectorAll('._cet-del').forEach(btn => {
+        btn.onclick = () => {
+          showConfirmModal(`Delete type "${btn.dataset.name}" and all its entities?`, async () => {
+            await api('DELETE', `/api/custom-types/${btn.dataset.name}`);
+            await renderCetList();
+          });
+        };
+      });
+    }
+    await renderCetList();
+
+    // Property defs builder
+    let propDefsRows = [];
+    function renderPropDefsUI() {
+      const pd = document.getElementById('_cet-propdefs');
+      if (!pd) return;
+      pd.innerHTML = propDefsRows.map((row, i) => `
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="text" placeholder="key" value="${escHtml(row.key)}" data-idx="${i}" data-field="key" style="width:90px" />
+          <input type="text" placeholder="Label" value="${escHtml(row.label)}" data-idx="${i}" data-field="label" style="width:100px" />
+          <select data-idx="${i}" data-field="type" style="flex:1">
+            ${['text','number','date','select','url'].map(opt => `<option value="${opt}" ${row.type===opt?'selected':''}>${opt}</option>`).join('')}
+          </select>
+          <button class="btn btn-sm btn-ghost" data-remove="${i}" style="color:var(--color-danger)">×</button>
+        </div>`).join('');
+      pd.querySelectorAll('input,select').forEach(el => {
+        el.oninput = el.onchange = () => {
+          const idx = parseInt(el.dataset.idx);
+          propDefsRows[idx][el.dataset.field] = el.value;
+        };
+      });
+      pd.querySelectorAll('[data-remove]').forEach(btn => {
+        btn.onclick = () => { propDefsRows.splice(parseInt(btn.dataset.remove), 1); renderPropDefsUI(); };
+      });
+    }
+    cetSection.querySelector('#_cet-addprop').onclick = () => {
+      propDefsRows.push({ key: '', label: '', type: 'text' });
+      renderPropDefsUI();
+    };
+    cetSection.querySelector('#_cet-create').onclick = async () => {
+      const name = (cetSection.querySelector('#_cet-name').value || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
+      const display_name = (cetSection.querySelector('#_cet-display').value || '').trim();
+      const icon = (cetSection.querySelector('#_cet-icon').value || '📁').trim() || '📁';
+      if (!name || !display_name) { showToast('Name and display name are required', 'error'); return; }
+      const prop_defs = JSON.stringify(propDefsRows.filter(r => r.key));
+      try {
+        await api('POST', '/api/custom-types', { name, display_name, icon, prop_defs });
+        showToast(`Type "${display_name}" created`);
+        propDefsRows = [];
+        cetSection.querySelector('#_cet-name').value = '';
+        cetSection.querySelector('#_cet-display').value = '';
+        cetSection.querySelector('#_cet-icon').value = '';
+        renderPropDefsUI();
+        await renderCetList();
+      } catch(err) { showToast('Failed: ' + (err.message || err), 'error'); }
+    };
+
     const ENTITY_TYPES = [
       { key: 'tasks',      label: 'Tasks',      api: 'tasks',      titleKey: 'title', exportKey: 'tasks',
         createFn: () => { overlay.remove(); showNewTaskModal({}, renderCurrentView); } },
@@ -12509,6 +12832,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Connected apps panel
   document.getElementById('connected-apps-btn').onclick = openConnectedAppsPanel;
 
+  // Sync vault button
+  const syncBtn = document.getElementById('sync-btn');
+  if (syncBtn) {
+    syncBtn.onclick = async () => {
+      syncBtn.classList.add('spinning');
+      try {
+        const r = await api('POST', '/api/sync');
+        showToast(`Vault sync: ${r.inserted} inserted, ${r.updated} updated`);
+        await loadCustomEntityTypes();
+        renderView(currentView);
+      } catch(e) { showToast('Sync failed', 'error'); }
+      finally { syncBtn.classList.remove('spinning'); }
+    };
+  }
+
   // Mobile menu toggle
   const mobMenuBtn = document.getElementById('mob-menu-btn');
   const sidebar = document.getElementById('sidebar');
@@ -12531,6 +12869,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     allTags = [];
     allCategories = [];
   }
+
+  // Load custom entity types and render nav
+  await loadCustomEntityTypes();
 
   // Fetch latest GitHub commit SHA for version button
   try {
