@@ -1284,6 +1284,10 @@ function setCustomPropValue(entity, recordId, key, value) {
   // Sync to backend (persists to DB + Obsidian vault frontmatter)
   api('POST', `/api/properties?entity_type=${entity}&entity_id=${recordId}`, { key, value: String(value) })
     .catch(e => console.warn('[vault] custom prop sync failed:', e));
+  // Refresh custom prop chips in any visible list/cards/kanban row for this record
+  document.querySelectorAll(`.task-chips-outer[data-entity="${entity}"][data-rid="${recordId}"]`).forEach(el => {
+    el.innerHTML = renderCustomPropChips(entity, recordId, el.dataset.vm || 'list');
+  });
 }
 
 function customPropCell(entity, recordId, def) {
@@ -1300,13 +1304,15 @@ function customPropCell(entity, recordId, def) {
     return `<td><input type="number" class="custom-prop-input" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" value="${val}" style="font-size:12px;width:70px;border:1px solid var(--border);border-radius:3px;padding:1px 4px;background:transparent;color:var(--text-primary)"></td>`;
   }
   if (def.type === 'select' || def.type === 'status') {
-    const opts = def.options || [];
-    const html = val ? `<span style="font-size:11px;background:var(--accent-glow);border-radius:3px;padding:1px 5px">${val}</span>` : '—';
+    const oc = def.optionColors || {};
+    const color = val ? (oc[val] || '') : '';
+    const html = val ? (color ? `<span class="multi-chip color-${color}" style="font-size:11px">${escHtml(val)}</span>` : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${escHtml(val)}</span>`) : '—';
     return `<td class="custom-prop-select-cell" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" style="cursor:pointer">${html}</td>`;
   }
   if (def.type === 'multi_select') {
     const arr = (() => { try { const a = JSON.parse(val); return Array.isArray(a) ? a : (val ? [val] : []); } catch { return val ? [val] : []; } })();
-    const html = arr.length ? arr.map(v => `<span style="font-size:11px;background:var(--accent-glow);border-radius:3px;padding:1px 5px;margin-right:2px">${v}</span>`).join('') : '—';
+    const oc = def.optionColors || {};
+    const html = arr.length ? arr.map(v => oc[v] ? `<span class="multi-chip color-${oc[v]}" style="font-size:11px">${escHtml(v)}</span>` : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${escHtml(v)}</span>`).join('') : '—';
     return `<td class="custom-prop-select-cell" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" style="cursor:pointer">${html}</td>`;
   }
   return `<td><span class="custom-prop-text" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" contenteditable="true" style="font-size:12px;outline:none;min-width:60px;display:inline-block">${val}</span></td>`;
@@ -1607,18 +1613,28 @@ function renderCustomPropChips(entity, recordId, viewMode) {
   const chips = defs.filter(d => isVisible(d.key)).map(def => {
     const val = vals[def.key] ?? '';
     if (!val && val !== false && val !== 0) return '';
-    let display = '';
     if (def.type === 'checkbox') {
-      display = val ? '✓' : '✗';
-    } else if (def.type === 'multi_select') {
-      try { const a = JSON.parse(val); display = Array.isArray(a) ? a.join(', ') : val; } catch { display = val; }
-    } else if (def.type === 'relation') {
-      display = String(val).replace(/^\[\[|\]\]$/g, '');
-    } else {
-      display = String(val);
+      return val ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px" title="${def.label}: checked"><span style="color:var(--text-muted)">${def.label}:</span> ✓</span>` : '';
     }
+    if (def.type === 'multi_select') {
+      const arr = (() => { try { const a = JSON.parse(val); return Array.isArray(a) ? a : (val ? [val] : []); } catch { return val ? [val] : []; } })();
+      if (!arr.length) return '';
+      const oc = def.optionColors || {};
+      return arr.map(v => oc[v]
+        ? `<span class="multi-chip color-${oc[v]}" style="font-size:10px">${escHtml(v)}</span>`
+        : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:10px">${escHtml(v)}</span>`
+      ).join('');
+    }
+    if (def.type === 'select' || def.type === 'status') {
+      if (!val) return '';
+      const color = (def.optionColors || {})[val] || '';
+      return color
+        ? `<span class="multi-chip color-${color}" style="font-size:10px" title="${def.label}: ${escHtml(val)}">${escHtml(val)}</span>`
+        : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:10px" title="${def.label}: ${escHtml(val)}">${escHtml(val)}</span>`;
+    }
+    const display = def.type === 'relation' ? String(val).replace(/^\[\[|\]\]$/g, '') : String(val);
     if (!display) return '';
-    return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${def.label}: ${display}"><span style="color:var(--text-muted)">${def.label}:</span> ${display}</span>`;
+    return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${def.label}: ${display}"><span style="color:var(--text-muted)">${def.label}:</span> ${escHtml(display)}</span>`;
   }).filter(Boolean);
   if (!chips.length) return '';
   return `<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:4px">${chips.join('')}</div>`;
@@ -1671,7 +1687,7 @@ function bindCustomPropCells() {
             row.onclick = (ev) => { ev.stopPropagation(); const o = row.dataset.opt; if (sel.has(o)) sel.delete(o); else sel.add(o); renderMs(); };
           });
           const db = popup.querySelector('#custom-ms-done');
-          if (db) db.onclick = (ev) => { ev.stopPropagation(); popup.remove(); const v=JSON.stringify([...sel]); setCustomPropValue(entity,recordId,propKey,v); cell.innerHTML=([...sel].map(v=>`<span style="font-size:11px;background:var(--accent-glow);border-radius:3px;padding:1px 5px;margin-right:2px">${v}</span>`).join(''))||'—'; };
+          if (db) db.onclick = (ev) => { ev.stopPropagation(); popup.remove(); const v=JSON.stringify([...sel]); setCustomPropValue(entity,recordId,propKey,v); const oc2=def.optionColors||{}; cell.innerHTML=([...sel].map(v=>oc2[v]?`<span class="multi-chip color-${oc2[v]}" style="font-size:11px">${escHtml(v)}</span>`:`<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${escHtml(v)}</span>`).join(''))||'—'; };
         };
         renderMs();
         const r = cell.getBoundingClientRect();
@@ -1679,10 +1695,12 @@ function bindCustomPropCells() {
         document.body.appendChild(popup);
         setTimeout(() => { document.addEventListener('click', function h(ev) { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', h); } }); }, 0);
       } else {
-        const opts = [{ value:'', label:'— clear —' }, ...(def.options||[]).map(o => ({ value:o, label:o }))];
-        openValuePicker(cell, opts, (val) => {
-          setCustomPropValue(entity, recordId, propKey, val);
-          cell.innerHTML = val ? `<span style="font-size:11px;background:var(--accent-glow);border-radius:3px;padding:1px 5px">${val}</span>` : '—';
+        openSingleSelectPicker(cell, def, entity, recordId, propKey, () => {
+          const newDef = getCustomPropDefs(entity).find(d => d.key === propKey);
+          const newVal = getCustomPropValues(entity, recordId)[propKey] ?? '';
+          const oc2 = (newDef && newDef.optionColors) || {};
+          const color2 = oc2[newVal] || '';
+          cell.innerHTML = newVal ? (color2 ? `<span class="multi-chip color-${color2}" style="font-size:11px">${escHtml(newVal)}</span>` : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${escHtml(newVal)}</span>`) : '—';
         });
       }
     };
@@ -1807,7 +1825,10 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
           }
           if (!val) return `<span class="empty">—</span>`;
           if (custom.type === 'select' || custom.type === 'status') {
-            return `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${val}</span>`;
+            const color = (custom.optionColors || {})[val] || '';
+            return color
+              ? `<span class="multi-chip color-${color}" style="font-size:11px">${escHtml(val)}</span>`
+              : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${escHtml(val)}</span>`;
           }
           if (custom.type === 'url') {
             return `<a href="${val}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);text-decoration:underline;font-size:12px" onclick="event.stopPropagation()">${val}</a>`;
@@ -1883,11 +1904,7 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
         return;
       }
       if (def.type === 'select' || def.type === 'status') {
-        const opts = [{ value: '', label: '— clear —' }, ...(def.options||[]).map(o => ({ value: o, label: o }))];
-        openValuePicker(valEl, opts, (val) => {
-          setCustomPropValue(entity, recordId, key, val);
-          onRerender();
-        });
+        openSingleSelectPicker(valEl, def, entity, recordId, key, onRerender);
         return;
       }
       if (def.type === 'multi_select') {
@@ -2625,10 +2642,10 @@ function taskRowHtml(task, showProject, indent, viewMode) {
     <div class="task-check ${done ? 'done' : ''}" data-check-id="${task.id}">${done ? '✓' : ''}</div>
     <div class="task-content">
       <div class="${titleCls}"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${task.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${task.title} <span class="comment-badge" data-comment-for="${task.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div>
-      <div class="task-meta-row">${projBadge}${dueBadge}${catChip}${tagChips}${statusChip}${priorityChip}${storyPts}</div>
-      ${renderCustomPropChips('task', task.id, vm)}
+      <div class="task-meta-row">${projBadge}${catChip}${tagChips}${statusChip}${priorityChip}${storyPts}</div>
+      <div class="task-chips-outer" data-entity="task" data-rid="${task.id}" data-vm="${vm||'list'}">${renderCustomPropChips('task', task.id, vm)}</div>
     </div>
-    <span class="task-row-due-right">${vis('due_date') && task.due_date ? fmtDate(task.due_date) : ''}</span>
+    <span class="task-row-due-right">${dueBadge}</span>
   </li>`;
 }
 
@@ -3455,6 +3472,79 @@ function openMultiSelectPicker(anchorEl, def, entity, recordId, key, onRerender)
   renderPicker();
   popup.style.cssText = `position:fixed;z-index:9200;min-width:220px;max-height:340px;overflow-y:auto`;
   clampPopup(popup, anchorEl);
+  setTimeout(() => document.addEventListener('click', function h(ev) { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', h); } }), 0);
+}
+
+// ── openSingleSelectPicker ────────────────────────────────────────────────────
+// Single-value picker for select/status custom props with color assignment.
+function openSingleSelectPicker(anchorEl, def, entity, recordId, key, onRerender) {
+  document.getElementById('ss-picker-popup')?.remove();
+  const popup = document.createElement('div');
+  popup.id = 'ss-picker-popup';
+  popup.className = 'prop-vis-panel';
+  const opts = [...(def.options || [])];
+  const optColors = Object.assign({}, def.optionColors || {});
+
+  function saveColors() {
+    const defs = getCustomPropDefs(entity);
+    const idx = defs.findIndex(d => d.key === key);
+    if (idx >= 0) { defs[idx].optionColors = optColors; setCustomPropDefs(entity, defs); }
+  }
+
+  function renderPicker() {
+    popup.innerHTML =
+      `<div style="padding:4px 10px 6px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">${escHtml(def.label)}</div>` +
+      `<div class="prop-vis-row" data-ss-clear style="cursor:pointer;color:var(--text-muted);font-size:12px;font-style:italic">— clear —</div>` +
+      opts.map(o => {
+        const color = optColors[o];
+        const chipHtml = color
+          ? `<span class="multi-chip color-${color}" style="font-size:11px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${escHtml(o)}</span>`
+          : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${escHtml(o)}</span>`;
+        return `<div class="prop-vis-row ss-pick-opt" data-val="${o.replace(/"/g,'&quot;')}"
+          style="display:flex;align-items:center;gap:5px;cursor:pointer">
+          ${chipHtml}
+          <button class="ss-color-btn btn btn-sm btn-ghost" data-opt="${o.replace(/"/g,'&quot;')}"
+            title="Assign color" style="padding:0 4px;font-size:10px;opacity:0.5;flex-shrink:0">●</button>
+        </div>`;
+      }).join('');
+
+    popup.querySelector('[data-ss-clear]').onclick = (e) => {
+      e.stopPropagation(); popup.remove();
+      setCustomPropValue(entity, recordId, key, ''); onRerender();
+    };
+    popup.querySelectorAll('.ss-pick-opt').forEach(row => {
+      row.onclick = (e) => {
+        if (e.target.closest('.ss-color-btn')) return;
+        e.stopPropagation(); popup.remove();
+        setCustomPropValue(entity, recordId, key, row.dataset.val); onRerender();
+      };
+    });
+    popup.querySelectorAll('.ss-color-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        document.getElementById('ss-cpicker')?.remove();
+        const o = btn.dataset.opt;
+        const cp = document.createElement('div');
+        cp.id = 'ss-cpicker';
+        cp.className = 'prop-vis-panel';
+        cp.innerHTML = MS_COLORS.map(c =>
+          `<div class="prop-vis-row ss-cpick-item" data-color="${c}" style="cursor:pointer">
+            <span class="multi-chip color-${c}" style="font-size:11px">${c}</span>
+          </div>`).join('');
+        cp.querySelectorAll('.ss-cpick-item').forEach(ci => {
+          ci.onclick = (ev) => { ev.stopPropagation(); optColors[o] = ci.dataset.color; saveColors(); cp.remove(); renderPicker(); };
+        });
+        cp.style.cssText = `position:fixed;z-index:9400;min-width:110px`;
+        clampPopup(cp, btn);
+        setTimeout(() => document.addEventListener('click', function h(ev) { if (!cp.contains(ev.target)) { cp.remove(); document.removeEventListener('click', h); } }), 0);
+      };
+    });
+  }
+
+  renderPicker();
+  popup.style.cssText = `position:fixed;z-index:9200;min-width:200px;max-height:320px;overflow-y:auto`;
+  clampPopup(popup, anchorEl);
+  document.body.appendChild(popup);
   setTimeout(() => document.addEventListener('click', function h(ev) { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', h); } }), 0);
 }
 
