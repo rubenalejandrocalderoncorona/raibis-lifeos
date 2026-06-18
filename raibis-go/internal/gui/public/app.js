@@ -1721,7 +1721,7 @@ function showAddRelationPanel(anchorBtn, key, name, entity, onAdd) {
   const entities = [...builtinEntities, ...customEntities.map(t => t.name)];
   const entityLabel = (ent) => { const ct = customEntityTypes.find(t => t.name === ent); return ct ? (ct.display_name || ct.name) : ent; };
   let relatedEntity = entities[0];
-  let bilateral = false;
+  let bilateral = true;
 
   const renderPanel = () => {
     panel.innerHTML = `
@@ -2038,11 +2038,22 @@ function bindCustomPropCells() {
                 const patchPath = entity === 'task' ? `/api/tasks/${recordId}` : `/api/${entity}s/${recordId}`;
                 api('PATCH', patchPath, { sprint_id: spId }).catch(() => {});
               }
-              if (def.bilateral) {
+              if (def.bilateral !== false) {
                 const revKey = `${entity}_${propKey}`;
+                // Ensure reverse def exists on relEntity
+                const revDefs = getCustomPropDefs(relEntity);
+                if (!revDefs.some(d => d.key === revKey)) {
+                  const revLabel = (def.label || propKey) + ' (from ' + (entity === 'task' ? 'Task' : entity) + ')';
+                  revDefs.push({ key: revKey, label: revLabel, type: 'relation', relatedEntity: entity, bilateral: true });
+                  setCustomPropDefs(relEntity, revDefs);
+                  const rv = getEntityVisProps(relEntity);
+                  if (!rv.includes(revKey)) setEntityVisProps(relEntity, [...rv, revKey]);
+                }
                 let sourceTitle = String(recordId);
                 try {
-                  const src = await api('GET', entity === 'task' ? `/api/tasks/${recordId}` : `/api/${entity}s/${recordId}`);
+                  const isBuiltinSrc = ['task','goal','project','sprint','note','resource','habit'].includes(entity);
+                  const srcPath = entity === 'task' ? `/api/tasks/${recordId}` : isBuiltinSrc ? `/api/${entity}s/${recordId}` : `/api/custom/${entity}/${recordId}`;
+                  const src = await api('GET', srcPath);
                   sourceTitle = src.title || src.name || String(recordId);
                 } catch {}
                 const newIdSet = new Set(multiIds.map(String));
@@ -2333,11 +2344,21 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
                 api('PATCH', patchPath, { sprint_id: spId }).catch(() => {});
               }
               // Bilateral sync
-              if (def.bilateral) {
+              if (def.bilateral !== false) {
                 const revKey = `${entity}_${key}`;
+                // Ensure reverse def exists on relEntity
+                const revDefs = getCustomPropDefs(relEntity);
+                if (!revDefs.some(d => d.key === revKey)) {
+                  const revLabel = (def.label || key) + ' (from ' + (entity === 'task' ? 'Task' : entity) + ')';
+                  revDefs.push({ key: revKey, label: revLabel, type: 'relation', relatedEntity: entity, bilateral: true });
+                  setCustomPropDefs(relEntity, revDefs);
+                  const rv = getEntityVisProps(relEntity);
+                  if (!rv.includes(revKey)) setEntityVisProps(relEntity, [...rv, revKey]);
+                }
                 let sourceTitle = String(recordId);
                 try {
-                  const srcPath = entity === 'task' ? `/api/tasks/${recordId}` : `/api/${entity}s/${recordId}`;
+                  const isBuiltinSrc = ['task','goal','project','sprint','note','resource','habit'].includes(entity);
+                  const srcPath = entity === 'task' ? `/api/tasks/${recordId}` : isBuiltinSrc ? `/api/${entity}s/${recordId}` : `/api/custom/${entity}/${recordId}`;
                   const src = await api('GET', srcPath);
                   sourceTitle = src.title || src.name || String(recordId);
                 } catch {}
@@ -2372,7 +2393,9 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
                   }
                 }
               }
-              onRerender();
+              valEl.innerHTML = newItems.length
+                ? newItems.map(it => `<span class="multi-chip" style="font-size:11px">${escHtml(it.label)}</span>`).join('')
+                : '<span class="empty">—</span>';
             },
             { multiSelect: true, selectedIds: curIds }
           );
@@ -12612,6 +12635,149 @@ function renderAutoForm(container, existing, defEntityType, onSave) {
   }
 
   render();
+}
+
+/* ─── New Entity Type Modal ──────────────────────────────────────────── */
+function showNewEntityTypeModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9100;display:flex;align-items:center;justify-content:center';
+
+  const PROP_TYPES = ['text','number','date','select','multi_select','url','checkbox','relation'];
+  const STARTER_PROPS = [
+    { key: 'status',    label: 'Status',    type: 'select',       options: 'To Do,In Progress,Done' },
+    { key: 'priority',  label: 'Priority',  type: 'select',       options: 'Low,Medium,High' },
+    { key: 'due_date',  label: 'Due Date',  type: 'date',         options: '' },
+    { key: 'tags',      label: 'Tags',      type: 'multi_select', options: '' },
+    { key: 'category',  label: 'Category',  type: 'text',         options: '' },
+    { key: 'notes',     label: 'Notes',     type: 'text',         options: '' },
+  ];
+
+  let iconSelected = '📁';
+  let propRows = [];
+
+  overlay.innerHTML = `
+    <div style="background:var(--bg-card);border-radius:12px;padding:28px 32px;width:520px;max-width:95vw;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+        <h2 style="font-size:17px;font-weight:700;margin:0">New Entity Type</h2>
+        <button id="_net-close" style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--text-muted);line-height:1">×</button>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px">
+        <button id="_net-icon-btn" style="width:44px;height:44px;border:1px solid var(--border);border-radius:8px;background:var(--bg-surface);cursor:pointer;font-size:22px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📁</button>
+        <div style="flex:1;display:flex;flex-direction:column;gap:8px">
+          <input id="_net-display" type="text" placeholder="Display name (e.g. Repositories)" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px;background:var(--bg-surface);color:var(--text-primary)" />
+          <input id="_net-name" type="text" placeholder="Slug (auto-generated, e.g. repositories)" style="width:100%;padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--text-muted);background:var(--bg-surface)" />
+        </div>
+      </div>
+      <div style="margin-bottom:12px">
+        <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Starter properties</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">
+          ${STARTER_PROPS.map(sp => `<label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border);border-radius:20px;background:var(--bg-surface)"><input type="checkbox" data-starter="${sp.key}" style="accent-color:var(--accent)"> ${sp.label}</label>`).join('')}
+        </div>
+        <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Custom properties</div>
+        <div id="_net-propdefs" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
+        <button id="_net-addprop" class="btn btn-sm btn-ghost" style="font-size:12px">+ Add property</button>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;padding-top:16px;border-top:1px solid var(--border)">
+        <button id="_net-cancel" class="btn btn-ghost">Cancel</button>
+        <button id="_net-create" class="btn btn-primary">Create entity</button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  const iconBtn = overlay.querySelector('#_net-icon-btn');
+  const displayInp = overlay.querySelector('#_net-display');
+  const nameInp = overlay.querySelector('#_net-name');
+  const propDefsEl = overlay.querySelector('#_net-propdefs');
+
+  // Auto-generate slug from display name
+  displayInp.oninput = () => {
+    nameInp.value = displayInp.value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g,'');
+  };
+
+  // Icon picker
+  iconBtn.onclick = (e) => {
+    e.stopPropagation();
+    showIconPicker(iconBtn, null, null, iconSelected, (icon) => {
+      iconSelected = icon || '📁';
+      iconBtn.innerHTML = iconSelected.startsWith('__svg:')
+        ? renderEntityIcon(iconSelected, 22)
+        : `<span style="font-size:22px">${iconSelected}</span>`;
+    });
+  };
+
+  // Prop rows builder
+  function renderPropDefs() {
+    propDefsEl.innerHTML = propRows.map((row, i) => `
+      <div style="display:flex;gap:6px;align-items:center">
+        <input type="text" placeholder="Label" value="${escHtml(row.label)}" data-idx="${i}" data-field="label" style="flex:1;padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:12px;background:var(--bg-surface);color:var(--text-primary)" />
+        <select data-idx="${i}" data-field="type" style="padding:5px 6px;border:1px solid var(--border);border-radius:5px;font-size:12px;background:var(--bg-surface);color:var(--text-primary)">
+          ${PROP_TYPES.map(t => `<option value="${t}" ${row.type===t?'selected':''}>${t}</option>`).join('')}
+        </select>
+        <button class="btn btn-sm btn-ghost" data-remove="${i}" style="color:var(--color-danger);flex-shrink:0">×</button>
+      </div>`).join('');
+    propDefsEl.querySelectorAll('input,select').forEach(el => {
+      el.oninput = el.onchange = () => {
+        const idx = parseInt(el.dataset.idx);
+        const field = el.dataset.field;
+        if (field === 'label') {
+          propRows[idx].label = el.value;
+          propRows[idx].key = el.value.trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
+        } else {
+          propRows[idx][field] = el.value;
+        }
+      };
+    });
+    propDefsEl.querySelectorAll('[data-remove]').forEach(btn => {
+      btn.onclick = () => { propRows.splice(parseInt(btn.dataset.remove), 1); renderPropDefs(); };
+    });
+  }
+
+  overlay.querySelector('#_net-addprop').onclick = () => {
+    propRows.push({ key: '', label: '', type: 'text' });
+    renderPropDefs();
+  };
+
+  // Starter props
+  overlay.querySelectorAll('[data-starter]').forEach(chk => {
+    chk.onchange = () => {
+      const sp = STARTER_PROPS.find(p => p.key === chk.dataset.starter);
+      if (!sp) return;
+      if (chk.checked) {
+        if (!propRows.find(r => r.key === sp.key)) {
+          propRows.push({ key: sp.key, label: sp.label, type: sp.type });
+          renderPropDefs();
+        }
+      } else {
+        propRows = propRows.filter(r => r.key !== sp.key);
+        renderPropDefs();
+      }
+    };
+  });
+
+  // Close
+  const close = () => overlay.remove();
+  overlay.querySelector('#_net-close').onclick = close;
+  overlay.querySelector('#_net-cancel').onclick = close;
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) close(); });
+
+  // Create
+  overlay.querySelector('#_net-create').onclick = async () => {
+    const display_name = displayInp.value.trim();
+    const name = nameInp.value.trim() || display_name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+    if (!name || !display_name) { showToast('Display name is required', 'error'); return; }
+    const icon = iconSelected || '📁';
+    const validRows = propRows.filter(r => r.key && r.label);
+    const prop_defs = JSON.stringify(validRows);
+    try {
+      await api('POST', '/api/custom-types', { name, display_name, icon, prop_defs });
+      customEntityTypes = await api('GET', '/api/custom-types').catch(() => []) || [];
+      renderCustomEntityNav();
+      showToast(`"${display_name}" created`);
+      close();
+    } catch(err) { showToast('Failed: ' + (err.message || err), 'error'); }
+  };
 }
 
 /* ─── Raibis Settings Window ─────────────────────────────────────────── */
