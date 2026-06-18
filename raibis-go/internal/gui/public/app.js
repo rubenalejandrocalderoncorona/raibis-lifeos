@@ -440,7 +440,7 @@ function propVisible(viewMode, key) {
 const ENTITY_PROPS = {
   project:  [
     { key: 'status',    label: 'Status' },
-    { key: 'goal',      label: 'Goal' },
+    { key: 'goal',      label: 'Goals' },
     { key: 'area',      label: 'Area' },
     { key: 'progress',  label: 'Progress' },
     { key: 'tags',      label: 'Tags' },
@@ -464,7 +464,7 @@ const ENTITY_PROPS = {
   ],
   sprint:   [
     { key: 'status',    label: 'Status' },
-    { key: 'project',   label: 'Project' },
+    { key: 'project',   label: 'Projects' },
     { key: 'dates',     label: 'Dates' },
     { key: 'progress',  label: 'Progress' },
   ],
@@ -2034,11 +2034,12 @@ function bindCustomPropCells() {
                 return { id: String(id), label: it ? (it.title || it.name || String(id)) : String(id) };
               });
               setCustomPropValue(entity, recordId, propKey, JSON.stringify(newItems));
-              // Sprint FK auto-assignment
-              if (relEntity === 'sprint' && (entity === 'task' || entity === 'goal' || entity === 'project')) {
+              // Sprint FK + relations table sync
+              if (relEntity === 'sprint' && entity === 'task') {
                 const spId = multiIds.length > 0 ? parseInt(multiIds[0]) : null;
-                const patchPath = entity === 'task' ? `/api/tasks/${recordId}` : `/api/${entity}s/${recordId}`;
-                api('PATCH', patchPath, { sprint_id: spId }).catch(() => {});
+                api('PATCH', `/api/tasks/${recordId}`, { sprint_id: spId }).catch(() => {});
+                for (const sid of multiIds) api('POST', `/api/relations/sprint/${sid}`, { related_entity_type: 'task', related_entity_id: recordId }).catch(() => {});
+                for (const id of curIds) if (!multiIds.map(String).includes(String(id))) api('DELETE', `/api/relations/sprint/${id}/task/${recordId}`, {}).catch(() => {});
               }
               if (def.bilateral !== false) {
                 const revKey = def.reverseKey ?? `${entity}_${propKey}`;
@@ -2330,11 +2331,12 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
                 return { id: String(id), label: it ? (it.title || it.name || String(id)) : String(id) };
               });
               setCustomPropValue(entity, recordId, key, JSON.stringify(newItems));
-              // Sprint FK auto-assignment: if relation targets sprint, set sprint_id on the entity
-              if (relEntity === 'sprint' && (entity === 'task' || entity === 'goal' || entity === 'project')) {
+              // Sprint FK + relations table sync
+              if (relEntity === 'sprint' && entity === 'task') {
                 const spId = multiIds.length > 0 ? parseInt(multiIds[0]) : null;
-                const patchPath = entity === 'task' ? `/api/tasks/${recordId}` : `/api/${entity}s/${recordId}`;
-                api('PATCH', patchPath, { sprint_id: spId }).catch(() => {});
+                api('PATCH', `/api/tasks/${recordId}`, { sprint_id: spId }).catch(() => {});
+                for (const sid of multiIds) api('POST', `/api/relations/sprint/${sid}`, { related_entity_type: 'task', related_entity_id: recordId }).catch(() => {});
+                for (const id of curIds) if (!multiIds.map(String).includes(String(id))) api('DELETE', `/api/relations/sprint/${id}/task/${recordId}`, {}).catch(() => {});
               }
               // Bilateral sync
               if (def.bilateral !== false) {
@@ -3574,12 +3576,12 @@ function renderCurrentView() {
 // vs the body (vertical inline prop panel). Opened by the ··· button.
 
 const ENTITY_ALL_PROPS = {
-  task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goal'},{key:'project',label:'Project'},{key:'category',label:'Category'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'}],
+  task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goals'},{key:'project',label:'Projects'},{key:'category',label:'Category'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'}],
   goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'due',label:'Due Date'},{key:'metrics',label:'Metrics'}],
-  project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goal'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
-  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Project'},{key:'points',label:'Story Points'}],
-  note:     [{key:'date',label:'Date'},{key:'project',label:'Project'},{key:'goal',label:'Goal'},{key:'tags',label:'Tags'},{key:'category',label:'Category'}],
-  resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Project'},{key:'goal',label:'Goal'}],
+  project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
+  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'points',label:'Story Points'}],
+  note:     [{key:'date',label:'Date'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'}],
+  resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'}],
 };
 
 const ENTITY_SECTION_DEFAULTS = {
@@ -4659,6 +4661,12 @@ async function _removeRelProp(ownerType, ownerId, targetType, targetId) {
   let arr = parseRelationValue(vals[propKey] ?? '');
   arr = arr.filter(x => x.id !== String(targetId));
   setCustomPropValue(ownerType, ownerId, propKey, JSON.stringify(arr));
+}
+
+// Called when a builtin FK field changes: syncs the reverse custom prop on the related entity
+async function syncBuiltinRelation(ownerType, ownerId, ownerTitle, relEntity, oldId, newId) {
+  if (oldId && String(oldId) !== String(newId)) await _removeRelProp(relEntity, parseInt(oldId), ownerType, ownerId);
+  if (newId) await _ensureRelProp(relEntity, parseInt(newId), ownerType, ownerId, ownerTitle || String(ownerId));
 }
 
 // Ensures both sides see the link as a custom prop (body panel entry)
@@ -8576,9 +8584,9 @@ async function showTaskSlideover(taskId) {
       renderValue: () => tags.length ? tags.map(t => tagHtml(t)).join('') : '' },
     { key: 'category', label: 'Category',     icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? `<span>${catName}</span>` : '' },
-    { key: 'goal',     label: 'Goal',         icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+    { key: 'goal',     label: 'Goals',        icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
       renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
-    { key: 'project',  label: 'Project',      icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+    { key: 'project',  label: 'Projects',     icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
       renderValue: () => projName ? `<span>${projName}</span>` : '' },
     { key: 'points',   label: 'Story Points', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
       renderValue: () => task.story_points != null && task.story_points > 0 ? `<span>${task.story_points}</span>` : '' },
@@ -8768,13 +8776,17 @@ async function showTaskSlideover(taskId) {
     goal: (valEl) => {
       const items = [{ value: '', label: '— none —' }, ...allGoals.map(g => ({ value: g.id, label: g.title }))];
       openCombo(valEl, items, task.goal_id, async ({ value }) => {
+        const oldId = task.goal_id;
         await patchTask({ goal_id: value ? parseInt(value) : null });
+        syncBuiltinRelation('task', taskId, task.title, 'goal', oldId, value ? parseInt(value) : null);
       });
     },
     project: (valEl) => {
       const items = [{ value: '', label: '— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))];
       openCombo(valEl, items, task.project_id, async ({ value }) => {
+        const oldId = task.project_id;
         await patchTask({ project_id: value ? parseInt(value) : null });
+        syncBuiltinRelation('task', taskId, task.title, 'project', oldId, value ? parseInt(value) : null);
       });
     },
     points: (valEl) => {
@@ -10701,7 +10713,7 @@ async function showProjectSlideover(project, goals, afterSave) {
       renderValue: () => statusBadge(p.status||'active') },
     { key: 'due',      label: 'Due Date',  icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => fmtDate(p.due_date) ? `<span>${fmtDate(p.due_date)}</span>` : '' },
-    { key: 'goal',     label: 'Goal',      icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+    { key: 'goal',     label: 'Goals',     icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
       renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
     { key: 'tags',     label: 'Tags',      icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
       renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
@@ -10843,7 +10855,7 @@ async function showProjectSlideover(project, goals, afterSave) {
   const projInlinePropEditFns = {
     status:   (valEl) => { openValuePicker(valEl, PROJECT_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchProject({ status: val }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     due:      (valEl) => { openDateRangePickerGlobal(valEl, stripDate(p.start_date), stripDate(p.due_date), async (start, end) => { await patchProject({ start_date: start||null, due_date: end||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
-    goal:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(goals||[]).map(g => ({ value: g.id, label: g.title }))], async (val) => { await patchProject({ goal_id: val ? parseInt(val) : null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    goal:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(goals||[]).map(g => ({ value: g.id, label: g.title }))], async (val) => { const oldId = p.goal_id; await patchProject({ goal_id: val ? parseInt(val) : null }); syncBuiltinRelation('project', projectId, p.title, 'goal', oldId, val ? parseInt(val) : null); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: ids }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchProject({ category_id: val ? parseInt(val) : null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     macro:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => { await patchProject({ macro_area: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
@@ -11282,9 +11294,9 @@ async function showNoteSlideover(noteId, afterSave) {
   const allNoteBuiltinDefs = [
     { key: 'date',     label: 'Date',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => n.note_date ? `<span>${fmtDate(n.note_date)}</span>` : '' },
-    { key: 'project',  label: 'Project',  icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+    { key: 'project',  label: 'Projects', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
       renderValue: () => projName ? `<span>${projName}</span>` : '' },
-    { key: 'goal',     label: 'Goal',     icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+    { key: 'goal',     label: 'Goals',    icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
       renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
     { key: 'tags',     label: 'Tags',     icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
       renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
@@ -11399,8 +11411,8 @@ async function showNoteSlideover(noteId, afterSave) {
 
   const noteInlinePropEditFns = {
     date:     (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(n.note_date), async (val) => { await patchNote({ note_date: val||null }); showNoteSlideover(noteId, afterSave); }); },
-    project:  (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => { await patchNote({ project_id: val ? parseInt(val) : null }); showNoteSlideover(noteId, afterSave); }); },
-    goal:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => { await patchNote({ goal_id: val ? parseInt(val) : null }); showNoteSlideover(noteId, afterSave); }); },
+    project:  (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => { const oldId = n.project_id; await patchNote({ project_id: val ? parseInt(val) : null }); syncBuiltinRelation('note', noteId, n.title||String(noteId), 'project', oldId, val ? parseInt(val) : null); showNoteSlideover(noteId, afterSave); }); },
+    goal:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => { const oldId = n.goal_id; await patchNote({ goal_id: val ? parseInt(val) : null }); syncBuiltinRelation('note', noteId, n.title||String(noteId), 'goal', oldId, val ? parseInt(val) : null); showNoteSlideover(noteId, afterSave); }); },
     tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: ids }); showNoteSlideover(noteId, afterSave); }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchNote({ category_id: val ? parseInt(val) : null }); showNoteSlideover(noteId, afterSave); }); },
   };
@@ -11459,7 +11471,7 @@ async function showSprintSlideover(sprintId, afterSave) {
       renderValue: () => `<span>${s.status || 'planned'}</span>` },
     { key: 'dates',   label: 'Dates',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => { const dr = s.start_date && s.end_date ? `${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}` : fmtDate(s.start_date||s.end_date)||''; return dr ? `<span>${dr}</span>` : ''; } },
-    { key: 'project', label: 'Project',   icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+    { key: 'project', label: 'Projects',  icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
       renderValue: () => projName ? `<span>${projName}</span>` : '' },
     { key: 'points',  label: 'Capacity (pts)', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
       renderValue: () => s.story_points != null ? `<span>${s.story_points}</span>` : '' },
@@ -11579,7 +11591,7 @@ async function showSprintSlideover(sprintId, afterSave) {
   const sprintInlinePropEditFns = {
     status:  (valEl) => { openValuePicker(valEl, SPRINT_STATUSES.map(v => ({ value: v, label: v })), async (val) => { await patchSprint({ status: val }); showSprintSlideover(sprintId, afterSave); }); },
     dates:   (valEl) => { openDateRangePickerGlobal(valEl, stripDate(s.start_date), stripDate(s.end_date), async (start, end) => { await patchSprint({ start_date: start||null, end_date: end||null }); showSprintSlideover(sprintId, afterSave); }); },
-    project: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))], async (val) => { await patchSprint({ project_id: val ? parseInt(val) : null }); showSprintSlideover(sprintId, afterSave); }); },
+    project: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))], async (val) => { const oldId = s.project_id; await patchSprint({ project_id: val ? parseInt(val) : null }); syncBuiltinRelation('sprint', sprintId, s.title||String(sprintId), 'project', oldId, val ? parseInt(val) : null); showSprintSlideover(sprintId, afterSave); }); },
     points:  (valEl) => {
       const inp = document.createElement('input');
       inp.type = 'number'; inp.min = '0'; inp.style.cssText = 'width:80px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
@@ -11730,9 +11742,9 @@ async function showResourceSlideover(resource, afterSave) {
       renderValue: () => r.resource_type ? `<span>${r.resource_type}</span>` : '' },
     { key: 'url',     label: 'URL',     icon: pIco('<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>'),
       renderValue: () => rawUrl ? `<span>${rawUrl.replace(/^https?:\/\//,'')}</span>` : '' },
-    { key: 'project', label: 'Project', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+    { key: 'project', label: 'Projects', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
       renderValue: () => projName ? `<span>${projName}</span>` : '' },
-    { key: 'goal',    label: 'Goal',    icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+    { key: 'goal',    label: 'Goals',   icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
       renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
   ];
   const resBodyDefs = allResBuiltinDefs.filter(d => resSections.body.includes(d.key));
@@ -11851,8 +11863,8 @@ async function showResourceSlideover(resource, afterSave) {
       inp.onblur = async () => { await patchResource({ url: inp.value.trim() || null }); showResourceSlideover({ id: resId }, afterSave); };
       inp.onkeydown = ke => { if (ke.key === 'Enter') inp.blur(); };
     },
-    project: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => { await patchResource({ project_id: val ? parseInt(val) : null }); showResourceSlideover({ id: resId }, afterSave); }); },
-    goal:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => { await patchResource({ goal_id: val ? parseInt(val) : null }); showResourceSlideover({ id: resId }, afterSave); }); },
+    project: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => { const oldId = r.project_id; await patchResource({ project_id: val ? parseInt(val) : null }); syncBuiltinRelation('resource', resId, r.title||String(resId), 'project', oldId, val ? parseInt(val) : null); showResourceSlideover({ id: resId }, afterSave); }); },
+    goal:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => { const oldId = r.goal_id; await patchResource({ goal_id: val ? parseInt(val) : null }); syncBuiltinRelation('resource', resId, r.title||String(resId), 'goal', oldId, val ? parseInt(val) : null); showResourceSlideover({ id: resId }, afterSave); }); },
   };
 
   resExtraHeadKeys.forEach(k => {
