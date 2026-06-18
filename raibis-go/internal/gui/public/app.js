@@ -4614,7 +4614,7 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
               await api('PATCH', `/api/tasks/${entityId}`, { sprint_id: parseInt(val) }).catch(() => {});
           }
           const parentTitle = entityData?.title || entityData?.name || String(entityId);
-          await ensureEVBilateral(entityType, entityId, parentTitle, ct, parseInt(val));
+          await ensureEVBilateral(entityType, entityId, parentTitle, ct, parseInt(val), childTitle);
           initEntityViewsSection(entityType, entityId, entityData);
         });
       } catch(err) { console.error('ev-add:', err); }
@@ -4638,42 +4638,53 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
 /* ─── Entity Views Bilateral Sync ───────────────────────────────────── */
 // When a link is added via ev-add-btn, ensure the child entity has a custom
 // prop showing which parent entities reference it (and vice versa).
-async function ensureEVBilateral(parentType, parentId, parentTitle, childType, childId) {
-  const revKey = `${parentType}s`;
-  const revLabel = EV_LABELS[parentType] || (parentType.charAt(0).toUpperCase() + parentType.slice(1));
-  const defs = getCustomPropDefs(childType);
-  if (!defs.some(d => d.key === revKey)) {
-    defs.push({ key: revKey, label: revLabel, type: 'relation', relatedEntity: parentType, bilateral: false });
-    setCustomPropDefs(childType, defs);
-    const vp = getEntityVisProps(childType);
-    if (!vp.includes(revKey)) setEntityVisProps(childType, [...vp, revKey]);
+async function _ensureRelProp(ownerType, ownerId, targetType, targetId, targetTitle) {
+  const propKey = `${targetType}s`;
+  const propLabel = EV_LABELS[targetType] || targetType;
+  const defs = getCustomPropDefs(ownerType);
+  if (!defs.some(d => d.key === propKey)) {
+    defs.push({ key: propKey, label: propLabel, type: 'relation', relatedEntity: targetType, bilateral: false });
+    setCustomPropDefs(ownerType, defs);
+    const vp = getEntityVisProps(ownerType);
+    if (!vp.includes(propKey)) setEntityVisProps(ownerType, [...vp, propKey]);
   }
   try {
-    const serverProps = await api('GET', `/api/properties?entity_type=${childType}&entity_id=${childId}`);
-    const existing = getCustomPropValues(childType, childId);
-    Object.assign(existing, serverProps);
-    localStorage.setItem(`customPropVals_${childType}_${childId}`, JSON.stringify(existing));
+    const sp = await api('GET', `/api/properties?entity_type=${ownerType}&entity_id=${ownerId}`);
+    const ex = getCustomPropValues(ownerType, ownerId);
+    Object.assign(ex, sp);
+    localStorage.setItem(`customPropVals_${ownerType}_${ownerId}`, JSON.stringify(ex));
   } catch(e) {}
-  const vals = getCustomPropValues(childType, childId);
-  let arr = parseRelationValue(vals[revKey] ?? '');
-  if (!arr.some(x => x.id === String(parentId))) {
-    arr.push({ id: String(parentId), label: parentTitle });
-    setCustomPropValue(childType, childId, revKey, JSON.stringify(arr));
+  const vals = getCustomPropValues(ownerType, ownerId);
+  let arr = parseRelationValue(vals[propKey] ?? '');
+  if (!arr.some(x => x.id === String(targetId))) {
+    arr.push({ id: String(targetId), label: targetTitle });
+    setCustomPropValue(ownerType, ownerId, propKey, JSON.stringify(arr));
   }
 }
 
-async function removeEVBilateral(parentType, parentId, childType, childId) {
-  const revKey = `${parentType}s`;
+async function _removeRelProp(ownerType, ownerId, targetType, targetId) {
+  const propKey = `${targetType}s`;
   try {
-    const serverProps = await api('GET', `/api/properties?entity_type=${childType}&entity_id=${childId}`);
-    const existing = getCustomPropValues(childType, childId);
-    Object.assign(existing, serverProps);
-    localStorage.setItem(`customPropVals_${childType}_${childId}`, JSON.stringify(existing));
+    const sp = await api('GET', `/api/properties?entity_type=${ownerType}&entity_id=${ownerId}`);
+    const ex = getCustomPropValues(ownerType, ownerId);
+    Object.assign(ex, sp);
+    localStorage.setItem(`customPropVals_${ownerType}_${ownerId}`, JSON.stringify(ex));
   } catch(e) {}
-  const vals = getCustomPropValues(childType, childId);
-  let arr = parseRelationValue(vals[revKey] ?? '');
-  arr = arr.filter(x => x.id !== String(parentId));
-  setCustomPropValue(childType, childId, revKey, JSON.stringify(arr));
+  const vals = getCustomPropValues(ownerType, ownerId);
+  let arr = parseRelationValue(vals[propKey] ?? '');
+  arr = arr.filter(x => x.id !== String(targetId));
+  setCustomPropValue(ownerType, ownerId, propKey, JSON.stringify(arr));
+}
+
+// Ensures both sides see the link as a custom prop (body panel entry)
+async function ensureEVBilateral(parentType, parentId, parentTitle, childType, childId, childTitle) {
+  await _ensureRelProp(childType, childId, parentType, parentId, parentTitle);
+  if (childTitle !== undefined) await _ensureRelProp(parentType, parentId, childType, childId, childTitle);
+}
+
+async function removeEVBilateral(parentType, parentId, childType, childId) {
+  await _removeRelProp(childType, childId, parentType, parentId);
+  await _removeRelProp(parentType, parentId, childType, childId);
 }
 
 /* ─── Relations Section (bidirectional peer links) ───────────────────── */
@@ -5899,7 +5910,7 @@ async function renderProjects() {
   if (projPropVisBtn && projPropVisWrap) {
     projPropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(projPropVisWrap, [...ENTITY_PROPS.project, ...getCustomPropDefs('project').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('project'), (keys) => setEntityVisProps('project', keys), render);
+      bindPropVisPanel(projPropVisWrap, [...(ENTITY_ALL_PROPS.project||[]), ...getCustomPropDefs('project').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('project'), (keys) => setEntityVisProps('project', keys), render);
     };
   }
 
@@ -6071,7 +6082,7 @@ async function renderGoals() {
   if (goalPropVisBtn && goalPropVisWrap) {
     goalPropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(goalPropVisWrap, [...ENTITY_PROPS.goal, ...getCustomPropDefs('goal').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('goal'), (keys) => setEntityVisProps('goal', keys), render);
+      bindPropVisPanel(goalPropVisWrap, [...(ENTITY_ALL_PROPS.goal||[]), ...getCustomPropDefs('goal').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('goal'), (keys) => setEntityVisProps('goal', keys), render);
     };
   }
 
@@ -6347,9 +6358,15 @@ async function renderGoals() {
 
 /* ─── Notes View ─────────────────────────────────────────────────────── */
 async function renderNotes() {
-  let notes = [];
+  let notes = [], _noteProjects = [], _noteGoals = [];
   let apiError = null;
-  try { notes = await api('GET', '/api/notes'); } catch(e) { apiError = e.message || String(e); }
+  try {
+    [notes, _noteProjects, _noteGoals] = await Promise.all([
+      api('GET', '/api/notes'),
+      api('GET', '/api/projects').catch(() => []),
+      api('GET', '/api/goals').catch(() => []),
+    ]);
+  } catch(e) { apiError = e.message || String(e); }
 
   if (apiError) {
     document.getElementById('main-content').innerHTML = `<div class="view">
@@ -6383,7 +6400,7 @@ async function renderNotes() {
   if (notePropVisBtn && notePropVisWrap) {
     notePropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(notePropVisWrap, [...ENTITY_PROPS.note, ...getCustomPropDefs('note').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('note'), (keys) => setEntityVisProps('note', keys), render);
+      bindPropVisPanel(notePropVisWrap, [...(ENTITY_ALL_PROPS.note||[]), ...getCustomPropDefs('note').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('note'), (keys) => setEntityVisProps('note', keys), render);
     };
   }
 
@@ -6423,6 +6440,8 @@ async function renderNotes() {
         <span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
         <span class="entity-list-title">${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></span>
         ${vis('date') && fmtDate(n.note_date) ? `<span class="entity-list-meta">${fmtDate(n.note_date)}</span>` : ''}
+        ${vis('project') && n.project_id ? `<span class="entity-list-meta">${(_noteProjects.find(p => String(p.id) === String(n.project_id))?.title) || ''}</span>` : ''}
+        ${vis('goal') && n.goal_id ? `<span class="entity-list-meta">${(_noteGoals.find(g => String(g.id) === String(n.goal_id))?.title) || ''}</span>` : ''}
         ${vis('category') && n.category_name ? `<span class="entity-list-meta">${n.category_name}</span>` : ''}
         ${vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : ''}
         ${renderCustomPropChips('note', n.id, 'list')}
@@ -6664,7 +6683,7 @@ async function renderSprints() {
   if (sprintPropVisBtn && sprintPropVisWrap) {
     sprintPropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(sprintPropVisWrap, [...ENTITY_PROPS.sprint, ...getCustomPropDefs('sprint').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('sprint'), (keys) => setEntityVisProps('sprint', keys), render);
+      bindPropVisPanel(sprintPropVisWrap, [...(ENTITY_ALL_PROPS.sprint||[]), ...getCustomPropDefs('sprint').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('sprint'), (keys) => setEntityVisProps('sprint', keys), render);
     };
   }
 
@@ -6810,12 +6829,17 @@ async function renderSprintDetail(sprintId) {
   // Load all tasks so toggle reveals subtasks that don't carry sprint_id
   let allTasks = [];
   try { allTasks = await api('GET', '/api/tasks?all=1'); allTasksCache = allTasks; allTasksFull = allTasks; } catch(e) {}
-  const unassigned = allTasks.filter(t => !t.sprint_id && !t.parent_task_id);
-
-  // Compute sub_task_count from full cache
-  tasks.forEach(t => {
-    t.sub_task_count = allTasksCache.filter(s => s.parent_task_id === t.id).length;
-  });
+  // Also include tasks linked to this sprint via the relations table (multi-sprint support)
+  let relLinkedTaskIds = new Set();
+  try {
+    const rels = await api('GET', `/api/relations/sprint/${sprintId}`);
+    (Array.isArray(rels) ? rels : []).filter(r => r.related_entity_type === 'task').forEach(r => relLinkedTaskIds.add(String(r.related_entity_id)));
+  } catch(e) {}
+  // Merge: tasks with sprint_id FK OR tasks linked via relations table
+  const sprintTaskIds = new Set([...tasks.map(t => String(t.id)), ...relLinkedTaskIds]);
+  allTasks.filter(t => relLinkedTaskIds.has(String(t.id)) && !tasks.some(st => st.id === t.id)).forEach(t => tasks.push(t));
+  tasks.forEach(t => { t.sub_task_count = allTasksCache.filter(s => s.parent_task_id === t.id).length; });
+  const unassigned = allTasks.filter(t => !t.parent_task_id && !sprintTaskIds.has(String(t.id)));
 
   function buildSprintTaskTree(taskList, depth) {
     let html = '';
@@ -6975,8 +6999,8 @@ async function renderSprintDetail(sprintId) {
 
   function renderAssignPanels(allTasks) {
     const sid = parseInt(sprintId);
-    const assignedTasks = allTasks.filter(t => t.sprint_id && String(t.sprint_id) === String(sprintId));
-    const unassignedTasks = allTasks.filter(t => !t.sprint_id && !t.parent_task_id);
+    const assignedTasks = allTasks.filter(t => (t.sprint_id && String(t.sprint_id) === String(sprintId)) || relLinkedTaskIds.has(String(t.id)));
+    const unassignedTasks = allTasks.filter(t => !t.parent_task_id && !assignedTasks.some(a => a.id === t.id));
     const filtered = sdSearchText
       ? unassignedTasks.filter(t => (t.title||'').toLowerCase().includes(sdSearchText))
       : unassignedTasks;
@@ -7043,8 +7067,14 @@ async function renderSprintDetail(sprintId) {
       btn.onclick = async () => {
         const taskId = parseInt(btn.dataset.taskId);
         btn.disabled = true; btn.textContent = '…';
-        await api('PATCH', `/api/tasks/${taskId}`, { sprint_id: parseInt(sprintId) });
+        // Set FK only if task has no sprint yet (first sprint), otherwise use relations table for multi-sprint
         const task = allTasks.find(t => t.id === taskId);
+        if (!task?.sprint_id) {
+          await api('PATCH', `/api/tasks/${taskId}`, { sprint_id: parseInt(sprintId) });
+        } else {
+          // Additional sprint: link via relations table only
+          await api('POST', `/api/relations/sprint/${sprintId}`, { related_entity_type: 'task', related_entity_id: taskId }).catch(() => {});
+        }
         if (task) await ensureEVBilateral('sprint', parseInt(sprintId), sprint.title || String(sprintId), 'task', taskId, task.title || String(taskId));
         renderSprintDetail(sprintId);
       };
@@ -7053,7 +7083,13 @@ async function renderSprintDetail(sprintId) {
       btn.onclick = async () => {
         const taskId = parseInt(btn.dataset.taskId);
         btn.disabled = true; btn.textContent = '…';
-        await api('PATCH', `/api/tasks/${taskId}`, { sprint_id: null });
+        // Clear FK if this is the FK-linked sprint
+        const task = allTasks.find(t => t.id === taskId);
+        if (task?.sprint_id && String(task.sprint_id) === String(sprintId)) {
+          await api('PATCH', `/api/tasks/${taskId}`, { sprint_id: null });
+        }
+        // Also remove from relations table (no-op if not there)
+        await api('DELETE', `/api/relations/sprint/${sprintId}/task/${taskId}`).catch(() => {});
         await removeEVBilateral('sprint', parseInt(sprintId), 'task', taskId);
         renderSprintDetail(sprintId);
       };
@@ -7458,7 +7494,7 @@ async function renderResources() {
   if (resPropVisBtn && resPropVisWrap) {
     resPropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(resPropVisWrap, [...ENTITY_PROPS.resource, ...getCustomPropDefs('resource').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('resource'), (keys) => setEntityVisProps('resource', keys), render);
+      bindPropVisPanel(resPropVisWrap, [...(ENTITY_ALL_PROPS.resource||[]), ...getCustomPropDefs('resource').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('resource'), (keys) => setEntityVisProps('resource', keys), render);
     };
   }
 
