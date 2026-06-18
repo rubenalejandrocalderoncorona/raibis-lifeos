@@ -2038,7 +2038,7 @@ function bindCustomPropCells() {
               if (relEntity === 'sprint' && entity === 'task') {
                 const spId = multiIds.length > 0 ? parseInt(multiIds[0]) : null;
                 api('PATCH', `/api/tasks/${recordId}`, { sprint_id: spId }).catch(() => {});
-                for (const sid of multiIds) api('POST', `/api/relations/sprint/${sid}`, { related_entity_type: 'task', related_entity_id: recordId }).catch(() => {});
+                for (const sid of multiIds) api('POST', `/api/relations/sprint/${sid}`, { related_entity_type: 'task', related_entity_id: parseInt(recordId) }).catch(() => {});
                 for (const id of curIds) if (!multiIds.map(String).includes(String(id))) api('DELETE', `/api/relations/sprint/${id}/task/${recordId}`, {}).catch(() => {});
               }
               if (def.bilateral !== false) {
@@ -2167,9 +2167,9 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
   const customDefs = getCustomPropDefs(entity);
   const customVals = recordId != null ? getCustomPropValues(entity, recordId) : {};
 
-  // Merge all def keys in order
+  // Merge all def keys in order — custom keys that shadow a builtin are excluded
   const allBuiltinKeys = builtinDefs.map(d => d.key);
-  const allCustomKeys = customDefs.map(d => d.key);
+  const allCustomKeys = customDefs.filter(d => !allBuiltinKeys.includes(d.key)).map(d => d.key);
   const allKeys = [...allBuiltinKeys, ...allCustomKeys];
   let orderedKeys;
   if (order) {
@@ -2335,7 +2335,7 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
               if (relEntity === 'sprint' && entity === 'task') {
                 const spId = multiIds.length > 0 ? parseInt(multiIds[0]) : null;
                 api('PATCH', `/api/tasks/${recordId}`, { sprint_id: spId }).catch(() => {});
-                for (const sid of multiIds) api('POST', `/api/relations/sprint/${sid}`, { related_entity_type: 'task', related_entity_id: recordId }).catch(() => {});
+                for (const sid of multiIds) api('POST', `/api/relations/sprint/${sid}`, { related_entity_type: 'task', related_entity_id: parseInt(recordId) }).catch(() => {});
                 for (const id of curIds) if (!multiIds.map(String).includes(String(id))) api('DELETE', `/api/relations/sprint/${id}/task/${recordId}`, {}).catch(() => {});
               }
               // Bilateral sync
@@ -4667,6 +4667,50 @@ async function _removeRelProp(ownerType, ownerId, targetType, targetId) {
 async function syncBuiltinRelation(ownerType, ownerId, ownerTitle, relEntity, oldId, newId) {
   if (oldId && String(oldId) !== String(newId)) await _removeRelProp(relEntity, parseInt(oldId), ownerType, ownerId);
   if (newId) await _ensureRelProp(relEntity, parseInt(newId), ownerType, ownerId, ownerTitle || String(ownerId));
+}
+
+// Reads stored multi-value for a builtin relation prop; falls back to FK display name
+function renderMultiRelationValue(entity, recordId, propKey, fkTitle) {
+  const vals = getCustomPropValues(entity, recordId);
+  const stored = vals[propKey];
+  if (stored) {
+    const items = parseRelationValue(stored);
+    if (items.length) return items.map(it => `<span class="multi-chip" style="font-size:11px">${escHtml(it.label)}</span>`).join('');
+  }
+  return fkTitle ? `<span>${escHtml(fkTitle)}</span>` : '';
+}
+
+// Multi-value picker for builtin FK relation props (goal, project, sprint).
+// Stores multi-value in custom prop storage under propKey, keeps FK synced to first item,
+// and runs bilateral sync for added/removed items.
+function openMultiRelationPicker(valEl, entity, recordId, propKey, relEntity, relList, currentObj, patchFn, fkField, rerender) {
+  const customVals = getCustomPropValues(entity, recordId);
+  let curItems = parseRelationValue(customVals[propKey] ?? '');
+  if (!curItems.length && currentObj && currentObj[fkField]) {
+    const fkId = String(currentObj[fkField]);
+    const fkItem = relList.find(x => String(x.id) === fkId);
+    curItems = [{ id: fkId, label: fkItem ? (fkItem.title || fkItem.name || fkId) : fkId }];
+  }
+  const curIds = curItems.map(x => x.id).filter(Boolean);
+  openCombo(valEl, relList.map(it => ({ value: String(it.id), label: it.title || it.name || String(it.id) })), null,
+    async ({ multiIds }) => {
+      if (!multiIds) return;
+      const newItems = multiIds.map(id => {
+        const it = relList.find(x => String(x.id) === String(id));
+        return { id: String(id), label: it ? (it.title || it.name || String(id)) : String(id) };
+      });
+      setCustomPropValue(entity, parseInt(recordId), propKey, JSON.stringify(newItems));
+      const primaryId = multiIds.length > 0 ? parseInt(multiIds[0]) : null;
+      const patch = {}; patch[fkField] = primaryId;
+      await patchFn(patch);
+      const newSet = new Set(multiIds.map(String)), oldSet = new Set(curIds.map(String));
+      const ownerTitle = (currentObj && (currentObj.title || currentObj.name)) || String(recordId);
+      for (const id of newSet) if (!oldSet.has(id)) _ensureRelProp(relEntity, parseInt(id), entity, parseInt(recordId), ownerTitle);
+      for (const id of oldSet) if (!newSet.has(id)) _removeRelProp(relEntity, parseInt(id), entity, parseInt(recordId));
+      rerender();
+    },
+    { multiSelect: true, selectedIds: curIds }
+  );
 }
 
 // Ensures both sides see the link as a custom prop (body panel entry)
@@ -8585,9 +8629,9 @@ async function showTaskSlideover(taskId) {
     { key: 'category', label: 'Category',     icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? `<span>${catName}</span>` : '' },
     { key: 'goal',     label: 'Goals',        icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
-      renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
+      renderValue: () => renderMultiRelationValue('task', taskId, 'goal', goalName) },
     { key: 'project',  label: 'Projects',     icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
-      renderValue: () => projName ? `<span>${projName}</span>` : '' },
+      renderValue: () => renderMultiRelationValue('task', taskId, 'project', projName) },
     { key: 'points',   label: 'Story Points', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
       renderValue: () => task.story_points != null && task.story_points > 0 ? `<span>${task.story_points}</span>` : '' },
     { key: 'recur',    label: 'Recurring',    icon: pIco('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>'),
@@ -8773,22 +8817,8 @@ async function showTaskSlideover(taskId) {
         }
       }, { allowCreate: true });
     },
-    goal: (valEl) => {
-      const items = [{ value: '', label: '— none —' }, ...allGoals.map(g => ({ value: g.id, label: g.title }))];
-      openCombo(valEl, items, task.goal_id, async ({ value }) => {
-        const oldId = task.goal_id;
-        await patchTask({ goal_id: value ? parseInt(value) : null });
-        syncBuiltinRelation('task', taskId, task.title, 'goal', oldId, value ? parseInt(value) : null);
-      });
-    },
-    project: (valEl) => {
-      const items = [{ value: '', label: '— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))];
-      openCombo(valEl, items, task.project_id, async ({ value }) => {
-        const oldId = task.project_id;
-        await patchTask({ project_id: value ? parseInt(value) : null });
-        syncBuiltinRelation('task', taskId, task.title, 'project', oldId, value ? parseInt(value) : null);
-      });
-    },
+    goal:    (valEl) => openMultiRelationPicker(valEl, 'task', taskId, 'goal', 'goal', allGoals, task, patchTask, 'goal_id', () => showTaskSlideover(taskId)),
+    project: (valEl) => openMultiRelationPicker(valEl, 'task', taskId, 'project', 'project', allProjects, task, patchTask, 'project_id', () => showTaskSlideover(taskId)),
     points: (valEl) => {
       const inp = document.createElement('input');
       inp.type = 'number'; inp.min = '0'; inp.style.cssText = 'width:80px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
@@ -10714,7 +10744,7 @@ async function showProjectSlideover(project, goals, afterSave) {
     { key: 'due',      label: 'Due Date',  icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => fmtDate(p.due_date) ? `<span>${fmtDate(p.due_date)}</span>` : '' },
     { key: 'goal',     label: 'Goals',     icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
-      renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
+      renderValue: () => renderMultiRelationValue('project', projectId, 'goal', goalName) },
     { key: 'tags',     label: 'Tags',      icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
       renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category',  icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
@@ -10855,7 +10885,7 @@ async function showProjectSlideover(project, goals, afterSave) {
   const projInlinePropEditFns = {
     status:   (valEl) => { openValuePicker(valEl, PROJECT_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchProject({ status: val }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     due:      (valEl) => { openDateRangePickerGlobal(valEl, stripDate(p.start_date), stripDate(p.due_date), async (start, end) => { await patchProject({ start_date: start||null, due_date: end||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
-    goal:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(goals||[]).map(g => ({ value: g.id, label: g.title }))], async (val) => { const oldId = p.goal_id; await patchProject({ goal_id: val ? parseInt(val) : null }); syncBuiltinRelation('project', projectId, p.title, 'goal', oldId, val ? parseInt(val) : null); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    goal:     (valEl) => openMultiRelationPicker(valEl, 'project', projectId, 'goal', 'goal', goals||[], p, patchProject, 'goal_id', () => showProjectSlideover({ id: projectId }, goals, afterSave)),
     tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: ids }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchProject({ category_id: val ? parseInt(val) : null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     macro:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => { await patchProject({ macro_area: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
@@ -11295,9 +11325,9 @@ async function showNoteSlideover(noteId, afterSave) {
     { key: 'date',     label: 'Date',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => n.note_date ? `<span>${fmtDate(n.note_date)}</span>` : '' },
     { key: 'project',  label: 'Projects', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
-      renderValue: () => projName ? `<span>${projName}</span>` : '' },
+      renderValue: () => renderMultiRelationValue('note', noteId, 'project', projName) },
     { key: 'goal',     label: 'Goals',    icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
-      renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
+      renderValue: () => renderMultiRelationValue('note', noteId, 'goal', goalName) },
     { key: 'tags',     label: 'Tags',     icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
       renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
@@ -11387,17 +11417,11 @@ async function showNoteSlideover(noteId, afterSave) {
   });
   document.getElementById('chip-project')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
-      const v = document.getElementById('chip-project-val'); if (v) v.textContent = val ? projects.find(p => String(p.id) === String(val))?.title || '—' : '—';
-      await patchNote({ project_id: val ? parseInt(val) : null });
-    });
+    openMultiRelationPicker(e.currentTarget, 'note', noteId, 'project', 'project', projects, n, patchNote, 'project_id', () => showNoteSlideover(noteId, afterSave));
   });
   document.getElementById('chip-goal')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => {
-      const v = document.getElementById('chip-goal-val'); if (v) v.textContent = val ? goals.find(g => String(g.id) === String(val))?.title || '—' : '—';
-      await patchNote({ goal_id: val ? parseInt(val) : null });
-    });
+    openMultiRelationPicker(e.currentTarget, 'note', noteId, 'goal', 'goal', goals, n, patchNote, 'goal_id', () => showNoteSlideover(noteId, afterSave));
   });
   document.getElementById('chip-tags')?.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -11411,8 +11435,8 @@ async function showNoteSlideover(noteId, afterSave) {
 
   const noteInlinePropEditFns = {
     date:     (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(n.note_date), async (val) => { await patchNote({ note_date: val||null }); showNoteSlideover(noteId, afterSave); }); },
-    project:  (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => { const oldId = n.project_id; await patchNote({ project_id: val ? parseInt(val) : null }); syncBuiltinRelation('note', noteId, n.title||String(noteId), 'project', oldId, val ? parseInt(val) : null); showNoteSlideover(noteId, afterSave); }); },
-    goal:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => { const oldId = n.goal_id; await patchNote({ goal_id: val ? parseInt(val) : null }); syncBuiltinRelation('note', noteId, n.title||String(noteId), 'goal', oldId, val ? parseInt(val) : null); showNoteSlideover(noteId, afterSave); }); },
+    project:  (valEl) => openMultiRelationPicker(valEl, 'note', noteId, 'project', 'project', projects, n, patchNote, 'project_id', () => showNoteSlideover(noteId, afterSave)),
+    goal:     (valEl) => openMultiRelationPicker(valEl, 'note', noteId, 'goal', 'goal', goals, n, patchNote, 'goal_id', () => showNoteSlideover(noteId, afterSave)),
     tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: ids }); showNoteSlideover(noteId, afterSave); }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchNote({ category_id: val ? parseInt(val) : null }); showNoteSlideover(noteId, afterSave); }); },
   };
@@ -11472,7 +11496,7 @@ async function showSprintSlideover(sprintId, afterSave) {
     { key: 'dates',   label: 'Dates',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => { const dr = s.start_date && s.end_date ? `${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}` : fmtDate(s.start_date||s.end_date)||''; return dr ? `<span>${dr}</span>` : ''; } },
     { key: 'project', label: 'Projects',  icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
-      renderValue: () => projName ? `<span>${projName}</span>` : '' },
+      renderValue: () => renderMultiRelationValue('sprint', sprintId, 'project', projName) },
     { key: 'points',  label: 'Capacity (pts)', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
       renderValue: () => s.story_points != null ? `<span>${s.story_points}</span>` : '' },
   ];
@@ -11591,7 +11615,7 @@ async function showSprintSlideover(sprintId, afterSave) {
   const sprintInlinePropEditFns = {
     status:  (valEl) => { openValuePicker(valEl, SPRINT_STATUSES.map(v => ({ value: v, label: v })), async (val) => { await patchSprint({ status: val }); showSprintSlideover(sprintId, afterSave); }); },
     dates:   (valEl) => { openDateRangePickerGlobal(valEl, stripDate(s.start_date), stripDate(s.end_date), async (start, end) => { await patchSprint({ start_date: start||null, end_date: end||null }); showSprintSlideover(sprintId, afterSave); }); },
-    project: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...allProjects.map(p => ({ value: p.id, label: p.title }))], async (val) => { const oldId = s.project_id; await patchSprint({ project_id: val ? parseInt(val) : null }); syncBuiltinRelation('sprint', sprintId, s.title||String(sprintId), 'project', oldId, val ? parseInt(val) : null); showSprintSlideover(sprintId, afterSave); }); },
+    project: (valEl) => openMultiRelationPicker(valEl, 'sprint', sprintId, 'project', 'project', allProjects, s, patchSprint, 'project_id', () => showSprintSlideover(sprintId, afterSave)),
     points:  (valEl) => {
       const inp = document.createElement('input');
       inp.type = 'number'; inp.min = '0'; inp.style.cssText = 'width:80px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
@@ -11743,9 +11767,9 @@ async function showResourceSlideover(resource, afterSave) {
     { key: 'url',     label: 'URL',     icon: pIco('<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>'),
       renderValue: () => rawUrl ? `<span>${rawUrl.replace(/^https?:\/\//,'')}</span>` : '' },
     { key: 'project', label: 'Projects', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
-      renderValue: () => projName ? `<span>${projName}</span>` : '' },
+      renderValue: () => renderMultiRelationValue('resource', resId, 'project', projName) },
     { key: 'goal',    label: 'Goals',   icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
-      renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
+      renderValue: () => renderMultiRelationValue('resource', resId, 'goal', goalName) },
   ];
   const resBodyDefs = allResBuiltinDefs.filter(d => resSections.body.includes(d.key));
   await loadEntityCustomProps('resource', resId);
@@ -11835,17 +11859,11 @@ async function showResourceSlideover(resource, afterSave) {
   });
   document.getElementById('chip-project')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => {
-      const v = document.getElementById('chip-project-val'); if (v) v.textContent = val ? projects.find(p => String(p.id) === String(val))?.title || '—' : '—';
-      await patchResource({ project_id: val ? parseInt(val) : null });
-    });
+    openMultiRelationPicker(e.currentTarget, 'resource', resId, 'project', 'project', projects, r, patchResource, 'project_id', () => showResourceSlideover({ id: resId }, afterSave));
   });
   document.getElementById('chip-goal')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => {
-      const v = document.getElementById('chip-goal-val'); if (v) v.textContent = val ? goals.find(g => String(g.id) === String(val))?.title || '—' : '—';
-      await patchResource({ goal_id: val ? parseInt(val) : null });
-    });
+    openMultiRelationPicker(e.currentTarget, 'resource', resId, 'goal', 'goal', goals, r, patchResource, 'goal_id', () => showResourceSlideover({ id: resId }, afterSave));
   });
 
   const resInlinePropEditFns = {
@@ -11863,8 +11881,8 @@ async function showResourceSlideover(resource, afterSave) {
       inp.onblur = async () => { await patchResource({ url: inp.value.trim() || null }); showResourceSlideover({ id: resId }, afterSave); };
       inp.onkeydown = ke => { if (ke.key === 'Enter') inp.blur(); };
     },
-    project: (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...projects.map(p => ({ value: p.id, label: p.title }))], async (val) => { const oldId = r.project_id; await patchResource({ project_id: val ? parseInt(val) : null }); syncBuiltinRelation('resource', resId, r.title||String(resId), 'project', oldId, val ? parseInt(val) : null); showResourceSlideover({ id: resId }, afterSave); }); },
-    goal:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...goals.map(g => ({ value: g.id, label: g.title }))], async (val) => { const oldId = r.goal_id; await patchResource({ goal_id: val ? parseInt(val) : null }); syncBuiltinRelation('resource', resId, r.title||String(resId), 'goal', oldId, val ? parseInt(val) : null); showResourceSlideover({ id: resId }, afterSave); }); },
+    project: (valEl) => openMultiRelationPicker(valEl, 'resource', resId, 'project', 'project', projects, r, patchResource, 'project_id', () => showResourceSlideover({ id: resId }, afterSave)),
+    goal:    (valEl) => openMultiRelationPicker(valEl, 'resource', resId, 'goal', 'goal', goals, r, patchResource, 'goal_id', () => showResourceSlideover({ id: resId }, afterSave)),
   };
 
   resExtraHeadKeys.forEach(k => {
