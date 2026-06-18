@@ -1580,6 +1580,20 @@ function setCustomPropValue(entity, recordId, key, value) {
   });
 }
 
+async function loadEntityCustomProps(entity, recordId) {
+  if (!recordId) return;
+  try {
+    const props = await api('GET', `/api/properties?entity_type=${entity}&entity_id=${recordId}`);
+    const customDefs = getCustomPropDefs(entity);
+    const customKeys = new Set(customDefs.map(d => d.key));
+    const existing = getCustomPropValues(entity, recordId);
+    for (const [k, v] of Object.entries(props)) {
+      if (customKeys.has(k)) existing[k] = v;
+    }
+    localStorage.setItem(`customPropVals_${entity}_${recordId}`, JSON.stringify(existing));
+  } catch(e) {}
+}
+
 function customPropCell(entity, recordId, def) {
   const vals = getCustomPropValues(entity, recordId);
   const val = vals[def.key] ?? '';
@@ -1999,7 +2013,10 @@ function bindCustomPropCells() {
         setTimeout(() => { document.addEventListener('click', function h(ev) { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', h); } }); }, 0);
       } else if (def.type === 'relation') {
         const relEntity = def.relatedEntity || 'task';
-        const relPath = relEntity === 'task' ? '/api/tasks?all=1' : `/api/${relEntity}s`;
+        const isBuiltin = ['task','goal','project','sprint','note','resource','habit'].includes(relEntity);
+        const relPath = relEntity === 'task' ? '/api/tasks?all=1'
+          : isBuiltin ? `/api/${relEntity}s`
+          : `/api/custom/${relEntity}`;
         api('GET', relPath).then(async raw => {
           const list = Array.isArray(raw) ? raw : (raw?.tasks || raw?.goals || raw?.projects || raw?.notes || raw?.resources || raw?.sprints || []);
           const currentItems = parseRelationValue(curVal);
@@ -2032,16 +2049,30 @@ function bindCustomPropCells() {
                 const oldIdSet = new Set(curIds.map(String));
                 for (const id of newIdSet) {
                   if (!oldIdSet.has(id)) {
-                    const rv = getCustomPropValues(relEntity, parseInt(id));
-                    let ra = parseRelationValue(rv[revKey] ?? '');
-                    if (!ra.some(x => x.id === String(recordId))) { ra.push({ id: String(recordId), label: sourceTitle }); setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(ra)); }
+                    let revVals = getCustomPropValues(relEntity, parseInt(id));
+                    try {
+                      const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
+                      revVals = { ...revVals, ...serverProps };
+                      localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
+                    } catch(e) {}
+                    let revArr = parseRelationValue(revVals[revKey] ?? '');
+                    if (!revArr.some(x => x.id === String(recordId))) {
+                      revArr.push({ id: String(recordId), label: sourceTitle });
+                      setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
+                    }
                   }
                 }
                 for (const id of oldIdSet) {
                   if (id && !newIdSet.has(id)) {
-                    const rv = getCustomPropValues(relEntity, parseInt(id));
-                    let ra = parseRelationValue(rv[revKey] ?? '').filter(x => x.id !== String(recordId));
-                    setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(ra));
+                    let revVals = getCustomPropValues(relEntity, parseInt(id));
+                    try {
+                      const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
+                      revVals = { ...revVals, ...serverProps };
+                      localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
+                    } catch(e) {}
+                    let revArr = parseRelationValue(revVals[revKey] ?? '');
+                    revArr = revArr.filter(x => x.id !== String(recordId));
+                    setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
                   }
                 }
               }
@@ -2276,7 +2307,10 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
       }
       if (def.type === 'relation') {
         const relEntity = def.relatedEntity || 'task';
-        const relPath = relEntity === 'task' ? '/api/tasks?all=1' : `/api/${relEntity}s`;
+        const isBuiltin = ['task','goal','project','sprint','note','resource','habit'].includes(relEntity);
+        const relPath = relEntity === 'task' ? '/api/tasks?all=1'
+          : isBuiltin ? `/api/${relEntity}s`
+          : `/api/custom/${relEntity}`;
         api('GET', relPath).then(async raw => {
           const list = Array.isArray(raw) ? raw : (raw?.tasks || raw?.goals || raw?.projects || raw?.notes || raw?.resources || raw?.sprints || []);
           const currentItems = parseRelationValue(cur);
@@ -2311,7 +2345,12 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
                 const oldIdSet = new Set(curIds.map(String));
                 for (const id of newIdSet) {
                   if (!oldIdSet.has(id)) {
-                    const revVals = getCustomPropValues(relEntity, parseInt(id));
+                    let revVals = getCustomPropValues(relEntity, parseInt(id));
+                    try {
+                      const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
+                      revVals = { ...revVals, ...serverProps };
+                      localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
+                    } catch(e) {}
                     let revArr = parseRelationValue(revVals[revKey] ?? '');
                     if (!revArr.some(x => x.id === String(recordId))) {
                       revArr.push({ id: String(recordId), label: sourceTitle });
@@ -2321,7 +2360,12 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
                 }
                 for (const id of oldIdSet) {
                   if (id && !newIdSet.has(id)) {
-                    const revVals = getCustomPropValues(relEntity, parseInt(id));
+                    let revVals = getCustomPropValues(relEntity, parseInt(id));
+                    try {
+                      const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
+                      revVals = { ...revVals, ...serverProps };
+                      localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
+                    } catch(e) {}
                     let revArr = parseRelationValue(revVals[revKey] ?? '');
                     revArr = revArr.filter(x => x.id !== String(recordId));
                     setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
@@ -3293,7 +3337,7 @@ function renderCustomEntityNav() {
   const container = document.getElementById('custom-entities-nav');
   if (!container) return;
   if (!customEntityTypes.length) {
-    container.innerHTML = '<div style="font-size:11px;color:var(--text-muted);padding:2px 0 0 2px;cursor:pointer" onclick="openRaibisSettings(\'data\')">No custom types yet</div>';
+    container.innerHTML = '';
     return;
   }
   container.innerHTML = customEntityTypes.map(t => `
@@ -8412,9 +8456,9 @@ async function showTaskSlideover(taskId) {
 
   const allTaskBuiltinDefs = [
     { key: 'status',   label: 'Status',       icon: pIco('<circle cx="12" cy="12" r="10"/>'),
-      renderValue: () => task.status ? `<span>${task.status.replace('_',' ')}</span>` : '' },
+      renderValue: () => task.status ? statusBadge(task.status) : '' },
     { key: 'priority', label: 'Priority',     icon: pIco('<polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/>'),
-      renderValue: () => task.priority ? `<span>${task.priority}</span>` : '' },
+      renderValue: () => task.priority ? priorityBadge(task.priority) : '' },
     { key: 'due',      label: 'Due Date',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => { const v = fmtDateRange(task.start_date, task.due_date); return v ? `<span>${v}</span>` : ''; } },
     { key: 'focus',    label: 'Focus Block',  icon: pIco('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'),
@@ -8433,6 +8477,7 @@ async function showTaskSlideover(taskId) {
       renderValue: () => (task.recur_interval||0) > 0 ? `<span>Every ${task.recur_interval} ${task.recur_unit||'days'}</span>` : '' },
   ];
   const taskBodyDefs = allTaskBuiltinDefs.filter(d => taskSections.body.includes(d.key));
+  await loadEntityCustomProps('task', taskId);
   const taskInlinePropPanel = buildInlinePropPanel('task', taskId, taskBodyDefs);
 
   const body = `
@@ -10544,7 +10589,7 @@ async function showProjectSlideover(project, goals, afterSave) {
 
   const allProjBuiltinDefs = [
     { key: 'status',   label: 'Status',    icon: pIco('<circle cx="12" cy="12" r="10"/>'),
-      renderValue: () => `<span>${(p.status||'active').replace('_',' ')}</span>` },
+      renderValue: () => statusBadge(p.status||'active') },
     { key: 'due',      label: 'Due Date',  icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => fmtDate(p.due_date) ? `<span>${fmtDate(p.due_date)}</span>` : '' },
     { key: 'goal',     label: 'Goal',      icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
@@ -10561,6 +10606,7 @@ async function showProjectSlideover(project, goals, afterSave) {
       renderValue: () => p.archived ? `<span>Yes</span>` : '' },
   ];
   const projBodyDefs = allProjBuiltinDefs.filter(d => projSections.body.includes(d.key));
+  await loadEntityCustomProps('project', projectId);
   const projInlinePropPanel = buildInlinePropPanel('project', projectId, projBodyDefs);
 
   const goalCrumb = goalName
@@ -10750,7 +10796,7 @@ async function showGoalSlideover(goal, afterSave) {
 
   const allGoalBuiltinDefs = [
     { key: 'status',   label: 'Status',   icon: pIco('<circle cx="12" cy="12" r="10"/>'),
-      renderValue: () => `<span>${(g.status||'active').replace('_',' ')}</span>` },
+      renderValue: () => statusBadge(g.status||'active') },
     { key: 'type',     label: 'Type',     icon: pIco('<path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z"/><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/>'),
       renderValue: () => g.type ? `<span>${g.type}</span>` : '' },
     { key: 'year',     label: 'Year',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
@@ -10765,6 +10811,7 @@ async function showGoalSlideover(goal, afterSave) {
       renderValue: () => g.target != null ? `<span>${g.current_value ?? '—'}/${g.target}</span>` : '' },
   ];
   const goalBodyDefs = allGoalBuiltinDefs.filter(d => goalSections.body.includes(d.key));
+  await loadEntityCustomProps('goal', goalId);
   const goalInlinePropPanel = buildInlinePropPanel('goal', goalId, goalBodyDefs);
 
   const projRows = projects.map(p =>
@@ -11136,6 +11183,7 @@ async function showNoteSlideover(noteId, afterSave) {
       renderValue: () => catName ? `<span>${catName}</span>` : '' },
   ];
   const noteBodyDefs = allNoteBuiltinDefs.filter(d => noteSections.body.includes(d.key));
+  await loadEntityCustomProps('note', noteId);
   const noteInlinePropPanel = buildInlinePropPanel('note', noteId, noteBodyDefs);
 
   const body = `
@@ -11308,6 +11356,7 @@ async function showSprintSlideover(sprintId, afterSave) {
       renderValue: () => s.story_points != null ? `<span>${s.story_points}</span>` : '' },
   ];
   const sprintBodyDefs = allSprintBuiltinDefs.filter(d => sprintSections.body.includes(d.key));
+  await loadEntityCustomProps('sprint', sprintId);
   const sprintInlinePropPanel = buildInlinePropPanel('sprint', sprintId, sprintBodyDefs);
 
   const projCrumb = projName
@@ -11578,6 +11627,7 @@ async function showResourceSlideover(resource, afterSave) {
       renderValue: () => goalName ? `<span>${goalName}</span>` : '' },
   ];
   const resBodyDefs = allResBuiltinDefs.filter(d => resSections.body.includes(d.key));
+  await loadEntityCustomProps('resource', resId);
   const resInlinePropPanel = buildInlinePropPanel('resource', resId, resBodyDefs);
 
   const body = `
@@ -12669,6 +12719,15 @@ async function openRaibisSettings(defaultTab = 'apps') {
           </div>
           <div>
             <label class="form-label" style="font-size:11px;margin-bottom:6px;display:block">Properties</label>
+            <div style="margin-bottom:10px">
+              <label style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Starter Properties</label>
+              <div id="_cet-starters" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">
+                ${['status','priority','due_date','tags','category','notes'].map(k => {
+                  const labels = { status:'Status', priority:'Priority', due_date:'Due Date', tags:'Tags', category:'Category', notes:'Notes' };
+                  return `<label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:3px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card)"><input type="checkbox" data-starter="${k}" style="cursor:pointer;accent-color:var(--accent)">${labels[k]}</label>`;
+                }).join('')}
+              </div>
+            </div>
             <div id="_cet-propdefs" style="display:flex;flex-direction:column;gap:6px"></div>
             <button class="btn btn-sm btn-ghost" id="_cet-addprop" style="margin-top:6px">+ Add property</button>
           </div>
@@ -12736,6 +12795,31 @@ async function openRaibisSettings(defaultTab = 'apps') {
       renderPropDefsUI();
     };
 
+    // Starter properties
+    const STARTER_PROPS = [
+      { key: 'status',    label: 'Status',    type: 'select',       options: 'To Do,In Progress,Done' },
+      { key: 'priority',  label: 'Priority',  type: 'select',       options: 'Low,Medium,High' },
+      { key: 'due_date',  label: 'Due Date',  type: 'date' },
+      { key: 'tags',      label: 'Tags',      type: 'multi_select', options: '' },
+      { key: 'category',  label: 'Category',  type: 'text' },
+      { key: 'notes',     label: 'Notes',     type: 'text' },
+    ];
+    cetSection.querySelectorAll('[data-starter]').forEach(chk => {
+      chk.onchange = () => {
+        const sp = STARTER_PROPS.find(p => p.key === chk.dataset.starter);
+        if (!sp) return;
+        if (chk.checked) {
+          if (!propDefsRows.find(r => r.key === sp.key)) {
+            propDefsRows.push({ key: sp.key, label: sp.label, type: sp.type });
+            renderPropDefsUI();
+          }
+        } else {
+          propDefsRows = propDefsRows.filter(r => r.key !== sp.key);
+          renderPropDefsUI();
+        }
+      };
+    });
+
     // Wire icon picker for entity type icon button
     let cetIconSelected = '📁';
     const cetIconBtn = cetSection.querySelector('#_cet-icon-btn');
@@ -12765,6 +12849,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
         if (cetIconBtn) cetIconBtn.innerHTML = '<span style="font-size:20px">📁</span>';
         cetSection.querySelector('#_cet-name').value = '';
         cetSection.querySelector('#_cet-display').value = '';
+        cetSection.querySelectorAll('[data-starter]').forEach(chk => { chk.checked = false; });
         renderPropDefsUI();
         await renderCetList();
       } catch(err) { showToast('Failed: ' + (err.message || err), 'error'); }
