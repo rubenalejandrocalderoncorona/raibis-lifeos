@@ -1748,14 +1748,16 @@ function showAddRelationPanel(anchorBtn, key, name, entity, onAdd) {
     panel.querySelector('#rel-create').onclick = (e) => {
       e.stopPropagation();
       const defs = getCustomPropDefs(entity);
-      defs.push({ key, label: name, type: 'relation', relatedEntity, bilateral });
+      const revKey = bilateral ? `${entity}_${key}` : undefined;
+      defs.push({ key, label: name, type: 'relation', relatedEntity, bilateral, reverseKey: revKey });
       setCustomPropDefs(entity, defs);
       if (bilateral) {
-        // Add reverse relation on the target entity
-        const revKey = `${entity}_${key}`;
+        // Add reverse relation on the target entity — label = display name of the source entity
+        const BUILTIN_LABELS = {task:'Tasks',goal:'Goals',project:'Projects',sprint:'Sprints',note:'Notes',resource:'Resources',habit:'Habits'};
+        const revLabel = BUILTIN_LABELS[entity] || entityLabel(entity);
         const revDefs = getCustomPropDefs(relatedEntity);
         if (!revDefs.some(d => d.key === revKey)) {
-          revDefs.push({ key: revKey, label: `${name} (from ${entity})`, type: 'relation', relatedEntity: entity, bilateral: true });
+          revDefs.push({ key: revKey, label: revLabel, type: 'relation', relatedEntity: entity, bilateral: true, reverseKey: key });
           setCustomPropDefs(relatedEntity, revDefs);
           const rv = getEntityVisProps(relatedEntity); if (!rv.includes(revKey)) setEntityVisProps(relatedEntity, [...rv, revKey]);
         }
@@ -2039,16 +2041,7 @@ function bindCustomPropCells() {
                 api('PATCH', patchPath, { sprint_id: spId }).catch(() => {});
               }
               if (def.bilateral !== false) {
-                const revKey = `${entity}_${propKey}`;
-                // Ensure reverse def exists on relEntity
-                const revDefs = getCustomPropDefs(relEntity);
-                if (!revDefs.some(d => d.key === revKey)) {
-                  const revLabel = (def.label || propKey) + ' (from ' + (entity === 'task' ? 'Task' : entity) + ')';
-                  revDefs.push({ key: revKey, label: revLabel, type: 'relation', relatedEntity: entity, bilateral: true });
-                  setCustomPropDefs(relEntity, revDefs);
-                  const rv = getEntityVisProps(relEntity);
-                  if (!rv.includes(revKey)) setEntityVisProps(relEntity, [...rv, revKey]);
-                }
+                const revKey = def.reverseKey ?? `${entity}_${propKey}`;
                 let sourceTitle = String(recordId);
                 try {
                   const isBuiltinSrc = ['task','goal','project','sprint','note','resource','habit'].includes(entity);
@@ -2345,16 +2338,7 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
               }
               // Bilateral sync
               if (def.bilateral !== false) {
-                const revKey = `${entity}_${key}`;
-                // Ensure reverse def exists on relEntity
-                const revDefs = getCustomPropDefs(relEntity);
-                if (!revDefs.some(d => d.key === revKey)) {
-                  const revLabel = (def.label || key) + ' (from ' + (entity === 'task' ? 'Task' : entity) + ')';
-                  revDefs.push({ key: revKey, label: revLabel, type: 'relation', relatedEntity: entity, bilateral: true });
-                  setCustomPropDefs(relEntity, revDefs);
-                  const rv = getEntityVisProps(relEntity);
-                  if (!rv.includes(revKey)) setEntityVisProps(relEntity, [...rv, revKey]);
-                }
+                const revKey = def.reverseKey ?? `${entity}_${key}`;
                 let sourceTitle = String(recordId);
                 try {
                   const isBuiltinSrc = ['task','goal','project','sprint','note','resource','habit'].includes(entity);
@@ -4643,7 +4627,8 @@ async function _ensureRelProp(ownerType, ownerId, targetType, targetId, targetTi
   const propLabel = EV_LABELS[targetType] || targetType;
   const defs = getCustomPropDefs(ownerType);
   if (!defs.some(d => d.key === propKey)) {
-    defs.push({ key: propKey, label: propLabel, type: 'relation', relatedEntity: targetType, bilateral: false });
+    const reverseKey = `${ownerType}s`;
+    defs.push({ key: propKey, label: propLabel, type: 'relation', relatedEntity: targetType, bilateral: true, reverseKey });
     setCustomPropDefs(ownerType, defs);
     const vp = getEntityVisProps(ownerType);
     if (!vp.includes(propKey)) setEntityVisProps(ownerType, [...vp, propKey]);
