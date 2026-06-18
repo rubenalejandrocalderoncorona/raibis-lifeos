@@ -4442,6 +4442,13 @@ const EV_ALL_TYPES = ['note','resource','task','goal','project','sprint','habit'
 function getBottomViews(entityType) {
   const s = localStorage.getItem(`entityViews_${entityType}`);
   if (s) try { return JSON.parse(s); } catch {}
+  if (entityType === 'task') return [
+    { childType: 'note',     mode: 'list' },
+    { childType: 'resource', mode: 'list' },
+    { childType: 'project',  mode: 'list' },
+    { childType: 'goal',     mode: 'list' },
+    { childType: 'sprint',   mode: 'list' },
+  ];
   return [{ childType: 'note', mode: 'list' }, { childType: 'resource', mode: 'list' }];
 }
 function setBottomViews(entityType, views) {
@@ -4558,6 +4565,7 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
       } else {
         await api('DELETE', `/api/relations/${entityType}/${entityId}/${ct}/${cid}`).catch(() => {});
       }
+      await removeEVBilateral(entityType, entityId, ct, parseInt(cid));
       initEntityViewsSection(entityType, entityId, entityData);
     };
   });
@@ -4588,12 +4596,25 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
         const linkedIds = new Set((relsByType[ct] || []).map(r => String(r.related_entity_id)));
         const available = all.filter(item => !linkedIds.has(String(item.id)));
         if (!available.length) return;
-        openValuePicker(anchor, available.map(item => ({
+        const pickerItems = available.map(item => ({
           value: String(item.id), label: item.title || item.name || '(untitled)'
-        })), async (val) => {
+        }));
+        openValuePicker(anchor, pickerItems, async (val) => {
+          const childTitle = pickerItems.find(i => i.value === val)?.label || val;
           await api('POST', `/api/relations/${entityType}/${entityId}`, {
             related_entity_type: ct, related_entity_id: parseInt(val)
           });
+          // Set FK for task scalar relations if not yet assigned
+          if (entityType === 'task') {
+            if (ct === 'project' && !entityData.project_id)
+              await api('PATCH', `/api/tasks/${entityId}`, { project_id: parseInt(val) }).catch(() => {});
+            else if (ct === 'goal' && !entityData.goal_id)
+              await api('PATCH', `/api/tasks/${entityId}`, { goal_id: parseInt(val) }).catch(() => {});
+            else if (ct === 'sprint' && !entityData.sprint_id)
+              await api('PATCH', `/api/tasks/${entityId}`, { sprint_id: parseInt(val) }).catch(() => {});
+          }
+          const parentTitle = entityData?.title || entityData?.name || String(entityId);
+          await ensureEVBilateral(entityType, entityId, parentTitle, ct, parseInt(val));
           initEntityViewsSection(entityType, entityId, entityData);
         });
       } catch(err) { console.error('ev-add:', err); }
@@ -4612,6 +4633,47 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
       initEntityViewsSection(entityType, entityId, entityData);
     });
   };
+}
+
+/* ─── Entity Views Bilateral Sync ───────────────────────────────────── */
+// When a link is added via ev-add-btn, ensure the child entity has a custom
+// prop showing which parent entities reference it (and vice versa).
+async function ensureEVBilateral(parentType, parentId, parentTitle, childType, childId) {
+  const revKey = `${parentType}s`;
+  const revLabel = EV_LABELS[parentType] || (parentType.charAt(0).toUpperCase() + parentType.slice(1));
+  const defs = getCustomPropDefs(childType);
+  if (!defs.some(d => d.key === revKey)) {
+    defs.push({ key: revKey, label: revLabel, type: 'relation', relatedEntity: parentType, bilateral: false });
+    setCustomPropDefs(childType, defs);
+    const vp = getEntityVisProps(childType);
+    if (!vp.includes(revKey)) setEntityVisProps(childType, [...vp, revKey]);
+  }
+  try {
+    const serverProps = await api('GET', `/api/properties?entity_type=${childType}&entity_id=${childId}`);
+    const existing = getCustomPropValues(childType, childId);
+    Object.assign(existing, serverProps);
+    localStorage.setItem(`customPropVals_${childType}_${childId}`, JSON.stringify(existing));
+  } catch(e) {}
+  const vals = getCustomPropValues(childType, childId);
+  let arr = parseRelationValue(vals[revKey] ?? '');
+  if (!arr.some(x => x.id === String(parentId))) {
+    arr.push({ id: String(parentId), label: parentTitle });
+    setCustomPropValue(childType, childId, revKey, JSON.stringify(arr));
+  }
+}
+
+async function removeEVBilateral(parentType, parentId, childType, childId) {
+  const revKey = `${parentType}s`;
+  try {
+    const serverProps = await api('GET', `/api/properties?entity_type=${childType}&entity_id=${childId}`);
+    const existing = getCustomPropValues(childType, childId);
+    Object.assign(existing, serverProps);
+    localStorage.setItem(`customPropVals_${childType}_${childId}`, JSON.stringify(existing));
+  } catch(e) {}
+  const vals = getCustomPropValues(childType, childId);
+  let arr = parseRelationValue(vals[revKey] ?? '');
+  arr = arr.filter(x => x.id !== String(parentId));
+  setCustomPropValue(childType, childId, revKey, JSON.stringify(arr));
 }
 
 /* ─── Relations Section (bidirectional peer links) ───────────────────── */
@@ -6982,6 +7044,8 @@ async function renderSprintDetail(sprintId) {
         const taskId = parseInt(btn.dataset.taskId);
         btn.disabled = true; btn.textContent = '…';
         await api('PATCH', `/api/tasks/${taskId}`, { sprint_id: parseInt(sprintId) });
+        const task = allTasks.find(t => t.id === taskId);
+        if (task) await ensureEVBilateral('sprint', parseInt(sprintId), sprint.title || String(sprintId), 'task', taskId, task.title || String(taskId));
         renderSprintDetail(sprintId);
       };
     });
@@ -6990,6 +7054,7 @@ async function renderSprintDetail(sprintId) {
         const taskId = parseInt(btn.dataset.taskId);
         btn.disabled = true; btn.textContent = '…';
         await api('PATCH', `/api/tasks/${taskId}`, { sprint_id: null });
+        await removeEVBilateral('sprint', parseInt(sprintId), 'task', taskId);
         renderSprintDetail(sprintId);
       };
     });
