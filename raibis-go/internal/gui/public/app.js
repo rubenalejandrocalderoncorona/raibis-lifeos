@@ -1757,7 +1757,8 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
     tools: TOOLS,
     minHeight: isFullscreen ? 600 : 200,
     onReady: () => {
-      container.style.paddingLeft = '80px';
+      const redactor = container.querySelector('.codex-editor__redactor');
+      if (redactor) redactor.style.paddingLeft = '60px';
     },
     onChange: async () => {
       clearTimeout(saveTimer);
@@ -8709,9 +8710,35 @@ async function renderProjectDetail(projectId) {
       </div>
     </div>
     ${p.description ? `<div class="card" style="margin-bottom:16px"><p style="color:var(--text-muted)">${p.description}</p></div>` : ''}
-    <div id="pd-widget-grid">
-      ${buildWidgetGrid('project', projectId, { tasks, notes, resources, propPanelHtml: projDetailPropPanel, entityData: p })}
+    <div class="cc-grid wide">
+      <div class="widget">
+        <div class="widget-header"><span class="widget-title">Tasks (${tasks.length})</span></div>
+        <div id="pd-task-list">${buildTaskList()}</div>
+      </div>
     </div>
+    <div class="cc-grid" style="margin-top:16px">
+      <div class="widget">
+        <div class="widget-header"><span class="widget-title">Notes (${notes.length})</span></div>
+        <div id="pd-notes">${noteCards}</div>
+      </div>
+      <div class="widget">
+        <div class="widget-header"><span class="widget-title">Resources (${resources.length})</span></div>
+        <div>${resRows}</div>
+      </div>
+    </div>
+    <div class="widget" style="margin-top:16px">
+      <div class="widget-header"><span class="widget-title">Custom Properties</span></div>
+      ${projDetailPropPanel}
+    </div>
+    <div class="widget" style="margin-top:16px">
+      <div class="widget-header">
+        <span class="widget-title">Properties</span>
+        <button class="btn btn-sm btn-ghost" id="pd-add-prop-btn">+ Add</button>
+      </div>
+      <div id="pd-props-list"></div>
+    </div>
+    ${buildRichContentSection('project', projectId)}
+    ${buildCommentSection('project', projectId)}
   </div>`;
 
   document.getElementById('pd-back-btn').onclick = () => renderView('projects');
@@ -8751,11 +8778,17 @@ async function renderProjectDetail(projectId) {
       el.onclick = () => renderView('goal-detail', el.dataset.goalId);
     });
   }
-  const pdwg = document.getElementById('pd-widget-grid');
-  initWidgetGrid('project', projectId, pdwg, () => renderProjectDetail(projectId));
+  document.querySelectorAll('.clickable-note').forEach(el => {
+    el.onclick = () => {
+      const n = notes.find(x => String(x.id) === el.dataset.noteId);
+      if (n) showNoteModal(n, () => renderProjectDetail(projectId));
+    };
+  });
   bindDetailTaskEvents(() => renderProjectDetail(projectId));
+  bindPropertiesWidget('project', projectId, 'pd-props-list', 'pd-add-prop-btn');
   bindInlinePropPanel('project', projectId, projDetailEditFns, () => renderProjectDetail(projectId));
-  pdwg.querySelectorAll('.clickable-note').forEach(el => { el.onclick = () => { const n = notes.find(x => String(x.id) === el.dataset.noteId); if (n) showNoteModal(n, () => renderProjectDetail(projectId)); }; });
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
+  initRichEditor(`editorjs-project-${projectId}`, 'project', projectId, false);
 }
 async function renderGoalDetail(goalId) {
   let g;
@@ -8905,9 +8938,43 @@ async function renderGoalDetail(goalId) {
     </div>
     ${g.description ? `<div class="card" style="margin-bottom:16px"><p style="color:var(--text-muted)">${g.description}</p></div>` : ''}
     ${metricsHtml}
-    <div id="gd-widget-grid">
-      ${buildWidgetGrid('goal', goalId, { tasks, notes, resources, projects, propPanelHtml: goalDetailPropPanel, entityData: g })}
+    <div class="cc-grid" style="margin-bottom:16px">
+      <div class="widget">
+        <div class="widget-header"><span class="widget-title">Projects (${projects.length})</span></div>
+        <div id="gd-proj-list">${projCards}</div>
+      </div>
+      <div class="widget">
+        <div class="widget-header"><span class="widget-title">Direct Tasks (${tasks.length})</span></div>
+        <div id="gd-task-list">${taskRows}</div>
+      </div>
     </div>
+    <div class="cc-grid">
+      <div class="widget">
+        <div class="widget-header"><span class="widget-title">Notes (${notes.length})</span></div>
+        <div id="gd-notes">${noteCards}</div>
+      </div>
+      <div class="widget">
+        <div class="widget-header"><span class="widget-title">Resources (${resources.length})</span></div>
+        <div>${resources.map(r => `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
+          <span class="badge badge-todo">${r.resource_type || 'link'}</span>
+          <span style="flex:1">${r.title}</span>
+          ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" class="btn btn-sm btn-ghost">↗</a>` : ''}
+        </div>`).join('') || '<div class="empty-state" style="padding:20px"><div class="empty-state-text">No resources</div></div>'}</div>
+      </div>
+    </div>
+    <div class="widget" style="margin-top:16px">
+      <div class="widget-header"><span class="widget-title">Custom Properties</span></div>
+      ${goalDetailPropPanel}
+    </div>
+    <div class="widget" style="margin-top:16px">
+      <div class="widget-header">
+        <span class="widget-title">Properties</span>
+        <button class="btn btn-sm btn-ghost" id="gd-add-prop-btn">+ Add</button>
+      </div>
+      <div id="gd-props-list"></div>
+    </div>
+    ${buildRichContentSection('goal', goalId)}
+    ${buildCommentSection('goal', goalId)}
   </div>`;
 
   document.getElementById('gd-back-btn').onclick = () => renderView('goals');
@@ -8942,12 +9009,20 @@ async function renderGoalDetail(goalId) {
       });
     };
   }
-  const gdwg = document.getElementById('gd-widget-grid');
-  initWidgetGrid('goal', goalId, gdwg, () => renderGoalDetail(goalId));
+  document.querySelectorAll('#gd-proj-list .detail-nav').forEach(el => {
+    el.onclick = () => renderView('project-detail', el.dataset.projId);
+  });
+  document.querySelectorAll('.clickable-note').forEach(el => {
+    el.onclick = () => {
+      const n = notes.find(x => String(x.id) === el.dataset.noteId);
+      if (n) showNoteModal(n, () => renderGoalDetail(goalId));
+    };
+  });
   bindDetailTaskEvents(() => renderGoalDetail(goalId));
+  bindPropertiesWidget('goal', goalId, 'gd-props-list', 'gd-add-prop-btn');
   bindInlinePropPanel('goal', goalId, goalDetailEditFns, () => renderGoalDetail(goalId));
-  gdwg.querySelectorAll('.detail-nav[data-proj-id]').forEach(el => el.onclick = () => renderView('project-detail', el.dataset.projId));
-  gdwg.querySelectorAll('.clickable-note').forEach(el => { el.onclick = () => { const n = notes.find(x => String(x.id) === el.dataset.noteId); if (n) showNoteModal(n, () => renderGoalDetail(goalId)); }; });
+  bindCommentSection(document.querySelector('.comment-section[data-entity-type="goal"]'));
+  initRichEditor(`editorjs-goal-${goalId}`, 'goal', goalId, false);
 }
 
 /* ─── Properties Widget ──────────────────────────────────────────────── */

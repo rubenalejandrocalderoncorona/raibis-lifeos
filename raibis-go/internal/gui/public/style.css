@@ -5151,19 +5151,21 @@ tr:hover .ctx-handle,
 .rich-editor-host {
   min-height: 200px;
   cursor: text;
-  padding-left: 80px;
   overflow: visible;
 }
 /* Editor.js toolbar gutter + theming */
+.codex-editor {
+  overflow: visible !important;
+}
 .codex-editor__redactor {
   padding-bottom: 80px !important;
 }
 .ce-block__content {
   max-width: 100% !important;
 }
-/* Push drag handle fully into gutter so it never touches block content */
+/* Drag handle lives in the 60px gutter set by onReady on .codex-editor__redactor */
 .ce-drag-handle, .cdx-drag-handle {
-  left: -60px !important;
+  left: -52px !important;
 }
 .ce-toolbar__plus, .ce-toolbar__settings-btn {
   color: var(--text-muted) !important;
