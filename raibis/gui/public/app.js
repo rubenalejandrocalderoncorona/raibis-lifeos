@@ -471,9 +471,23 @@ const ENTITY_PROPS = {
 };
 function getEntityVisProps(entity) {
   const stored = localStorage.getItem(`entityVisProps_${entity}`);
-  return stored ? JSON.parse(stored) : (ENTITY_PROPS[entity] || []).map(p => p.key);
+  const base = stored ? JSON.parse(stored) : (ENTITY_PROPS[entity] || []).map(p => p.key);
+  // Inject taxonomy props that aren't explicitly hidden by the user for this entity
+  const hiddenTax = new Set(JSON.parse(localStorage.getItem(`entityHiddenTax_${entity}`) || '[]'));
+  const taxKeys = getGlobalTaxonomyProps().map(tp => `tax_${tp.key}`).filter(k => !hiddenTax.has(k));
+  const baseSet = new Set(base);
+  return [...base, ...taxKeys.filter(k => !baseSet.has(k))];
 }
 function setEntityVisProps(entity, keys) {
+  // Track which taxonomy props the user explicitly toggled off
+  const keySet = new Set(keys);
+  const hiddenTax = [];
+  getGlobalTaxonomyProps().forEach(tp => {
+    const k = `tax_${tp.key}`;
+    if (!keySet.has(k)) hiddenTax.push(k);
+  });
+  if (hiddenTax.length > 0) localStorage.setItem(`entityHiddenTax_${entity}`, JSON.stringify(hiddenTax));
+  else localStorage.removeItem(`entityHiddenTax_${entity}`);
   localStorage.setItem(`entityVisProps_${entity}`, JSON.stringify(keys));
 }
 function entityPropVisible(entity, key) {
@@ -1534,11 +1548,90 @@ function setPropLabelWidth(w) {
 
 function getCustomPropDefs(entity) {
   const stored = localStorage.getItem(`customPropDefs_${entity}`);
-  return stored ? JSON.parse(stored) : [];
+  const entityDefs = stored ? JSON.parse(stored) : [];
+  const taxProps = getGlobalTaxonomyProps();
+  const entityKeys = new Set(entityDefs.map(d => d.key));
+  const taxDefs = taxProps
+    .filter(tp => !entityKeys.has(`tax_${tp.key}`))
+    .map(tp => {
+      const opts = getTaxonomyOptions(tp.key);
+      const optionColors = {};
+      opts.forEach(o => { if (o.color) optionColors[o.name] = o.color; });
+      return { key: `tax_${tp.key}`, label: tp.label, type: 'multi_select', options: opts.map(o => o.name), optionColors, _taxonomy: tp.key };
+    });
+  return [...entityDefs, ...taxDefs];
 }
 
 function setCustomPropDefs(entity, defs) {
-  localStorage.setItem(`customPropDefs_${entity}`, JSON.stringify(defs));
+  // Taxonomy defs are global; save their option changes to taxonomy storage, not entity storage
+  const taxDefs = defs.filter(d => d._taxonomy);
+  const entityDefs = defs.filter(d => !d._taxonomy);
+  taxDefs.forEach(d => {
+    const existing = getTaxonomyOptions(d._taxonomy);
+    const opts = (d.options || []).map(name => {
+      const prev = existing.find(o => o.name === name);
+      return { id: prev ? prev.id : String(Date.now() + Math.random()), name, color: (d.optionColors || {})[name] || '' };
+    });
+    saveTaxonomyOptions(d._taxonomy, opts);
+  });
+  localStorage.setItem(`customPropDefs_${entity}`, JSON.stringify(entityDefs));
+}
+
+// ── Global Taxonomy Props ─────────────────────────────────────────────────
+function getGlobalTaxonomyProps() {
+  const s = localStorage.getItem('globalTaxonomyProps');
+  return s ? JSON.parse(s) : [];
+}
+function saveGlobalTaxonomyProps(props) {
+  localStorage.setItem('globalTaxonomyProps', JSON.stringify(props));
+}
+function getTaxonomyOptions(key) {
+  const s = localStorage.getItem(`taxonomyOpts_${key}`);
+  return s ? JSON.parse(s) : [];
+}
+function saveTaxonomyOptions(key, options) {
+  localStorage.setItem(`taxonomyOpts_${key}`, JSON.stringify(options));
+}
+
+function renderTaxonomyNav() {
+  const container = document.getElementById('taxonomy-custom-nav');
+  if (!container) return;
+  const props = getGlobalTaxonomyProps();
+  container.innerHTML = props.map(tp => `
+    <a class="nav-item" data-view="taxonomy:${escHtml(tp.key)}" href="#">
+      <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><line x1="12" y1="7" x2="5.5" y2="17"/><line x1="12" y1="7" x2="18.5" y2="17"/></svg>
+      <span>${escHtml(tp.label)}</span>
+    </a>
+  `).join('');
+  container.querySelectorAll('[data-view]').forEach(a => {
+    a.onclick = e => { e.preventDefault(); renderView(a.dataset.view); };
+  });
+}
+
+function showNewTaxonomyModal() {
+  const body = `
+    <div class="form-group"><label class="form-label">Name *</label>
+      <input type="text" id="tax-name" placeholder="e.g. Types, Contexts, Areas…" /></div>
+    <p style="font-size:12px;color:var(--text-muted);margin-top:4px">This creates a global multiselect property that appears on all entities in their property panels.</p>
+    <div class="form-actions">
+      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
+      <button class="btn btn-primary" id="modal-save-btn">Create</button>
+    </div>`;
+  openModal('New Taxonomy Property', body, null);
+  document.getElementById('modal-cancel-btn').onclick = closeModal;
+  setTimeout(() => document.getElementById('tax-name')?.focus(), 50);
+  document.getElementById('modal-save-btn').onclick = () => {
+    const label = document.getElementById('tax-name')?.value.trim() || '';
+    if (!label) { showToast('Name is required', 'error'); return; }
+    const key = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    const props = getGlobalTaxonomyProps();
+    if (props.some(p => p.key === key)) { showToast('A taxonomy with this name already exists', 'error'); return; }
+    props.push({ key, label });
+    saveGlobalTaxonomyProps(props);
+    closeModal();
+    renderTaxonomyNav();
+    renderView(`taxonomy:${key}`);
+  };
 }
 
 // Prop label/icon overrides (user-renamed built-in or custom props)
@@ -1580,17 +1673,217 @@ function setCustomPropValue(entity, recordId, key, value) {
   });
 }
 
+/* ─── Rich Content / EditorJS helpers ───────────────────────────────── */
+const _activeEditors = {};
+
+function buildRichContentSection(entity, entityId) {
+  const hostId = `editorjs-${entity}-${entityId}`;
+  return `<div class="rich-content-section">
+    <div class="rich-section-label">Content</div>
+    <div id="${hostId}" class="rich-editor-host"></div>
+  </div>`;
+}
+
+function editorJsToMarkdown(data) {
+  if (!data || !data.blocks) return '';
+  return data.blocks.map(b => {
+    const txt = s => (s || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+    switch (b.type) {
+      case 'header':    return '#'.repeat(b.data.level||2) + ' ' + txt(b.data.text);
+      case 'paragraph': return txt(b.data.text);
+      case 'list': {
+        const items = b.data.items || [];
+        return items.map((it,i) => (b.data.style==='ordered' ? `${i+1}.` : '-') + ' ' + txt(typeof it === 'string' ? it : it.content||it.text||'')).join('\n');
+      }
+      case 'checklist': return (b.data.items||[]).map(it => `- [${it.checked?'x':' '}] ${txt(it.text)}`).join('\n');
+      case 'quote':     return `> ${txt(b.data.text)}\n> — ${txt(b.data.caption)}`;
+      case 'code':      return '```\n' + (b.data.code||'') + '\n```';
+      case 'delimiter': return '---';
+      case 'table': {
+        const rows = b.data.content || [];
+        if (!rows.length) return '';
+        const r0 = rows[0].map(c => txt(c));
+        return '| ' + r0.join(' | ') + ' |\n| ' + r0.map(()=>'---').join(' | ') + ' |\n' +
+          rows.slice(1).map(r => '| ' + r.map(c=>txt(c)).join(' | ') + ' |').join('\n');
+      }
+      default: return '';
+    }
+  }).filter(Boolean).join('\n\n');
+}
+
+async function initRichEditor(hostId, entity, entityId, isFullscreen) {
+  if (!window.EditorJS) return;
+  const container = document.getElementById(hostId);
+  if (!container) return;
+
+  // Destroy prior instance
+  if (_activeEditors[hostId]) {
+    try { await _activeEditors[hostId].destroy(); } catch {}
+    delete _activeEditors[hostId];
+  }
+
+  // Load saved content from entity's content_json field
+  let savedData = null;
+  try {
+    const _epaths = { task: 'tasks', note: 'notes', goal: 'goals', project: 'projects', sprint: 'sprints', resource: 'resources' };
+    const _ent = await api('GET', `/api/${_epaths[entity] || entity + 's'}/${entityId}`);
+    if (_ent.content_json) { savedData = JSON.parse(_ent.content_json); }
+  } catch {}
+  // Fall back to local cache
+  if (!savedData) {
+    const vals = getCustomPropValues(entity, entityId);
+    if (vals.rich_content) { try { savedData = JSON.parse(vals.rich_content); } catch {} }
+  }
+
+  const TOOLS = {};
+  if (window.Header)      TOOLS.header      = { class: window.Header, config: { placeholder: 'Heading', levels: [1,2,3] } };
+  if (window.SimpleImage) TOOLS.image       = { class: window.SimpleImage };
+  if (window.List)        TOOLS.list        = { class: window.List, inlineToolbar: true };
+  if (window.Checklist)   TOOLS.checklist   = { class: window.Checklist, inlineToolbar: true };
+  if (window.Quote)       TOOLS.quote       = { class: window.Quote, inlineToolbar: true };
+  if (window.CodeTool)    TOOLS.code        = window.CodeTool;
+  if (window.Delimiter)   TOOLS.delimiter   = window.Delimiter;
+  if (window.RawTool)     TOOLS.raw         = window.RawTool;
+  if (window.Warning)     TOOLS.warning     = { class: window.Warning, inlineToolbar: true };
+  if (window.Marker)      TOOLS.marker      = { class: window.Marker };
+  if (window.InlineCode)  TOOLS.inlineCode  = { class: window.InlineCode };
+  if (window.Table)       TOOLS.table       = { class: window.Table, inlineToolbar: true };
+
+  let saveTimer;
+  const editor = new EditorJS({
+    holder: hostId,
+    placeholder: 'Add content — type / for blocks…',
+    data: savedData || { blocks: [] },
+    tools: TOOLS,
+    minHeight: isFullscreen ? 600 : 200,
+    onReady: () => {
+      container.style.paddingLeft = '80px';
+    },
+    onChange: async () => {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(async () => {
+        try {
+          const data = await editor.save();
+          const json = JSON.stringify(data);
+          api('POST', '/api/content', { entity_type: entity, entity_id: parseInt(entityId), content_json: json }).catch(() => {});
+        } catch {}
+      }, 900);
+    },
+  });
+  _activeEditors[hostId] = editor;
+}
+
+/* ─── Fullscreen entity overlay ──────────────────────────────────────── */
+let _currentSlideoverExpand = null;
+function setSlideoverExpand(fn) { _currentSlideoverExpand = fn; }
+let _currentFsPropsBuilder = null;
+function setFsPropsBuilder(fn) { _currentFsPropsBuilder = fn; }
+let _currentFsChipsBuilder = null;
+function setFsChipsBuilder(fn) { _currentFsChipsBuilder = fn; }
+
+function openEntityFullscreen(entity, entityId, title, patchTitleFn) {
+  const overlay = document.getElementById('entity-fullscreen');
+  if (!overlay) return;
+  overlay.style.display = 'flex';
+  document.body.classList.add('fullscreen-open');
+
+  // Load entity icon
+  const fsIconRow = document.getElementById('fs-icon-row');
+  if (fsIconRow) {
+    loadEntityIcon(entity, entityId).then(icon => {
+      fsIconRow.innerHTML = icon ? renderEntityIcon(icon, 36) : '';
+    }).catch(() => { fsIconRow.innerHTML = ''; });
+  }
+
+  // Set title (editable)
+  const titleEl = document.getElementById('fs-title');
+  if (titleEl) {
+    titleEl.textContent = title || '';
+    titleEl.oninput = () => {
+      clearTimeout(titleEl._saveT);
+      titleEl._saveT = setTimeout(() => patchTitleFn(titleEl.textContent.trim()), 600);
+    };
+  }
+
+  // Clone header chips (Status, Priority, Due… etc) from the open slideover
+  const fsChipsRow = document.getElementById('fs-prop-chips-row');
+  if (fsChipsRow) {
+    const srcChips = document.querySelector('#slideover-body #prop-chips');
+    fsChipsRow.innerHTML = srcChips ? srcChips.innerHTML : '';
+    // Remove IDs to prevent document.getElementById conflicts with the live slideover
+    fsChipsRow.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+    // Wire up interactive handlers via the entity's registered chips builder
+    if (_currentFsChipsBuilder) _currentFsChipsBuilder(fsChipsRow);
+  }
+
+  // Mount prop panel — use entity-registered builder for fully interactive props
+  const fsProps = document.getElementById('fs-props');
+  if (fsProps) {
+    if (_currentFsPropsBuilder) {
+      _currentFsPropsBuilder(fsProps);
+    } else {
+      const fsRerender = () => {
+        fsProps.innerHTML = buildInlinePropPanel(entity, entityId, []);
+        bindInlinePropPanel(entity, entityId, {}, fsRerender, fsProps);
+      };
+      fsProps.innerHTML = buildInlinePropPanel(entity, entityId, []);
+      bindInlinePropPanel(entity, entityId, {}, fsRerender, fsProps);
+    }
+  }
+
+  // Init the fullscreen editor
+  initRichEditor('editorjs-fullscreen', entity, entityId, true);
+
+  // Comments
+  const fsCom = document.getElementById('fs-comments');
+  if (fsCom) {
+    fsCom.innerHTML = buildCommentSection(entity, entityId);
+    bindCommentSection(fsCom.querySelector('.comment-section'));
+  }
+
+  // Close handler
+  document.getElementById('fs-close-btn').onclick = closeEntityFullscreen;
+}
+
+function closeEntityFullscreen() {
+  const overlay = document.getElementById('entity-fullscreen');
+  if (overlay) overlay.style.display = 'none';
+  document.body.classList.remove('fullscreen-open');
+  const chipsRow = document.getElementById('fs-prop-chips-row');
+  if (chipsRow) chipsRow.innerHTML = '';
+  const key = 'editorjs-fullscreen';
+  if (_activeEditors[key]) {
+    try { _activeEditors[key].destroy(); } catch {}
+    delete _activeEditors[key];
+  }
+}
+
 async function loadEntityCustomProps(entity, recordId) {
   if (!recordId) return;
   try {
     const props = await api('GET', `/api/properties?entity_type=${entity}&entity_id=${recordId}`);
-    const customDefs = getCustomPropDefs(entity);
-    const customKeys = new Set(customDefs.map(d => d.key));
     const existing = getCustomPropValues(entity, recordId);
-    for (const [k, v] of Object.entries(props)) {
-      if (customKeys.has(k)) existing[k] = v;
-    }
+    // Merge ALL server values (not filtered — defs may not yet exist locally)
+    Object.assign(existing, props);
     localStorage.setItem(`customPropVals_${entity}_${recordId}`, JSON.stringify(existing));
+
+    // Auto-restore prop defs for relation values found on server that have no local def
+    const currentDefs = getCustomPropDefs(entity);
+    const existingKeys = new Set(currentDefs.map(d => d.key));
+    const entityOnlyDefs = currentDefs.filter(d => !d._taxonomy);
+    let defsChanged = false;
+    for (const [k, v] of Object.entries(props)) {
+      if (existingKeys.has(k)) continue;
+      try {
+        const parsed = JSON.parse(v);
+        if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].id !== undefined && parsed[0].label !== undefined) {
+          const relEntity = k.replace(/s$/, '');
+          entityOnlyDefs.push({ key: k, label: k.charAt(0).toUpperCase() + k.slice(1), type: 'relation', relatedEntity: relEntity, bilateral: true, reverseKey: `${entity}s` });
+          defsChanged = true;
+        }
+      } catch {}
+    }
+    if (defsChanged) setCustomPropDefs(entity, entityOnlyDefs);
   } catch(e) {}
 }
 
@@ -2237,7 +2530,7 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
           }
           return `<span style="font-size:12px">${String(val).replace(/</g,'&lt;')}</span>`;
         })();
-    const isCustom = !!custom;
+    const isCustom = !!custom && !custom._taxonomy;
     return `<div class="inline-prop-row" data-prop-key="${key}" data-is-custom="${isCustom}">
       <span class="inline-prop-drag-handle" title="Drag to reorder">⠿</span>
       <div class="inline-prop-label">${iconHtml}<span class="inline-prop-label-text">${labelText}</span></div>
@@ -2260,8 +2553,8 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
 // Wires drag-to-reorder, custom prop editing, delete, and the Add button.
 // builtinEditFns: { [key]: (rowEl, valueEl) => void } — called on value click
 // onRerender: () => void — called to rebuild the panel after any change
-function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender) {
-  const panel = document.querySelector(`.inline-prop-panel[data-entity="${entity}"]`);
+function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root) {
+  const panel = (root || document).querySelector(`.inline-prop-panel[data-entity="${entity}"]`);
   if (!panel) return;
 
   // Auto re-render when a property is added from another panel (same entity type)
@@ -3310,6 +3603,13 @@ function renderView(view, params) {
   if (view.startsWith('custom:')) {
     const typeName = view.slice(7);
     renderCustomEntityList(typeName);
+    return;
+  }
+
+  // Global taxonomy prop views: "taxonomy:{key}"
+  if (view.startsWith('taxonomy:')) {
+    const taxKey = view.slice(9);
+    renderTaxonomyPropView(taxKey);
     return;
   }
 
@@ -4705,8 +5005,10 @@ function openMultiRelationPicker(valEl, entity, recordId, propKey, relEntity, re
       await patchFn(patch);
       const newSet = new Set(multiIds.map(String)), oldSet = new Set(curIds.map(String));
       const ownerTitle = (currentObj && (currentObj.title || currentObj.name)) || String(recordId);
-      for (const id of newSet) if (!oldSet.has(id)) _ensureRelProp(relEntity, parseInt(id), entity, parseInt(recordId), ownerTitle);
-      for (const id of oldSet) if (!newSet.has(id)) _removeRelProp(relEntity, parseInt(id), entity, parseInt(recordId));
+      await Promise.all([
+        ...[...newSet].filter(id => !oldSet.has(id)).map(id => _ensureRelProp(relEntity, parseInt(id), entity, parseInt(recordId), ownerTitle)),
+        ...[...oldSet].filter(id => !newSet.has(id)).map(id => _removeRelProp(relEntity, parseInt(id), entity, parseInt(recordId))),
+      ]);
       rerender();
     },
     { multiSelect: true, selectedIds: curIds }
@@ -5993,9 +6295,10 @@ async function renderProjects() {
         <span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
         <span class="entity-list-title proj-list-title">${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></span>
         ${vis('status') ? statusBadge(p.status) : ''}
-        ${vis('goal') && p.goal_title ? `<span class="entity-list-meta">${p.goal_title}</span>` : ''}
+        ${vis('goal') ? (() => { const v = renderMultiRelationValue('project', p.id, 'goal', p.goal_title); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
         ${vis('area') && p.macro_area ? `<span class="entity-list-meta">${p.macro_area.split('(')[0].trim()}</span>` : ''}
         ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
+        ${renderCustomPropChips('project', p.id, 'list')}
         <span onclick="event.stopPropagation()"><button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button></span>
       </div>`;
     }).join('')}</div>`;
@@ -6477,8 +6780,8 @@ async function renderNotes() {
         <span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
         <span class="entity-list-title">${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></span>
         ${vis('date') && fmtDate(n.note_date) ? `<span class="entity-list-meta">${fmtDate(n.note_date)}</span>` : ''}
-        ${vis('project') && n.project_id ? `<span class="entity-list-meta">${(_noteProjects.find(p => String(p.id) === String(n.project_id))?.title) || ''}</span>` : ''}
-        ${vis('goal') && n.goal_id ? `<span class="entity-list-meta">${(_noteGoals.find(g => String(g.id) === String(n.goal_id))?.title) || ''}</span>` : ''}
+        ${vis('project') ? (() => { const v = renderMultiRelationValue('note', n.id, 'project', (_noteProjects.find(p => String(p.id) === String(n.project_id))?.title)); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
+        ${vis('goal') ? (() => { const v = renderMultiRelationValue('note', n.id, 'goal', (_noteGoals.find(g => String(g.id) === String(n.goal_id))?.title)); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
         ${vis('category') && n.category_name ? `<span class="entity-list-meta">${n.category_name}</span>` : ''}
         ${vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : ''}
         ${renderCustomPropChips('note', n.id, 'list')}
@@ -6550,6 +6853,8 @@ async function renderNotes() {
       <div class="note-meta" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
         ${vis('date') && fmtDate(n.note_date) ? `<span>${fmtDate(n.note_date)}</span>` : ''}
         ${vis('category') && n.category_name ? `<span>· ${n.category_name}</span>` : ''}
+        ${vis('project') ? (() => { const v = renderMultiRelationValue('note', n.id, 'project', (_noteProjects.find(p => String(p.id) === String(n.project_id))?.title)); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
+        ${vis('goal') ? (() => { const v = renderMultiRelationValue('note', n.id, 'goal', (_noteGoals.find(g => String(g.id) === String(n.goal_id))?.title)); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
         ${tagChips}
       </div>
       ${renderCustomPropChips('note', n.id, 'cards')}
@@ -6565,6 +6870,8 @@ async function renderNotes() {
         <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span></td>
         <td><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></td>
         ${vis('date')     ? `<td>${fmtDate(n.note_date) || '—'}</td>` : ''}
+        ${vis('project')  ? `<td>${renderMultiRelationValue('note', n.id, 'project', (_noteProjects.find(p => String(p.id) === String(n.project_id))?.title)) || '—'}</td>` : ''}
+        ${vis('goal')     ? `<td>${renderMultiRelationValue('note', n.id, 'goal', (_noteGoals.find(g => String(g.id) === String(n.goal_id))?.title)) || '—'}</td>` : ''}
         ${vis('category') ? `<td>${n.category_name || '—'}</td>` : ''}
         ${vis('tags')     ? `<td>${(n.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
         ${customCols}
@@ -6576,6 +6883,8 @@ async function renderNotes() {
       '<th class="ctx-handle-th"></th>',
       '<th>Title</th>',
       vis('date')     ? '<th>Date</th>'     : '',
+      vis('project')  ? '<th>Projects</th>' : '',
+      vis('goal')     ? '<th>Goals</th>'    : '',
       vis('category') ? '<th>Category</th>' : '',
       vis('tags')     ? '<th>Tags</th>'     : '',
       customHeaders,
@@ -6850,6 +7159,379 @@ async function renderSprints() {
 }
 
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   WIDGET SYSTEM  — configurable, drag-and-drop layout per entity type
+   Layout stored in localStorage; custom widgets via user-written JS snippets.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const WIDGET_TYPE_META = {
+  properties: { label: 'Properties', icon: '⚙' },
+  tasks:      { label: 'Tasks',      icon: '✓' },
+  notes:      { label: 'Notes',      icon: '📄' },
+  resources:  { label: 'Resources',  icon: '🔗' },
+  projects:   { label: 'Projects',   icon: '📁' },
+  sprints:    { label: 'Sprints',    icon: '⚡' },
+  editor:     { label: 'Content',    icon: '✏' },
+  comments:   { label: 'Comments',   icon: '💬' },
+  metrics:    { label: 'Metrics',    icon: '📊' },
+  custom:     { label: 'Custom',     icon: '◈' },
+};
+
+const WIDGET_DEFAULT_LAYOUTS = {
+  goal: [
+    { id: 'w-projects',  type: 'projects',   label: 'Projects',     visible: true },
+    { id: 'w-tasks',     type: 'tasks',      label: 'Direct Tasks', visible: true },
+    { id: 'w-notes',     type: 'notes',      label: 'Notes',        visible: true },
+    { id: 'w-resources', type: 'resources',  label: 'Resources',    visible: true },
+    { id: 'w-properties',type: 'properties', label: 'Properties',   visible: true },
+    { id: 'w-editor',    type: 'editor',     label: 'Content',      visible: true },
+    { id: 'w-comments',  type: 'comments',   label: 'Comments',     visible: true },
+  ],
+  project: [
+    { id: 'w-tasks',     type: 'tasks',      label: 'Tasks',        visible: true },
+    { id: 'w-notes',     type: 'notes',      label: 'Notes',        visible: true },
+    { id: 'w-resources', type: 'resources',  label: 'Resources',    visible: true },
+    { id: 'w-properties',type: 'properties', label: 'Properties',   visible: true },
+    { id: 'w-editor',    type: 'editor',     label: 'Content',      visible: true },
+    { id: 'w-comments',  type: 'comments',   label: 'Comments',     visible: true },
+  ],
+  sprint: [
+    { id: 'w-tasks',     type: 'tasks',      label: 'Sprint Tasks', visible: true },
+    { id: 'w-properties',type: 'properties', label: 'Properties',   visible: true },
+    { id: 'w-editor',    type: 'editor',     label: 'Content',      visible: true },
+    { id: 'w-comments',  type: 'comments',   label: 'Comments',     visible: true },
+  ],
+};
+
+function getWidgetLayout(entity) {
+  try {
+    const saved = localStorage.getItem(`widget_layout_${entity}`);
+    if (saved) { const p = JSON.parse(saved); if (Array.isArray(p) && p.length) return p; }
+  } catch(e) {}
+  return JSON.parse(JSON.stringify(WIDGET_DEFAULT_LAYOUTS[entity] || []));
+}
+function saveWidgetLayout(entity, layout) { localStorage.setItem(`widget_layout_${entity}`, JSON.stringify(layout)); }
+function resetWidgetLayout(entity) { localStorage.removeItem(`widget_layout_${entity}`); }
+function getCustomWidgetDefs() { try { return JSON.parse(localStorage.getItem('widget_custom_defs') || '[]'); } catch(e) { return []; } }
+function saveCustomWidgetDefs(defs) { localStorage.setItem('widget_custom_defs', JSON.stringify(defs)); }
+
+// ── Widget content builders ───────────────────────────────────────────────────
+
+function _wTasksHtml(tasks) {
+  if (!tasks || !tasks.length)
+    return '<div class="empty-state" style="padding:20px"><div class="empty-state-text">No tasks</div></div>';
+  const taskIds = new Set(tasks.map(t => t.id));
+  const top = tasks.filter(t => !t.parent_task_id || !taskIds.has(t.parent_task_id));
+  let html = '<ul class="task-list">';
+  const walk = (list, depth) => {
+    for (const t of list) {
+      html += taskRowHtml(t, false, depth);
+      if (expandedTasks.has(String(t.id))) {
+        const kids = allTasksCache.filter(s => s.parent_task_id === t.id);
+        if (kids.length) {
+          walk(kids, depth + 1);
+          html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
+            <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px">+ Subtask</button></li>`;
+        }
+      }
+    }
+  };
+  walk(top, 0);
+  return html + '</ul>';
+}
+
+function _wNotesHtml(notes) {
+  return notes && notes.length
+    ? notes.map(n => `<div class="note-card clickable-note" data-note-id="${n.id}" style="cursor:pointer">
+        <div class="note-title">${escHtml(n.title || 'Untitled')}</div>
+        <div class="note-body-preview">${escHtml(n.body || '')}</div>
+        <div class="note-meta">${fmtDate(n.note_date) || ''}</div></div>`).join('')
+    : '<div class="empty-state" style="padding:20px"><div class="empty-state-text">No notes</div></div>';
+}
+
+function _wResourcesHtml(resources) {
+  return resources && resources.length
+    ? resources.map(r => `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
+        <span class="badge badge-todo">${escHtml(r.resource_type || 'link')}</span>
+        <span style="flex:1">${escHtml(r.title)}</span>
+        ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" class="btn btn-sm btn-ghost">↗</a>` : ''}</div>`).join('')
+    : '<div class="empty-state" style="padding:20px"><div class="empty-state-text">No resources</div></div>';
+}
+
+function _wProjectsHtml(projects) {
+  if (!projects || !projects.length)
+    return '<div class="empty-state" style="padding:20px"><div class="empty-state-text">No projects</div></div>';
+  return projects.map(p => {
+    const prog = p.progress || {}, pct = prog.pct || 0;
+    return `<div class="card detail-nav" data-proj-id="${p.id}" style="cursor:pointer;margin-bottom:8px">
+      <div class="flex-between gap-8"><span class="card-title">${escHtml(p.title)}</span>${statusBadge(p.status)}</div>
+      <div class="progress-wrap" style="margin-top:8px">
+        <div class="progress-label"><span>${pct}%</span><span>${prog.done||0}/${prog.total||0}</span></div>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+      </div></div>`;
+  }).join('');
+}
+
+function _wMetricsHtml(data) {
+  if (!data || data.target == null) return '<div class="empty-state-text" style="padding:12px 0">No metrics configured</div>';
+  const pct = data.target > 0 ? Math.round((data.current_value || 0) / data.target * 100) : 0;
+  return `<div class="stats-row">
+    ${data.start_value != null ? `<div class="stat-card"><div class="stat-value">${data.start_value}</div><div class="stat-label">Start</div></div>` : ''}
+    ${data.current_value != null ? `<div class="stat-card"><div class="stat-value">${data.current_value}</div><div class="stat-label">Current</div></div>` : ''}
+    ${data.target != null ? `<div class="stat-card"><div class="stat-value">${data.target}</div><div class="stat-label">Target</div></div>` : ''}
+  </div>
+  <div class="progress-track" style="margin-top:8px"><div class="progress-fill" style="width:${pct}%"></div></div>
+  <div style="text-align:right;font-size:12px;color:var(--text-muted);margin-top:4px">${pct}%</div>`;
+}
+
+function _wCustomHtml(entity, entityId, data, def) {
+  if (!def || !def.code) return '<div class="empty-state-text" style="padding:12px 0">No code. Edit via Widgets panel.</div>';
+  try {
+    const fn = new Function('entity', 'entityId', 'data', '"use strict";\n' + def.code);
+    return fn(entity, entityId, data) || '';
+  } catch(e) {
+    return `<div style="color:var(--danger);font-size:12px;padding:8px">Widget error: ${escHtml(e.message)}</div>`;
+  }
+}
+
+// ── Main grid builder ─────────────────────────────────────────────────────────
+// wData = { tasks, notes, resources, projects, propPanelHtml, entityData }
+
+function buildWidgetGrid(entity, entityId, wData) {
+  const layout = getWidgetLayout(entity);
+  const customDefs = getCustomWidgetDefs();
+  const visible = layout.filter(w => w.visible);
+  if (!visible.length) return `<div class="empty-state" style="padding:40px"><div class="empty-state-text">No visible widgets. Use the Widgets ⚙ button to configure.</div></div>`;
+  const dgh = `<span class="widget-drag-handle" title="Drag to reorder"><svg width="10" height="16" viewBox="0 0 10 16" fill="var(--text-muted)"><circle cx="3" cy="2" r="1.5"/><circle cx="7" cy="2" r="1.5"/><circle cx="3" cy="6" r="1.5"/><circle cx="7" cy="6" r="1.5"/><circle cx="3" cy="10" r="1.5"/><circle cx="7" cy="10" r="1.5"/><circle cx="3" cy="14" r="1.5"/><circle cx="7" cy="14" r="1.5"/></svg></span>`;
+  return visible.map(w => {
+    let body = '';
+    switch(w.type) {
+      case 'tasks':      body = _wTasksHtml(wData.tasks); break;
+      case 'notes':      body = _wNotesHtml(wData.notes); break;
+      case 'resources':  body = _wResourcesHtml(wData.resources); break;
+      case 'projects':   body = _wProjectsHtml(wData.projects); break;
+      case 'properties': body = wData.propPanelHtml || ''; break;
+      case 'editor':     body = `<div id="editorjs-${entity}-${entityId}" class="rich-editor-host"></div>`; break;
+      case 'comments':   body = buildCommentSection(entity, entityId); break;
+      case 'metrics':    body = _wMetricsHtml(wData.entityData); break;
+      case 'custom': {
+        const def = customDefs.find(d => d.id === w.customDefId);
+        body = _wCustomHtml(entity, entityId, wData.entityData, def); break;
+      }
+      default: body = `<div class="empty-state-text">Unknown widget: ${escHtml(w.type)}</div>`;
+    }
+    return `<div class="widget widget-item" data-widget-id="${escHtml(w.id)}" data-widget-type="${w.type}" style="margin-bottom:16px">
+      <div class="widget-header">
+        ${dgh}
+        <span class="widget-title">${escHtml(w.label)}</span>
+      </div>
+      <div class="widget-body">${body}</div>
+    </div>`;
+  }).join('');
+}
+
+function initWidgetGrid(entity, entityId, container, onRerender) {
+  if (!container) return;
+  if (window.Sortable) {
+    new Sortable(container, {
+      handle: '.widget-drag-handle',
+      animation: 150,
+      onEnd: () => {
+        const layout = getWidgetLayout(entity);
+        const order = Array.from(container.querySelectorAll('.widget-item[data-widget-id]')).map(el => el.dataset.widgetId);
+        const sorted = order.map(id => layout.find(w => w.id === id)).filter(Boolean);
+        const rest = layout.filter(w => !sorted.find(s => s.id === w.id));
+        saveWidgetLayout(entity, [...sorted, ...rest]);
+      }
+    });
+  }
+  const editorHost = container.querySelector('.rich-editor-host[id]');
+  if (editorHost) initRichEditor(editorHost.id, entity, entityId, false);
+  const cmt = container.querySelector('.comment-section');
+  if (cmt) bindCommentSection(cmt);
+}
+
+// ── Widget manager panel ──────────────────────────────────────────────────────
+
+function openWidgetManager(entity, anchorEl, onClose) {
+  document.getElementById('widget-mgr')?.remove();
+  const layout = getWidgetLayout(entity);
+  const customDefs = getCustomWidgetDefs();
+  const dgh = `<svg width="10" height="16" viewBox="0 0 10 16" fill="var(--text-muted)" style="cursor:grab;flex-shrink:0"><circle cx="3" cy="2" r="1.5"/><circle cx="7" cy="2" r="1.5"/><circle cx="3" cy="6" r="1.5"/><circle cx="7" cy="6" r="1.5"/><circle cx="3" cy="10" r="1.5"/><circle cx="7" cy="10" r="1.5"/><circle cx="3" cy="14" r="1.5"/><circle cx="7" cy="14" r="1.5"/></svg>`;
+
+  const rowsHtml = layout.map(w => {
+    const meta = WIDGET_TYPE_META[w.type] || { icon: '◉' };
+    return `<div class="wm-row" data-wid="${escHtml(w.id)}">
+      <span class="wm-row-handle">${dgh}</span>
+      <span class="wm-row-icon">${meta.icon}</span>
+      <span class="wm-row-label">${escHtml(w.label)}</span>
+      <label class="wm-toggle-wrap" title="${w.visible ? 'Click to hide' : 'Click to show'}">
+        <input type="checkbox" class="wm-vis-cb" ${w.visible ? 'checked' : ''} data-wid="${escHtml(w.id)}">
+        <span class="wm-toggle-slider"></span>
+      </label>
+      ${w.type === 'custom' ? `<button class="btn btn-ghost btn-sm wm-del-btn" data-wid="${escHtml(w.id)}" style="color:var(--danger);padding:2px 5px;line-height:1;flex-shrink:0">✕</button>` : '<span style="width:24px;flex-shrink:0"></span>'}
+    </div>`;
+  }).join('');
+
+  const existingTypes = new Set(layout.map(w => w.type));
+  const addableOpts = Object.entries(WIDGET_TYPE_META)
+    .filter(([t]) => t !== 'custom' && !existingTypes.has(t))
+    .map(([t, m]) => `<option value="${t}">${m.icon} ${m.label}</option>`).join('');
+  const addCustomOpts = customDefs
+    .filter(d => !layout.find(w => w.type === 'custom' && w.customDefId === d.id))
+    .map(d => `<option value="cx:${d.id}">◈ ${escHtml(d.name)}</option>`).join('');
+
+  const panel = document.createElement('div');
+  panel.id = 'widget-mgr';
+  panel.className = 'widget-mgr';
+  panel.innerHTML = `
+    <div class="wm-hd"><span class="wm-title">Manage Widgets</span><button class="btn btn-ghost btn-sm" id="wm-x">✕</button></div>
+    <div class="wm-body">
+      <div class="wm-list" id="wm-list">${rowsHtml || '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No widgets configured</div>'}</div>
+      <div class="wm-add">
+        <select id="wm-sel" class="form-input" style="flex:1;font-size:12px;min-width:0"><option value="">Add widget…</option>${addableOpts}${addCustomOpts}</select>
+        <button class="btn btn-sm btn-primary" id="wm-add">Add</button>
+      </div>
+      <button class="btn btn-sm btn-ghost" id="wm-new-cust" style="width:100%;margin-top:6px;font-size:12px">+ New Custom Widget</button>
+      <button class="btn btn-sm btn-ghost" id="wm-reset" style="width:100%;margin-top:4px;font-size:11px;color:var(--text-muted)">Reset to defaults</button>
+    </div>`;
+
+  document.body.appendChild(panel);
+
+  if (anchorEl) {
+    const r = anchorEl.getBoundingClientRect();
+    panel.style.top = (r.bottom + 8) + 'px';
+    panel.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+  }
+
+  if (window.Sortable) {
+    new Sortable(document.getElementById('wm-list'), { handle: '.wm-row-handle', animation: 120 });
+  }
+
+  panel.querySelectorAll('.wm-vis-cb').forEach(cb => {
+    cb.onchange = () => {
+      const lay = getWidgetLayout(entity);
+      const w = lay.find(x => x.id === cb.dataset.wid);
+      if (w) { w.visible = cb.checked; saveWidgetLayout(entity, lay); }
+    };
+  });
+
+  panel.querySelectorAll('.wm-del-btn').forEach(btn => {
+    btn.onclick = () => {
+      saveWidgetLayout(entity, getWidgetLayout(entity).filter(w => w.id !== btn.dataset.wid));
+      btn.closest('.wm-row').remove();
+    };
+  });
+
+  document.getElementById('wm-add').onclick = () => {
+    const val = document.getElementById('wm-sel').value;
+    if (!val) return;
+    const lay = getWidgetLayout(entity);
+    if (val.startsWith('cx:')) {
+      const def = customDefs.find(d => d.id === val.slice(3));
+      if (def) lay.push({ id: `w-cx-${Date.now()}`, type: 'custom', label: def.name, customDefId: def.id, visible: true });
+    } else {
+      const meta = WIDGET_TYPE_META[val];
+      if (meta) lay.push({ id: `w-${val}-${Date.now()}`, type: val, label: meta.label, visible: true });
+    }
+    saveWidgetLayout(entity, lay);
+    _closeWM(); openWidgetManager(entity, anchorEl, onClose);
+  };
+
+  document.getElementById('wm-new-cust').onclick = () => {
+    _closeWM(); openCustomWidgetEditor(null, () => openWidgetManager(entity, anchorEl, onClose));
+  };
+
+  document.getElementById('wm-reset').onclick = () => {
+    if (!confirm('Reset widget layout to defaults?')) return;
+    resetWidgetLayout(entity); _closeWM(); openWidgetManager(entity, anchorEl, onClose);
+  };
+
+  const saveOrder = () => {
+    const listEl = document.getElementById('wm-list');
+    if (!listEl) return;
+    const lay = getWidgetLayout(entity);
+    const order = Array.from(listEl.querySelectorAll('.wm-row[data-wid]')).map(r => r.dataset.wid);
+    const sorted = order.map(id => lay.find(w => w.id === id)).filter(Boolean);
+    const rest = lay.filter(w => !sorted.find(s => s.id === w.id));
+    saveWidgetLayout(entity, [...sorted, ...rest]);
+  };
+
+  document.getElementById('wm-x').onclick = () => { saveOrder(); _closeWM(); if (onClose) onClose(); };
+
+  setTimeout(() => {
+    const handler = (e) => {
+      if (!document.getElementById('widget-mgr')?.contains(e.target)) {
+        saveOrder(); _closeWM(); document.removeEventListener('click', handler); if (onClose) onClose();
+      }
+    };
+    document.addEventListener('click', handler);
+  }, 120);
+}
+
+function _closeWM() { document.getElementById('widget-mgr')?.remove(); }
+
+// ── Custom widget code editor ─────────────────────────────────────────────────
+
+function openCustomWidgetEditor(existingDef, onClose) {
+  const isEdit = !!existingDef;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal open';
+  overlay.style.zIndex = '10500';
+  const exCode = existingDef?.code || `// Signature: (entity, entityId, data) => htmlString
+// data = full API response: data.title, data.tasks, data.notes, data.resources, ...
+const tasks = data.tasks || [];
+return \`<div style="padding:8px">
+  <strong>\${data.title}</strong>
+  <p style="color:var(--text-muted);margin-top:4px">\${tasks.length} task(s)</p>
+</div>\`;`;
+  overlay.innerHTML = `<div class="modal-box" style="max-width:740px;width:95vw">
+    <div class="modal-header">
+      <span class="modal-title">${isEdit ? 'Edit' : 'Create'} Custom Widget</span>
+      <button class="modal-close-btn" id="cwe-x">✕</button>
+    </div>
+    <div class="modal-body">
+      <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Name</label>
+      <input id="cwe-name" class="form-input" placeholder="My Widget" value="${escHtml(existingDef?.name||'')}" style="margin-bottom:12px">
+      <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">JavaScript (return HTML string)</label>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">See <code>WIDGETS.md</code> in the repo for full API docs.</div>
+      <textarea id="cwe-code" class="form-input" rows="14" style="font-family:'Menlo','Monaco',monospace;font-size:12px">${escHtml(exCode)}</textarea>
+    </div>
+    <div class="modal-footer" style="justify-content:space-between">
+      <div>${isEdit ? `<button class="btn btn-ghost" id="cwe-del" style="color:var(--danger)">Delete</button>` : '<span></span>'}</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost" id="cwe-cancel">Cancel</button>
+        <button class="btn btn-primary" id="cwe-save">Save Widget</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const close = () => { overlay.remove(); if (onClose) onClose(); };
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+  document.getElementById('cwe-x').onclick = close;
+  document.getElementById('cwe-cancel').onclick = close;
+  document.getElementById('cwe-save').onclick = () => {
+    const name = document.getElementById('cwe-name').value.trim();
+    const code = document.getElementById('cwe-code').value;
+    if (!name) { alert('Widget name is required'); return; }
+    const defs = getCustomWidgetDefs();
+    if (isEdit) {
+      const idx = defs.findIndex(d => d.id === existingDef.id);
+      if (idx >= 0) defs[idx] = { ...existingDef, name, code };
+      else defs.push({ id: existingDef.id, name, code });
+    } else {
+      defs.push({ id: `cw-${Date.now()}`, name, code });
+    }
+    saveCustomWidgetDefs(defs); close();
+  };
+  if (isEdit) {
+    document.getElementById('cwe-del')?.addEventListener('click', () => {
+      if (!confirm('Delete this custom widget?')) return;
+      saveCustomWidgetDefs(getCustomWidgetDefs().filter(d => d.id !== existingDef.id)); close();
+    });
+  }
+}
+
 /* ─── Sprint Detail View ─────────────────────────────────────────────── */
 async function renderSprintDetail(sprintId) {
   let sprint;
@@ -6858,6 +7540,40 @@ async function renderSprintDetail(sprintId) {
     return;
   }
   updateBreadcrumb('sprint-detail', sprintId, sprint.title);
+
+  async function patchSprint(data) {
+    try { await api('PATCH', `/api/sprints/${sprintId}`, data); } catch(e) { return; }
+    renderSprintDetail(sprintId);
+  }
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  let sdLocalProjects = [];
+  try { sdLocalProjects = await api('GET', '/api/projects'); } catch(e) {}
+  const sdProjName = sdLocalProjects.find(p => String(p.id) === String(sprint.project_id))?.title || sprint.project_title || null;
+  const allSprintDetailBuiltinDefs = [
+    { key: 'status',  label: 'Status',    icon: pIco('<circle cx="12" cy="12" r="10"/>'),
+      renderValue: () => statusBadge(sprint.status||'planned') },
+    { key: 'dates',   label: 'Dates',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+      renderValue: () => { const dr = sprint.start_date && sprint.end_date ? `${fmtDate(sprint.start_date)} → ${fmtDate(sprint.end_date)}` : fmtDate(sprint.start_date||sprint.end_date)||''; return dr ? `<span>${dr}</span>` : ''; } },
+    { key: 'project', label: 'Projects',  icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
+      renderValue: () => renderMultiRelationValue('sprint', sprintId, 'project', sdProjName) },
+    { key: 'points',  label: 'Capacity (pts)', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
+      renderValue: () => sprint.story_points != null ? `<span>${sprint.story_points}</span>` : '' },
+  ];
+  await loadEntityCustomProps('sprint', sprintId);
+  const sprintDetailPropPanel = buildInlinePropPanel('sprint', sprintId, allSprintDetailBuiltinDefs);
+  const sprintDetailEditFns = {
+    status:  (valEl) => { openValuePicker(valEl, ['planned','active','completed'].map(s => ({ value: s, label: s })), async (val) => { await patchSprint({ status: val }); }); },
+    dates:   (valEl) => { openDateRangePickerGlobal(valEl, stripDate(sprint.start_date), stripDate(sprint.end_date), async (start, end) => { await patchSprint({ start_date: start||null, end_date: end||null }); }); },
+    project: (valEl) => openMultiRelationPicker(valEl, 'sprint', sprintId, 'project', 'project', sdLocalProjects, sprint, patchSprint, 'project_id', () => renderSprintDetail(sprintId)),
+    points:  (valEl) => {
+      const inp = document.createElement('input');
+      inp.type = 'number'; inp.min = '0'; inp.style.cssText = 'width:80px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
+      inp.value = sprint.story_points || '';
+      valEl.innerHTML = ''; valEl.appendChild(inp); inp.focus();
+      inp.onblur = async () => { await patchSprint({ story_points: parseInt(inp.value) || 0 }); };
+      inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); };
+    },
+  };
 
   const tasks = sprint.tasks || [];
   const prog = sprint.progress || {};
@@ -6916,6 +7632,7 @@ async function renderSprintDetail(sprintId) {
         </div>
       </div>
       <div class="flex gap-8">
+        <button class="btn btn-ghost btn-sm" id="sd-manage-btn">Widgets ⚙</button>
         <button class="btn btn-ghost" id="sd-back-btn">← Back</button>
         ${prevStatus ? `<button class="btn btn-ghost" id="sd-prev-status-btn" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
         ${nextStatus ? `<button class="btn btn-ghost" id="sd-status-btn" data-next="${nextStatus}">${nextLabel}</button>` : ''}
@@ -6953,13 +7670,12 @@ async function renderSprintDetail(sprintId) {
         <div id="sd-assigned-list" style="max-height:320px;overflow-y:auto"></div>
       </div>
     </div>
-    <div class="widget" style="margin-top:12px">
-      <div class="widget-header"><span class="widget-title">Custom Properties</span></div>
-      ${buildInlinePropPanel('sprint', sprintId, [])}
+    <div id="sd-widget-grid" style="margin-top:12px">
+      ${buildWidgetGrid('sprint', sprintId, { tasks, propPanelHtml: sprintDetailPropPanel, entityData: sprint })}
     </div>
-    ${buildCommentSection('sprint', sprintId)}
   </div>`;
 
+  document.getElementById('sd-manage-btn').onclick = (e) => openWidgetManager('sprint', e.currentTarget, () => renderSprintDetail(sprintId));
   document.getElementById('sd-back-btn').onclick = () => renderView('sprints');
   document.getElementById('sd-json-btn').onclick = () =>
     showJSONModal(`/api/export/sprint/${sprintId}`, `sprint-${sprint.title.replace(/\s+/g,'-')}.json`);
@@ -7158,8 +7874,9 @@ async function renderSprintDetail(sprintId) {
   });
 
   bindDetailTaskEvents(() => renderSprintDetail(sprintId));
-  bindInlinePropPanel('sprint', sprintId, {}, () => renderSprintDetail(sprintId));
-  bindCommentSection(document.querySelector('.comment-section[data-entity-type="sprint"]'));
+  const sdwg = document.getElementById('sd-widget-grid');
+  initWidgetGrid('sprint', sprintId, sdwg, () => renderSprintDetail(sprintId));
+  bindInlinePropPanel('sprint', sprintId, sprintDetailEditFns, () => renderSprintDetail(sprintId));
 }
 
 /* ─── Habits View ─────────────────────────────────────────────────────── */
@@ -7760,6 +8477,103 @@ async function renderTags() {
   });
 }
 
+/* ─── Taxonomy Prop View ─────────────────────────────────────────────── */
+async function renderTaxonomyPropView(key) {
+  const props = getGlobalTaxonomyProps();
+  const prop = props.find(p => p.key === key);
+  if (!prop) {
+    document.getElementById('main-content').innerHTML = `<div class="view"><div class="empty-state"><div class="empty-state-icon">◈</div><div class="empty-state-text">Taxonomy not found</div></div></div>`;
+    return;
+  }
+  const options = getTaxonomyOptions(key);
+  const optChips = options.map(o => {
+    const hex = COLOR_HEX[o.color] || o.color || '#378ADD';
+    return `<div class="taxonomy-chip">
+      <div class="taxonomy-chip-color" style="background:${hex}"></div>
+      <span class="taxonomy-chip-name">${escHtml(o.name)}</span>
+      <div class="taxonomy-chip-actions">
+        <button class="btn btn-sm btn-ghost tax-opt-edit-btn" data-key="${escHtml(key)}" data-opt-id="${escHtml(String(o.id))}">Edit</button>
+        <button class="btn btn-sm btn-danger tax-opt-del-btn" data-key="${escHtml(key)}" data-opt-id="${escHtml(String(o.id))}">Del</button>
+      </div>
+    </div>`;
+  }).join('') || `<div class="empty-state"><div class="empty-state-icon">◈</div><div class="empty-state-text">No options yet — add one below</div></div>`;
+
+  document.getElementById('main-content').innerHTML = `<div class="view">
+    <div class="view-header">
+      <h1 class="view-title">${escHtml(prop.label)}</h1>
+      <div class="flex gap-8">
+        <button class="btn btn-ghost" id="tax-rename-btn">Rename</button>
+        <button class="btn btn-danger btn-sm" id="tax-delete-btn">Delete taxonomy</button>
+        <button class="btn btn-primary" id="new-tax-opt-btn">+ New option</button>
+      </div>
+    </div>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">Options for <b>${escHtml(prop.label)}</b> — these appear as a multiselect in all entity property panels.</p>
+    <div id="tax-opts-grid" class="taxonomy-grid">${optChips}</div>
+  </div>`;
+
+  document.getElementById('new-tax-opt-btn').onclick = () => showTaxonomyOptionModal(key, null, () => renderTaxonomyPropView(key));
+  document.getElementById('tax-rename-btn').onclick = () => {
+    const label = prompt(`New name for "${prop.label}":`, prop.label);
+    if (!label || !label.trim()) return;
+    const ps = getGlobalTaxonomyProps();
+    const idx = ps.findIndex(p => p.key === key);
+    if (idx >= 0) { ps[idx].label = label.trim(); saveGlobalTaxonomyProps(ps); }
+    renderTaxonomyNav();
+    renderTaxonomyPropView(key);
+  };
+  document.getElementById('tax-delete-btn').onclick = () => {
+    if (!confirm(`Delete taxonomy "${prop.label}"? Values saved on entities will remain but the property will no longer appear.`)) return;
+    saveGlobalTaxonomyProps(getGlobalTaxonomyProps().filter(p => p.key !== key));
+    localStorage.removeItem(`taxonomyOpts_${key}`);
+    renderTaxonomyNav();
+    renderView('dashboard');
+  };
+  document.querySelectorAll('.tax-opt-edit-btn').forEach(btn => {
+    btn.onclick = () => {
+      const opt = getTaxonomyOptions(btn.dataset.key).find(o => String(o.id) === btn.dataset.optId);
+      if (opt) showTaxonomyOptionModal(btn.dataset.key, opt, () => renderTaxonomyPropView(key));
+    };
+  });
+  document.querySelectorAll('.tax-opt-del-btn').forEach(btn => {
+    btn.onclick = () => {
+      if (!confirm('Delete this option?')) return;
+      saveTaxonomyOptions(btn.dataset.key, getTaxonomyOptions(btn.dataset.key).filter(o => String(o.id) !== btn.dataset.optId));
+      renderTaxonomyPropView(key);
+    };
+  });
+}
+
+function showTaxonomyOptionModal(taxKey, opt, afterSave) {
+  const v = opt || {};
+  const body = `
+    <div class="form-group"><label class="form-label">Name *</label>
+      <input type="text" id="taxopt-name" value="${escHtml(v.name || '')}" placeholder="Option name" /></div>
+    <div class="form-group"><label class="form-label">Color</label>
+      ${colorSelect('taxopt-color', v.color || 'blue')}</div>
+    <div class="form-actions">
+      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
+      <button class="btn btn-primary" id="modal-save-btn">Save</button>
+    </div>`;
+  openModal(v.id ? 'Edit Option' : 'New Option', body, null);
+  document.getElementById('modal-cancel-btn').onclick = closeModal;
+  setTimeout(() => document.getElementById('taxopt-name')?.focus(), 50);
+  document.getElementById('modal-save-btn').onclick = () => {
+    const name = document.getElementById('taxopt-name')?.value.trim() || '';
+    const color = document.getElementById('taxopt-color')?.value || 'blue';
+    if (!name) { showToast('Name is required', 'error'); return; }
+    let opts = getTaxonomyOptions(taxKey);
+    if (v.id) {
+      const idx = opts.findIndex(o => String(o.id) === String(v.id));
+      if (idx >= 0) opts[idx] = { ...opts[idx], name, color };
+    } else {
+      opts.push({ id: String(Date.now()), name, color });
+    }
+    saveTaxonomyOptions(taxKey, opts);
+    closeModal();
+    if (afterSave) afterSave();
+  };
+}
+
 /* ─── Project Detail View ─────────────────────────────────────────────── */
 async function renderProjectDetail(projectId) {
   let p;
@@ -7768,6 +8582,47 @@ async function renderProjectDetail(projectId) {
     return;
   }
   updateBreadcrumb('project-detail', projectId, p.title);
+
+  async function patchProject(data) {
+    try { await api('PATCH', `/api/projects/${projectId}`, data); } catch(e) { return; }
+    renderProjectDetail(projectId);
+  }
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const tags = p.tags || [];
+  const catName = allCategories ? (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name : null;
+  let pdLocalGoals = [];
+  try { pdLocalGoals = await api('GET', '/api/goals'); } catch(e) {}
+  const goalName = pdLocalGoals.find(g => String(g.id) === String(p.goal_id))?.title || null;
+  const allProjDetailBuiltinDefs = [
+    { key: 'status',   label: 'Status',    icon: pIco('<circle cx="12" cy="12" r="10"/>'),
+      renderValue: () => statusBadge(p.status||'active') },
+    { key: 'due',      label: 'Due Date',  icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+      renderValue: () => p.due_date ? `<span>${fmtDate(p.due_date)}</span>` : '' },
+    { key: 'goal',     label: 'Goals',     icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+      renderValue: () => renderMultiRelationValue('project', projectId, 'goal', goalName) },
+    { key: 'tags',     label: 'Tags',      icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
+      renderValue: () => tags.length ? tags.map(t => tagHtml(t)).join('') : '' },
+    { key: 'category', label: 'Category',  icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+    { key: 'macro',    label: 'Macro Area',icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => p.macro_area ? `<span>${p.macro_area.split('(')[0].trim()}</span>` : '' },
+    { key: 'kanban',   label: 'Kanban Col',icon: pIco('<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>'),
+      renderValue: () => p.kanban_col ? `<span>${p.kanban_col}</span>` : '' },
+    { key: 'archived', label: 'Archived',  icon: pIco('<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/>'),
+      renderValue: () => p.archived ? `<span>Yes</span>` : '' },
+  ];
+  await loadEntityCustomProps('project', projectId);
+  const projDetailPropPanel = buildInlinePropPanel('project', projectId, allProjDetailBuiltinDefs);
+  const projDetailEditFns = {
+    status:   (valEl) => { openValuePicker(valEl, PROJECT_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchProject({ status: val }); }); },
+    due:      (valEl) => { openDateRangePickerGlobal(valEl, stripDate(p.start_date), stripDate(p.due_date), async (start, end) => { await patchProject({ start_date: start||null, due_date: end||null }); }); },
+    goal:     (valEl) => openMultiRelationPicker(valEl, 'project', projectId, 'goal', 'goal', pdLocalGoals, p, patchProject, 'goal_id', () => renderProjectDetail(projectId)),
+    tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: ids }); renderProjectDetail(projectId); }); },
+    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchProject({ category_id: val ? parseInt(val) : null }); }); },
+    macro:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => { await patchProject({ macro_area: val||null }); }); },
+    kanban:   (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...KANBAN_COLS.map(k => ({ value: k, label: k }))], async (val) => { await patchProject({ kanban_col: val||null }); }); },
+    archived: (valEl) => { patchProject({ archived: !p.archived }); },
+  };
 
   const tasks = p.tasks || [];
   const notes = p.notes || [];
@@ -7845,6 +8700,7 @@ async function renderProjectDetail(projectId) {
         </div>
       </div>
       <div class="flex gap-8">
+        <button class="btn btn-ghost btn-sm" id="pd-manage-btn">Widgets ⚙</button>
         <button class="btn btn-ghost" id="pd-export-btn">Export JSON</button>
         <button class="btn btn-ghost" id="pd-back-btn">← Back</button>
         <button class="btn btn-primary" id="pd-add-task-btn">+ Task</button>
@@ -7853,29 +8709,9 @@ async function renderProjectDetail(projectId) {
       </div>
     </div>
     ${p.description ? `<div class="card" style="margin-bottom:16px"><p style="color:var(--text-muted)">${p.description}</p></div>` : ''}
-    <div class="cc-grid wide">
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Tasks (${tasks.length})</span></div>
-        <div id="pd-task-list">${buildTaskList()}</div>
-      </div>
+    <div id="pd-widget-grid">
+      ${buildWidgetGrid('project', projectId, { tasks, notes, resources, propPanelHtml: projDetailPropPanel, entityData: p })}
     </div>
-    <div class="cc-grid" style="margin-top:16px">
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Notes (${notes.length})</span></div>
-        <div id="pd-notes">${noteCards}</div>
-      </div>
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Resources (${resources.length})</span></div>
-        <div>${resRows}</div>
-      </div>
-    </div>
-    <div class="widget" style="margin-top:16px">
-      <div class="widget-header">
-        <span class="widget-title">Custom Properties</span>
-      </div>
-      ${buildInlinePropPanel('project', projectId, [])}
-    </div>
-    ${buildCommentSection('project', projectId)}
   </div>`;
 
   document.getElementById('pd-back-btn').onclick = () => renderView('projects');
@@ -7884,6 +8720,7 @@ async function renderProjectDetail(projectId) {
   document.getElementById('pd-add-res-btn').onclick = () => showResourceModal({ project_id: parseInt(projectId) }, () => renderProjectDetail(projectId));
   document.getElementById('pd-export-btn').onclick = () =>
     showJSONModal(`/api/export/project/${projectId}`, `project-${p.title}.json`);
+  document.getElementById('pd-manage-btn').onclick = (e) => openWidgetManager('project', e.currentTarget, () => renderProjectDetail(projectId));
   // ── Project icon picker ──────────────────────────────────────────────
   const projIconBtn = document.getElementById('proj-icon-btn');
   const projIconDisplay = document.getElementById('proj-icon-display');
@@ -7914,15 +8751,11 @@ async function renderProjectDetail(projectId) {
       el.onclick = () => renderView('goal-detail', el.dataset.goalId);
     });
   }
-  document.querySelectorAll('.clickable-note').forEach(el => {
-    el.onclick = () => {
-      const n = notes.find(x => String(x.id) === el.dataset.noteId);
-      if (n) showNoteModal(n, () => renderProjectDetail(projectId));
-    };
-  });
+  const pdwg = document.getElementById('pd-widget-grid');
+  initWidgetGrid('project', projectId, pdwg, () => renderProjectDetail(projectId));
   bindDetailTaskEvents(() => renderProjectDetail(projectId));
-  bindInlinePropPanel('project', projectId, {}, () => renderProjectDetail(projectId));
-  bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
+  bindInlinePropPanel('project', projectId, projDetailEditFns, () => renderProjectDetail(projectId));
+  pdwg.querySelectorAll('.clickable-note').forEach(el => { el.onclick = () => { const n = notes.find(x => String(x.id) === el.dataset.noteId); if (n) showNoteModal(n, () => renderProjectDetail(projectId)); }; });
 }
 async function renderGoalDetail(goalId) {
   let g;
@@ -7931,6 +8764,53 @@ async function renderGoalDetail(goalId) {
     return;
   }
   updateBreadcrumb('goal-detail', goalId, g.title);
+
+  async function patchGoal(data) {
+    try { await api('PATCH', `/api/goals/${goalId}`, data); } catch(e) { return; }
+    renderGoalDetail(goalId);
+  }
+  const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const tags = g.tags || [];
+  const catName = allCategories ? (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name : null;
+  const allGoalDetailBuiltinDefs = [
+    { key: 'status',   label: 'Status',   icon: pIco('<circle cx="12" cy="12" r="10"/>'),
+      renderValue: () => statusBadge(g.status||'active') },
+    { key: 'type',     label: 'Type',     icon: pIco('<path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z"/>'),
+      renderValue: () => g.type ? `<span>${g.type}</span>` : '' },
+    { key: 'year',     label: 'Year',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+      renderValue: () => g.year ? `<span>${g.year}</span>` : '' },
+    { key: 'tags',     label: 'Tags',     icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
+      renderValue: () => tags.length ? tags.map(t => tagHtml(t)).join('') : '' },
+    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+    { key: 'due',      label: 'Due Date', icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
+      renderValue: () => g.due_date ? `<span>${fmtDate(g.due_date)}</span>` : '' },
+    { key: 'metrics',  label: 'Metrics',  icon: pIco('<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
+      renderValue: () => g.target != null ? `<span>${g.current_value ?? '—'}/${g.target}</span>` : '' },
+  ];
+  await loadEntityCustomProps('goal', goalId);
+  const goalDetailPropPanel = buildInlinePropPanel('goal', goalId, allGoalDetailBuiltinDefs);
+  const goalDetailEditFns = {
+    status:   (valEl) => { openValuePicker(valEl, GOAL_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchGoal({ status: val }); }); },
+    type:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_TYPES.map(t => ({ value: t, label: t }))], async (val) => { await patchGoal({ type: val||null }); }); },
+    year:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_YEARS.map(y => ({ value: y, label: y }))], async (val) => { await patchGoal({ year: val||null }); }); },
+    tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: ids }); renderGoalDetail(goalId); }); },
+    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchGoal({ category_id: val ? parseInt(val) : null }); }); },
+    due:      (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(g.due_date), async (val) => { await patchGoal({ due_date: val||null }); }); },
+    metrics:  (valEl) => {
+      valEl.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap">
+        <input type="number" placeholder="Start" value="${g.start_value??''}" id="gdm-sv" style="width:65px;font-size:12px;padding:2px 5px;border:1px solid var(--accent);border-radius:3px;background:var(--bg-card);color:var(--text)">
+        <input type="number" placeholder="Current" value="${g.current_value??''}" id="gdm-cv" style="width:65px;font-size:12px;padding:2px 5px;border:1px solid var(--accent);border-radius:3px;background:var(--bg-card);color:var(--text)">
+        <input type="number" placeholder="Target" value="${g.target??''}" id="gdm-t" style="width:65px;font-size:12px;padding:2px 5px;border:1px solid var(--accent);border-radius:3px;background:var(--bg-card);color:var(--text)">
+      </div>`;
+      document.getElementById('gdm-sv')?.focus();
+      const save = async () => {
+        const sv = parseFloat(document.getElementById('gdm-sv')?.value), cv = parseFloat(document.getElementById('gdm-cv')?.value), t = parseFloat(document.getElementById('gdm-t')?.value);
+        await patchGoal({ start_value: isNaN(sv)?null:sv, current_value: isNaN(cv)?null:cv, target: isNaN(t)?null:t });
+      };
+      ['gdm-sv','gdm-cv','gdm-t'].forEach(id => { document.getElementById(id)?.addEventListener('blur', () => setTimeout(save, 150)); document.getElementById(id)?.addEventListener('keydown', e => { if (e.key==='Enter') save(); }); });
+    },
+  };
 
   const projects = g.projects || [];
   const tasks = g.tasks || [];
@@ -8015,6 +8895,7 @@ async function renderGoalDetail(goalId) {
         </div>
       </div>
       <div class="flex gap-8">
+        <button class="btn btn-ghost btn-sm" id="gd-manage-btn">Widgets ⚙</button>
         <button class="btn btn-ghost" id="gd-export-btn">Export JSON</button>
         <button class="btn btn-ghost" id="gd-back-btn">← Back</button>
         <button class="btn btn-primary" id="gd-add-task-btn">+ Task</button>
@@ -8024,44 +8905,9 @@ async function renderGoalDetail(goalId) {
     </div>
     ${g.description ? `<div class="card" style="margin-bottom:16px"><p style="color:var(--text-muted)">${g.description}</p></div>` : ''}
     ${metricsHtml}
-    <div class="cc-grid" style="margin-bottom:16px">
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Projects (${projects.length})</span></div>
-        <div id="gd-proj-list">${projCards}</div>
-      </div>
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Direct Tasks (${tasks.length})</span></div>
-        <div id="gd-task-list">${taskRows}</div>
-      </div>
+    <div id="gd-widget-grid">
+      ${buildWidgetGrid('goal', goalId, { tasks, notes, resources, projects, propPanelHtml: goalDetailPropPanel, entityData: g })}
     </div>
-    <div class="cc-grid">
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Notes (${notes.length})</span></div>
-        <div id="gd-notes">${noteCards}</div>
-      </div>
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Resources (${resources.length})</span></div>
-        <div>${resources.map(r => `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
-          <span class="badge badge-todo">${r.resource_type || 'link'}</span>
-          <span style="flex:1">${r.title}</span>
-          ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" class="btn btn-sm btn-ghost">↗</a>` : ''}
-        </div>`).join('') || '<div class="empty-state" style="padding:20px"><div class="empty-state-text">No resources</div></div>'}</div>
-      </div>
-    </div>
-    <div class="widget" style="margin-top:16px">
-      <div class="widget-header">
-        <span class="widget-title">Custom Properties</span>
-      </div>
-      ${buildInlinePropPanel('goal', goalId, [])}
-    </div>
-    <div class="widget" style="margin-top:16px">
-      <div class="widget-header">
-        <span class="widget-title">Properties</span>
-        <button class="btn btn-sm btn-ghost" id="gd-add-prop-btn">+ Add</button>
-      </div>
-      <div id="gd-props-list"></div>
-    </div>
-    ${buildCommentSection('goal', goalId)}
   </div>`;
 
   document.getElementById('gd-back-btn').onclick = () => renderView('goals');
@@ -8070,6 +8916,7 @@ async function renderGoalDetail(goalId) {
   document.getElementById('gd-add-task-btn').onclick = () => showNewTaskModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
   document.getElementById('gd-add-note-btn').onclick = () => showNoteModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
   document.getElementById('gd-add-res-btn').onclick = () => showResourceModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
+  document.getElementById('gd-manage-btn').onclick = (e) => openWidgetManager('goal', e.currentTarget, () => renderGoalDetail(goalId));
   // ── Goal icon picker ──────────────────────────────────────────────────
   const goalIconBtn = document.getElementById('goal-icon-btn');
   const goalIconDisplay = document.getElementById('goal-icon-display');
@@ -8095,19 +8942,12 @@ async function renderGoalDetail(goalId) {
       });
     };
   }
-  document.querySelectorAll('#gd-proj-list .detail-nav').forEach(el => {
-    el.onclick = () => renderView('project-detail', el.dataset.projId);
-  });
-  document.querySelectorAll('.clickable-note').forEach(el => {
-    el.onclick = () => {
-      const n = notes.find(x => String(x.id) === el.dataset.noteId);
-      if (n) showNoteModal(n, () => renderGoalDetail(goalId));
-    };
-  });
+  const gdwg = document.getElementById('gd-widget-grid');
+  initWidgetGrid('goal', goalId, gdwg, () => renderGoalDetail(goalId));
   bindDetailTaskEvents(() => renderGoalDetail(goalId));
-  bindPropertiesWidget('goal', goalId, 'gd-props-list', 'gd-add-prop-btn');
-  bindInlinePropPanel('goal', goalId, {}, () => renderGoalDetail(goalId));
-  bindCommentSection(document.querySelector('.comment-section[data-entity-type="goal"]'));
+  bindInlinePropPanel('goal', goalId, goalDetailEditFns, () => renderGoalDetail(goalId));
+  gdwg.querySelectorAll('.detail-nav[data-proj-id]').forEach(el => el.onclick = () => renderView('project-detail', el.dataset.projId));
+  gdwg.querySelectorAll('.clickable-note').forEach(el => { el.onclick = () => { const n = notes.find(x => String(x.id) === el.dataset.noteId); if (n) showNoteModal(n, () => renderGoalDetail(goalId)); }; });
 }
 
 /* ─── Properties Widget ──────────────────────────────────────────────── */
@@ -8634,10 +9474,12 @@ async function showTaskSlideover(taskId) {
       renderValue: () => renderMultiRelationValue('task', taskId, 'project', projName) },
     { key: 'points',   label: 'Story Points', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
       renderValue: () => task.story_points != null && task.story_points > 0 ? `<span>${task.story_points}</span>` : '' },
-    { key: 'recur',    label: 'Recurring',    icon: pIco('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>'),
+    { key: 'recur',       label: 'Recurring',    icon: pIco('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/>'),
       renderValue: () => (task.recur_interval||0) > 0 ? `<span>Every ${task.recur_interval} ${task.recur_unit||'days'}</span>` : '' },
+    { key: 'description', label: 'Description',  icon: pIco('<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>'),
+      renderValue: () => task.description ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(task.description)}</span>` : '' },
   ];
-  const taskBodyDefs = allTaskBuiltinDefs.filter(d => taskSections.body.includes(d.key));
+  const taskBodyDefs = allTaskBuiltinDefs.filter(d => taskSections.body.includes(d.key) || d.key === 'description');
   await loadEntityCustomProps('task', taskId);
   const taskInlinePropPanel = buildInlinePropPanel('task', taskId, taskBodyDefs);
 
@@ -8678,10 +9520,6 @@ async function showTaskSlideover(taskId) {
 
     ${taskInlinePropPanel}
 
-    <div class="form-group">
-      <label class="form-label">Description</label>
-      <textarea id="detail-desc" style="width:100%;min-height:80px">${task.description || ''}</textarea>
-    </div>
     <div class="subtask-section">
       <div class="subtask-section-title">
         <span>Subtasks (${subtasks.length})</span>
@@ -8705,6 +9543,7 @@ async function showTaskSlideover(taskId) {
     </div>
     ${buildEntityViewsSection('task', taskId)}
     ${buildCommentSection('task', taskId)}
+    ${buildRichContentSection('task', taskId)}
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <button class="btn btn-ghost btn-sm" id="task-export-btn">Export JSON</button>
       <button class="btn btn-ghost btn-sm" style="color:var(--danger)" id="task-delete-btn">Delete</button>
@@ -8860,10 +9699,96 @@ async function showTaskSlideover(taskId) {
       const dismiss = e => { if (!popup.contains(e.target)) { popup.remove(); document.removeEventListener('mousedown', dismiss); } };
       setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
     },
+    description: (valEl) => {
+      const cur = task.description || '';
+      const ta = Object.assign(document.createElement('textarea'), { value: cur });
+      ta.style.cssText = 'width:100%;min-height:72px;border:1px solid var(--accent);border-radius:4px;padding:6px 8px;font-size:13px;background:var(--bg-card);color:var(--text-primary);resize:vertical;box-sizing:border-box';
+      valEl.innerHTML = '';
+      valEl.appendChild(ta);
+      ta.focus();
+      const save = async () => {
+        await patchTask({ description: ta.value });
+        task.description = ta.value;
+        valEl.innerHTML = ta.value ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(ta.value)}</span>` : '<span class="empty">—</span>';
+      };
+      ta.onblur = save;
+      ta.onkeydown = (ke) => { if (ke.key === 'Escape') { valEl.innerHTML = cur ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(cur)}</span>` : '<span class="empty">—</span>'; } };
+    },
   };
   bindInlinePropPanel('task', taskId, taskInlinePropEditFns, () => showTaskSlideover(taskId));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="task"]'));
   initEntityViewsSection('task', taskId, { ...task, _goalTitle: goalName, _projTitle: projName, _sprintTitle: sprintName });
+  initRichEditor(`editorjs-task-${taskId}`, 'task', taskId, false);
+  setFsPropsBuilder((fsPropsEl) => {
+    const rerender = () => { fsPropsEl.innerHTML = buildInlinePropPanel('task', taskId, taskBodyDefs); bindInlinePropPanel('task', taskId, taskInlinePropEditFns, rerender, fsPropsEl); };
+    fsPropsEl.innerHTML = buildInlinePropPanel('task', taskId, taskBodyDefs);
+    bindInlinePropPanel('task', taskId, taskInlinePropEditFns, rerender, fsPropsEl);
+  });
+  setFsChipsBuilder((container) => {
+    const byKey = (k) => container.querySelector(`[data-key="${k}"]`);
+    byKey('status')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openEditableValueCombo(e.currentTarget, TASK_STATUSES, 'taskStatuses', task.status, async (value) => {
+        const chip = e.currentTarget;
+        chip.className = `prop-chip chip-status-${value}`;
+        chip.querySelector('.chip-value').textContent = value.replace(/_/g,' ');
+        applyChipValueColor(chip, 'taskStatuses', value);
+        await handleStatusChange(value);
+      });
+    });
+    byKey('priority')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openEditableValueCombo(e.currentTarget, TASK_PRIORITIES, 'taskPriorities', task.priority, async (value) => {
+        const chip = e.currentTarget;
+        chip.className = `prop-chip chip-priority-${value}`;
+        chip.querySelector('.chip-value').textContent = value.replace(/_/g,' ');
+        applyChipValueColor(chip, 'taskPriorities', value);
+        await patchTask({ priority: value });
+      });
+    });
+    byKey('due')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openDateRangePickerGlobal(e.currentTarget, stripDate(task.start_date), stripDate(task.due_date), async (start, end) => {
+        const v = e.currentTarget.querySelector('.chip-value');
+        if (v) v.textContent = fmtDateRange(start, end) || '—';
+        await patchTask({ start_date: start || null, due_date: end || start || null });
+      });
+    });
+    byKey('focus')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openDateRangePickerGlobal(e.currentTarget, stripDate(task.focus_block_start), stripDate(task.focus_block), async (start, end) => {
+        const v = e.currentTarget.querySelector('.chip-value');
+        if (v) v.textContent = fmtDateRange(start, end) || '—';
+        e.currentTarget.classList.toggle('chip-empty', !end && !start);
+        await patchTask({ focus_block_start: start || null, focus_block: end || start || null });
+      });
+    });
+    byKey('tags')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const curIds = tags.map(t => t.id);
+      openCombo(e.currentTarget, allTags.map(t => ({ value: t.id, label: t.name, color: t.color })), null, async ({ multiIds, create }) => {
+        if (create) {
+          try { const newTag = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(newTag); await api('PUT', `/api/tasks/${taskId}/tags`, { tag_ids: [...new Set([...curIds, newTag.id])] }); } catch(err) {}
+          closeCombo(); showTaskSlideover(taskId); return;
+        }
+        const ids = (multiIds || []).map(Number);
+        const v = e.currentTarget.querySelector('.chip-value');
+        if (v) { const sel = allTags.filter(t => ids.includes(t.id)); v.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'; }
+        await api('PUT', `/api/tasks/${taskId}/tags`, { tag_ids: ids });
+      }, { multiSelect: true, allowCreate: true, selectedIds: curIds });
+    });
+    taskExtraHeadKeys.forEach(k => {
+      const el = container.querySelector(`[data-key="${k}"]`);
+      if (!el) return;
+      const fn = taskInlinePropEditFns[k];
+      if (fn) el.addEventListener('click', (ev) => { ev.stopPropagation(); fn(el.querySelector('.chip-value')); });
+    });
+    container.querySelector('.prop-chips-more')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openPropSectionManager(e.currentTarget, 'task', () => showTaskSlideover(taskId));
+    });
+  });
+  setSlideoverExpand(() => openEntityFullscreen('task', taskId, task.title, (t) => patchTask({ title: t })));
   // Persists to localStorage under `storageKey`.
   function openEditableValueCombo(anchorEl, valuesArray, storageKey, currentVal, onSelect) {
     closeCombo();
@@ -9159,9 +10084,6 @@ async function showTaskSlideover(taskId) {
     e.stopPropagation();
     openPropSectionManager(e.currentTarget, 'task', () => showTaskSlideover(taskId));
   };
-
-  // ── Other existing bindings ──────────────────────────────────────────
-  document.getElementById('detail-desc').onblur = (e) => patchTask({ description: e.target.value });
 
   document.getElementById('add-subtask-btn').onclick = () => {
     showNewTaskModal({ parent_task_id: parseInt(taskId), status: 'todo', priority: 'medium',
@@ -10909,6 +11831,7 @@ async function showProjectSlideover(project, goals, afterSave) {
   bindInlinePropPanel('project', projectId, projInlinePropEditFns, () => showProjectSlideover({ id: projectId }, goals, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
   initEntityViewsSection('project', projectId, p);
+  setSlideoverExpand(() => { closeSlideover(); renderView('project-detail', projectId); });
 
   // Task rows click → task sideview
   document.querySelectorAll('#proj-task-list [data-task-id]').forEach(el => {
@@ -11118,6 +12041,7 @@ async function showGoalSlideover(goal, afterSave) {
   bindInlinePropPanel('goal', goalId, goalInlinePropEditFns, () => showGoalSlideover({ id: goalId }, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="goal"]'));
   initEntityViewsSection('goal', goalId, g);
+  setSlideoverExpand(() => { closeSlideover(); renderView('goal-detail', goalId); });
 
   // Project cards nav
   document.querySelectorAll('#goal-proj-list [data-proj-id]').forEach(el => {
@@ -11365,6 +12289,7 @@ async function showNoteSlideover(noteId, afterSave) {
     ${buildEntityViewsSection('note', noteId)}
 
     ${buildCommentSection('note', noteId)}
+    ${buildRichContentSection('note', noteId)}
 
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <button class="btn btn-ghost btn-sm" id="note-export-btn">Export JSON</button>
@@ -11458,6 +12383,13 @@ async function showNoteSlideover(noteId, afterSave) {
   bindInlinePropPanel('note', noteId, noteInlinePropEditFns, () => showNoteSlideover(noteId, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="note"]'));
   initEntityViewsSection('note', noteId, n);
+  initRichEditor(`editorjs-note-${noteId}`, 'note', noteId, false);
+  setFsPropsBuilder((fsPropsEl) => {
+    const rerender = () => { fsPropsEl.innerHTML = buildInlinePropPanel('note', noteId, noteBodyDefs); bindInlinePropPanel('note', noteId, noteInlinePropEditFns, rerender, fsPropsEl); };
+    fsPropsEl.innerHTML = buildInlinePropPanel('note', noteId, noteBodyDefs);
+    bindInlinePropPanel('note', noteId, noteInlinePropEditFns, rerender, fsPropsEl);
+  });
+  setSlideoverExpand(() => openEntityFullscreen('note', noteId, n.title, (t) => patchNote({ title: t })));
 
   document.getElementById('note-export-btn').onclick = () => showJSONModal(`/api/export/note/${noteId}`, `note-${noteId}.json`);
   document.getElementById('note-delete-btn').onclick = () => deleteEntity('note', noteId);
@@ -11551,6 +12483,7 @@ async function showSprintSlideover(sprintId, afterSave) {
     </div>
 
     ${buildCommentSection('sprint', sprintId)}
+    ${buildRichContentSection('sprint', sprintId)}
 
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <button class="btn btn-ghost btn-sm" id="sprint-export-btn">Export JSON</button>
@@ -11642,6 +12575,13 @@ async function showSprintSlideover(sprintId, afterSave) {
   // Inline prop panel
   bindInlinePropPanel('sprint', sprintId, sprintInlinePropEditFns, () => showSprintSlideover(sprintId, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="sprint"]'));
+  initRichEditor(`editorjs-sprint-${sprintId}`, 'sprint', sprintId, false);
+  setFsPropsBuilder((fsPropsEl) => {
+    const rerender = () => { fsPropsEl.innerHTML = buildInlinePropPanel('sprint', sprintId, sprintBodyDefs); bindInlinePropPanel('sprint', sprintId, sprintInlinePropEditFns, rerender, fsPropsEl); };
+    fsPropsEl.innerHTML = buildInlinePropPanel('sprint', sprintId, sprintBodyDefs);
+    bindInlinePropPanel('sprint', sprintId, sprintInlinePropEditFns, rerender, fsPropsEl);
+  });
+  setSlideoverExpand(() => openEntityFullscreen('sprint', sprintId, s.title, (t) => patchSprint({ title: t })));
 
   // Task rows
   document.querySelectorAll('#sprint-task-list [data-task-id]').forEach(el => {
@@ -11812,6 +12752,7 @@ async function showResourceSlideover(resource, afterSave) {
     ${buildEntityViewsSection('resource', resId)}
 
     ${buildCommentSection('resource', resId)}
+    ${buildRichContentSection('resource', resId)}
 
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <button class="btn btn-ghost btn-sm" id="res-export-btn">Export JSON</button>
@@ -11902,6 +12843,13 @@ async function showResourceSlideover(resource, afterSave) {
   bindInlinePropPanel('resource', resId, resInlinePropEditFns, () => showResourceSlideover({ id: resId }, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="resource"]'));
   initEntityViewsSection('resource', resId, r);
+  initRichEditor(`editorjs-resource-${resId}`, 'resource', resId, false);
+  setFsPropsBuilder((fsPropsEl) => {
+    const rerender = () => { fsPropsEl.innerHTML = buildInlinePropPanel('resource', resId, resBodyDefs); bindInlinePropPanel('resource', resId, resInlinePropEditFns, rerender, fsPropsEl); };
+    fsPropsEl.innerHTML = buildInlinePropPanel('resource', resId, resBodyDefs);
+    bindInlinePropPanel('resource', resId, resInlinePropEditFns, rerender, fsPropsEl);
+  });
+  setSlideoverExpand(() => openEntityFullscreen('resource', resId, r.title, (t) => patchResource({ title: t })));
 
   // File upload
   const fileInput = document.getElementById('rs-file-input');
@@ -12021,11 +12969,15 @@ function showCategoryModal(cat) {
       color: document.getElementById('c-color').value,
     };
     if (!data.name) { showToast('Name is required', 'error'); return; }
-    if (v.id) await api('PATCH', `/api/categories/${v.id}`, data);
-    else await api('POST', '/api/categories', data);
-    closeModal();
-    try { allCategories = await api('GET', '/api/categories'); } catch(e) {}
-    renderCategories();
+    try {
+      if (v.id) await api('PATCH', `/api/categories/${v.id}`, data);
+      else await api('POST', '/api/categories', data);
+      closeModal();
+      try { allCategories = await api('GET', '/api/categories'); } catch(e) {}
+      await renderCategories();
+    } catch(e) {
+      showToast('Failed to save category: ' + (e.message || e), 'error');
+    }
   };
   if (v.id) {
     document.getElementById('modal-delete-btn').onclick = async () => {
@@ -12059,11 +13011,15 @@ function showTagModal(tag) {
       color: document.getElementById('tg-color').value,
     };
     if (!data.name) { showToast('Name is required', 'error'); return; }
-    if (v.id) await api('PATCH', `/api/tags/${v.id}`, data);
-    else await api('POST', '/api/tags', data);
-    closeModal();
-    try { allTags = await api('GET', '/api/tags'); } catch(e) {}
-    renderTags();
+    try {
+      if (v.id) await api('PATCH', `/api/tags/${v.id}`, data);
+      else await api('POST', '/api/tags', data);
+      closeModal();
+      try { allTags = await api('GET', '/api/tags'); } catch(e) {}
+      await renderTags();
+    } catch(e) {
+      showToast('Failed to save tag: ' + (e.message || e), 'error');
+    }
   };
   if (v.id) {
     document.getElementById('modal-delete-btn').onclick = async () => {
@@ -13680,6 +14636,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Slideover close
   document.getElementById('slideover-close').onclick = closeSlideover;
 
+  // Slideover expand
+  document.getElementById('slideover-expand').onclick = () => {
+    if (_currentSlideoverExpand) _currentSlideoverExpand();
+  };
+
   // Form slideover close
   document.getElementById('form-slideover-close').onclick = closeFormSlideover;
 
@@ -13738,6 +14699,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Load custom entity types and render nav
   await loadCustomEntityTypes();
+  renderTaxonomyNav();
 
   // Fetch latest GitHub commit SHA for version button
   try {

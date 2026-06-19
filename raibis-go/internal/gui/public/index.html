@@ -147,6 +147,13 @@
             <span>Tags</span>
           </a>
 
+          <div id="taxonomy-custom-nav"></div>
+
+          <a class="nav-item" onclick="showNewTaxonomyModal()" href="#" style="color:var(--text-muted)">
+            <span class="nav-icon" style="font-size:16px">＋</span>
+            <span>Add taxonomy</span>
+          </a>
+
         </nav>
 
         <div class="sidebar-footer">
@@ -176,6 +183,7 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           JSON
         </button>
+        <button class="slideover-expand-btn" id="slideover-expand" title="Expand to full page"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg></button>
         <button class="modal-close" id="slideover-close">&times;</button>
       </div>
     </div>
@@ -240,6 +248,48 @@
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a10 10 0 110 20A10 10 0 0112 2z"/><path d="M12 8v4l3 3"/></svg>
     </button>
   </div>
+
+  <!-- Entity full-screen overlay -->
+  <div class="entity-fullscreen" id="entity-fullscreen" style="display:none">
+    <div class="entity-fullscreen-inner">
+      <div class="entity-fs-topbar">
+        <button class="btn btn-ghost btn-sm" id="fs-close-btn">&#8592; Back to panel</button>
+        <div class="flex-1"></div>
+        <button class="btn btn-ghost btn-sm" id="fs-export-btn" style="display:none">Export JSON</button>
+      </div>
+      <div class="entity-fs-content" id="fs-content">
+        <div id="fs-icon-row" style="min-height:28px;margin-bottom:4px"></div>
+        <h1 class="entity-fs-title" id="fs-title" contenteditable="true" spellcheck="false"></h1>
+        <div class="entity-fs-meta" id="fs-meta"></div>
+        <div id="fs-prop-chips-row" class="prop-chips" style="margin-bottom:16px"></div>
+        <div class="entity-fs-section-header">PROPERTIES</div>
+        <div class="entity-fs-props" id="fs-props"></div>
+        <div class="entity-fs-editor-wrap">
+          <div class="rich-section-label">Content</div>
+          <div id="editorjs-fullscreen" class="rich-editor-host"></div>
+        </div>
+        <div id="fs-comments"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SortableJS for widget drag-and-drop -->
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+
+  <!-- EditorJS CDN scripts -->
+  <script src="https://cdn.jsdelivr.net/npm/@editorjs/editorjs@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@editorjs/header@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@editorjs/simple-image@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@editorjs/list@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@editorjs/checklist@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@editorjs/quote@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@editorjs/code@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@editorjs/delimiter@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@editorjs/raw@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@editorjs/warning@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@editorjs/marker@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@editorjs/inline-code@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@editorjs/table@latest"></script>
 
   <!-- GSAP animations utility (loads after GSAP CDN via defer ordering) -->
   <script src="animations.js?v=4.0.0"></script>
