@@ -14,6 +14,7 @@ type Note struct {
 	ProjectID    *int64    `json:"project_id,omitempty"`
 	CategoryID   *int64    `json:"category_id,omitempty"`
 	CategoryName string    `json:"category_name,omitempty"`
+	ContentJSON  string    `json:"content_json,omitempty"`
 	Archived     bool      `json:"archived"`
 	NoteDate     *string   `json:"note_date,omitempty"`
 	Tags         []Tag     `json:"tags,omitempty"`

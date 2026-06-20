@@ -7896,6 +7896,7 @@ async function renderHabits() {
   }
 
   const habitFilterState = { filters: {}, sort: {}, searchText: '' };
+  const todayStr = new Date().toISOString().slice(0, 10);
 
   // ── Helpers ──────────────────────────────────────────────────────────
   const HABIT_TYPE_COLORS = {
@@ -7904,6 +7905,9 @@ async function renderHabits() {
     meditation:  { bg: 'var(--tag-purple-bg)', text: 'var(--tag-purple-text)' },
     general:     { bg: 'var(--tag-gray-bg)',   text: 'var(--color-text-secondary)' },
   };
+  const HABIT_PALETTE = ['#378ADD','#6dcc8a','#a78bfa','#fb923c','#f472b6','#22d3ee','#d4a84b','#e07070'];
+  const habitColors = {};
+  habits.forEach((h, i) => { habitColors[h.id] = HABIT_PALETTE[i % HABIT_PALETTE.length]; });
 
   function habitTypeBadge(type) {
     const t = (type || 'general').toLowerCase();
@@ -7916,6 +7920,16 @@ async function renderHabits() {
     return `<span style="font-size:11px;color:var(--accent);font-family:var(--font-mono)">${h.reference_id}</span>`;
   }
 
+  function streakBadge(h) {
+    if (!h.streak) return '';
+    return `<span class="habit-streak-badge" title="${h.streak}-day streak">🔥 ${h.streak}</span>`;
+  }
+
+  function checkinBtn(h) {
+    const done = !!h.done_today;
+    return `<button class="btn btn-sm habit-checkin-btn${done ? ' habit-checkin-done' : ''}" data-habit-id="${h.id}" data-done="${done}" title="${done ? 'Undo today\'s check-in' : 'Check in for today'}">${done ? '✓ Done' : '+ Today'}</button>`;
+  }
+
   // ── Table view ───────────────────────────────────────────────────────
   function buildTableView(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">○</div><div class="empty-state-text">No habits yet — add one to get started</div></div>`;
@@ -7923,14 +7937,15 @@ async function renderHabits() {
       <td style="font-weight:500">${h.title}</td>
       <td>${habitTypeBadge(h.type)}</td>
       <td>${refLink(h)}</td>
-      <td style="font-size:11px;color:var(--text-muted)">${fmtDate(h.created_at) || '—'}</td>
+      <td style="font-size:12px;color:var(--text-muted)">${streakBadge(h)}</td>
       <td onclick="event.stopPropagation()" style="white-space:nowrap">
+        ${checkinBtn(h)}
         <button class="btn btn-sm btn-ghost habit-edit-btn" data-habit-id="${h.id}">Edit</button>
         <button class="btn btn-sm btn-danger habit-del-btn" data-habit-id="${h.id}">Del</button>
       </td>
     </tr>`).join('');
     return `<div class="notion-table-wrap"><table class="notion-table">
-      <thead><tr><th>Title</th><th>Type</th><th>Reference</th><th>Created</th><th></th></tr></thead>
+      <thead><tr><th>Title</th><th>Type</th><th>Reference</th><th>Streak</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
   }
@@ -7938,104 +7953,112 @@ async function renderHabits() {
   // ── Cards view ───────────────────────────────────────────────────────
   function buildCardsView(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">○</div><div class="empty-state-text">No habits yet — add one to get started</div></div>`;
-    return list.map(h => `<div class="card" style="cursor:default">
+    return `<div class="cc-grid">${list.map(h => `<div class="card habit-card" style="cursor:default">
       <div class="flex-between gap-8" style="margin-bottom:6px">
         <span class="card-title">${h.title}</span>
         <div class="flex gap-8" onclick="event.stopPropagation()">
           <button class="btn btn-sm btn-ghost habit-edit-btn" data-habit-id="${h.id}">Edit</button>
-          <button class="btn btn-sm btn-danger habit-del-btn" data-habit-id="${h.id}">Delete</button>
+          <button class="btn btn-sm btn-danger habit-del-btn" data-habit-id="${h.id}">Del</button>
         </div>
       </div>
-      <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:6px">
+      <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
         ${habitTypeBadge(h.type)}
         ${h.reference_id ? `<span class="badge" style="background:var(--tag-cyan-bg,#e0f7fa);color:var(--tag-cyan-text,#00838f);font-family:var(--font-mono)">ref: ${h.reference_id}</span>` : ''}
+        ${streakBadge(h)}
       </div>
-      <div style="font-size:11px;color:var(--text-muted)">Added ${fmtDate(h.created_at) || '—'}</div>
-    </div>`).join('');
+      <div class="flex-between" style="align-items:center">
+        <span style="font-size:11px;color:var(--text-muted)">Since ${fmtDate(h.created_at) || '—'}</span>
+        <span onclick="event.stopPropagation()">${checkinBtn(h)}</span>
+      </div>
+    </div>`).join('')}</div>`;
   }
 
-  // ── Calendar view ────────────────────────────────────────────────────
-  // Shows one month grid; marks the habit's creation week and today so
-  // the user can see "active since" at a glance. Each habit gets a
-  // colour-coded bar spanning from its created_at date to today.
-  function buildCalendarView(list) {
-    const now   = new Date();
-    const year  = now.getFullYear();
-    const month = now.getMonth(); // 0-based
+  // ── Calendar heatmap view ─────────────────────────────────────────────
+  // Shows 12 weeks of completion data per habit as GitHub-style squares.
+  async function buildCalendarView(list) {
+    if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">○</div><div class="empty-state-text">No habits yet — add one to get started</div></div>`;
 
-    const firstDay = new Date(year, month, 1);
-    const lastDay  = new Date(year, month + 1, 0);
-    const startOffset = firstDay.getDay(); // 0=Sun
+    // Fetch completions for all habits (last 12 weeks = 84 days)
+    const fromDate = (() => {
+      const d = new Date(); d.setDate(d.getDate() - 83); return d.toISOString().slice(0, 10);
+    })();
 
-    const monthName = firstDay.toLocaleString('default', { month: 'long', year: 'numeric' });
-    const todayStr  = now.toISOString().slice(0, 10);
+    const completionSets = await Promise.all(list.map(async h => {
+      try {
+        const dates = await api('GET', `/api/habits/${h.id}/completions?from=${fromDate}&to=${todayStr}`);
+        return new Set(dates);
+      } catch(_) { return new Set(); }
+    }));
 
-    // Assign a colour to each habit
-    const HABIT_PALETTE = ['#378ADD','#6dcc8a','#a78bfa','#fb923c','#f472b6','#22d3ee','#d4a84b','#e07070'];
-    const habitColors = {};
-    list.forEach((h, i) => { habitColors[h.id] = HABIT_PALETTE[i % HABIT_PALETTE.length]; });
+    // Build date array for last 84 days, starting from the most recent Sunday
+    const today = new Date();
+    const dayOfWeek = today.getDay(); // 0=Sun
+    const gridEnd = new Date(today);
+    const gridStart = new Date(gridEnd);
+    gridStart.setDate(gridStart.getDate() - 83 - dayOfWeek);
 
-    // Build 7-column week grid
-    const totalCells = startOffset + lastDay.getDate();
-    const rows = Math.ceil(totalCells / 7);
-
-    let calRows = '';
-    for (let row = 0; row < rows; row++) {
-      let cells = '';
-      for (let col = 0; col < 7; col++) {
-        const cellIndex = row * 7 + col;
-        const dayNum    = cellIndex - startOffset + 1;
-        if (dayNum < 1 || dayNum > lastDay.getDate()) {
-          cells += `<div class="calendar-day" style="background:var(--bg);opacity:.35"></div>`;
-          continue;
-        }
-        const dateStr = `${year}-${String(month + 1).padStart(2,'0')}-${String(dayNum).padStart(2,'0')}`;
-        const isToday = dateStr === todayStr;
-
-        // Which habits are "active" on this day?
-        const activeHabits = list.filter(h => {
-          const created = h.created_at ? h.created_at.slice(0, 10) : null;
-          return created && created <= dateStr && dateStr <= todayStr;
-        });
-
-        const chips = activeHabits.map(h =>
-          `<div class="cal-task-chip" style="border-left:2px solid ${habitColors[h.id]};background:var(--bg-card);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${h.title}">${h.title}</div>`
-        ).join('');
-
-        cells += `<div class="calendar-day${isToday ? ' today' : ''}">
-          <div class="cal-day-num-cell${isToday ? ' today' : ''}">${dayNum}</div>
-          ${chips}
-        </div>`;
-      }
-      calRows += `<div style="display:grid;grid-template-columns:repeat(7,1fr);border-bottom:1px solid var(--border)">${cells}</div>`;
+    const allDates = [];
+    for (let d = new Date(gridStart); d <= gridEnd; d.setDate(d.getDate() + 1)) {
+      allDates.push(d.toISOString().slice(0, 10));
     }
 
-    const dayLabels = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    const header = dayLabels.map(d =>
-      `<div style="padding:6px 8px;font-size:11px;font-weight:600;color:var(--text-muted);text-align:center;border-right:1px solid var(--border)">${d}</div>`
-    ).join('');
+    const weekLabels = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const monthPositions = {};
+    allDates.forEach((date, i) => {
+      const col = Math.floor(i / 7);
+      const m = date.slice(0, 7);
+      if (!monthPositions[m]) monthPositions[m] = col;
+    });
 
-    // Legend
-    const legend = list.length ? `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:16px;font-size:12px">
-      ${list.map(h => `<span style="display:flex;align-items:center;gap:4px">
-        <span style="width:10px;height:10px;border-radius:50%;background:${habitColors[h.id]};flex-shrink:0"></span>
-        ${h.title}
-      </span>`).join('')}
-    </div>` : '';
+    const totalCols = Math.ceil(allDates.length / 7);
 
-    return `<div>
-      <div style="text-align:center;font-weight:600;font-size:15px;margin-bottom:12px;color:var(--text)">${monthName}</div>
-      <div class="calendar-month-wrap">
-        <div style="display:grid;grid-template-columns:repeat(7,1fr);background:var(--bg-card);border-bottom:1px solid var(--border)">${header}</div>
-        ${calRows}
-      </div>
-      ${legend}
-    </div>`;
+    function habitHeatmap(h, cSet) {
+      const items = [];
+
+      // Month labels (grid-row:1, grid-column: weekIndex+2)
+      Object.entries(monthPositions).forEach(([ym, weekCol]) => {
+        const [y, m] = ym.split('-');
+        const label = new Date(+y, +m - 1, 1).toLocaleString('default', { month: 'short' });
+        items.push(`<div style="grid-column:${weekCol+2};grid-row:1;font-size:10px;color:var(--text-muted);white-space:nowrap">${label}</div>`);
+      });
+
+      // Day-of-week labels (grid-column:1, grid-row:2-8) — only odd rows to avoid crowding
+      weekLabels.forEach((lbl, ri) => {
+        if ([1,3,5].includes(ri)) {
+          items.push(`<div style="grid-column:1;grid-row:${ri+2};font-size:9px;color:var(--text-muted);text-align:right;padding-right:4px;line-height:14px">${lbl}</div>`);
+        }
+      });
+
+      // Cells: each date maps to (weekIndex+2, dayOfWeek+2)
+      allDates.forEach((date, i) => {
+        const weekCol = Math.floor(i / 7) + 2;
+        const dayRow  = (i % 7) + 2;
+        const done    = cSet.has(date);
+        const isToday = date === todayStr;
+        const color   = done ? habitColors[h.id] : 'var(--color-border)';
+        const opacity = done ? '1' : '0.35';
+        items.push(`<div class="habit-heat-cell${isToday ? ' today' : ''}" data-date="${date}" data-habit-id="${h.id}" data-done="${done}" style="grid-column:${weekCol};grid-row:${dayRow};background:${color};opacity:${opacity}" title="${date}${done ? ' ✓' : ''}"></div>`);
+      });
+
+      return `<div class="habit-heatmap-row">
+        <div class="habit-heatmap-title">
+          <span style="font-weight:600">${_esc(h.title)}</span>
+          ${streakBadge(h)}
+          <span onclick="event.stopPropagation()">${checkinBtn(h)}</span>
+        </div>
+        <div class="habit-heatmap-grid" style="grid-template-columns:26px repeat(${totalCols},14px);grid-template-rows:16px repeat(7,14px)">
+          ${items.join('')}
+        </div>
+      </div>`;
+    }
+
+    const rows = list.map((h, i) => habitHeatmap(h, completionSets[i]));
+    return `<div class="habit-heatmap-wrap">${rows.join('')}</div>`;
   }
 
   // ── Shell ────────────────────────────────────────────────────────────
   const toggle = viewToggleHtml(
-    [{key:'table',label:'Table'},{key:'cards',label:'Cards'},{key:'calendar',label:'Calendar'}],
+    [{key:'table',label:'Table'},{key:'cards',label:'Cards'},{key:'calendar',label:'Heatmap'}],
     habitsViewMode
   );
 
@@ -8060,6 +8083,7 @@ async function renderHabits() {
   const habitSortDefs = [
     { key: 'title',      label: 'Title'   },
     { key: 'type',       label: 'Type'    },
+    { key: 'streak',     label: 'Streak'  },
     { key: 'created_at', label: 'Created' },
   ];
 
@@ -8078,18 +8102,19 @@ async function renderHabits() {
     return applySortFilter(habits, habitFilterState, {
       type:       h => h.type || 'general',
       title:      h => h.title,
+      streak:     h => h.streak || 0,
       created_at: h => h.created_at || '',
       _text:      h => h.title + ' ' + (h.reference_id || '') + ' ' + (h.type || ''),
     });
   }
 
-  function render() {
+  async function render() {
     const list = getFiltered();
     const el   = document.getElementById('habit-list');
     if (!el) return;
-    if (habitsViewMode === 'table')    el.innerHTML = buildTableView(list);
-    else if (habitsViewMode === 'cards')   el.innerHTML = buildCardsView(list);
-    else if (habitsViewMode === 'calendar') el.innerHTML = buildCalendarView(list);
+    if (habitsViewMode === 'table')         el.innerHTML = buildTableView(list);
+    else if (habitsViewMode === 'cards')    el.innerHTML = buildCardsView(list);
+    else if (habitsViewMode === 'calendar') el.innerHTML = await buildCalendarView(list);
     bindHabitEvents();
   }
 
@@ -8098,13 +8123,42 @@ async function renderHabits() {
   bindViewToggle([], null, (mode) => {
     habitsViewMode = mode;
     localStorage.setItem('habitsViewMode', mode);
-    // Calendar doesn't use filter bar — re-render whole view to add/remove it cleanly
     renderHabits();
   });
 
   render();
 
   function bindHabitEvents() {
+    document.querySelectorAll('.habit-checkin-btn').forEach(btn => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const id   = btn.dataset.habitId;
+        const done = btn.dataset.done === 'true';
+        btn.disabled = true;
+        try {
+          const res = await api('POST', `/api/habits/${id}/checkin`, { done: !done });
+          // Update in-memory habit
+          const h = habits.find(x => String(x.id) === id);
+          if (h) { h.done_today = res.done_today; h.streak = res.streak; }
+          render();
+        } catch(_) { btn.disabled = false; }
+      };
+    });
+    document.querySelectorAll('.habit-heat-cell').forEach(cell => {
+      cell.onclick = async (e) => {
+        e.stopPropagation();
+        const id   = cell.dataset.habitId;
+        const date = cell.dataset.date;
+        const done = cell.dataset.done === 'true';
+        cell.style.opacity = '0.5';
+        try {
+          const res = await api('POST', `/api/habits/${id}/checkin`, { date, done: !done });
+          const h = habits.find(x => String(x.id) === id);
+          if (h) { h.done_today = res.done_today; h.streak = res.streak; }
+          renderHabits();
+        } catch(_) { cell.style.opacity = done ? '1' : '0.35'; }
+      };
+    });
     document.querySelectorAll('.habit-edit-btn').forEach(btn => {
       btn.onclick = (e) => {
         e.stopPropagation();

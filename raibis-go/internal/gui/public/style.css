@@ -5290,3 +5290,62 @@ body.fullscreen-open .fab-group { right: var(--space-6) !important; bottom: var(
   margin-bottom: 8px;
   line-height: 1.5;
 }
+
+/* ── Habit tracking ─────────────────────────────────────────────────── */
+.habit-streak-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #d97706;
+  background: #fef3c7;
+  border-radius: 10px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+.dark .habit-streak-badge { background: #451a03; color: #fbbf24; }
+
+.habit-checkin-btn {
+  font-size: 12px;
+  font-weight: 500;
+  border: 1.5px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-radius: var(--radius-sm);
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.habit-checkin-btn:hover { border-color: var(--color-accent); color: var(--color-accent); }
+.habit-checkin-done {
+  background: #d1fae5 !important;
+  border-color: #10b981 !important;
+  color: #065f46 !important;
+}
+.dark .habit-checkin-done { background: #064e3b !important; color: #6ee7b7 !important; }
+
+/* Heatmap layout */
+.habit-heatmap-wrap { display: flex; flex-direction: column; gap: 24px; }
+.habit-heatmap-row {}
+.habit-heatmap-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.habit-heatmap-grid {
+  display: grid;
+  gap: 2px;
+  width: fit-content;
+}
+.habit-heat-cell {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: opacity 0.1s, transform 0.1s;
+}
+.habit-heat-cell:hover { transform: scale(1.25); opacity: 1 !important; }
+.habit-heat-cell.today { outline: 2px solid var(--color-accent); outline-offset: 1px; }

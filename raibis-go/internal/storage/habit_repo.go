@@ -7,6 +7,100 @@ import (
 	"github.com/raibis/raibis-go/internal/domain"
 )
 
+// ── Habit completions ──────────────────────────────────────────────────────────
+
+func (s *sqliteStorage) LogHabitCompletion(habitID int64, date string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO habit_completions (habit_id, date) VALUES (?, ?)`,
+		habitID, date,
+	)
+	return err
+}
+
+func (s *sqliteStorage) RemoveHabitCompletion(habitID int64, date string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`DELETE FROM habit_completions WHERE habit_id = ? AND date = ?`,
+		habitID, date,
+	)
+	return err
+}
+
+func (s *sqliteStorage) ListHabitCompletions(habitID int64, from, to string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT date FROM habit_completions WHERE habit_id = ? AND date >= ? AND date <= ? ORDER BY date DESC`,
+		habitID, from, to,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var dates []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		dates = append(dates, d)
+	}
+	if dates == nil {
+		dates = []string{}
+	}
+	return dates, rows.Err()
+}
+
+func (s *sqliteStorage) GetHabitStreak(habitID int64) (streak int, doneToday bool, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	today := time.Now().UTC().Format("2006-01-02")
+
+	rows, qErr := s.db.Query(
+		`SELECT date FROM habit_completions WHERE habit_id = ? ORDER BY date DESC`,
+		habitID,
+	)
+	if qErr != nil {
+		return 0, false, qErr
+	}
+	defer rows.Close()
+
+	var dates []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return 0, false, err
+		}
+		dates = append(dates, d)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false, err
+	}
+
+	dateSet := make(map[string]bool, len(dates))
+	for _, d := range dates {
+		dateSet[d] = true
+	}
+
+	doneToday = dateSet[today]
+
+	// Count consecutive days backwards from today
+	cursor := time.Now().UTC()
+	for {
+		ds := cursor.Format("2006-01-02")
+		if !dateSet[ds] {
+			break
+		}
+		streak++
+		cursor = cursor.AddDate(0, 0, -1)
+	}
+	return streak, doneToday, nil
+}
+
 // ── SQLite implementation for Habits ─────────────────────────────────────────
 
 // CreateHabit inserts a new Habit and returns its generated ID.

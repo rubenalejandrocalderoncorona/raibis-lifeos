@@ -93,3 +93,39 @@ func (s *HabitService) Update(h *domain.Habit) (*domain.Habit, error) {
 func (s *HabitService) Delete(id int64) error {
 	return s.store.DeleteHabit(id)
 }
+
+// LogCompletion records a habit completion for the given date (YYYY-MM-DD).
+func (s *HabitService) LogCompletion(habitID int64, date string) error {
+	return s.store.LogHabitCompletion(habitID, date)
+}
+
+// RemoveCompletion removes a habit completion for the given date.
+func (s *HabitService) RemoveCompletion(habitID int64, date string) error {
+	return s.store.RemoveHabitCompletion(habitID, date)
+}
+
+// GetCompletions returns completion dates for a habit in [from, to].
+func (s *HabitService) GetCompletions(habitID int64, from, to string) ([]string, error) {
+	return s.store.ListHabitCompletions(habitID, from, to)
+}
+
+// GetStreak returns the current streak and whether today is done for a habit.
+func (s *HabitService) GetStreak(habitID int64) (streak int, doneToday bool, err error) {
+	return s.store.GetHabitStreak(habitID)
+}
+
+// ListWithStats returns all habits annotated with streak and done_today.
+func (s *HabitService) ListWithStats() ([]*domain.Habit, error) {
+	habits, err := s.store.ListHabits()
+	if err != nil {
+		return nil, err
+	}
+	for _, h := range habits {
+		streak, doneToday, err := s.store.GetHabitStreak(h.ID)
+		if err == nil {
+			h.Streak = streak
+			h.DoneToday = doneToday
+		}
+	}
+	return habits, nil
+}

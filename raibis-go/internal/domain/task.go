@@ -28,6 +28,7 @@ type Task struct {
 	PomodorosPlanned   *int       `json:"pomodoros_planned,omitempty"`
 	PomodorosFinished  *int       `json:"pomodoros_finished,omitempty"`
 	Pomodoro           bool       `json:"pomodoro"`
+	ContentJSON        string     `json:"content_json,omitempty"`
 	// Computed / joined fields (not stored in tasks table)
 	SubTasks           []*Task    `json:"sub_tasks,omitempty"`
 	Tags               []Tag      `json:"tags,omitempty"`

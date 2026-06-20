@@ -220,6 +220,23 @@ func applyMigrations(db *sql.DB) error {
 			updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_custom_entities_type ON custom_entities(type_name)`,
+
+		// ── content_json: EditorJS rich content dual-storage ──────────────────
+		`ALTER TABLE tasks     ADD COLUMN content_json TEXT`,
+		`ALTER TABLE notes     ADD COLUMN content_json TEXT`,
+		`ALTER TABLE projects  ADD COLUMN content_json TEXT`,
+		`ALTER TABLE goals     ADD COLUMN content_json TEXT`,
+		`ALTER TABLE sprints   ADD COLUMN content_json TEXT`,
+		`ALTER TABLE resources ADD COLUMN content_json TEXT`,
+
+		// ── habit_completions: daily check-in log ─────────────────────────────
+		`CREATE TABLE IF NOT EXISTS habit_completions (
+			id       INTEGER PRIMARY KEY AUTOINCREMENT,
+			habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
+			date     TEXT    NOT NULL,
+			UNIQUE(habit_id, date)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_habit_completions_habit ON habit_completions(habit_id, date)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -392,6 +409,10 @@ func (s *sqliteStorage) ListTasks(f domain.TaskFilter) ([]*domain.Task, error) {
 func (s *sqliteStorage) UpdateTask(t *domain.Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var contentJSON interface{}
+	if t.ContentJSON != "" {
+		contentJSON = t.ContentJSON
+	}
 	_, err := s.db.Exec(
 		`UPDATE tasks SET
 		    goal_id=?, project_id=?, sprint_id=?, parent_task_id=?,
@@ -399,6 +420,7 @@ func (s *sqliteStorage) UpdateTask(t *domain.Task) error {
 		    start_date=?, due_date=?, estimated_mins=?, logged_mins=?,
 		    category=?, category_id=?, focus_block=?, focus_block_start=?, recur_interval=?, recur_unit=?,
 		    story_points=?, pomodoros_planned=?, pomodoros_finished=?, pomodoro=?,
+		    content_json=COALESCE(?,content_json),
 		    updated_at=datetime('now')
 		 WHERE id=?`,
 		t.GoalID, t.ProjectID, t.SprintID, t.ParentTaskID,
@@ -407,6 +429,7 @@ func (s *sqliteStorage) UpdateTask(t *domain.Task) error {
 		nullTime(t.StartDate), nullTime(t.DueDate), t.EstimatedMin, t.LoggedMins,
 		t.Category, t.CategoryID, t.FocusBlock, t.FocusBlockStart, t.RecurInterval, t.RecurUnit,
 		t.StoryPoints, t.PomodorosPlanned, t.PomodorosFinished, t.Pomodoro,
+		contentJSON,
 		t.ID,
 	)
 	return err
@@ -428,7 +451,8 @@ SELECT t.id, t.goal_id, t.project_id, t.sprint_id, t.parent_task_id,
        t.recur_interval, t.recur_unit, t.story_points,
        t.pomodoros_planned, t.pomodoros_finished,
        COALESCE(c.name,'') AS category_name,
-       COALESCE(t.pomodoro, 0)
+       COALESCE(t.pomodoro, 0),
+       COALESCE(t.content_json,'')
 FROM tasks t
 LEFT JOIN categories c ON t.category_id = c.id`
 
@@ -481,16 +505,20 @@ func (s *sqliteStorage) GetGoal(id int64) (*domain.Goal, error) {
 func (s *sqliteStorage) UpdateGoal(g *domain.Goal) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var contentJSON interface{}
+	if g.ContentJSON != "" {
+		contentJSON = g.ContentJSON
+	}
 	_, err := s.db.Exec(
 		`UPDATE goals SET title=?, description=?, status=?, type=?, year=?,
 		  start_date=?, due_date=?, start_value=?, current_value=?, target=?,
-		  category_id=?
+		  category_id=?, content_json=COALESCE(?,content_json)
 		 WHERE id=?`,
 		g.Title, g.Description, string(g.Status),
 		emptyToNil(g.Type), emptyToNil(g.Year),
 		g.StartDate, g.DueDate,
 		g.StartValue, g.CurrentValue, g.Target, g.CategoryID,
-		g.ID,
+		contentJSON, g.ID,
 	)
 	return err
 }
@@ -506,7 +534,8 @@ const goalSelectCols = `
 SELECT g.id, g.title, COALESCE(g.description,''), g.status, g.created_at,
        COALESCE(g.type,''), COALESCE(g.year,''),
        g.start_date, g.due_date, g.start_value, g.current_value, g.target,
-       g.category_id, COALESCE(c.name,'') AS category_name
+       g.category_id, COALESCE(c.name,'') AS category_name,
+       COALESCE(g.content_json,'')
 FROM goals g
 LEFT JOIN categories c ON g.category_id = c.id`
 
@@ -564,15 +593,19 @@ func (s *sqliteStorage) UpdateProject(p *domain.Project) error {
 	if p.Archived {
 		archived = 1
 	}
+	var contentJSON interface{}
+	if p.ContentJSON != "" {
+		contentJSON = p.ContentJSON
+	}
 	_, err := s.db.Exec(
 		`UPDATE projects SET goal_id=?, title=?, description=?, status=?,
 		  macro_area=?, kanban_col=?, archived=?, category_id=?,
-		  start_date=?, due_date=?
+		  start_date=?, due_date=?, content_json=COALESCE(?,content_json)
 		 WHERE id=?`,
 		p.GoalID, p.Title, p.Description, string(p.Status),
 		emptyToNil(p.MacroArea), emptyToNil(p.KanbanCol), archived, p.CategoryID,
 		nullTime(p.StartDate), nullTime(p.DueDate),
-		p.ID,
+		contentJSON, p.ID,
 	)
 	return err
 }
@@ -589,7 +622,7 @@ SELECT p.id, p.goal_id, p.title, COALESCE(p.description,''), p.status, p.created
        COALESCE(g.title,'') AS goal_title,
        COALESCE(p.macro_area,''), COALESCE(p.kanban_col,''), p.archived,
        p.category_id, COALESCE(c.name,'') AS category_name,
-       p.start_date, p.due_date
+       p.start_date, p.due_date, COALESCE(p.content_json,'')
 FROM projects p
 LEFT JOIN goals g      ON p.goal_id     = g.id
 LEFT JOIN categories c ON p.category_id = c.id`
@@ -619,7 +652,7 @@ func (s *sqliteStorage) GetSprint(id int64) (*domain.Sprint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row := s.db.QueryRow(
-		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points
+		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points, COALESCE(content_json,'')
 		 FROM sprints WHERE id=?`, id)
 	return scanSprint(row)
 }
@@ -628,7 +661,7 @@ func (s *sqliteStorage) ListSprints(projectID int64) ([]*domain.Sprint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rows, err := s.db.Query(
-		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points
+		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points, COALESCE(content_json,'')
 		 FROM sprints WHERE project_id=? ORDER BY created_at DESC`, projectID)
 	if err != nil {
 		return nil, err
@@ -649,7 +682,7 @@ func (s *sqliteStorage) GetActiveSprint(projectID int64) (*domain.Sprint, error)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row := s.db.QueryRow(
-		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points
+		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points, COALESCE(content_json,'')
 		 FROM sprints WHERE project_id=? AND status='active' LIMIT 1`, projectID)
 	return scanSprint(row)
 }
@@ -736,11 +769,17 @@ func (s *sqliteStorage) UpdateNote(n *domain.Note) error {
 	if n.Archived {
 		archived = 1
 	}
+	var contentJSON interface{}
+	if n.ContentJSON != "" {
+		contentJSON = n.ContentJSON
+	}
 	_, err := s.db.Exec(
 		`UPDATE notes SET title=?, file_path=?, goal_id=?, task_id=?, project_id=?,
-		  category_id=?, archived=?, note_date=?, updated_at=datetime('now')
+		  category_id=?, archived=?, note_date=?, content_json=COALESCE(?,content_json),
+		  updated_at=datetime('now')
 		 WHERE id=?`,
-		n.Title, n.FilePath, n.GoalID, n.TaskID, n.ProjectID, n.CategoryID, archived, n.NoteDate, n.ID,
+		n.Title, n.FilePath, n.GoalID, n.TaskID, n.ProjectID, n.CategoryID, archived, n.NoteDate,
+		contentJSON, n.ID,
 	)
 	return err
 }
@@ -755,7 +794,7 @@ func (s *sqliteStorage) DeleteNote(id int64) error {
 const noteSelectCols = `
 SELECT n.id, COALESCE(n.title,''), n.file_path, n.goal_id, n.task_id, n.project_id, n.created_at, n.updated_at,
        n.category_id, COALESCE(c.name,'') AS category_name,
-       n.archived, n.note_date, COALESCE(n.body,'')
+       n.archived, n.note_date, COALESCE(n.body,''), COALESCE(n.content_json,'')
 FROM notes n
 LEFT JOIN categories c ON n.category_id = c.id`
 
@@ -979,6 +1018,7 @@ func scanTask(sc scanner) (*domain.Task, error) {
 		categoryID            sql.NullInt64
 		goalID                sql.NullInt64
 		pomodoro              int
+		contentJSON           string
 	)
 	err := sc.Scan(
 		&t.ID, &goalID, &t.ProjectID, &t.SprintID, &t.ParentTaskID,
@@ -988,7 +1028,7 @@ func scanTask(sc scanner) (*domain.Task, error) {
 		&t.Category, &categoryID, &focusBlock, &focusBlockStart,
 		&recurInterval, &recurUnit, &storyPoints,
 		&pomodorosPlanned, &pomodorosFinished,
-		&t.CategoryName, &pomodoro,
+		&t.CategoryName, &pomodoro, &contentJSON,
 	)
 	if err != nil {
 		return nil, err
@@ -1035,6 +1075,7 @@ func scanTask(sc scanner) (*domain.Task, error) {
 		t.PomodorosFinished = &v
 	}
 	t.Pomodoro = pomodoro != 0
+	t.ContentJSON = contentJSON
 	t.CreatedAt, _ = parseTime(createdAt)
 	t.UpdatedAt, _ = parseTime(updatedAt)
 	return t, nil
@@ -1047,11 +1088,12 @@ func scanGoal(sc scanner) (*domain.Goal, error) {
 		startDate, dueDate   sql.NullString
 		startVal, curVal, target sql.NullFloat64
 		categoryID           sql.NullInt64
+		contentJSON          string
 	)
 	if err := sc.Scan(
 		&g.ID, &g.Title, &g.Description, &g.Status, &createdAt,
 		&g.Type, &g.Year, &startDate, &dueDate, &startVal, &curVal, &target,
-		&categoryID, &g.CategoryName,
+		&categoryID, &g.CategoryName, &contentJSON,
 	); err != nil {
 		return nil, err
 	}
@@ -1074,22 +1116,24 @@ func scanGoal(sc scanner) (*domain.Goal, error) {
 	if categoryID.Valid {
 		g.CategoryID = &categoryID.Int64
 	}
+	g.ContentJSON = contentJSON
 	return g, nil
 }
 
 func scanProject(sc scanner) (*domain.Project, error) {
 	p := &domain.Project{}
 	var (
-		createdAt  string
-		archived   int
-		categoryID sql.NullInt64
-		startDate  sql.NullString
-		dueDate    sql.NullString
+		createdAt   string
+		archived    int
+		categoryID  sql.NullInt64
+		startDate   sql.NullString
+		dueDate     sql.NullString
+		contentJSON string
 	)
 	if err := sc.Scan(
 		&p.ID, &p.GoalID, &p.Title, &p.Description, &p.Status, &createdAt,
 		&p.GoalTitle, &p.MacroArea, &p.KanbanCol, &archived,
-		&categoryID, &p.CategoryName, &startDate, &dueDate,
+		&categoryID, &p.CategoryName, &startDate, &dueDate, &contentJSON,
 	); err != nil {
 		return nil, err
 	}
@@ -1108,6 +1152,7 @@ func scanProject(sc scanner) (*domain.Project, error) {
 			p.DueDate = &t
 		}
 	}
+	p.ContentJSON = contentJSON
 	return p, nil
 }
 
@@ -1122,12 +1167,13 @@ func scanNote(sc scanner) (*domain.Note, error) {
 		projectID            sql.NullInt64
 		categoryID           sql.NullInt64
 		dbBody               string
+		contentJSON          string
 	)
 	if err := sc.Scan(
 		&n.ID, &n.Title, &filePath, &goalID, &taskID, &projectID,
 		&createdAt, &updatedAt,
 		&categoryID, &n.CategoryName,
-		&archived, &n.NoteDate, &dbBody,
+		&archived, &n.NoteDate, &dbBody, &contentJSON,
 	); err != nil {
 		return nil, err
 	}
@@ -1153,6 +1199,7 @@ func scanNote(sc scanner) (*domain.Note, error) {
 	if categoryID.Valid {
 		n.CategoryID = &categoryID.Int64
 	}
+	n.ContentJSON = contentJSON
 	return n, nil
 }
 
@@ -1162,8 +1209,9 @@ func scanSprint(sc scanner) (*domain.Sprint, error) {
 	var projectID sql.NullInt64
 	var startDate, endDate sql.NullString
 	var storyPoints sql.NullInt64
+	var contentJSON string
 	err := sc.Scan(&sp.ID, &projectID, &sp.Title, &sp.Goal,
-		&startDate, &endDate, &status, &createdAt, &storyPoints)
+		&startDate, &endDate, &status, &createdAt, &storyPoints, &contentJSON)
 	if projectID.Valid {
 		sp.ProjectID = projectID.Int64
 	}
@@ -1183,6 +1231,7 @@ func scanSprint(sc scanner) (*domain.Sprint, error) {
 		v := int(storyPoints.Int64)
 		sp.StoryPoints = &v
 	}
+	sp.ContentJSON = contentJSON
 	sp.CreatedAt, _ = parseTime(createdAt)
 	return sp, nil
 }

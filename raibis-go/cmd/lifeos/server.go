@@ -25,6 +25,7 @@ import (
 	"github.com/raibis/raibis-go/internal/cmdutil"
 	"github.com/raibis/raibis-go/internal/domain"
 	"github.com/raibis/raibis-go/internal/gui"
+	"github.com/raibis/raibis-go/internal/richtext"
 	"github.com/raibis/raibis-go/internal/service"
 	"github.com/raibis/raibis-go/internal/storage"
 	"github.com/raibis/raibis-go/internal/vault"
@@ -221,6 +222,9 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 
 	// Properties (icon + custom key-value pairs per entity)
 	mux.HandleFunc("/api/properties", withCORS(propertiesHandler(store, v)))
+
+	// Rich content — EditorJS JSON dual-storage
+	mux.HandleFunc("/api/content", withCORS(contentHandler(store, v, dbPath)))
 
 	// Automations
 	mux.HandleFunc("/api/automations", withCORS(automationsHandler(store)))
@@ -3245,6 +3249,155 @@ func propertiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	}
+}
+
+// ── Rich Content ──────────────────────────────────────────────────────────────
+
+// contentHandler handles POST /api/content
+// Body: {"entity_type":"task","entity_id":1,"content_json":"{...}"}
+// It stores content_json in the entity's DB column and regenerates the
+// Obsidian .md file with the existing links body + the new Markdown body.
+func contentHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			EntityType  string `json:"entity_type"`
+			EntityID    int64  `json:"entity_id"`
+			ContentJSON string `json:"content_json"`
+		}
+		if err := readJSON(r, &body); err != nil {
+			errJSON(w, 400, "invalid JSON: "+err.Error())
+			return
+		}
+		if body.EntityType == "" || body.EntityID == 0 || body.ContentJSON == "" {
+			errJSON(w, 400, "entity_type, entity_id and content_json are required")
+			return
+		}
+
+		// Validate entity type
+		validTypes := map[string]string{
+			"task":     "tasks",
+			"note":     "notes",
+			"project":  "projects",
+			"goal":     "goals",
+			"sprint":   "sprints",
+			"resource": "resources",
+		}
+		tableName, ok := validTypes[body.EntityType]
+		if !ok {
+			errJSON(w, 400, "unsupported entity_type: "+body.EntityType)
+			return
+		}
+
+		// Save content_json to the DB column
+		db, err := openRawDB(dbPath)
+		if err != nil {
+			errJSON(w, 500, "db unavailable: "+err.Error())
+			return
+		}
+		defer db.Close()
+
+		_, err = db.Exec(
+			`UPDATE `+tableName+` SET content_json=? WHERE id=?`, //nolint:gosec — tableName is from allowlist above
+			body.ContentJSON, body.EntityID,
+		)
+		if err != nil {
+			errJSON(w, 500, "save content_json: "+err.Error())
+			return
+		}
+
+		// Convert EditorJS JSON to Markdown
+		mdBody, err := richtext.ToMarkdown([]byte(body.ContentJSON))
+		if err != nil {
+			// Non-fatal: log and skip vault update
+			log.Printf("content: richtext.ToMarkdown entity=%s id=%d: %v", body.EntityType, body.EntityID, err)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// Re-generate the Obsidian .md file: keep existing links body, append rich content
+		go func() {
+			existingLinksBody := entityLinksBody(body.EntityType, body.EntityID, store)
+			var fm map[string]any
+			switch body.EntityType {
+			case "task":
+				if t, err := store.GetTask(body.EntityID); err == nil {
+					fm = mergeFMWithProps(taskFM(t), store, "task", body.EntityID)
+				}
+			case "goal":
+				if g, err := store.GetGoal(body.EntityID); err == nil {
+					fm = mergeFMWithProps(goalFM(g), store, "goal", body.EntityID)
+				}
+			case "project":
+				if p, err := store.GetProject(body.EntityID); err == nil {
+					fm = mergeFMWithProps(projectFM(p), store, "project", body.EntityID)
+				}
+			case "sprint":
+				if sp, err := store.GetSprint(body.EntityID); err == nil {
+					fm = mergeFMWithProps(sprintFM(sp), store, "sprint", body.EntityID)
+				}
+			case "note":
+				// Notes use vault file directly; update the file content
+				if n, err := store.GetNote(body.EntityID); err == nil && n.FilePath != nil {
+					// Preserve existing vault content but replace/append rich markdown body
+					existing, _ := vlt.ReadFile(*n.FilePath)
+					_, existingBody := vault.ParseFrontmatter(existing)
+					// For notes, the body IS the content — replace with richtext markdown
+					newBody := mdBody
+					if existingBody != "" && newBody == "" {
+						newBody = existingBody
+					}
+					_ = vlt.WriteFile(*n.FilePath, newBody)
+				}
+				return
+			case "resource":
+				// Resources don't have structured vault entity MD — skip vault write
+				return
+			}
+			if fm == nil {
+				return
+			}
+			// Combine links body with rich content markdown
+			fullBody := existingLinksBody
+			if mdBody != "" {
+				if fullBody != "" {
+					fullBody += "\n\n" + mdBody
+				} else {
+					fullBody = mdBody
+				}
+			}
+			if err := vlt.WriteEntityMD(body.EntityType, body.EntityID, fm, fullBody); err != nil {
+				log.Printf("content: vault write entity=%s id=%d: %v", body.EntityType, body.EntityID, err)
+			}
+		}()
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// entityLinksBody returns the existing links/children body for an entity
+// (same as what would be written on a normal PATCH).
+func entityLinksBody(entityType string, entityID int64, store storage.Storage) string {
+	switch entityType {
+	case "task":
+		if t, err := store.GetTask(entityID); err == nil {
+			return taskLinksBody(t, store) + relationsLinksBody("task", entityID, store)
+		}
+	case "goal":
+		return childrenLinksBody("goal", entityID, store) + relationsLinksBody("goal", entityID, store)
+	case "project":
+		if p, err := store.GetProject(entityID); err == nil {
+			return projectLinksBody(p, store) + childrenLinksBody("project", entityID, store) + relationsLinksBody("project", entityID, store)
+		}
+	case "sprint":
+		if sp, err := store.GetSprint(entityID); err == nil {
+			return sprintLinksBody(sp, store)
+		}
+	}
+	return ""
 }
 
 // ── Sync Feed ─────────────────────────────────────────────────────────────────

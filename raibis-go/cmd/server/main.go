@@ -2346,7 +2346,7 @@ func habitsHandler(svc *service.HabitService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			habits, err := svc.List()
+			habits, err := svc.ListWithStats()
 			if err != nil {
 				errJSON(w, 500, err.Error())
 				return
@@ -2383,10 +2383,83 @@ func habitsHandler(svc *service.HabitService) http.HandlerFunc {
 	}
 }
 
-// habitHandler handles GET/PATCH/DELETE /api/habits/:id.
+// habitHandler handles GET/PATCH/DELETE /api/habits/:id
+// and sub-resources: POST /api/habits/:id/checkin, GET /api/habits/:id/completions.
 func habitHandler(svc *service.HabitService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, ok := parseID(r.URL.Path)
+		path := strings.TrimRight(r.URL.Path, "/")
+
+		// Sub-resource: /api/habits/:id/checkin
+		if strings.HasSuffix(path, "/checkin") {
+			parentPath := strings.TrimSuffix(path, "/checkin")
+			id, ok := parseID(parentPath)
+			if !ok {
+				errJSON(w, 400, "invalid habit id")
+				return
+			}
+			today := time.Now().UTC().Format("2006-01-02")
+			var body struct {
+				Date string `json:"date"`
+				Done *bool  `json:"done"`
+			}
+			_ = readJSON(r, &body)
+			date := body.Date
+			if date == "" {
+				date = today
+			}
+			switch r.Method {
+			case http.MethodPost:
+				// Toggle: if done is explicitly false, remove; otherwise log.
+				if body.Done != nil && !*body.Done {
+					if err := svc.RemoveCompletion(id, date); err != nil {
+						errJSON(w, 500, err.Error())
+						return
+					}
+				} else {
+					if err := svc.LogCompletion(id, date); err != nil {
+						errJSON(w, 500, err.Error())
+						return
+					}
+				}
+				streak, doneToday, _ := svc.GetStreak(id)
+				writeJSON(w, 200, map[string]any{"ok": true, "streak": streak, "done_today": doneToday})
+			default:
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			}
+			return
+		}
+
+		// Sub-resource: /api/habits/:id/completions
+		if strings.HasSuffix(path, "/completions") {
+			parentPath := strings.TrimSuffix(path, "/completions")
+			id, ok := parseID(parentPath)
+			if !ok {
+				errJSON(w, 400, "invalid habit id")
+				return
+			}
+			if r.Method != http.MethodGet {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			from := r.URL.Query().Get("from")
+			to := r.URL.Query().Get("to")
+			if from == "" {
+				from = time.Now().UTC().AddDate(0, -3, 0).Format("2006-01-02")
+			}
+			if to == "" {
+				to = time.Now().UTC().Format("2006-01-02")
+			}
+			dates, err := svc.GetCompletions(id, from, to)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, dates)
+			return
+		}
+
+		// Base resource: /api/habits/:id
+		id, ok := parseID(path)
 		if !ok {
 			errJSON(w, 400, "invalid habit id")
 			return

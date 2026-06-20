@@ -14,6 +14,7 @@ type Project struct {
 	Archived     bool       `json:"archived"`
 	CategoryID   *int64     `json:"category_id,omitempty"`
 	CategoryName string     `json:"category_name,omitempty"`
+	ContentJSON  string     `json:"content_json,omitempty"`
 	Tags         []Tag      `json:"tags,omitempty"`
 	GoalTitle    string     `json:"goal_title,omitempty"` // populated by JOIN
 	StartDate    *time.Time `json:"start_date,omitempty"`

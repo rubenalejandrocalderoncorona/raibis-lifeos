@@ -76,6 +76,14 @@ type Storage interface {
 	ListHabits() ([]*domain.Habit, error)
 	UpdateHabit(h *domain.Habit) error
 	DeleteHabit(id int64) error
+	// LogHabitCompletion marks a habit done on date (YYYY-MM-DD). Idempotent.
+	LogHabitCompletion(habitID int64, date string) error
+	// RemoveHabitCompletion removes a completion for date. Idempotent.
+	RemoveHabitCompletion(habitID int64, date string) error
+	// ListHabitCompletions returns all completion dates for a habit in [from, to].
+	ListHabitCompletions(habitID int64, from, to string) ([]string, error)
+	// GetHabitStreak returns the current consecutive-day streak and whether today is done.
+	GetHabitStreak(habitID int64) (streak int, doneToday bool, err error)
 
 	// ── Comments ─────────────────────────────────────────────────────────────
 	CreateComment(c *domain.Comment) (int64, error)

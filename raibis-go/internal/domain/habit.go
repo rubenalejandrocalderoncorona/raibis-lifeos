@@ -7,10 +7,10 @@ import "time"
 type HabitType string
 
 const (
-	HabitTypeLearning  HabitType = "learning"
-	HabitTypeFitness   HabitType = "fitness"
+	HabitTypeLearning   HabitType = "learning"
+	HabitTypeFitness    HabitType = "fitness"
 	HabitTypeMeditation HabitType = "meditation"
-	HabitTypeGeneral   HabitType = "general"
+	HabitTypeGeneral    HabitType = "general"
 )
 
 // Habit represents a trackable recurring behaviour.
@@ -34,4 +34,14 @@ type Habit struct {
 
 	// CreatedAt is set by the database on insert.
 	CreatedAt time.Time `json:"created_at"`
+
+	// Computed fields — populated by list endpoints, not stored.
+	Streak    int  `json:"streak"`
+	DoneToday bool `json:"done_today"`
+}
+
+// HabitCompletion records that a habit was performed on a given date.
+type HabitCompletion struct {
+	HabitID int64  `json:"habit_id"`
+	Date    string `json:"date"` // YYYY-MM-DD
 }
