@@ -5153,19 +5153,26 @@ tr:hover .ctx-handle,
   cursor: text;
   overflow: visible;
 }
-/* Editor.js toolbar gutter + theming */
+/* Editor.js toolbar gutter fix
+   Root cause: EditorJS centers .ce-toolbar__content at max-width:650px, but
+   .ce-block__content was overridden to max-width:100%. This misaligns them —
+   the + button ends up inside the text rather than in the left gutter.
+   Fix: force toolbar content to full-width too, then use padding-left:60px on
+   the redactor so blocks start at 60px while the + sits at left:0. */
 .codex-editor {
   overflow: visible !important;
 }
 .codex-editor__redactor {
+  padding-left: 60px !important;
   padding-bottom: 80px !important;
+}
+.ce-toolbar__content {
+  max-width: 100% !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
 }
 .ce-block__content {
   max-width: 100% !important;
-}
-/* Drag handle lives in the 60px gutter set by onReady on .codex-editor__redactor */
-.ce-drag-handle, .cdx-drag-handle {
-  left: -52px !important;
 }
 .ce-toolbar__plus, .ce-toolbar__settings-btn {
   color: var(--text-muted) !important;

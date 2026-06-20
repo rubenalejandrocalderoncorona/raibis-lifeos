@@ -1759,6 +1759,8 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
     onReady: () => {
       const redactor = container.querySelector('.codex-editor__redactor');
       if (redactor) redactor.style.paddingLeft = '60px';
+      const toolbarContent = container.querySelector('.ce-toolbar__content');
+      if (toolbarContent) { toolbarContent.style.maxWidth = '100%'; toolbarContent.style.marginLeft = '0'; toolbarContent.style.marginRight = '0'; }
     },
     onChange: async () => {
       clearTimeout(saveTimer);
