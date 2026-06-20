@@ -1654,6 +1654,9 @@ func (s *sqliteStorage) GetCustomEntity(typeName string, id int64) (*domain.Cust
 func (s *sqliteStorage) ListCustomEntities(typeName string) ([]*domain.CustomEntity, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	// Collect entities first, then load all props in one pass to avoid nested
+	// queries on the same connection (MaxOpenConns=1 would deadlock otherwise).
 	rows, err := s.db.Query(
 		`SELECT id, type_name, title, created_at, updated_at FROM custom_entities WHERE type_name=? ORDER BY id ASC`,
 		typeName,
@@ -1661,18 +1664,44 @@ func (s *sqliteStorage) ListCustomEntities(typeName string) ([]*domain.CustomEnt
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var out []*domain.CustomEntity
 	for rows.Next() {
-		e := &domain.CustomEntity{}
+		e := &domain.CustomEntity{Props: map[string]string{}}
 		if err := rows.Scan(&e.ID, &e.TypeName, &e.Title, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		props, _ := s.listPropsNoLock(e.TypeName, e.ID)
-		e.Props = props
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close() // release connection before loading props
+
+	// Load all props for this type in one query, then distribute to entities.
+	propRows, err := s.db.Query(
+		`SELECT entity_id, key, value FROM entity_properties WHERE entity_type=? ORDER BY entity_id ASC`,
+		typeName,
+	)
+	if err != nil {
+		return out, nil // props unavailable; return entities without props
+	}
+	defer propRows.Close()
+	for propRows.Next() {
+		var eid int64
+		var k, v string
+		if err := propRows.Scan(&eid, &k, &v); err != nil {
+			continue
+		}
+		for _, e := range out {
+			if e.ID == eid {
+				e.Props[k] = v
+				break
+			}
+		}
+	}
+	return out, propRows.Err()
 }
 
 func (s *sqliteStorage) UpdateCustomEntity(e *domain.CustomEntity) error {

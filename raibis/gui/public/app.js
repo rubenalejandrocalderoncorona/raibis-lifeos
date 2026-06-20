@@ -3566,7 +3566,12 @@ function updateBreadcrumb(view, params, detailLabel) {
     // Add Dashboard as root only if not already dashboard
   }
 
-  const label = detailLabel || VIEW_LABELS[view] || view;
+  let label = detailLabel || VIEW_LABELS[view] || view;
+  if (!detailLabel && view.startsWith('custom:')) {
+    const typeName = view.slice(7);
+    const typeInfo = customEntityTypes.find(t => t.name === typeName);
+    label = typeInfo ? (typeInfo.display_name || typeName) : typeName;
+  }
   crumbs.push({ label, view, params, current: true });
 
   if (crumbs.length <= 1 && view === 'dashboard') {
@@ -4929,14 +4934,22 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
 // prop showing which parent entities reference it (and vice versa).
 async function _ensureRelProp(ownerType, ownerId, targetType, targetId, targetTitle) {
   const propKey = `${targetType}s`;
-  const propLabel = EV_LABELS[targetType] || targetType;
-  const defs = getCustomPropDefs(ownerType);
-  if (!defs.some(d => d.key === propKey)) {
-    const reverseKey = `${ownerType}s`;
-    defs.push({ key: propKey, label: propLabel, type: 'relation', relatedEntity: targetType, bilateral: true, reverseKey });
-    setCustomPropDefs(ownerType, defs);
-    const vp = getEntityVisProps(ownerType);
-    if (!vp.includes(propKey)) setEntityVisProps(ownerType, [...vp, propKey]);
+  // If a built-in FK prop already covers this relation (e.g. note.project for targetType='project'),
+  // use its singular key instead of creating a duplicate plural custom prop def.
+  const builtinProps = ENTITY_ALL_PROPS[ownerType] || [];
+  const builtinMatch = builtinProps.find(p => p.key === targetType);
+  const effectiveKey = builtinMatch ? targetType : propKey;
+
+  if (!builtinMatch) {
+    const propLabel = EV_LABELS[targetType] || targetType;
+    const defs = getCustomPropDefs(ownerType);
+    if (!defs.some(d => d.key === propKey)) {
+      const reverseKey = `${ownerType}s`;
+      defs.push({ key: propKey, label: propLabel, type: 'relation', relatedEntity: targetType, bilateral: true, reverseKey });
+      setCustomPropDefs(ownerType, defs);
+      const vp = getEntityVisProps(ownerType);
+      if (!vp.includes(propKey)) setEntityVisProps(ownerType, [...vp, propKey]);
+    }
   }
   try {
     const sp = await api('GET', `/api/properties?entity_type=${ownerType}&entity_id=${ownerId}`);
@@ -4945,15 +4958,18 @@ async function _ensureRelProp(ownerType, ownerId, targetType, targetId, targetTi
     localStorage.setItem(`customPropVals_${ownerType}_${ownerId}`, JSON.stringify(ex));
   } catch(e) {}
   const vals = getCustomPropValues(ownerType, ownerId);
-  let arr = parseRelationValue(vals[propKey] ?? '');
+  let arr = parseRelationValue(vals[effectiveKey] ?? '');
   if (!arr.some(x => x.id === String(targetId))) {
     arr.push({ id: String(targetId), label: targetTitle });
-    setCustomPropValue(ownerType, ownerId, propKey, JSON.stringify(arr));
+    setCustomPropValue(ownerType, ownerId, effectiveKey, JSON.stringify(arr));
   }
 }
 
 async function _removeRelProp(ownerType, ownerId, targetType, targetId) {
   const propKey = `${targetType}s`;
+  const builtinProps = ENTITY_ALL_PROPS[ownerType] || [];
+  const builtinMatch = builtinProps.find(p => p.key === targetType);
+  const effectiveKey = builtinMatch ? targetType : propKey;
   try {
     const sp = await api('GET', `/api/properties?entity_type=${ownerType}&entity_id=${ownerId}`);
     const ex = getCustomPropValues(ownerType, ownerId);
@@ -4961,9 +4977,9 @@ async function _removeRelProp(ownerType, ownerId, targetType, targetId) {
     localStorage.setItem(`customPropVals_${ownerType}_${ownerId}`, JSON.stringify(ex));
   } catch(e) {}
   const vals = getCustomPropValues(ownerType, ownerId);
-  let arr = parseRelationValue(vals[propKey] ?? '');
+  let arr = parseRelationValue(vals[effectiveKey] ?? '');
   arr = arr.filter(x => x.id !== String(targetId));
-  setCustomPropValue(ownerType, ownerId, propKey, JSON.stringify(arr));
+  setCustomPropValue(ownerType, ownerId, effectiveKey, JSON.stringify(arr));
 }
 
 // Called when a builtin FK field changes: syncs the reverse custom prop on the related entity
