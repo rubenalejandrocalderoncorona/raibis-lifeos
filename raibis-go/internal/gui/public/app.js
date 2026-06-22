@@ -3664,6 +3664,10 @@ function renderView(view, params) {
     case 'calendar':        renderCalendarView(); break;
     case 'habits':          renderHabits(); break;
     case 'automations':     renderAutomationsView(); break;
+    case 'custom-detail': {
+      if (params) { const [tn, eid] = params.split('/'); renderCustomEntityDetail(tn, eid); }
+      break;
+    }
     default:
       main.innerHTML = `<div class="view"><div class="empty-state"><div class="empty-state-icon">?</div><div class="empty-state-text">Unknown view</div></div></div>`;
   }
@@ -3756,7 +3760,14 @@ async function renderCustomEntityList(typeName) {
 
     function bindRows() {
       main.querySelectorAll('.custom-entity-row[data-id]').forEach(row => {
-        row.onclick = e => { if (e.target.closest('button')) return; openCustomEntitySlideover(typeName, parseInt(row.dataset.id)); };
+        row.onclick = e => {
+          if (e.target.closest('button')) return;
+          if (typeInfo && typeInfo.has_detail_view) {
+            renderView('custom-detail', `${typeName}/${row.dataset.id}`);
+          } else {
+            openCustomEntitySlideover(typeName, parseInt(row.dataset.id));
+          }
+        };
       });
       main.querySelectorAll('.custom-edit-btn').forEach(btn => {
         btn.onclick = e => { e.stopPropagation(); openCustomEntityForm(typeName, { id: parseInt(btn.dataset.id) }); };
@@ -3844,6 +3855,46 @@ async function renderCustomEntityList(typeName) {
     render();
   } catch(err) {
     main.innerHTML = `<div class="view"><div class="empty-state"><div class="empty-state-text" style="color:var(--color-danger)">Failed to load ${escHtml(displayName)}: ${escHtml(String(err))}</div></div></div>`;
+  }
+}
+
+async function renderCustomEntityDetail(typeName, entityId) {
+  const typeInfo = customEntityTypes.find(t => t.name === typeName);
+  const displayName = typeInfo ? (typeInfo.display_name || typeName) : typeName;
+  const rawIcon = typeInfo ? (typeInfo.icon || '📁') : '📁';
+  const iconHtml = rawIcon.startsWith('__svg:') ? renderEntityIcon(rawIcon, 20) : `<span style="font-size:18px">${rawIcon}</span>`;
+  const entityKey = `custom_${typeName}`;
+  const main = document.getElementById('main-content');
+  try {
+    const e = await api('GET', `/api/custom/${typeName}/${entityId}`);
+    const propPanel = buildInlinePropPanel(entityKey, parseInt(entityId), []);
+    main.innerHTML = `<div class="view">
+      <div class="view-header">
+        <div>
+          <div style="color:var(--text-muted);font-size:12px;cursor:pointer;margin-bottom:4px" id="ced-back-crumb">← ${escHtml(displayName)}</div>
+          <h1 class="view-title">${iconHtml} ${escHtml(e.title)}</h1>
+        </div>
+        <div class="flex gap-8">
+          <button class="btn btn-ghost btn-sm" id="ced-manage-btn">Widgets ⚙</button>
+          <button class="btn btn-ghost" id="ced-back-btn">← Back</button>
+          <button class="btn btn-primary btn-sm" id="ced-edit-btn">Edit</button>
+        </div>
+      </div>
+      <div id="ced-widget-grid">
+        ${buildWidgetGrid(entityKey, parseInt(entityId), { propPanelHtml: propPanel })}
+      </div>
+    </div>`;
+
+    document.getElementById('ced-back-btn').onclick = () => renderView(`custom:${typeName}`);
+    document.getElementById('ced-back-crumb').onclick = () => renderView(`custom:${typeName}`);
+    document.getElementById('ced-edit-btn').onclick = () => openCustomEntityForm(typeName, e);
+    document.getElementById('ced-manage-btn').onclick = (ev) => openWidgetManager(entityKey, ev.currentTarget, () => renderCustomEntityDetail(typeName, entityId));
+
+    const container = document.getElementById('ced-widget-grid');
+    initWidgetGrid(entityKey, parseInt(entityId), container, () => renderCustomEntityDetail(typeName, entityId));
+    bindInlinePropPanel(entityKey, parseInt(entityId), {}, () => renderCustomEntityDetail(typeName, entityId));
+  } catch(err) {
+    main.innerHTML = `<div class="view"><div class="empty-state"><div class="empty-state-text" style="color:var(--color-danger)">Failed to load: ${escHtml(String(err))}</div></div></div>`;
   }
 }
 
@@ -3988,6 +4039,7 @@ function renderCurrentView() {
     case 'sprint-detail':  renderSprintDetail(currentParams); break;
     case 'resources':      renderResources(); break;
     case 'dashboard':      renderDashboard(); break;
+    case 'custom-detail':  if (currentParams) { const [tn, eid] = currentParams.split('/'); renderCustomEntityDetail(tn, eid); } break;
   }
 }
 
@@ -4437,19 +4489,33 @@ function openTagsPicker(anchorEl, selectedIds, onCommit) {
   popup.id = 'tags-picker-popup';
   popup.className = 'prop-vis-panel';
   let sel = new Set((selectedIds || []).map(String));
+  let filter = '';
 
   function renderTagsPicker() {
+    const filtered = allTags.filter(t => t.name.toLowerCase().includes(filter.toLowerCase()));
+    const exactMatch = allTags.some(t => t.name.toLowerCase() === filter.toLowerCase().trim());
+    const createLabel = filter.trim();
     popup.innerHTML =
-      `<div style="padding:4px 10px 6px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">Tags</div>` +
-      (allTags.length
-        ? allTags.map(t =>
-            `<div class="prop-vis-row" data-tag-id="${t.id}" style="cursor:pointer;user-select:none">
-              <span class="multi-chip color-${t.color||'blue'}" style="opacity:${sel.has(String(t.id))?'1':'0.35'}">${t.name}</span>
+      `<div style="padding:5px 8px;border-bottom:1px solid var(--border)">
+        <input id="tags-picker-inp" class="form-input" placeholder="Search or create…" value="${filter.replace(/"/g,'&quot;')}"
+          style="width:100%;font-size:12px;padding:3px 6px;height:26px;box-sizing:border-box">
+       </div>` +
+      (filtered.length
+        ? filtered.map(t =>
+            `<div class="prop-vis-row" data-tag-id="${t.id}" style="cursor:pointer;user-select:none;display:flex;align-items:center;gap:5px">
+              <span class="multi-chip color-${t.color||'blue'}" style="opacity:${sel.has(String(t.id))?'1':'0.35'};flex:1">${escHtml(t.name)}</span>
+              ${sel.has(String(t.id)) ? `<span style="color:var(--accent);font-size:13px;flex-shrink:0">✓</span>` : `<span style="width:13px;flex-shrink:0"></span>`}
             </div>`).join('')
-        : '<div style="padding:4px 10px;font-size:12px;color:var(--text-muted)">No tags</div>') +
+        : (!createLabel ? '<div style="padding:4px 10px;font-size:12px;color:var(--text-muted)">No tags</div>' : '')) +
+      (!exactMatch && createLabel
+        ? `<div class="prop-vis-row tags-picker-create" style="cursor:pointer;color:var(--accent);font-size:12px">+ Create "<b>${escHtml(createLabel)}</b>"</div>`
+        : '') +
       `<div style="padding:6px 8px;border-top:1px solid var(--border)">
         <button id="tags-picker-done" class="btn btn-sm btn-primary" style="width:100%">Done</button>
       </div>`;
+
+    const inp = popup.querySelector('#tags-picker-inp');
+    if (inp) { inp.oninput = () => { filter = inp.value; renderTagsPicker(); }; inp.onclick = e => e.stopPropagation(); inp.focus(); }
 
     popup.querySelectorAll('[data-tag-id]').forEach(el => {
       el.onclick = (e) => {
@@ -4459,6 +4525,23 @@ function openTagsPicker(anchorEl, selectedIds, onCommit) {
         renderTagsPicker();
       };
     });
+
+    const createEl = popup.querySelector('.tags-picker-create');
+    if (createEl) {
+      createEl.onclick = async (e) => {
+        e.stopPropagation();
+        const name = filter.trim();
+        if (!name) return;
+        try {
+          const newTag = await api('POST', '/api/tags', { name, color: 'blue' });
+          allTags.push(newTag);
+          sel.add(String(newTag.id));
+          filter = '';
+          renderTagsPicker();
+        } catch(err) { showToast('Failed to create tag', 'error'); }
+      };
+    }
+
     document.getElementById('tags-picker-done').onclick = (e) => {
       e.stopPropagation();
       popup.remove();
@@ -4467,7 +4550,7 @@ function openTagsPicker(anchorEl, selectedIds, onCommit) {
   }
 
   renderTagsPicker();
-  popup.style.cssText = `position:fixed;z-index:9100;min-width:200px;max-height:320px;overflow-y:auto`;
+  popup.style.cssText = `position:fixed;z-index:9100;min-width:220px;max-height:340px;overflow-y:auto`;
   clampPopup(popup, anchorEl);
   setTimeout(() => {
     document.addEventListener('click', function handler(ev) {
@@ -7342,7 +7425,13 @@ function getWidgetLayout(entity) {
     const saved = localStorage.getItem(`widget_layout_${entity}`);
     if (saved) { const p = JSON.parse(saved); if (Array.isArray(p) && p.length) return p; }
   } catch(e) {}
-  return JSON.parse(JSON.stringify(WIDGET_DEFAULT_LAYOUTS[entity] || []));
+  if (WIDGET_DEFAULT_LAYOUTS[entity]) return JSON.parse(JSON.stringify(WIDGET_DEFAULT_LAYOUTS[entity]));
+  if (entity.startsWith('custom_')) return [
+    { id: 'w-properties', type: 'properties', label: 'Properties', visible: true },
+    { id: 'w-editor',    type: 'editor',     label: 'Content',    visible: true },
+    { id: 'w-comments',  type: 'comments',   label: 'Comments',   visible: true },
+  ];
+  return [];
 }
 function saveWidgetLayout(entity, layout) { localStorage.setItem(`widget_layout_${entity}`, JSON.stringify(layout)); }
 function resetWidgetLayout(entity) { localStorage.removeItem(`widget_layout_${entity}`); }
@@ -8914,15 +9003,8 @@ async function renderProjectDetail(projectId) {
       </div>
     </div>
     <div class="widget" style="margin-top:16px">
-      <div class="widget-header"><span class="widget-title">Custom Properties</span></div>
+      <div class="widget-header"><span class="widget-title">Properties</span></div>
       ${projDetailPropPanel}
-    </div>
-    <div class="widget" style="margin-top:16px">
-      <div class="widget-header">
-        <span class="widget-title">Properties</span>
-        <button class="btn btn-sm btn-ghost" id="pd-add-prop-btn">+ Add</button>
-      </div>
-      <div id="pd-props-list"></div>
     </div>
     ${buildRichContentSection('project', projectId)}
     ${buildCommentSection('project', projectId)}
@@ -8972,7 +9054,6 @@ async function renderProjectDetail(projectId) {
     };
   });
   bindDetailTaskEvents(() => renderProjectDetail(projectId));
-  bindPropertiesWidget('project', projectId, 'pd-props-list', 'pd-add-prop-btn');
   bindInlinePropPanel('project', projectId, projDetailEditFns, () => renderProjectDetail(projectId));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
   initRichEditor(`editorjs-project-${projectId}`, 'project', projectId, false);
@@ -9150,15 +9231,8 @@ async function renderGoalDetail(goalId) {
       </div>
     </div>
     <div class="widget" style="margin-top:16px">
-      <div class="widget-header"><span class="widget-title">Custom Properties</span></div>
+      <div class="widget-header"><span class="widget-title">Properties</span></div>
       ${goalDetailPropPanel}
-    </div>
-    <div class="widget" style="margin-top:16px">
-      <div class="widget-header">
-        <span class="widget-title">Properties</span>
-        <button class="btn btn-sm btn-ghost" id="gd-add-prop-btn">+ Add</button>
-      </div>
-      <div id="gd-props-list"></div>
     </div>
     ${buildRichContentSection('goal', goalId)}
     ${buildCommentSection('goal', goalId)}
@@ -9206,7 +9280,6 @@ async function renderGoalDetail(goalId) {
     };
   });
   bindDetailTaskEvents(() => renderGoalDetail(goalId));
-  bindPropertiesWidget('goal', goalId, 'gd-props-list', 'gd-add-prop-btn');
   bindInlinePropPanel('goal', goalId, goalDetailEditFns, () => renderGoalDetail(goalId));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="goal"]'));
   initRichEditor(`editorjs-goal-${goalId}`, 'goal', goalId, false);
@@ -14231,6 +14304,12 @@ async function openRaibisSettings(defaultTab = 'apps') {
             <div id="_cet-propdefs" style="display:flex;flex-direction:column;gap:6px"></div>
             <button class="btn btn-sm btn-ghost" id="_cet-addprop" style="margin-top:6px">+ Add property</button>
           </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+              <input type="checkbox" id="_cet-has-detail-view" style="cursor:pointer;accent-color:var(--accent)">
+              Individual view (full page with widgets, like Goals/Projects)
+            </label>
+          </div>
           <div>
             <button class="btn btn-primary btn-sm" id="_cet-create">Create Entity Type</button>
           </div>
@@ -14257,6 +14336,10 @@ async function openRaibisSettings(defaultTab = 'apps') {
           <button class="btn btn-sm btn-ghost _cet-icon" data-name="${escHtml(t.name)}" title="Change icon" style="padding:2px 4px;min-width:28px;display:flex;align-items:center;justify-content:center">${iconDisplay}</button>
           <span style="flex:1;font-size:13px;font-weight:500">${escHtml(t.display_name)}</span>
           <span style="font-size:11px;color:var(--text-muted)">${escHtml(t.name)}</span>
+          <label title="Individual view" style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:var(--text-muted)">
+            <input type="checkbox" class="_cet-detail-view" data-name="${escHtml(t.name)}" ${t.has_detail_view ? 'checked' : ''} style="cursor:pointer;accent-color:var(--accent)">
+            Detail view
+          </label>
           <button class="btn btn-sm btn-ghost _cet-del" data-name="${escHtml(t.name)}" style="color:var(--color-danger)">Delete</button>
         </div>`;
       }).join('');
@@ -14273,6 +14356,18 @@ async function openRaibisSettings(defaultTab = 'apps') {
               await renderCetList();
             } catch(err) { showToast('Failed to update icon: ' + (err.message || err), 'error'); }
           });
+        };
+      });
+      list.querySelectorAll('._cet-detail-view').forEach(chk => {
+        chk.onchange = async () => {
+          const tName = chk.dataset.name;
+          const t = customEntityTypes.find(ct => ct.name === tName);
+          if (!t) return;
+          try {
+            await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon: t.icon || '📁', prop_defs: t.prop_defs || '', has_detail_view: chk.checked });
+            // Update in-memory cache without full reload
+            t.has_detail_view = chk.checked;
+          } catch(err) { showToast('Failed to update: ' + (err.message || err), 'error'); chk.checked = !chk.checked; }
         };
       });
       list.querySelectorAll('._cet-del').forEach(btn => {
@@ -14359,16 +14454,19 @@ async function openRaibisSettings(defaultTab = 'apps') {
       const name = (cetSection.querySelector('#_cet-name').value || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
       const display_name = (cetSection.querySelector('#_cet-display').value || '').trim();
       const icon = cetIconSelected || '📁';
+      const has_detail_view = !!(cetSection.querySelector('#_cet-has-detail-view')?.checked);
       if (!name || !display_name) { showToast('Name and display name are required', 'error'); return; }
       const prop_defs = JSON.stringify(propDefsRows.filter(r => r.key));
       try {
-        await api('POST', '/api/custom-types', { name, display_name, icon, prop_defs });
+        await api('POST', '/api/custom-types', { name, display_name, icon, prop_defs, has_detail_view });
         showToast(`Type "${display_name}" created`);
         propDefsRows = [];
         cetIconSelected = '📁';
         if (cetIconBtn) cetIconBtn.innerHTML = '<span style="font-size:20px">📁</span>';
         cetSection.querySelector('#_cet-name').value = '';
         cetSection.querySelector('#_cet-display').value = '';
+        const hdvChk = cetSection.querySelector('#_cet-has-detail-view');
+        if (hdvChk) hdvChk.checked = false;
         cetSection.querySelectorAll('[data-starter]').forEach(chk => { chk.checked = false; });
         renderPropDefsUI();
         await renderCetList();
