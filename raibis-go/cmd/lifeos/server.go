@@ -1230,6 +1230,18 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 
 func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimRight(r.URL.Path, "/")
+		if strings.HasSuffix(path, "/tags") {
+			idStr := strings.TrimSuffix(path, "/tags")
+			idStr = idStr[strings.LastIndex(idStr, "/")+1:]
+			eid, err := strconv.ParseInt(idStr, 10, 64)
+			if err != nil {
+				errJSON(w, 400, "invalid id")
+				return
+			}
+			entityTagsHandler(store, "sprint", eid)(w, r)
+			return
+		}
 		id, ok := parseID(r.URL.Path)
 		if !ok {
 			errJSON(w, 400, "invalid sprint id")
@@ -1912,6 +1924,18 @@ func resourcesHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 func resourceHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 	db, _ := openRawDB(dbPath)
 	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimRight(r.URL.Path, "/")
+		if strings.HasSuffix(path, "/tags") {
+			idStr := strings.TrimSuffix(path, "/tags")
+			idStr = idStr[strings.LastIndex(idStr, "/")+1:]
+			eid, err := strconv.ParseInt(idStr, 10, 64)
+			if err != nil {
+				errJSON(w, 400, "invalid id")
+				return
+			}
+			entityTagsHandler(store, "resource", eid)(w, r)
+			return
+		}
 		id, ok := parseID(r.URL.Path)
 		if !ok {
 			errJSON(w, 400, "invalid resource id")
@@ -4376,8 +4400,19 @@ func customEntitiesHandler(store storage.Storage) http.HandlerFunc {
 			return
 		}
 
-		// Individual endpoint: /api/custom/{type}/{id}
-		entityID, err := strconv.ParseInt(pathParts[1], 10, 64)
+		// Individual endpoint: /api/custom/{type}/{id} or /api/custom/{type}/{id}/tags
+		idPart := pathParts[1]
+		if strings.HasSuffix(idPart, "/tags") {
+			idPart = strings.TrimSuffix(idPart, "/tags")
+			eid, err2 := strconv.ParseInt(idPart, 10, 64)
+			if err2 != nil {
+				errJSON(w, 400, "invalid entity id")
+				return
+			}
+			entityTagsHandler(store, "custom_"+typeName, eid)(w, r)
+			return
+		}
+		entityID, err := strconv.ParseInt(idPart, 10, 64)
 		if err != nil {
 			errJSON(w, 400, "invalid entity id")
 			return

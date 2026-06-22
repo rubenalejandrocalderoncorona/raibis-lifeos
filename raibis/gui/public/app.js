@@ -3901,56 +3901,114 @@ async function renderCustomEntityDetail(typeName, entityId) {
 async function openCustomEntitySlideover(typeName, id) {
   const typeInfo = customEntityTypes.find(t => t.name === typeName);
   const displayName = typeInfo ? (typeInfo.display_name || typeName) : typeName;
-  let propDefs = [];
-  if (typeInfo && typeInfo.prop_defs) {
-    try { propDefs = JSON.parse(typeInfo.prop_defs); } catch(e) { propDefs = []; }
-  }
+  const entityKey = `custom_${typeName}`;
 
+  openSlideover(displayName, '<div class="loading">Loading…</div>');
+
+  let e, cesTags = [];
   try {
-    const e = await api('GET', `/api/custom/${typeName}/${id}`);
-    const props = e.props || {};
-
-    const rows = propDefs.map(pd => `
-      <div class="slideover-field">
-        <div class="slideover-field-label">${escHtml(pd.label || pd.key)}</div>
-        <div class="slideover-field-value">${escHtml(props[pd.key] || '—')}</div>
-      </div>`).join('');
-
-    // Show any extra props not in propDefs
-    const extraRows = Object.entries(props)
-      .filter(([k]) => !propDefs.find(pd => pd.key === k))
-      .map(([k, v]) => `
-        <div class="slideover-field">
-          <div class="slideover-field-label">${escHtml(k)}</div>
-          <div class="slideover-field-value">${escHtml(v)}</div>
-        </div>`).join('');
-
-    const body = `
-      <div class="slideover-section">
-        <div class="slideover-field">
-          <div class="slideover-field-label">Title</div>
-          <div class="slideover-field-value">${escHtml(e.title)}</div>
-        </div>
-        ${rows}${extraRows}
-        <div class="slideover-field">
-          <div class="slideover-field-label">Created</div>
-          <div class="slideover-field-value">${fmtDate(e.created_at)}</div>
-        </div>
-      </div>
-      <div class="slideover-actions" style="display:flex;gap:8px;padding:12px 0">
-        <button class="btn btn-primary btn-sm" id="custom-slideover-edit">Edit</button>
-      </div>`;
-
-    openSlideover(displayName, body);
-    setSlideoverExport('custom_' + typeName, id);
-
-    document.getElementById('custom-slideover-edit').onclick = () => {
-      closeSlideover();
-      openCustomEntityForm(typeName, e);
-    };
+    e = await api('GET', `/api/custom/${typeName}/${id}`);
+    try { cesTags = await api('GET', `/api/custom/${typeName}/${id}/tags`); } catch(_) { cesTags = []; }
   } catch(err) {
     showToast('Failed to load entity', 'error');
+    return;
   }
+
+  await loadEntityCustomProps(entityKey, id);
+  const propPanel = buildInlinePropPanel(entityKey, id, []);
+
+  const body = `
+    <button class="entity-icon-add-btn" id="ces-icon-add-btn">
+      <span id="ces-icon-display"></span>
+      <span id="ces-icon-add-label">Add icon</span>
+    </button>
+    <div class="detail-title-area">
+      <textarea class="detail-title-input" id="detail-title" rows="1">${(e.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+    </div>
+
+    <div class="prop-chips" id="prop-chips">
+      <button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${cesTags.length ? cesTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>
+      <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
+    </div>
+
+    ${propPanel}
+
+    ${buildCommentSection(entityKey, id)}
+
+    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <button class="btn btn-ghost btn-sm" id="ces-edit-btn">Edit</button>
+      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" id="ces-delete-btn">Delete</button>
+    </div>
+  `;
+
+  openSlideover(e.title || displayName, body);
+  setSlideoverExport(entityKey, id);
+
+  // Icon
+  const cesIconAddBtn = document.getElementById('ces-icon-add-btn');
+  const cesIconDisplay = document.getElementById('ces-icon-display');
+  const cesIconAddLabel = document.getElementById('ces-icon-add-label');
+  loadEntityIcon(entityKey, id).then(icon => {
+    if (icon) { cesIconDisplay.innerHTML = renderEntityIcon(icon, 32); cesIconDisplay.dataset.icon = icon; cesIconAddLabel.textContent = ''; }
+  });
+  cesIconAddBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    const cur = cesIconDisplay.dataset.icon || '';
+    showIconPicker(cesIconAddBtn, entityKey, id, cur, (newIcon) => {
+      cesIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
+      cesIconDisplay.dataset.icon = newIcon || '';
+      cesIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      saveEntityIcon(entityKey, id, newIcon);
+    });
+  };
+
+  // Title
+  const titleTA = document.getElementById('detail-title');
+  titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px';
+  titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
+  titleTA.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); titleTA.blur(); } });
+  titleTA.onblur = (ev) => {
+    const newTitle = ev.target.value.trim();
+    if (newTitle && newTitle !== e.title) {
+      api('PUT', `/api/custom/${typeName}/${id}`, { title: newTitle, props: e.props || {} })
+        .then(() => { e.title = newTitle; })
+        .catch(() => {});
+    }
+  };
+
+  // Tags chip
+  document.getElementById('chip-tags')?.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    openTagsPicker(ev.currentTarget, cesTags.map(t => t.id), async (ids) => {
+      await api('PUT', `/api/custom/${typeName}/${id}/tags`, { tag_ids: ids });
+      cesTags = allTags.filter(t => ids.includes(t.id));
+      const v = document.getElementById('chip-tags-val'); if (v) v.innerHTML = cesTags.length ? cesTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+    });
+  });
+
+  // ··· Section manager
+  document.getElementById('prop-chips-more').onclick = (ev) => {
+    ev.stopPropagation();
+    openPropSectionManager(ev.currentTarget, entityKey, () => openCustomEntitySlideover(typeName, id));
+  };
+
+  bindInlinePropPanel(entityKey, id, {}, () => openCustomEntitySlideover(typeName, id));
+  bindCommentSection(document.querySelector(`.comment-section[data-entity-type="${entityKey}"]`));
+
+  document.getElementById('ces-edit-btn').onclick = () => {
+    closeSlideover();
+    openCustomEntityForm(typeName, e);
+  };
+  document.getElementById('ces-delete-btn').onclick = async () => {
+    if (!confirm(`Delete this ${displayName}?`)) return;
+    try {
+      await api('DELETE', `/api/custom/${typeName}/${id}`);
+      closeSlideover();
+      renderView(currentView);
+    } catch(err) {
+      showToast('Delete failed', 'error');
+    }
+  };
 }
 
 async function openCustomEntityForm(typeName, entityOrNull) {
@@ -4051,18 +4109,18 @@ const ENTITY_ALL_PROPS = {
   task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goals'},{key:'project',label:'Projects'},{key:'category',label:'Category'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'}],
   goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'due',label:'Due Date'},{key:'metrics',label:'Metrics'}],
   project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
-  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'points',label:'Story Points'}],
+  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'}],
   note:     [{key:'date',label:'Date'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'}],
-  resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'}],
+  resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'}],
 };
 
 const ENTITY_SECTION_DEFAULTS = {
   task:     { heading:['status','priority','due','focus','tags'],   body:['goal','project','category','points','recur'] },
   goal:     { heading:['status','type','year','tags'],              body:['category','due','metrics'] },
   project:  { heading:['status','due','goal','tags'],              body:['category','macro','kanban','archived'] },
-  sprint:   { heading:['status','dates','project'],                body:['points'] },
+  sprint:   { heading:['status','dates','project','tags'],         body:['points'] },
   note:     { heading:['date','project','goal','tags'],            body:['category'] },
-  resource: { heading:['type','url','project','goal'],             body:[] },
+  resource: { heading:['type','url','project','goal'],             body:['tags'] },
 };
 
 function getPropSections(entity) {
@@ -12734,12 +12792,13 @@ async function showNoteSlideover(noteId, afterSave) {
 async function showSprintSlideover(sprintId, afterSave) {
   openSlideover('Sprint Detail', '<div class="loading">Loading…</div>');
 
-  let s, allProjects = [];
+  let s, allProjects = [], sprintTags = [];
   try {
     [s, allProjects] = await Promise.all([
       api('GET', `/api/sprints/${sprintId}`),
       api('GET', '/api/projects'),
     ]);
+    try { sprintTags = await api('GET', `/api/sprints/${sprintId}/tags`); } catch(e) { sprintTags = []; }
   } catch(e) { return; }
 
   const tasks = (s.tasks || []).filter(t => !t.parent_task_id);
@@ -12754,7 +12813,7 @@ async function showSprintSlideover(sprintId, afterSave) {
 
   const sprintSections = getPropSections('sprint');
   const sprintIsInHead = (k) => sprintSections.heading.includes(k);
-  const SPRINT_CHIP_KEYS = ['status','dates','project'];
+  const SPRINT_CHIP_KEYS = ['status','dates','project','tags'];
   const sprintExtraHeadKeys = sprintSections.heading.filter(k => !SPRINT_CHIP_KEYS.includes(k));
 
   const allSprintBuiltinDefs = [
@@ -12764,6 +12823,8 @@ async function showSprintSlideover(sprintId, afterSave) {
       renderValue: () => { const dr = s.start_date && s.end_date ? `${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}` : fmtDate(s.start_date||s.end_date)||''; return dr ? `<span>${dr}</span>` : ''; } },
     { key: 'project', label: 'Projects',  icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
       renderValue: () => renderMultiRelationValue('sprint', sprintId, 'project', projName) },
+    { key: 'tags',    label: 'Tags',      icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
+      renderValue: () => sprintTags.length ? sprintTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'points',  label: 'Capacity (pts)', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
       renderValue: () => s.story_points != null ? `<span>${s.story_points}</span>` : '' },
   ];
@@ -12803,6 +12864,7 @@ async function showSprintSlideover(sprintId, afterSave) {
       ${sprintIsInHead('status') ? `<button class="prop-chip" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value">${s.status || 'planned'}</span></button>` : ''}
       ${sprintIsInHead('dates') ? `<button class="prop-chip" id="chip-dates" data-key="dates"><span class="chip-label">Dates</span><span class="chip-value" id="chip-dates-val">${dateRange}</span></button>` : ''}
       ${sprintIsInHead('project') ? `<button class="prop-chip" id="chip-project" data-key="project"><span class="chip-label">Project</span><span class="chip-value" id="chip-project-val">${projName || '—'}</span></button>` : ''}
+      ${sprintIsInHead('tags') ? `<button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${sprintTags.length ? sprintTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>` : ''}
       ${sprintExtraHeadKeys.map(k => { const def = allSprintBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
@@ -12879,11 +12941,21 @@ async function showSprintSlideover(sprintId, afterSave) {
       await patchSprint({ project_id: val ? parseInt(val) : null });
     });
   });
+  document.getElementById('chip-tags')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openTagsPicker(e.currentTarget, sprintTags.map(t => t.id), async (ids) => {
+      await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: ids });
+      sprintTags = allTags.filter(t => ids.includes(t.id));
+      const v = document.getElementById('chip-tags-val'); if (v) v.innerHTML = sprintTags.length ? sprintTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      if (afterSave) afterSave();
+    });
+  });
 
   const sprintInlinePropEditFns = {
     status:  (valEl) => { openValuePicker(valEl, SPRINT_STATUSES.map(v => ({ value: v, label: v })), async (val) => { await patchSprint({ status: val }); showSprintSlideover(sprintId, afterSave); }); },
     dates:   (valEl) => { openDateRangePickerGlobal(valEl, stripDate(s.start_date), stripDate(s.end_date), async (start, end) => { await patchSprint({ start_date: start||null, end_date: end||null }); showSprintSlideover(sprintId, afterSave); }); },
     project: (valEl) => openMultiRelationPicker(valEl, 'sprint', sprintId, 'project', 'project', allProjects, s, patchSprint, 'project_id', () => showSprintSlideover(sprintId, afterSave)),
+    tags:    (valEl) => { openTagsPicker(valEl, sprintTags.map(t => t.id), async (ids) => { await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: ids }); showSprintSlideover(sprintId, afterSave); }); },
     points:  (valEl) => {
       const inp = document.createElement('input');
       inp.type = 'number'; inp.min = '0'; inp.style.cssText = 'width:80px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
@@ -13011,13 +13083,14 @@ async function showResourceSlideover(resource, afterSave) {
   const resId = v.id;
   openSlideover('Resource Detail', '<div class="loading">Loading…</div>');
 
-  let r, projects = [], goals = [];
+  let r, projects = [], goals = [], resTags = [];
   try {
     [r, projects, goals] = await Promise.all([
       api('GET', `/api/resources/${resId}`),
       api('GET', '/api/projects'),
       api('GET', '/api/goals'),
     ]);
+    try { resTags = await api('GET', `/api/resources/${resId}/tags`); } catch(e) { resTags = []; }
   } catch(e) { return; }
 
   async function patchResource(data) {
@@ -13033,7 +13106,7 @@ async function showResourceSlideover(resource, afterSave) {
 
   const resSections = getPropSections('resource');
   const resIsInHead = (k) => resSections.heading.includes(k);
-  const RES_CHIP_KEYS = ['type','url','project','goal'];
+  const RES_CHIP_KEYS = ['type','url','project','goal','tags'];
   const resExtraHeadKeys = resSections.heading.filter(k => !RES_CHIP_KEYS.includes(k));
 
   const allResBuiltinDefs = [
@@ -13045,6 +13118,8 @@ async function showResourceSlideover(resource, afterSave) {
       renderValue: () => renderMultiRelationValue('resource', resId, 'project', projName) },
     { key: 'goal',    label: 'Goals',   icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
       renderValue: () => renderMultiRelationValue('resource', resId, 'goal', goalName) },
+    { key: 'tags',    label: 'Tags',    icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
+      renderValue: () => resTags.length ? resTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
   ];
   const resBodyDefs = allResBuiltinDefs.filter(d => resSections.body.includes(d.key));
   await loadEntityCustomProps('resource', resId);
@@ -13060,6 +13135,7 @@ async function showResourceSlideover(resource, afterSave) {
       ${resIsInHead('url') ? `<button class="prop-chip${rawUrl ? '' : ' chip-empty'}" id="chip-url" data-key="url"><span class="chip-label">URL</span><span class="chip-value" id="chip-url-val">${rawUrl ? `<a href="${rawUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;display:inline-block;vertical-align:bottom">${rawUrl.replace(/^https?:\/\//,'')}</a>` : '—'}</span></button>` : ''}
       ${resIsInHead('project') ? `<button class="prop-chip" id="chip-project" data-key="project"><span class="chip-label">Project</span><span class="chip-value" id="chip-project-val">${projName || '—'}</span></button>` : ''}
       ${resIsInHead('goal') ? `<button class="prop-chip" id="chip-goal" data-key="goal"><span class="chip-label">Goal</span><span class="chip-value" id="chip-goal-val">${goalName || '—'}</span></button>` : ''}
+      ${resIsInHead('tags') ? `<button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${resTags.length ? resTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>` : ''}
       ${resExtraHeadKeys.map(k => { const def = allResBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
@@ -13141,6 +13217,15 @@ async function showResourceSlideover(resource, afterSave) {
     e.stopPropagation();
     openMultiRelationPicker(e.currentTarget, 'resource', resId, 'goal', 'goal', goals, r, patchResource, 'goal_id', () => showResourceSlideover({ id: resId }, afterSave));
   });
+  document.getElementById('chip-tags')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openTagsPicker(e.currentTarget, resTags.map(t => t.id), async (ids) => {
+      await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: ids });
+      resTags = allTags.filter(t => ids.includes(t.id));
+      const v = document.getElementById('chip-tags-val'); if (v) v.innerHTML = resTags.length ? resTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      if (afterSave) afterSave();
+    });
+  });
 
   const resInlinePropEditFns = {
     type:    (valEl) => {
@@ -13159,6 +13244,7 @@ async function showResourceSlideover(resource, afterSave) {
     },
     project: (valEl) => openMultiRelationPicker(valEl, 'resource', resId, 'project', 'project', projects, r, patchResource, 'project_id', () => showResourceSlideover({ id: resId }, afterSave)),
     goal:    (valEl) => openMultiRelationPicker(valEl, 'resource', resId, 'goal', 'goal', goals, r, patchResource, 'goal_id', () => showResourceSlideover({ id: resId }, afterSave)),
+    tags:    (valEl) => { openTagsPicker(valEl, resTags.map(t => t.id), async (ids) => { await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: ids }); showResourceSlideover({ id: resId }, afterSave); }); },
   };
 
   resExtraHeadKeys.forEach(k => {
