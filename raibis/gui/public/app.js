@@ -12812,6 +12812,11 @@ async function showSprintSlideover(sprintId, afterSave) {
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
 
   const sprintSections = getPropSections('sprint');
+  // Migrate: ensure tags is accessible for sessions with old stored sections
+  if (!sprintSections.heading.includes('tags') && !sprintSections.body.includes('tags')) {
+    sprintSections.heading.push('tags');
+    setPropSections('sprint', sprintSections);
+  }
   const sprintIsInHead = (k) => sprintSections.heading.includes(k);
   const SPRINT_CHIP_KEYS = ['status','dates','project','tags'];
   const sprintExtraHeadKeys = sprintSections.heading.filter(k => !SPRINT_CHIP_KEYS.includes(k));
@@ -13105,6 +13110,11 @@ async function showResourceSlideover(resource, afterSave) {
   const fileName = r.file_path ? r.file_path.split('/').pop() : '';
 
   const resSections = getPropSections('resource');
+  // Migrate: ensure tags is accessible for sessions with old stored sections
+  if (!resSections.heading.includes('tags') && !resSections.body.includes('tags')) {
+    resSections.body.push('tags');
+    setPropSections('resource', resSections);
+  }
   const resIsInHead = (k) => resSections.heading.includes(k);
   const RES_CHIP_KEYS = ['type','url','project','goal','tags'];
   const resExtraHeadKeys = resSections.heading.filter(k => !RES_CHIP_KEYS.includes(k));
@@ -14417,16 +14427,35 @@ async function openRaibisSettings(defaultTab = 'apps') {
         const iconDisplay = t.icon
           ? (t.icon.startsWith('__svg:') ? renderEntityIcon(t.icon, 16) : `<span style="font-size:16px">${t.icon}</span>`)
           : `<span style="font-size:16px">📁</span>`;
+        let propDefs = [];
+        try { propDefs = t.prop_defs ? JSON.parse(t.prop_defs) : []; } catch(e) {}
+        const propDefsHtml = propDefs.length
+          ? propDefs.map((pd, i) => `
+            <div style="display:flex;align-items:center;gap:6px;padding:3px 0" data-prop-idx="${i}" data-type-name="${escHtml(t.name)}">
+              <span style="font-size:11px;color:var(--text-muted);width:70px;flex-shrink:0">${escHtml(pd.key)}</span>
+              <span style="font-size:11px;flex:1">${escHtml(pd.label || pd.key)}</span>
+              <span style="font-size:10px;color:var(--text-muted);width:60px;flex-shrink:0">${escHtml(pd.type || 'text')}</span>
+              <button class="btn btn-sm btn-ghost _cet-prop-del" data-type-name="${escHtml(t.name)}" data-prop-idx="${i}" style="color:var(--color-danger);padding:0 4px;font-size:12px" title="Delete property">×</button>
+            </div>`).join('')
+          : '<div style="font-size:11px;color:var(--text-muted);padding:4px 0">No custom properties defined.</div>';
         return `
-        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--color-border)">
-          <button class="btn btn-sm btn-ghost _cet-icon" data-name="${escHtml(t.name)}" title="Change icon" style="padding:2px 4px;min-width:28px;display:flex;align-items:center;justify-content:center">${iconDisplay}</button>
-          <span style="flex:1;font-size:13px;font-weight:500">${escHtml(t.display_name)}</span>
-          <span style="font-size:11px;color:var(--text-muted)">${escHtml(t.name)}</span>
-          <label title="Individual view" style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:var(--text-muted)">
-            <input type="checkbox" class="_cet-detail-view" data-name="${escHtml(t.name)}" ${t.has_detail_view ? 'checked' : ''} style="cursor:pointer;accent-color:var(--accent)">
-            Detail view
-          </label>
-          <button class="btn btn-sm btn-ghost _cet-del" data-name="${escHtml(t.name)}" style="color:var(--color-danger)">Delete</button>
+        <div style="border-bottom:1px solid var(--color-border);padding:6px 0">
+          <div style="display:flex;align-items:center;gap:8px">
+            <button class="btn btn-sm btn-ghost _cet-icon" data-name="${escHtml(t.name)}" title="Change icon" style="padding:2px 4px;min-width:28px;display:flex;align-items:center;justify-content:center">${iconDisplay}</button>
+            <input type="text" class="_cet-display-name" data-name="${escHtml(t.name)}" value="${escHtml(t.display_name)}" style="flex:1;font-size:13px;font-weight:500;border:1px solid transparent;border-radius:4px;padding:2px 6px;background:transparent;color:var(--text-primary)" title="Click to rename" />
+            <span style="font-size:11px;color:var(--text-muted)">${escHtml(t.name)}</span>
+            <label title="Individual view" style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;color:var(--text-muted)">
+              <input type="checkbox" class="_cet-detail-view" data-name="${escHtml(t.name)}" ${t.has_detail_view ? 'checked' : ''} style="cursor:pointer;accent-color:var(--accent)">
+              Detail view
+            </label>
+            <button class="btn btn-sm btn-ghost _cet-toggle-props" data-name="${escHtml(t.name)}" title="Manage properties" style="font-size:11px">Props ▾</button>
+            <button class="btn btn-sm btn-ghost _cet-del" data-name="${escHtml(t.name)}" style="color:var(--color-danger)">Delete</button>
+          </div>
+          <div class="_cet-props-panel" data-name="${escHtml(t.name)}" style="display:none;padding:6px 8px 4px 36px;background:var(--color-surface-secondary,var(--color-surface));border-radius:4px;margin-top:4px">
+            <div style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-muted);margin-bottom:4px">Properties</div>
+            <div class="_cet-props-list" data-name="${escHtml(t.name)}">${propDefsHtml}</div>
+            <button class="btn btn-sm btn-ghost _cet-add-prop" data-name="${escHtml(t.name)}" style="margin-top:6px;font-size:11px">+ Add Property</button>
+          </div>
         </div>`;
       }).join('');
       list.querySelectorAll('._cet-icon').forEach(btn => {
@@ -14438,10 +14467,98 @@ async function openRaibisSettings(defaultTab = 'apps') {
           showIconPicker(btn, null, null, t.icon || '📁', async (newIcon) => {
             const icon = newIcon || '📁';
             try {
-              await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon, prop_defs: t.prop_defs || '' });
+              await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon, prop_defs: t.prop_defs || '', has_detail_view: t.has_detail_view });
               await renderCetList();
             } catch(err) { showToast('Failed to update icon: ' + (err.message || err), 'error'); }
           });
+        };
+      });
+      list.querySelectorAll('._cet-display-name').forEach(inp => {
+        inp.onfocus = () => { inp.style.border = '1px solid var(--accent)'; inp.style.background = 'var(--color-surface)'; };
+        inp.onblur = async () => {
+          inp.style.border = '1px solid transparent'; inp.style.background = 'transparent';
+          const tName = inp.dataset.name;
+          const t = customEntityTypes.find(ct => ct.name === tName);
+          if (!t || inp.value.trim() === t.display_name) return;
+          const newName = inp.value.trim();
+          if (!newName) { inp.value = t.display_name; return; }
+          try {
+            await api('PUT', `/api/custom-types/${tName}`, { display_name: newName, icon: t.icon || '📁', prop_defs: t.prop_defs || '', has_detail_view: t.has_detail_view });
+            t.display_name = newName;
+            renderCustomEntityNav();
+            showToast('Renamed');
+          } catch(err) { showToast('Failed to rename', 'error'); inp.value = t.display_name; }
+        };
+        inp.onkeydown = (e) => { if (e.key === 'Enter') inp.blur(); if (e.key === 'Escape') { inp.value = customEntityTypes.find(ct => ct.name === inp.dataset.name)?.display_name || inp.value; inp.blur(); } };
+      });
+      list.querySelectorAll('._cet-toggle-props').forEach(btn => {
+        btn.onclick = () => {
+          const panel = list.querySelector(`._cet-props-panel[data-name="${btn.dataset.name}"]`);
+          if (!panel) return;
+          const visible = panel.style.display !== 'none';
+          panel.style.display = visible ? 'none' : 'block';
+          btn.textContent = visible ? 'Props ▾' : 'Props ▴';
+        };
+      });
+      list.querySelectorAll('._cet-prop-del').forEach(btn => {
+        btn.onclick = async () => {
+          const tName = btn.dataset.typeName;
+          const idx = parseInt(btn.dataset.propIdx);
+          const t = customEntityTypes.find(ct => ct.name === tName);
+          if (!t) return;
+          let defs = [];
+          try { defs = t.prop_defs ? JSON.parse(t.prop_defs) : []; } catch(e) {}
+          defs.splice(idx, 1);
+          const newPropDefs = JSON.stringify(defs);
+          try {
+            await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon: t.icon || '📁', prop_defs: newPropDefs, has_detail_view: t.has_detail_view });
+            t.prop_defs = newPropDefs;
+            await renderCetList();
+            // Re-open the props panel for that type
+            const panel = list.querySelector(`._cet-props-panel[data-name="${tName}"]`);
+            if (panel) { panel.style.display = 'block'; const toggleBtn = list.querySelector(`._cet-toggle-props[data-name="${tName}"]`); if (toggleBtn) toggleBtn.textContent = 'Props ▴'; }
+            showToast('Property deleted');
+          } catch(err) { showToast('Failed to delete property', 'error'); }
+        };
+      });
+      list.querySelectorAll('._cet-add-prop').forEach(btn => {
+        btn.onclick = () => {
+          const tName = btn.dataset.name;
+          const t = customEntityTypes.find(ct => ct.name === tName);
+          if (!t) return;
+          const panelList = list.querySelector(`._cet-props-list[data-name="${tName}"]`);
+          if (!panelList) return;
+          const addRow = document.createElement('div');
+          addRow.style.cssText = 'display:flex;gap:6px;align-items:center;padding:3px 0';
+          addRow.innerHTML = `
+            <input type="text" placeholder="key" style="width:80px;font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:3px" class="_new-prop-key" />
+            <input type="text" placeholder="Label" style="width:90px;font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:3px" class="_new-prop-label" />
+            <select style="font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:3px" class="_new-prop-type">
+              ${['text','number','date','select','url','multi_select'].map(o => `<option value="${o}">${o}</option>`).join('')}
+            </select>
+            <button class="btn btn-sm btn-primary _new-prop-save" style="font-size:11px;padding:2px 8px">Add</button>
+            <button class="btn btn-sm btn-ghost _new-prop-cancel" style="font-size:11px;padding:2px 6px">×</button>`;
+          panelList.appendChild(addRow);
+          addRow.querySelector('._new-prop-cancel').onclick = () => addRow.remove();
+          addRow.querySelector('._new-prop-save').onclick = async () => {
+            const key = addRow.querySelector('._new-prop-key').value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+            const label = addRow.querySelector('._new-prop-label').value.trim() || key;
+            const type = addRow.querySelector('._new-prop-type').value;
+            if (!key) { showToast('Key is required', 'error'); return; }
+            let defs = [];
+            try { defs = t.prop_defs ? JSON.parse(t.prop_defs) : []; } catch(e) {}
+            if (defs.some(d => d.key === key)) { showToast('Property key already exists', 'error'); return; }
+            defs.push({ key, label, type });
+            const newPropDefs = JSON.stringify(defs);
+            try {
+              await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon: t.icon || '📁', prop_defs: newPropDefs, has_detail_view: t.has_detail_view });
+              t.prop_defs = newPropDefs;
+              await renderCetList();
+              const panel = list.querySelector(`._cet-props-panel[data-name="${tName}"]`);
+              if (panel) { panel.style.display = 'block'; const toggleBtn = list.querySelector(`._cet-toggle-props[data-name="${tName}"]`); if (toggleBtn) toggleBtn.textContent = 'Props ▴'; }
+              showToast('Property added');
+            } catch(err) { showToast('Failed to add property', 'error'); }
+          };
         };
       });
       list.querySelectorAll('._cet-detail-view').forEach(chk => {
@@ -14652,14 +14769,20 @@ async function openRaibisSettings(defaultTab = 'apps') {
     await loadEntities(activeType);
 
     // ── Export section ────────────────────────────────────────────────────
+    const builtinExportTypes = ENTITY_TYPES.filter(t => t.exportKey);
+    const customExportTypes = customEntityTypes.map(ct => ({ name: ct.name, label: ct.display_name }));
     const exportSection = document.createElement('div');
     exportSection.className = 'settings-export-section';
     exportSection.innerHTML = `
       <h4>Export as JSON</h4>
       <div class="settings-export-checks">
-        ${ENTITY_TYPES.filter(t => t.exportKey).map(t => `
+        ${builtinExportTypes.map(t => `
           <label class="settings-export-check">
-            <input type="checkbox" value="${t.exportKey}" checked> ${t.label}
+            <input type="checkbox" value="${t.exportKey}" data-kind="builtin" checked> ${t.label}
+          </label>`).join('')}
+        ${customExportTypes.map(ct => `
+          <label class="settings-export-check">
+            <input type="checkbox" value="${ct.name}" data-kind="custom" checked> ${ct.label}
           </label>`).join('')}
       </div>
       <button class="btn btn-sm" id="_export-all-btn">
@@ -14668,10 +14791,21 @@ async function openRaibisSettings(defaultTab = 'apps') {
       </button>`;
     body.appendChild(exportSection);
     body.querySelector('#_export-all-btn').onclick = async () => {
-      const checked = [...body.querySelectorAll('.settings-export-checks input:checked')].map(el => el.value);
-      if (!checked.length) { showToast('Select at least one entity type', 'info'); return; }
+      const builtinChecked = [...body.querySelectorAll('.settings-export-checks input[data-kind="builtin"]:checked')].map(el => el.value);
+      const customChecked = [...body.querySelectorAll('.settings-export-checks input[data-kind="custom"]:checked')].map(el => el.value);
+      if (!builtinChecked.length && !customChecked.length) { showToast('Select at least one entity type', 'info'); return; }
       try {
-        const data = await api('GET', `/api/export?entities=${checked.join(',')}`);
+        const data = {};
+        if (builtinChecked.length) {
+          const builtinData = await api('GET', `/api/export?entities=${builtinChecked.join(',')}`);
+          Object.assign(data, builtinData);
+        }
+        for (const typeName of customChecked) {
+          try {
+            const items = await api('GET', `/api/custom/${typeName}`);
+            data[typeName] = Array.isArray(items) ? items : [];
+          } catch(e) { data[typeName] = []; }
+        }
         downloadJson(data, `raibis-export-${new Date().toISOString().slice(0,10)}.json`);
       } catch { showToast('Export failed', 'error'); }
     };
@@ -15186,6 +15320,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Load custom entity types and render nav
   await loadCustomEntityTypes();
+
+  // Seed default global taxonomy properties if not yet created
+  (function seedDefaultTaxonomyProps() {
+    const props = getGlobalTaxonomyProps();
+    let changed = false;
+    if (!props.some(p => p.key === 'category')) {
+      props.push({ key: 'category', label: 'Category' });
+      changed = true;
+    }
+    if (changed) saveGlobalTaxonomyProps(props);
+  })();
+
   renderTaxonomyNav();
 
   // Fetch latest GitHub commit SHA for version button
