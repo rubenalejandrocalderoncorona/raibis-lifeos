@@ -3703,9 +3703,15 @@ function renderCustomEntityNav() {
   ).join('');
 
   container.querySelectorAll('._cet-nav-link').forEach(a => {
-    a.onclick = e => { e.preventDefault(); renderView(a.dataset.view); };
+    let _navClickTimer = null;
+    a.onclick = e => {
+      e.preventDefault();
+      if (_navClickTimer) return; // double-click in progress — let ondblclick handle it
+      _navClickTimer = setTimeout(() => { _navClickTimer = null; renderView(a.dataset.view); }, 220);
+    };
     a.ondblclick = e => {
       e.preventDefault(); e.stopPropagation();
+      if (_navClickTimer) { clearTimeout(_navClickTimer); _navClickTimer = null; }
       const wrap = a.closest('.nav-custom-wrap');
       const tName = wrap?.dataset.cetName;
       const t = customEntityTypes.find(ct => ct.name === tName);
@@ -4641,9 +4647,9 @@ function openTagsPicker(anchorEl, selectedIds, onCommit) {
               <span class="multi-chip color-${t.color||'blue'}" style="opacity:${sel.has(String(t.id))?'1':'0.35'};flex:1">${escHtml(t.name)}</span>
               ${sel.has(String(t.id)) ? `<span style="color:var(--accent);font-size:13px;flex-shrink:0">✓</span>` : `<span style="width:13px;flex-shrink:0"></span>`}
             </div>`).join('')
-        : (!createLabel ? '<div style="padding:4px 10px;font-size:12px;color:var(--text-muted)">No tags</div>' : '')) +
+        : (!createLabel ? '<div style="padding:6px 10px;font-size:12px;color:var(--text-muted)">No tags yet — type a name above to create one</div>' : '')) +
       (!exactMatch && createLabel
-        ? `<div class="prop-vis-row tags-picker-create" style="cursor:pointer;color:var(--accent);font-size:12px">+ Create "<b>${escHtml(createLabel)}</b>"</div>`
+        ? `<div class="prop-vis-row tags-picker-create" style="cursor:pointer;color:var(--accent);font-size:12px;padding:4px 10px">+ Create "<b>${escHtml(createLabel)}</b>"</div>`
         : '') +
       `<div style="padding:6px 8px;border-top:1px solid var(--border)">
         <button id="tags-picker-done" class="btn btn-sm btn-primary" style="width:100%">Done</button>
