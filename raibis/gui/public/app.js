@@ -418,6 +418,7 @@ const TASK_PROPS = [
   { key: 'priority',    label: 'Priority' },
   { key: 'due_date',    label: 'Due Date' },
   { key: 'project',     label: 'Project' },
+  { key: 'goal',        label: 'Goals' },
   { key: 'tags',        label: 'Tags' },
   { key: 'story_points',label: 'Story Points' },
   { key: 'category',    label: 'Category' },
@@ -441,7 +442,7 @@ const ENTITY_PROPS = {
   project:  [
     { key: 'status',    label: 'Status' },
     { key: 'goal',      label: 'Goals' },
-    { key: 'area',      label: 'Area' },
+    { key: 'macro',     label: 'Macro Area' },
     { key: 'progress',  label: 'Progress' },
     { key: 'tags',      label: 'Tags' },
   ],
@@ -454,13 +455,14 @@ const ENTITY_PROPS = {
   ],
   resource: [
     { key: 'type',      label: 'Type' },
-    { key: 'linked',    label: 'Linked' },
-    { key: 'url',       label: 'URL / Preview' },
+    { key: 'url',       label: 'URL' },
+    { key: 'project',   label: 'Projects' },
+    { key: 'goal',      label: 'Goals' },
   ],
   note:     [
     { key: 'date',      label: 'Date' },
-    { key: 'category',  label: 'Category' },
     { key: 'tags',      label: 'Tags' },
+    { key: 'category',  label: 'Category' },
   ],
   sprint:   [
     { key: 'status',    label: 'Status' },
@@ -3401,6 +3403,8 @@ function taskRowHtml(task, showProject, indent, viewMode) {
   const titleCls = done ? 'task-title-text done' : 'task-title-text';
   const projBadge = showProject && task.project_title && vis('project')
     ? `<span class="task-project">${task.project_title}</span>` : '';
+  const goalBadge = vis('goal') && task.goal_title
+    ? `<span class="task-project" style="background:var(--color-surface-secondary,var(--bg-card));border:1px solid var(--border)">${task.goal_title}</span>` : '';
   const dueBadge = vis('due_date') ? dueBadgeHtml(task.due_date) : '';
   const hasChildren = (task.sub_task_count || task.subtask_count || 0) > 0;
   const isExpanded = expandedTasks.has(String(task.id));
@@ -3427,7 +3431,7 @@ function taskRowHtml(task, showProject, indent, viewMode) {
     <div class="task-check ${done ? 'done' : ''}" data-check-id="${task.id}">${done ? '✓' : ''}</div>
     <div class="task-content">
       <div class="${titleCls}"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${task.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${task.title} <span class="comment-badge" data-comment-for="${task.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div>
-      <div class="task-meta-row">${projBadge}${catChip}${tagChips}${statusChip}${priorityChip}${storyPts}</div>
+      <div class="task-meta-row">${projBadge}${goalBadge}${catChip}${tagChips}${statusChip}${priorityChip}${storyPts}</div>
       <div class="task-chips-outer" data-entity="task" data-rid="${task.id}" data-vm="${vm||'list'}">${renderCustomPropChips('task', task.id, vm)}</div>
     </div>
     <span class="task-row-due-right">${dueBadge}</span>
@@ -3704,20 +3708,14 @@ function renderCustomEntityNav() {
 
   container.querySelectorAll('._cet-nav-link').forEach(a => {
     let _navClickTimer = null;
-    a.onclick = e => {
-      e.preventDefault();
-      if (_navClickTimer) return; // double-click in progress — let ondblclick handle it
-      _navClickTimer = setTimeout(() => { _navClickTimer = null; renderView(a.dataset.view); }, 220);
-    };
-    a.ondblclick = e => {
-      e.preventDefault(); e.stopPropagation();
-      if (_navClickTimer) { clearTimeout(_navClickTimer); _navClickTimer = null; }
+    let _navLastClick = 0;
+
+    function startInlineEdit() {
       const wrap = a.closest('.nav-custom-wrap');
       const tName = wrap?.dataset.cetName;
       const t = customEntityTypes.find(ct => ct.name === tName);
       if (!t) return;
 
-      // Replace link with inline edit form
       let editIconVal = t.icon || '📁';
       const editIconId = `_cet-edit-icon-${tName}`;
       const editInputId = `_cet-edit-input-${tName}`;
@@ -3768,6 +3766,20 @@ function renderCustomEntityNav() {
         if (ev.key === 'Enter') { ev.preventDefault(); saveEdit(); }
         if (ev.key === 'Escape') { ev.preventDefault(); renderCustomEntityNav(); }
       };
+    }
+
+    a.onclick = e => {
+      e.preventDefault();
+      const now = Date.now();
+      if (now - _navLastClick < 300) {
+        clearTimeout(_navClickTimer);
+        _navClickTimer = null;
+        _navLastClick = 0;
+        startInlineEdit();
+        return;
+      }
+      _navLastClick = now;
+      _navClickTimer = setTimeout(() => { _navClickTimer = null; renderView(a.dataset.view); }, 280);
     };
   });
 }
@@ -3798,6 +3810,72 @@ async function renderCustomEntityList(typeName) {
       ${buildViewTabBar(entityKey, views, activeView.id)}
       <div id="custom-entity-content"></div>
     </div>`;
+
+    // Double-click on view title → inline edit display_name + icon
+    const viewTitleEl = main.querySelector('.view-title');
+    if (viewTitleEl && typeInfo) {
+      let _titleLastClick = 0;
+      viewTitleEl.style.cursor = 'default';
+      viewTitleEl.title = 'Double-click to rename';
+      viewTitleEl.onclick = (e) => {
+        const now = Date.now();
+        if (now - _titleLastClick < 350) {
+          _titleLastClick = 0;
+          let editIconVal = typeInfo.icon || '📁';
+          viewTitleEl.innerHTML = `
+            <span style="display:inline-flex;align-items:center;gap:6px">
+              <button id="_cet-title-icon-btn" style="font-size:18px;background:none;border:1px solid var(--border);border-radius:4px;padding:1px 5px;cursor:pointer;line-height:1.4" title="Change icon">${editIconVal.startsWith('__svg:') ? renderEntityIcon(editIconVal, 20) : editIconVal}</button>
+              <input id="_cet-title-input" type="text" value="${escHtml(typeInfo.display_name || typeInfo.name)}"
+                style="font-size:inherit;padding:2px 8px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text-primary);min-width:120px" />
+              <button id="_cet-title-save" style="font-size:12px;background:var(--accent);color:#fff;border:none;border-radius:4px;padding:2px 8px;cursor:pointer">✓</button>
+              <button id="_cet-title-cancel" style="font-size:12px;background:none;border:1px solid var(--border);border-radius:4px;padding:2px 8px;cursor:pointer">✕</button>
+            </span>`;
+          const iconBtn = viewTitleEl.querySelector('#_cet-title-icon-btn');
+          const inp = viewTitleEl.querySelector('#_cet-title-input');
+          inp.focus(); inp.select();
+          iconBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            showIconPicker(iconBtn, null, null, editIconVal, (newIcon) => {
+              editIconVal = newIcon || '📁';
+              iconBtn.innerHTML = editIconVal.startsWith('__svg:') ? renderEntityIcon(editIconVal, 20) : editIconVal;
+            });
+          };
+          const restoreTitle = () => {
+            const ri = typeInfo.icon || '📁';
+            const riHtml = ri.startsWith('__svg:') ? renderEntityIcon(ri, 20) : `<span style="font-size:18px">${ri}</span>`;
+            viewTitleEl.innerHTML = `${riHtml} ${escHtml(typeInfo.display_name || typeInfo.name)}`;
+          };
+          const saveTitle = async () => {
+            const newName = inp.value.trim();
+            if (!newName) { restoreTitle(); return; }
+            try {
+              await api('PUT', `/api/custom-types/${typeName}`, {
+                display_name: newName,
+                icon: editIconVal,
+                prop_defs: typeInfo.prop_defs || '',
+                has_detail_view: typeInfo.has_detail_view,
+              });
+              typeInfo.display_name = newName;
+              typeInfo.icon = editIconVal;
+              renderCustomEntityNav();
+              restoreTitle();
+              showToast('Updated');
+            } catch(err) {
+              showToast('Failed to save', 'error');
+              restoreTitle();
+            }
+          };
+          viewTitleEl.querySelector('#_cet-title-save').onclick = (ev) => { ev.stopPropagation(); saveTitle(); };
+          viewTitleEl.querySelector('#_cet-title-cancel').onclick = (ev) => { ev.stopPropagation(); restoreTitle(); };
+          inp.onkeydown = (ev) => {
+            if (ev.key === 'Enter') { ev.preventDefault(); saveTitle(); }
+            if (ev.key === 'Escape') { ev.preventDefault(); restoreTitle(); }
+          };
+          return;
+        }
+        _titleLastClick = now;
+      };
+    }
 
     // Update "new" button label and wire it up
     const newBtn = document.getElementById(`new-${entityKey}-btn`);
@@ -4050,11 +4128,24 @@ async function openCustomEntitySlideover(typeName, id) {
   // Tags chip
   document.getElementById('chip-tags')?.addEventListener('click', (ev) => {
     ev.stopPropagation();
-    openTagsPicker(ev.currentTarget, cesTags.map(t => t.id), async (ids) => {
-      await api('PUT', `/api/custom/${typeName}/${id}/tags`, { tag_ids: ids });
+    const _items = allTags.map(t => ({ value: t.id, label: t.name, color: t.color }));
+    const _curIds = cesTags.map(t => t.id);
+    openCombo(ev.currentTarget, _items, null, async ({ multiIds, create }) => {
+      if (create) {
+        try {
+          const newTag = await api('POST', '/api/tags', { name: create, color: 'blue' });
+          allTags.push(newTag);
+          await api('PUT', `/api/custom/${typeName}/${id}/tags`, { tag_ids: [...new Set([..._curIds, newTag.id])] });
+        } catch(err) {}
+        closeCombo();
+        openCustomEntitySlideover(typeName, id);
+        return;
+      }
+      const ids = (multiIds || []).map(Number);
       cesTags = allTags.filter(t => ids.includes(t.id));
       const v = document.getElementById('chip-tags-val'); if (v) v.innerHTML = cesTags.length ? cesTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
-    });
+      await api('PUT', `/api/custom/${typeName}/${id}/tags`, { tag_ids: ids });
+    }, { multiSelect: true, allowCreate: true, selectedIds: _curIds });
   });
 
   // ··· Section manager
@@ -4178,9 +4269,9 @@ function renderCurrentView() {
 
 const ENTITY_ALL_PROPS = {
   task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goals'},{key:'project',label:'Projects'},{key:'category',label:'Category'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'}],
-  goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'due',label:'Due Date'},{key:'metrics',label:'Metrics'}],
-  project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
-  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'}],
+  goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'due',label:'Due Date'},{key:'metrics',label:'Metrics'}],
+  project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goals'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
+  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'}],
   note:     [{key:'date',label:'Date'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'}],
   resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'}],
 };
@@ -6118,6 +6209,7 @@ async function renderTasks() {
     const vis = (key) => propVisible('table', key);
     const allColDef = [
       { key: 'project',      header: 'Project',      cell: (t) => `<td>${t.project_title ? `<span class="badge badge-todo">${t.project_title}</span>` : '—'}</td>` },
+      { key: 'goal',         header: 'Goals',         cell: (t) => `<td>${t.goal_title ? `<span class="badge badge-todo">${t.goal_title}</span>` : '—'}</td>` },
       { key: 'status',       header: 'Status',        cell: (t) => { const sopts = TASK_STATUSES.map(s => `<option value="${s}" ${t.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join(''); return `<td><select class="inline-status-select" data-task-id="${t.id}" style="font-size:11px;padding:2px 6px;border-radius:3px">${sopts}</select></td>`; } },
       { key: 'priority',     header: 'Priority',      cell: (t) => `<td>${priorityBadge(t.priority)}</td>` },
       { key: 'due_date',     header: 'Due',           cell: (t) => `<td class="${isOverdue(t.due_date)?'task-due overdue':isToday(t.due_date)?'task-due today':''}">${fmtDate(t.due_date)||'—'}</td>` },
@@ -6654,8 +6746,9 @@ async function renderProjects() {
         <span class="entity-list-title proj-list-title">${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></span>
         ${vis('status') ? statusBadge(p.status) : ''}
         ${vis('goal') ? (() => { const v = renderMultiRelationValue('project', p.id, 'goal', p.goal_title); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
-        ${vis('area') && p.macro_area ? `<span class="entity-list-meta">${p.macro_area.split('(')[0].trim()}</span>` : ''}
+        ${vis('macro') && p.macro_area ? `<span class="entity-list-meta">${p.macro_area.split('(')[0].trim()}</span>` : ''}
         ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
+        ${vis('tags') ? (p.tags || []).map(t => tagHtml(t)).join('') : ''}
         ${renderCustomPropChips('project', p.id, 'list')}
         <span onclick="event.stopPropagation()"><button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button></span>
       </div>`;
@@ -6826,6 +6919,7 @@ async function renderGoals() {
         ${vis('year') && g.year ? `<span class="entity-list-meta">${g.year}</span>` : ''}
         ${vis('status') ? statusBadge(g.status) : ''}
         ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
+        ${vis('tags') ? (g.tags || []).map(t => tagHtml(t)).join('') : ''}
         <span onclick="event.stopPropagation()"><button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button></span>
       </div>`;
     }).join('')}</div>`;
@@ -7433,6 +7527,8 @@ async function renderSprints() {
         ${vis('project') && s.project_title ? `<span class="entity-list-meta">${s.project_title}</span>` : ''}
         ${vis('dates') ? `<span class="entity-list-meta">${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</span>` : ''}
         ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
+        ${vis('points') && s.story_points ? `<span class="entity-list-meta">${s.story_points} pts</span>` : ''}
+        ${vis('tags') ? (s.tags || []).map(t => tagHtml(t)).join('') : ''}
       </div>`;
     }).join('')}</div>`;
   }
@@ -8700,14 +8796,15 @@ async function renderResources() {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">⬡</div><div class="empty-state-text">No resources yet</div></div>`;
     const vis = (key) => entityPropVisible('resource', key);
     return `<div class="entity-list-view">${list.map(r => {
-      const linked = r.goal_title || r.project_title || r.task_title;
       return `<div class="entity-list-row res-row" data-res-id="${r.id}">
         <span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
         <span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
         <span class="entity-list-title">${r.title}<span class="comment-badge" data-comment-for="${r.id}" data-comment-entity="resource" style="display:none"></span></span>
         ${vis('type') && r.resource_type ? `<span class="entity-list-meta">${r.resource_type}</span>` : ''}
-        ${vis('linked') && linked ? `<span class="entity-list-meta">→ ${linked}</span>` : ''}
+        ${vis('project') && r.project_title ? `<span class="entity-list-meta">→ ${r.project_title}</span>` : ''}
+        ${vis('goal') && r.goal_title ? `<span class="entity-list-meta">→ ${r.goal_title}</span>` : ''}
         ${vis('url') && r.url ? `<span class="entity-list-meta" onclick="event.stopPropagation()"><a href="${r.url}" target="_blank" rel="noopener" style="color:var(--accent)">${r.url.length > 40 ? r.url.slice(0,40)+'…' : r.url}</a></span>` : ''}
+        ${vis('tags') ? (r.tags || []).map(t => tagHtml(t)).join('') : ''}
       </div>`;
     }).join('')}</div>`;
   }
@@ -9035,7 +9132,7 @@ async function renderProjectDetail(projectId) {
     status:   (valEl) => { openValuePicker(valEl, PROJECT_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchProject({ status: val }); }); },
     due:      (valEl) => { openDateRangePickerGlobal(valEl, stripDate(p.start_date), stripDate(p.due_date), async (start, end) => { await patchProject({ start_date: start||null, due_date: end||null }); }); },
     goal:     (valEl) => openMultiRelationPicker(valEl, 'project', projectId, 'goal', 'goal', pdLocalGoals, p, patchProject, 'goal_id', () => renderProjectDetail(projectId)),
-    tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: ids }); renderProjectDetail(projectId); }); },
+    tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); renderProjectDetail(projectId); return; } await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); renderProjectDetail(projectId); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchProject({ category_id: val ? parseInt(val) : null }); }); },
     macro:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => { await patchProject({ macro_area: val||null }); }); },
     kanban:   (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...KANBAN_COLS.map(k => ({ value: k, label: k }))], async (val) => { await patchProject({ kanban_col: val||null }); }); },
@@ -9236,7 +9333,7 @@ async function renderGoalDetail(goalId) {
     status:   (valEl) => { openValuePicker(valEl, GOAL_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchGoal({ status: val }); }); },
     type:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_TYPES.map(t => ({ value: t, label: t }))], async (val) => { await patchGoal({ type: val||null }); }); },
     year:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_YEARS.map(y => ({ value: y, label: y }))], async (val) => { await patchGoal({ year: val||null }); }); },
-    tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: ids }); renderGoalDetail(goalId); }); },
+    tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); renderGoalDetail(goalId); return; } await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); renderGoalDetail(goalId); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchGoal({ category_id: val ? parseInt(val) : null }); }); },
     due:      (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(g.due_date), async (val) => { await patchGoal({ due_date: val||null }); }); },
     metrics:  (valEl) => {
@@ -12271,12 +12368,26 @@ async function showProjectSlideover(project, goals, afterSave) {
   });
   document.getElementById('chip-tags')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openTagsPicker(e.currentTarget, tags.map(t => t.id), async (ids) => {
-      await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: ids });
+    const _items = allTags.map(t => ({ value: t.id, label: t.name, color: t.color }));
+    const _curIds = tags.map(t => t.id);
+    openCombo(e.currentTarget, _items, null, async ({ multiIds, create }) => {
+      if (create) {
+        try {
+          const newTag = await api('POST', '/api/tags', { name: create, color: 'blue' });
+          allTags.push(newTag);
+          const updIds = [...new Set([..._curIds, newTag.id])];
+          await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: updIds });
+        } catch(err) {}
+        closeCombo();
+        showProjectSlideover({ id: projectId }, goals, afterSave);
+        return;
+      }
+      const ids = (multiIds || []).map(Number);
       const sel = allTags.filter(t => ids.includes(t.id));
       const v = document.getElementById('chip-tags-val'); if (v) v.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: ids });
       if (afterSave) afterSave();
-    });
+    }, { multiSelect: true, allowCreate: true, selectedIds: _curIds });
   });
 
   // Extra heading chips
@@ -12284,7 +12395,7 @@ async function showProjectSlideover(project, goals, afterSave) {
     status:   (valEl) => { openValuePicker(valEl, PROJECT_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchProject({ status: val }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     due:      (valEl) => { openDateRangePickerGlobal(valEl, stripDate(p.start_date), stripDate(p.due_date), async (start, end) => { await patchProject({ start_date: start||null, due_date: end||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     goal:     (valEl) => openMultiRelationPicker(valEl, 'project', projectId, 'goal', 'goal', goals||[], p, patchProject, 'goal_id', () => showProjectSlideover({ id: projectId }, goals, afterSave)),
-    tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: ids }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showProjectSlideover({ id: projectId }, goals, afterSave); return; } await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showProjectSlideover({ id: projectId }, goals, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchProject({ category_id: val ? parseInt(val) : null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     macro:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => { await patchProject({ macro_area: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     kanban:   (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...KANBAN_COLS.map(k => ({ value: k, label: k }))], async (val) => { await patchProject({ kanban_col: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
@@ -12469,19 +12580,32 @@ async function showGoalSlideover(goal, afterSave) {
   });
   document.getElementById('chip-tags')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openTagsPicker(e.currentTarget, tags.map(t => t.id), async (ids) => {
-      await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: ids });
+    const _items = allTags.map(t => ({ value: t.id, label: t.name, color: t.color }));
+    const _curIds = tags.map(t => t.id);
+    openCombo(e.currentTarget, _items, null, async ({ multiIds, create }) => {
+      if (create) {
+        try {
+          const newTag = await api('POST', '/api/tags', { name: create, color: 'blue' });
+          allTags.push(newTag);
+          await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: [...new Set([..._curIds, newTag.id])] });
+        } catch(err) {}
+        closeCombo();
+        showGoalSlideover({ id: goalId }, afterSave);
+        return;
+      }
+      const ids = (multiIds || []).map(Number);
       const sel = allTags.filter(t => ids.includes(t.id));
       const v = document.getElementById('chip-tags-val'); if (v) v.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: ids });
       if (afterSave) afterSave();
-    });
+    }, { multiSelect: true, allowCreate: true, selectedIds: _curIds });
   });
 
   const goalInlinePropEditFns = {
     status:   (valEl) => { openValuePicker(valEl, GOAL_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchGoal({ status: val }); showGoalSlideover({ id: goalId }, afterSave); }); },
     type:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_TYPES.map(t => ({ value: t, label: t }))], async (val) => { await patchGoal({ type: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
     year:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_YEARS.map(y => ({ value: y, label: y }))], async (val) => { await patchGoal({ year: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
-    tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: ids }); showGoalSlideover({ id: goalId }, afterSave); }); },
+    tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showGoalSlideover({ id: goalId }, afterSave); return; } await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showGoalSlideover({ id: goalId }, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchGoal({ category_id: val ? parseInt(val) : null }); showGoalSlideover({ id: goalId }, afterSave); }); },
     due:      (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(g.due_date), async (val) => { await patchGoal({ due_date: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
     metrics:  (valEl) => {
@@ -12826,19 +12950,32 @@ async function showNoteSlideover(noteId, afterSave) {
   });
   document.getElementById('chip-tags')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openTagsPicker(e.currentTarget, tags.map(t => t.id), async (ids) => {
-      await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: ids });
+    const _items = allTags.map(t => ({ value: t.id, label: t.name, color: t.color }));
+    const _curIds = tags.map(t => t.id);
+    openCombo(e.currentTarget, _items, null, async ({ multiIds, create }) => {
+      if (create) {
+        try {
+          const newTag = await api('POST', '/api/tags', { name: create, color: 'blue' });
+          allTags.push(newTag);
+          await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: [...new Set([..._curIds, newTag.id])] });
+        } catch(err) {}
+        closeCombo();
+        showNoteSlideover(noteId, afterSave);
+        return;
+      }
+      const ids = (multiIds || []).map(Number);
       const sel = allTags.filter(t => ids.includes(t.id));
       const v = document.getElementById('chip-tags-val'); if (v) v.innerHTML = sel.length ? sel.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: ids });
       if (afterSave) afterSave();
-    });
+    }, { multiSelect: true, allowCreate: true, selectedIds: _curIds });
   });
 
   const noteInlinePropEditFns = {
     date:     (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(n.note_date), async (val) => { await patchNote({ note_date: val||null }); showNoteSlideover(noteId, afterSave); }); },
     project:  (valEl) => openMultiRelationPicker(valEl, 'note', noteId, 'project', 'project', projects, n, patchNote, 'project_id', () => showNoteSlideover(noteId, afterSave)),
     goal:     (valEl) => openMultiRelationPicker(valEl, 'note', noteId, 'goal', 'goal', goals, n, patchNote, 'goal_id', () => showNoteSlideover(noteId, afterSave)),
-    tags:     (valEl) => { openTagsPicker(valEl, tags.map(t => t.id), async (ids) => { await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: ids }); showNoteSlideover(noteId, afterSave); }); },
+    tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showNoteSlideover(noteId, afterSave); return; } await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showNoteSlideover(noteId, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchNote({ category_id: val ? parseInt(val) : null }); showNoteSlideover(noteId, afterSave); }); },
   };
 
@@ -13026,19 +13163,32 @@ async function showSprintSlideover(sprintId, afterSave) {
   });
   document.getElementById('chip-tags')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openTagsPicker(e.currentTarget, sprintTags.map(t => t.id), async (ids) => {
-      await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: ids });
+    const _items = allTags.map(t => ({ value: t.id, label: t.name, color: t.color }));
+    const _curIds = sprintTags.map(t => t.id);
+    openCombo(e.currentTarget, _items, null, async ({ multiIds, create }) => {
+      if (create) {
+        try {
+          const newTag = await api('POST', '/api/tags', { name: create, color: 'blue' });
+          allTags.push(newTag);
+          await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: [...new Set([..._curIds, newTag.id])] });
+        } catch(err) {}
+        closeCombo();
+        showSprintSlideover(sprintId, afterSave);
+        return;
+      }
+      const ids = (multiIds || []).map(Number);
       sprintTags = allTags.filter(t => ids.includes(t.id));
       const v = document.getElementById('chip-tags-val'); if (v) v.innerHTML = sprintTags.length ? sprintTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: ids });
       if (afterSave) afterSave();
-    });
+    }, { multiSelect: true, allowCreate: true, selectedIds: _curIds });
   });
 
   const sprintInlinePropEditFns = {
     status:  (valEl) => { openValuePicker(valEl, SPRINT_STATUSES.map(v => ({ value: v, label: v })), async (val) => { await patchSprint({ status: val }); showSprintSlideover(sprintId, afterSave); }); },
     dates:   (valEl) => { openDateRangePickerGlobal(valEl, stripDate(s.start_date), stripDate(s.end_date), async (start, end) => { await patchSprint({ start_date: start||null, end_date: end||null }); showSprintSlideover(sprintId, afterSave); }); },
     project: (valEl) => openMultiRelationPicker(valEl, 'sprint', sprintId, 'project', 'project', allProjects, s, patchSprint, 'project_id', () => showSprintSlideover(sprintId, afterSave)),
-    tags:    (valEl) => { openTagsPicker(valEl, sprintTags.map(t => t.id), async (ids) => { await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: ids }); showSprintSlideover(sprintId, afterSave); }); },
+    tags:    (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = sprintTags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showSprintSlideover(sprintId, afterSave); return; } await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showSprintSlideover(sprintId, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     points:  (valEl) => {
       const inp = document.createElement('input');
       inp.type = 'number'; inp.min = '0'; inp.style.cssText = 'width:80px;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text)';
@@ -13302,12 +13452,25 @@ async function showResourceSlideover(resource, afterSave) {
   });
   document.getElementById('chip-tags')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openTagsPicker(e.currentTarget, resTags.map(t => t.id), async (ids) => {
-      await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: ids });
+    const _items = allTags.map(t => ({ value: t.id, label: t.name, color: t.color }));
+    const _curIds = resTags.map(t => t.id);
+    openCombo(e.currentTarget, _items, null, async ({ multiIds, create }) => {
+      if (create) {
+        try {
+          const newTag = await api('POST', '/api/tags', { name: create, color: 'blue' });
+          allTags.push(newTag);
+          await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: [...new Set([..._curIds, newTag.id])] });
+        } catch(err) {}
+        closeCombo();
+        showResourceSlideover({ id: resId }, afterSave);
+        return;
+      }
+      const ids = (multiIds || []).map(Number);
       resTags = allTags.filter(t => ids.includes(t.id));
       const v = document.getElementById('chip-tags-val'); if (v) v.innerHTML = resTags.length ? resTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+      await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: ids });
       if (afterSave) afterSave();
-    });
+    }, { multiSelect: true, allowCreate: true, selectedIds: _curIds });
   });
 
   const resInlinePropEditFns = {
@@ -13327,7 +13490,7 @@ async function showResourceSlideover(resource, afterSave) {
     },
     project: (valEl) => openMultiRelationPicker(valEl, 'resource', resId, 'project', 'project', projects, r, patchResource, 'project_id', () => showResourceSlideover({ id: resId }, afterSave)),
     goal:    (valEl) => openMultiRelationPicker(valEl, 'resource', resId, 'goal', 'goal', goals, r, patchResource, 'goal_id', () => showResourceSlideover({ id: resId }, afterSave)),
-    tags:    (valEl) => { openTagsPicker(valEl, resTags.map(t => t.id), async (ids) => { await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: ids }); showResourceSlideover({ id: resId }, afterSave); }); },
+    tags:    (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = resTags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showResourceSlideover({ id: resId }, afterSave); return; } await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showResourceSlideover({ id: resId }, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
   };
 
   resExtraHeadKeys.forEach(k => {
@@ -14441,6 +14604,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
   }
 
   async function renderDataTab(body) {
+    body.innerHTML = '';
     // ── Custom Entity Types section ───────────────────────────────────────────
     const cetSection = document.createElement('div');
     cetSection.style.cssText = 'margin-bottom:20px;border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:16px;background:var(--color-surface)';
@@ -14778,12 +14942,17 @@ async function openRaibisSettings(defaultTab = 'apps') {
       });
     });
 
+    // Dedicated container so loadEntities doesn't destroy the CET section above
+    const dataSection = document.createElement('div');
+    dataSection.style.cssText = 'border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:16px;background:var(--color-surface);margin-bottom:20px';
+    body.appendChild(dataSection);
+
     let activeType = ENTITY_TYPES[0];
 
     async function loadEntities(type) {
       activeType = type;
       const singularLabel = type.label.replace(/s$/, '');
-      body.innerHTML = `
+      dataSection.innerHTML = `
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
           ${ENTITY_TYPES.map(t => `<button class="btn btn-sm ${t.key===type.key?'btn-primary':'btn-ghost'}" data-dtype="${t.key}">${t.label}</button>`).join('')}
         </div>
@@ -14796,13 +14965,13 @@ async function openRaibisSettings(defaultTab = 'apps') {
         </div>
         <div id="_data-content" style="color:var(--text-muted);font-size:13px;padding:8px 0">Loading…</div>`;
 
-      body.querySelectorAll('[data-dtype]').forEach(btn => {
+      dataSection.querySelectorAll('[data-dtype]').forEach(btn => {
         btn.onclick = () => loadEntities(ENTITY_TYPES.find(t => t.key === btn.dataset.dtype));
       });
-      const createBtn = body.querySelector('#_data-create');
+      const createBtn = dataSection.querySelector('#_data-create');
       if (createBtn) createBtn.onclick = type.createFn || (() => showToast('No create action for ' + type.label, 'info'));
 
-      const delTypeBtn = body.querySelector('#_data-del-type');
+      const delTypeBtn = dataSection.querySelector('#_data-del-type');
       if (delTypeBtn) {
         const ctName = type.key.replace(/^custom_/, '');
         delTypeBtn.onclick = () => showConfirmModal(
@@ -14811,13 +14980,14 @@ async function openRaibisSettings(defaultTab = 'apps') {
             await api('DELETE', `/api/custom-types/${ctName}`);
             customEntityTypes = customEntityTypes.filter(ct => ct.name !== ctName);
             renderCustomEntityNav();
+            await renderCetList();
             await loadEntities(ENTITY_TYPES[0]);
           }
         );
       }
 
-      const content = body.querySelector('#_data-content');
-      const countEl  = body.querySelector('#_data-count');
+      const content = dataSection.querySelector('#_data-content');
+      const countEl  = dataSection.querySelector('#_data-count');
       try {
         let items = await api('GET', `/api/${type.api}`);
         if (!Array.isArray(items)) items = items[type.key] || [];
@@ -15410,17 +15580,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Load custom entity types and render nav
   await loadCustomEntityTypes();
-
-  // Seed default global taxonomy properties if not yet created
-  (function seedDefaultTaxonomyProps() {
-    const props = getGlobalTaxonomyProps();
-    let changed = false;
-    if (!props.some(p => p.key === 'category')) {
-      props.push({ key: 'category', label: 'Category' });
-      changed = true;
-    }
-    if (changed) saveGlobalTaxonomyProps(props);
-  })();
 
   renderTaxonomyNav();
 

@@ -80,7 +80,8 @@ func serve(cfg serverConfig) {
 	}
 
 	svc := service.New(store)
-	mux := buildMux(svc, store, v, cfg.dbPath)
+	habitSvc := service.NewHabitService(store)
+	mux := buildMux(svc, habitSvc, store, v, cfg.dbPath)
 
 	if cfg.socketPath == "" && cfg.tcpPort == "" {
 		fmt.Fprintln(os.Stderr, "lifeos server: no socket or port specified; use --socket or --port")
@@ -147,7 +148,7 @@ func serve(cfg serverConfig) {
 
 // ── Router ─────────────────────────────────────────────────────────────────────
 
-func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, dbPath string) http.Handler {
+func buildMux(svc service.TaskService, habitSvc *service.HabitService, store storage.Storage, v *vault.Vault, dbPath string) http.Handler {
 	mux := http.NewServeMux()
 
 	// Tasks
@@ -177,6 +178,10 @@ func buildMux(svc service.TaskService, store storage.Storage, v *vault.Vault, db
 	// Tags
 	mux.HandleFunc("/api/tags", withCORS(tagsHandler(store)))
 	mux.HandleFunc("/api/tags/", withCORS(tagHandler(store)))
+
+	// Habits
+	mux.HandleFunc("/api/habits", withCORS(habitsHandler(habitSvc)))
+	mux.HandleFunc("/api/habits/", withCORS(habitHandler(habitSvc)))
 
 	// Kanban, Resources, Pomodoro, misc
 	mux.HandleFunc("/api/kanban", withCORS(kanbanHandler(svc, store)))
@@ -5209,6 +5214,171 @@ func runAutomations(store storage.Storage, svc service.TaskService, t *domain.Ta
 		}
 		if _, err := svc.Create(&newTask); err != nil {
 			log.Printf("automations: recur fallback for task %d: %v", t.ID, err)
+		}
+	}
+}
+
+// habitsHandler handles GET /api/habits and POST /api/habits.
+func habitsHandler(svc *service.HabitService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			habits, err := svc.ListWithStats()
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, habits)
+		case http.MethodPost:
+			var body struct {
+				Title       string `json:"title"`
+				Type        string `json:"type"`
+				ReferenceID string `json:"reference_id"`
+			}
+			if err := readJSON(r, &body); err != nil {
+				errJSON(w, 400, "invalid JSON: "+err.Error())
+				return
+			}
+			h := &domain.Habit{
+				Title: body.Title,
+				Type:  domain.HabitType(body.Type),
+			}
+			if body.ReferenceID != "" {
+				h.ReferenceID = &body.ReferenceID
+			}
+			created, err := svc.Create(h)
+			if err != nil {
+				errJSON(w, 400, err.Error())
+				return
+			}
+			writeJSON(w, 201, created)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// habitHandler handles GET/PATCH/DELETE /api/habits/:id and sub-resources.
+func habitHandler(svc *service.HabitService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimRight(r.URL.Path, "/")
+
+		if strings.HasSuffix(path, "/checkin") {
+			parentPath := strings.TrimSuffix(path, "/checkin")
+			id, ok := parseID(parentPath)
+			if !ok {
+				errJSON(w, 400, "invalid habit id")
+				return
+			}
+			today := time.Now().UTC().Format("2006-01-02")
+			var body struct {
+				Date string `json:"date"`
+				Done *bool  `json:"done"`
+			}
+			_ = readJSON(r, &body)
+			date := body.Date
+			if date == "" {
+				date = today
+			}
+			if r.Method == http.MethodPost {
+				if body.Done != nil && !*body.Done {
+					if err := svc.RemoveCompletion(id, date); err != nil {
+						errJSON(w, 500, err.Error())
+						return
+					}
+				} else {
+					if err := svc.LogCompletion(id, date); err != nil {
+						errJSON(w, 500, err.Error())
+						return
+					}
+				}
+				streak, doneToday, _ := svc.GetStreak(id)
+				writeJSON(w, 200, map[string]any{"ok": true, "streak": streak, "done_today": doneToday})
+			} else {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			}
+			return
+		}
+
+		if strings.HasSuffix(path, "/completions") {
+			parentPath := strings.TrimSuffix(path, "/completions")
+			id, ok := parseID(parentPath)
+			if !ok {
+				errJSON(w, 400, "invalid habit id")
+				return
+			}
+			if r.Method != http.MethodGet {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			from := r.URL.Query().Get("from")
+			to := r.URL.Query().Get("to")
+			if from == "" {
+				from = time.Now().UTC().AddDate(0, -3, 0).Format("2006-01-02")
+			}
+			if to == "" {
+				to = time.Now().UTC().Format("2006-01-02")
+			}
+			dates, err := svc.GetCompletions(id, from, to)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, dates)
+			return
+		}
+
+		id, ok := parseID(path)
+		if !ok {
+			errJSON(w, 400, "invalid habit id")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			h, err := svc.Get(id)
+			if err != nil {
+				errJSON(w, 404, "habit not found")
+				return
+			}
+			writeJSON(w, 200, h)
+		case http.MethodPatch:
+			h, err := svc.Get(id)
+			if err != nil {
+				errJSON(w, 404, "habit not found")
+				return
+			}
+			var body map[string]any
+			if err := readJSON(r, &body); err != nil {
+				errJSON(w, 400, "invalid JSON")
+				return
+			}
+			if v, ok := body["title"].(string); ok {
+				h.Title = v
+			}
+			if v, ok := body["type"].(string); ok {
+				h.Type = domain.HabitType(v)
+			}
+			if v, ok := body["reference_id"]; ok {
+				if v == nil {
+					h.ReferenceID = nil
+				} else if s, ok := v.(string); ok {
+					h.ReferenceID = &s
+				}
+			}
+			updated, err := svc.Update(h)
+			if err != nil {
+				errJSON(w, 400, err.Error())
+				return
+			}
+			writeJSON(w, 200, updated)
+		case http.MethodDelete:
+			if err := svc.Delete(id); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	}
 }
