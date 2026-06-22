@@ -2222,7 +2222,15 @@ function bindAddPropBtn(entity, onAdd) {
 // Returns an HTML string of visible custom prop chips for card/list/kanban views.
 // For tasks: uses propVisible(viewMode, key). For others: entityPropVisible(entity, key).
 function renderCustomPropChips(entity, recordId, viewMode) {
-  const defs = getCustomPropDefs(entity);
+  const allDefs = getCustomPropDefs(entity);
+  if (!allDefs.length) return '';
+  // Filter out custom relation props that shadow a built-in prop
+  const builtinKeys = new Set((ENTITY_ALL_PROPS[entity] || []).map(d => d.key));
+  const defs = allDefs.filter(d => {
+    if (builtinKeys.has(d.key)) return false;
+    if (d.type === 'relation' && builtinKeys.has(d.key.replace(/s$/, ''))) return false;
+    return true;
+  });
   if (!defs.length) return '';
   const isVisible = entity === 'task'
     ? (key) => propVisible(viewMode || 'cards', key)
@@ -2251,7 +2259,9 @@ function renderCustomPropChips(entity, recordId, viewMode) {
         : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:10px" title="${def.label}: ${escHtml(val)}">${escHtml(val)}</span>`;
     }
     if (def.type === 'relation') {
-      const relItems = parseRelationValue(val);
+      const allRelItems = parseRelationValue(val);
+      const seenIds = new Set();
+      const relItems = allRelItems.filter(it => { if (seenIds.has(it.id)) return false; seenIds.add(it.id); return true; });
       if (!relItems.length) return '';
       return relItems.map(it => `<span class="multi-chip" style="font-size:10px" title="${def.label}: ${escHtml(it.label)}">${escHtml(it.label)}</span>`).join('');
     }
@@ -3718,6 +3728,23 @@ async function renderCustomEntityList(typeName) {
     const newBtn = document.getElementById(`new-${entityKey}-btn`);
     if (newBtn) { newBtn.textContent = `+ New ${displayName}`; newBtn.onclick = () => openCustomEntityForm(typeName, null); }
 
+    // Inject prop-visibility eye button into toolbar
+    const eyeSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+    const propVisHtml = `<div class="prop-vis-wrap" id="${entityKey}-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="${entityKey}-prop-vis-btn" title="Property visibility">${eyeSvg}</button></div>`;
+    const customToolbarRight = main.querySelector(`#${entityKey}-tab-bar .view-toolbar-right`);
+    if (customToolbarRight && newBtn) {
+      customToolbarRight.insertBefore(document.createRange().createContextualFragment(propVisHtml), newBtn);
+    }
+    const propVisBtn = document.getElementById(`${entityKey}-prop-vis-btn`);
+    const propVisWrap = document.getElementById(`${entityKey}-prop-vis-wrap`);
+    if (propVisBtn && propVisWrap) {
+      propVisBtn.onclick = (e) => {
+        e.stopPropagation();
+        const propList = propDefs.map(pd => ({ key: pd.key, label: pd.label || pd.key }));
+        bindPropVisPanel(propVisWrap, propList, () => getEntityVisProps(entityKey), (keys) => setEntityVisProps(entityKey, keys), render);
+      };
+    }
+
     // Bind view tab bar
     bindViewTabBar(entityKey, (newActiveId) => {
       setActiveTabId(entityKey, newActiveId);
@@ -3748,12 +3775,12 @@ async function renderCustomEntityList(typeName) {
     function buildListView(items) {
       if (!items.length) return emptyState();
       return `<div class="entity-list-view">${items.map(e => {
-        const props = propDefs.slice(0, 3).map(pd => {
+        const visProps = propDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 3).map(pd => {
           const v = e.props?.[pd.key] || ''; return v ? `<span class="entity-list-meta">${escHtml(v)}</span>` : '';
         }).filter(Boolean).join('');
         return `<div class="entity-list-row custom-entity-row" data-id="${e.id}" style="cursor:pointer">
           <span class="entity-list-title">${escHtml(e.title)}</span>
-          ${props}
+          ${visProps}
           <span onclick="event.stopPropagation()" style="display:flex;gap:4px;margin-left:auto">
             <button class="btn btn-sm btn-ghost custom-edit-btn" data-id="${e.id}">Edit</button>
             <button class="btn btn-sm btn-ghost custom-del-btn" data-id="${e.id}" style="color:var(--color-danger)">Delete</button>
@@ -3765,13 +3792,13 @@ async function renderCustomEntityList(typeName) {
     function buildCardsView(items) {
       if (!items.length) return emptyState();
       return `<div class="entity-cards">${items.map(e => {
-        const props = propDefs.slice(0, 4).map(pd => {
+        const visProps = propDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 4).map(pd => {
           const v = e.props?.[pd.key] || '';
           return v ? `<div style="display:flex;gap:6px;font-size:12px;padding:2px 0"><span style="color:var(--text-muted);min-width:80px;flex-shrink:0">${escHtml(pd.label)}</span><span>${escHtml(v)}</span></div>` : '';
         }).filter(Boolean).join('');
         return `<div class="entity-card custom-entity-row" data-id="${e.id}" style="cursor:pointer;display:flex;flex-direction:column;gap:4px">
           <div class="entity-card-title" style="font-weight:600;font-size:14px;margin-bottom:4px">${escHtml(e.title)}</div>
-          ${props}
+          ${visProps}
           <div style="display:flex;gap:6px;padding-top:8px;justify-content:flex-end;border-top:1px solid var(--color-border);margin-top:4px" onclick="event.stopPropagation()">
             <button class="btn btn-sm btn-ghost custom-edit-btn" data-id="${e.id}">Edit</button>
             <button class="btn btn-sm btn-ghost custom-del-btn" data-id="${e.id}" style="color:var(--color-danger)">Delete</button>
@@ -3782,16 +3809,17 @@ async function renderCustomEntityList(typeName) {
 
     function buildTableView(items) {
       if (!items.length) return emptyState();
+      const visDefs = propDefs.filter(pd => entityPropVisible(entityKey, pd.key));
       return `<div class="entity-table-wrap"><table class="entity-table">
         <thead><tr>
           <th>Title</th>
-          ${propDefs.map(pd => `<th>${escHtml(pd.label)}</th>`).join('')}
+          ${visDefs.map(pd => `<th>${escHtml(pd.label)}</th>`).join('')}
           <th>Created</th>
           <th></th>
         </tr></thead>
         <tbody>${items.map(e => `<tr class="custom-entity-row" data-id="${e.id}" style="cursor:pointer">
           <td style="font-weight:500">${escHtml(e.title)}</td>
-          ${propDefs.map(pd => `<td>${escHtml(e.props?.[pd.key] || '')}</td>`).join('')}
+          ${visDefs.map(pd => `<td>${escHtml(e.props?.[pd.key] || '')}</td>`).join('')}
           <td style="color:var(--text-muted);font-size:11px">${fmtDate(e.created_at)}</td>
           <td onclick="event.stopPropagation()" style="display:flex;gap:4px">
             <button class="btn btn-sm btn-ghost custom-edit-btn" data-id="${e.id}">Edit</button>
@@ -14220,13 +14248,33 @@ async function openRaibisSettings(defaultTab = 'apps') {
         list.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">No custom entity types defined yet.</div>';
         return;
       }
-      list.innerHTML = types.map(t => `
+      list.innerHTML = types.map(t => {
+        const iconDisplay = t.icon
+          ? (t.icon.startsWith('__svg:') ? renderEntityIcon(t.icon, 16) : `<span style="font-size:16px">${t.icon}</span>`)
+          : `<span style="font-size:16px">📁</span>`;
+        return `
         <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--color-border)">
-          <span style="font-size:16px">${t.icon || '📁'}</span>
+          <button class="btn btn-sm btn-ghost _cet-icon" data-name="${escHtml(t.name)}" title="Change icon" style="padding:2px 4px;min-width:28px;display:flex;align-items:center;justify-content:center">${iconDisplay}</button>
           <span style="flex:1;font-size:13px;font-weight:500">${escHtml(t.display_name)}</span>
           <span style="font-size:11px;color:var(--text-muted)">${escHtml(t.name)}</span>
           <button class="btn btn-sm btn-ghost _cet-del" data-name="${escHtml(t.name)}" style="color:var(--color-danger)">Delete</button>
-        </div>`).join('');
+        </div>`;
+      }).join('');
+      list.querySelectorAll('._cet-icon').forEach(btn => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          const tName = btn.dataset.name;
+          const t = customEntityTypes.find(ct => ct.name === tName);
+          if (!t) return;
+          showIconPicker(btn, null, null, t.icon || '📁', async (newIcon) => {
+            const icon = newIcon || '📁';
+            try {
+              await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon, prop_defs: t.prop_defs || '' });
+              await renderCetList();
+            } catch(err) { showToast('Failed to update icon: ' + (err.message || err), 'error'); }
+          });
+        };
+      });
       list.querySelectorAll('._cet-del').forEach(btn => {
         btn.onclick = () => {
           showConfirmModal(`Delete type "${btn.dataset.name}" and all its entities?`, async () => {
@@ -14343,6 +14391,18 @@ async function openRaibisSettings(defaultTab = 'apps') {
       { key: 'habits',     label: 'Habits',     api: 'habits',     titleKey: 'name',  exportKey: 'habits',
         createFn: () => { overlay.remove(); showHabitModal(null); } },
     ];
+    // Append custom entity types as browsable tabs
+    customEntityTypes.forEach(ct => {
+      const ctName = ct.name;
+      ENTITY_TYPES.push({
+        key: `custom_${ctName}`,
+        label: ct.display_name,
+        api: `custom/${ctName}`,
+        titleKey: 'title',
+        exportKey: null,
+        createFn: () => { overlay.remove(); openCustomEntityForm(ctName, null); },
+      });
+    });
 
     let activeType = ENTITY_TYPES[0];
 
@@ -14379,14 +14439,16 @@ async function openRaibisSettings(defaultTab = 'apps') {
               ${items.map(item => `
                 <div class="_data-row" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--color-border);border-radius:var(--radius-md);background:var(--color-surface)">
                   <span style="flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(item[type.titleKey] || '(untitled)')}</span>
-                  <button class="btn btn-sm btn-ghost _data-export-item" data-id="${item.id}" title="Export as JSON" style="flex-shrink:0">⬇</button>
+                  ${type.exportKey ? `<button class="btn btn-sm btn-ghost _data-export-item" data-id="${item.id}" title="Export as JSON" style="flex-shrink:0">⬇</button>` : ''}
                   <button class="btn btn-sm btn-ghost _data-del" data-id="${item.id}" style="color:var(--color-danger);flex-shrink:0">Delete</button>
                 </div>`).join('')}
             </div>`;
-          content.querySelectorAll('._data-export-item').forEach(btn => {
-            btn.onclick = () => downloadEntityJson(type.exportKey.replace(/s$/, ''), btn.dataset.id,
-              `${type.exportKey.replace(/s$/, '')}-${btn.dataset.id}.json`);
-          });
+          if (type.exportKey) {
+            content.querySelectorAll('._data-export-item').forEach(btn => {
+              btn.onclick = () => downloadEntityJson(type.exportKey.replace(/s$/, ''), btn.dataset.id,
+                `${type.exportKey.replace(/s$/, '')}-${btn.dataset.id}.json`);
+            });
+          }
         }
         content.querySelectorAll('._data-del').forEach(btn => {
           btn.onclick = () => {
@@ -14411,7 +14473,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
     exportSection.innerHTML = `
       <h4>Export as JSON</h4>
       <div class="settings-export-checks">
-        ${ENTITY_TYPES.map(t => `
+        ${ENTITY_TYPES.filter(t => t.exportKey).map(t => `
           <label class="settings-export-check">
             <input type="checkbox" value="${t.exportKey}" checked> ${t.label}
           </label>`).join('')}
