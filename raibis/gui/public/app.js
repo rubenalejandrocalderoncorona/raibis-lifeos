@@ -565,6 +565,14 @@ function getDefaultViews(entity) {
     sprint:   [{id:'_cards', name:'Cards', viewType:'cards', filters:[], sorts:[]}],
     resource: [{id:'_table', name:'Table', viewType:'table', filters:[], sorts:[]}],
   };
+  // Custom entity types use a fixed key prefix
+  if (entity.startsWith('custom_')) {
+    return [
+      {id:'_list',  name:'List',  viewType:'list',  filters:[], sorts:[]},
+      {id:'_cards', name:'Cards', viewType:'cards', filters:[], sorts:[]},
+      {id:'_table', name:'Table', viewType:'table', filters:[], sorts:[]},
+    ];
+  }
   return defaults[entity] || [{id:'_list',name:'List',viewType:'list',filters:[],sorts:[]}];
 }
 function getEntityViews(entity) {
@@ -2463,9 +2471,17 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
   const customDefs = getCustomPropDefs(entity);
   const customVals = recordId != null ? getCustomPropValues(entity, recordId) : {};
 
-  // Merge all def keys in order — custom keys that shadow a builtin are excluded
+  // Merge all def keys in order — custom keys that shadow a builtin are excluded.
+  // Also exclude relation custom props whose key is the plural of a built-in FK key
+  // (e.g. 'projects' when 'project' is a built-in prop) — prevents duplicate rows
+  // left over from before the _ensureRelProp fix.
   const allBuiltinKeys = builtinDefs.map(d => d.key);
-  const allCustomKeys = customDefs.filter(d => !allBuiltinKeys.includes(d.key)).map(d => d.key);
+  const entityBuiltinSingularKeys = new Set((ENTITY_ALL_PROPS[entity] || []).map(d => d.key));
+  const allCustomKeys = customDefs.filter(d => {
+    if (allBuiltinKeys.includes(d.key)) return false;
+    if (d.type === 'relation' && entityBuiltinSingularKeys.has(d.key.replace(/s$/, ''))) return false;
+    return true;
+  }).map(d => d.key);
   const allKeys = [...allBuiltinKeys, ...allCustomKeys];
   let orderedKeys;
   if (order) {
@@ -3657,12 +3673,15 @@ function renderCustomEntityNav() {
     container.innerHTML = '';
     return;
   }
-  container.innerHTML = customEntityTypes.map(t => `
-    <a class="nav-item" data-view="custom:${escHtml(t.name)}" href="#">
-      <span class="nav-icon" style="font-size:16px">${t.icon || '📁'}</span>
+  container.innerHTML = customEntityTypes.map(t => {
+    const iconHtml = t.icon
+      ? (t.icon.startsWith('__svg:') ? `<span class="nav-icon" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px">${renderEntityIcon(t.icon, 16)}</span>` : `<span class="nav-icon" style="font-size:16px">${t.icon}</span>`)
+      : `<span class="nav-icon" style="font-size:16px">📁</span>`;
+    return `<a class="nav-item" data-view="custom:${escHtml(t.name)}" href="#">
+      ${iconHtml}
       <span>${escHtml(t.display_name || t.name)}</span>
-    </a>
-  `).join('');
+    </a>`;
+  }).join('');
   container.querySelectorAll('[data-view]').forEach(a => {
     a.onclick = e => { e.preventDefault(); renderView(a.dataset.view); };
   });
@@ -3671,65 +3690,130 @@ function renderCustomEntityNav() {
 async function renderCustomEntityList(typeName) {
   const typeInfo = customEntityTypes.find(t => t.name === typeName);
   const displayName = typeInfo ? (typeInfo.display_name || typeName) : typeName;
-  const icon = typeInfo ? (typeInfo.icon || '📁') : '📁';
+  const rawIcon = typeInfo ? (typeInfo.icon || '📁') : '📁';
+  const iconHtml = rawIcon.startsWith('__svg:') ? renderEntityIcon(rawIcon, 20) : `<span style="font-size:18px">${rawIcon}</span>`;
   let propDefs = [];
   if (typeInfo && typeInfo.prop_defs) {
     try { propDefs = JSON.parse(typeInfo.prop_defs); } catch(e) { propDefs = []; }
   }
 
+  const entityKey = `custom_${typeName}`;
+  const views = getEntityViews(entityKey);
+  const activeId = getActiveTabId(entityKey);
+  let activeView = views.find(v => v.id === activeId) || views[0];
+  let viewMode = activeView.viewType || 'list';
+
   const main = document.getElementById('main-content');
   try {
     const entities = await api('GET', `/api/custom/${typeName}`);
-    const list = Array.isArray(entities) ? entities : [];
+    let list = Array.isArray(entities) ? entities : [];
 
-    main.innerHTML = `
-      <div class="view">
-        <div class="view-header">
-          <h1 class="view-title">${icon} ${escHtml(displayName)}</h1>
-          <button class="btn btn-primary" id="custom-new-btn">+ New ${escHtml(displayName)}</button>
-        </div>
-        ${!list.length ? `<div class="empty-state"><div class="empty-state-icon">${icon}</div><div class="empty-state-text">No ${escHtml(displayName.toLowerCase())} yet.</div></div>` : `
-        <div class="entity-list">
-          ${list.map(e => {
-            const propPreview = propDefs.slice(0, 3).map(pd => {
-              const val = e.props && e.props[pd.key] ? e.props[pd.key] : '';
-              return val ? `<span style="font-size:11px;color:var(--text-muted)">${escHtml(pd.label)}: ${escHtml(val)}</span>` : '';
-            }).filter(Boolean).join(' &bull; ');
-            return `
-              <div class="entity-row" data-id="${e.id}" style="cursor:pointer">
-                <div style="flex:1;min-width:0">
-                  <div style="font-weight:500;font-size:14px">${escHtml(e.title)}</div>
-                  ${propPreview ? `<div style="margin-top:2px">${propPreview}</div>` : ''}
-                  <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${fmtDate(e.created_at)}</div>
-                </div>
-                <div style="display:flex;gap:6px;flex-shrink:0">
-                  <button class="btn btn-sm btn-ghost custom-edit-btn" data-id="${e.id}" title="Edit">Edit</button>
-                  <button class="btn btn-sm btn-ghost custom-del-btn" data-id="${e.id}" style="color:var(--color-danger)" title="Delete">Delete</button>
-                </div>
-              </div>`;
-          }).join('')}
-        </div>`}
-      </div>`;
+    main.innerHTML = `<div class="view">
+      <div class="view-header"><h1 class="view-title">${iconHtml} ${escHtml(displayName)}</h1></div>
+      ${buildViewTabBar(entityKey, views, activeView.id)}
+      <div id="custom-entity-content"></div>
+    </div>`;
 
-    main.querySelector('#custom-new-btn').onclick = () => openCustomEntityForm(typeName, null);
-    main.querySelectorAll('.entity-row').forEach(row => {
-      row.onclick = e => {
-        if (e.target.closest('button')) return;
-        openCustomEntitySlideover(typeName, parseInt(row.dataset.id));
-      };
-    });
-    main.querySelectorAll('.custom-edit-btn').forEach(btn => {
-      btn.onclick = e => { e.stopPropagation(); openCustomEntityForm(typeName, { id: parseInt(btn.dataset.id) }); };
-    });
-    main.querySelectorAll('.custom-del-btn').forEach(btn => {
-      btn.onclick = e => {
-        e.stopPropagation();
-        showConfirmModal(`Delete this ${escHtml(displayName)}?`, async () => {
-          await api('DELETE', `/api/custom/${typeName}/${btn.dataset.id}`);
-          renderView(currentView);
-        });
-      };
-    });
+    // Update "new" button label and wire it up
+    const newBtn = document.getElementById(`new-${entityKey}-btn`);
+    if (newBtn) { newBtn.textContent = `+ New ${displayName}`; newBtn.onclick = () => openCustomEntityForm(typeName, null); }
+
+    // Bind view tab bar
+    bindViewTabBar(entityKey, (newActiveId) => {
+      setActiveTabId(entityKey, newActiveId);
+      const v = getEntityViews(entityKey).find(v => v.id === newActiveId) || views[0];
+      activeView = v;
+      viewMode = v.viewType || 'list';
+      render();
+    }, () => renderCustomEntityList(typeName));
+
+    function bindRows() {
+      main.querySelectorAll('.custom-entity-row[data-id]').forEach(row => {
+        row.onclick = e => { if (e.target.closest('button')) return; openCustomEntitySlideover(typeName, parseInt(row.dataset.id)); };
+      });
+      main.querySelectorAll('.custom-edit-btn').forEach(btn => {
+        btn.onclick = e => { e.stopPropagation(); openCustomEntityForm(typeName, { id: parseInt(btn.dataset.id) }); };
+      });
+      main.querySelectorAll('.custom-del-btn').forEach(btn => {
+        btn.onclick = e => {
+          e.stopPropagation();
+          showConfirmModal(`Delete this ${escHtml(displayName)}?`, async () => {
+            await api('DELETE', `/api/custom/${typeName}/${btn.dataset.id}`);
+            renderView(currentView);
+          });
+        };
+      });
+    }
+
+    function buildListView(items) {
+      if (!items.length) return emptyState();
+      return `<div class="entity-list-view">${items.map(e => {
+        const props = propDefs.slice(0, 3).map(pd => {
+          const v = e.props?.[pd.key] || ''; return v ? `<span class="entity-list-meta">${escHtml(v)}</span>` : '';
+        }).filter(Boolean).join('');
+        return `<div class="entity-list-row custom-entity-row" data-id="${e.id}" style="cursor:pointer">
+          <span class="entity-list-title">${escHtml(e.title)}</span>
+          ${props}
+          <span onclick="event.stopPropagation()" style="display:flex;gap:4px;margin-left:auto">
+            <button class="btn btn-sm btn-ghost custom-edit-btn" data-id="${e.id}">Edit</button>
+            <button class="btn btn-sm btn-ghost custom-del-btn" data-id="${e.id}" style="color:var(--color-danger)">Delete</button>
+          </span>
+        </div>`;
+      }).join('')}</div>`;
+    }
+
+    function buildCardsView(items) {
+      if (!items.length) return emptyState();
+      return `<div class="entity-cards">${items.map(e => {
+        const props = propDefs.slice(0, 4).map(pd => {
+          const v = e.props?.[pd.key] || '';
+          return v ? `<div style="display:flex;gap:6px;font-size:12px;padding:2px 0"><span style="color:var(--text-muted);min-width:80px;flex-shrink:0">${escHtml(pd.label)}</span><span>${escHtml(v)}</span></div>` : '';
+        }).filter(Boolean).join('');
+        return `<div class="entity-card custom-entity-row" data-id="${e.id}" style="cursor:pointer;display:flex;flex-direction:column;gap:4px">
+          <div class="entity-card-title" style="font-weight:600;font-size:14px;margin-bottom:4px">${escHtml(e.title)}</div>
+          ${props}
+          <div style="display:flex;gap:6px;padding-top:8px;justify-content:flex-end;border-top:1px solid var(--color-border);margin-top:4px" onclick="event.stopPropagation()">
+            <button class="btn btn-sm btn-ghost custom-edit-btn" data-id="${e.id}">Edit</button>
+            <button class="btn btn-sm btn-ghost custom-del-btn" data-id="${e.id}" style="color:var(--color-danger)">Delete</button>
+          </div>
+        </div>`;
+      }).join('')}</div>`;
+    }
+
+    function buildTableView(items) {
+      if (!items.length) return emptyState();
+      return `<div class="entity-table-wrap"><table class="entity-table">
+        <thead><tr>
+          <th>Title</th>
+          ${propDefs.map(pd => `<th>${escHtml(pd.label)}</th>`).join('')}
+          <th>Created</th>
+          <th></th>
+        </tr></thead>
+        <tbody>${items.map(e => `<tr class="custom-entity-row" data-id="${e.id}" style="cursor:pointer">
+          <td style="font-weight:500">${escHtml(e.title)}</td>
+          ${propDefs.map(pd => `<td>${escHtml(e.props?.[pd.key] || '')}</td>`).join('')}
+          <td style="color:var(--text-muted);font-size:11px">${fmtDate(e.created_at)}</td>
+          <td onclick="event.stopPropagation()" style="display:flex;gap:4px">
+            <button class="btn btn-sm btn-ghost custom-edit-btn" data-id="${e.id}">Edit</button>
+            <button class="btn btn-sm btn-ghost custom-del-btn" data-id="${e.id}" style="color:var(--color-danger)">Delete</button>
+          </td>
+        </tr>`).join('')}
+        </tbody>
+      </table></div>`;
+    }
+
+    function emptyState() {
+      return `<div class="empty-state"><div class="empty-state-icon">${iconHtml}</div><div class="empty-state-text">No ${escHtml(displayName.toLowerCase())} yet.</div></div>`;
+    }
+
+    function render() {
+      const container = document.getElementById('custom-entity-content');
+      if (!container) return;
+      container.innerHTML = viewMode === 'cards' ? buildCardsView(list) : viewMode === 'table' ? buildTableView(list) : buildListView(list);
+      bindRows();
+    }
+
+    render();
   } catch(err) {
     main.innerHTML = `<div class="view"><div class="empty-state"><div class="empty-state-text" style="color:var(--color-danger)">Failed to load ${escHtml(displayName)}: ${escHtml(String(err))}</div></div></div>`;
   }
@@ -4994,7 +5078,10 @@ function renderMultiRelationValue(entity, recordId, propKey, fkTitle) {
   const stored = vals[propKey];
   if (stored) {
     const items = parseRelationValue(stored);
-    if (items.length) return items.map(it => `<span class="multi-chip" style="font-size:11px">${escHtml(it.label)}</span>`).join('');
+    // Deduplicate by id to guard against stale storage having duplicate entries
+    const seen = new Set();
+    const unique = items.filter(it => { if (seen.has(it.id)) return false; seen.add(it.id); return true; });
+    if (unique.length) return unique.map(it => `<span class="multi-chip" style="font-size:11px">${escHtml(it.label)}</span>`).join('');
   }
   return fkTitle ? `<span>${escHtml(fkTitle)}</span>` : '';
 }
@@ -14362,14 +14449,21 @@ async function openRaibisSettings(defaultTab = 'apps') {
         showConfirmModal('Are you absolutely sure? Type-to-confirm not required, but this is irreversible.', async () => {
           try {
             await api('DELETE', '/api/data/purge');
-            // Clear localStorage entity caches
-            Object.keys(localStorage).filter(k =>
-              k.startsWith('savedViews_') || k.startsWith('entityViews_') ||
-              k.startsWith('customPropDefs_') || k.startsWith('customPropVals_')
-            ).forEach(k => localStorage.removeItem(k));
-            showToast('All data deleted', 'success');
-            renderCurrentView();
-            loadEntities(activeType);
+            // Clear ALL entity-related localStorage state so stale IDs don't
+            // bleed into newly-created entities (which reuse the same numeric IDs
+            // after the DB AUTOINCREMENT counter resets).
+            const CLEAR_PREFIXES = [
+              'savedViews_', 'entityViews_', 'customPropDefs_', 'customPropVals_',
+              'propSections_', 'propOverrides_', 'propOrder_', 'entityVisProps_',
+              'entityHiddenTax_', 'activeTab_', 'taxonomyOpts_', 'taskVisProps_',
+            ];
+            Object.keys(localStorage).forEach(k => {
+              if (CLEAR_PREFIXES.some(p => k.startsWith(p)) || k === 'globalTaxonomyProps') {
+                localStorage.removeItem(k);
+              }
+            });
+            showToast('All data deleted — reloading…', 'success');
+            setTimeout(() => location.reload(), 800);
           } catch { showToast('Purge failed', 'error'); }
         });
       });
