@@ -3683,21 +3683,86 @@ async function loadCustomEntityTypes() {
 function renderCustomEntityNav() {
   const container = document.getElementById('custom-entities-nav');
   if (!container) return;
-  if (!customEntityTypes.length) {
-    container.innerHTML = '';
-    return;
-  }
-  container.innerHTML = customEntityTypes.map(t => {
-    const iconHtml = t.icon
-      ? (t.icon.startsWith('__svg:') ? `<span class="nav-icon" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px">${renderEntityIcon(t.icon, 16)}</span>` : `<span class="nav-icon" style="font-size:16px">${t.icon}</span>`)
+  if (!customEntityTypes.length) { container.innerHTML = ''; return; }
+
+  function navIconHtml(t) {
+    return t.icon
+      ? (t.icon.startsWith('__svg:')
+          ? `<span class="nav-icon" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px">${renderEntityIcon(t.icon, 16)}</span>`
+          : `<span class="nav-icon" style="font-size:16px">${t.icon}</span>`)
       : `<span class="nav-icon" style="font-size:16px">📁</span>`;
-    return `<a class="nav-item" data-view="custom:${escHtml(t.name)}" href="#">
-      ${iconHtml}
-      <span>${escHtml(t.display_name || t.name)}</span>
-    </a>`;
-  }).join('');
-  container.querySelectorAll('[data-view]').forEach(a => {
+  }
+
+  container.innerHTML = customEntityTypes.map(t =>
+    `<div class="nav-custom-wrap" data-cet-name="${escHtml(t.name)}">
+      <a class="nav-item _cet-nav-link" data-view="custom:${escHtml(t.name)}" href="#" title="Double-click to rename">
+        ${navIconHtml(t)}
+        <span class="_cet-nav-label">${escHtml(t.display_name || t.name)}</span>
+      </a>
+    </div>`
+  ).join('');
+
+  container.querySelectorAll('._cet-nav-link').forEach(a => {
     a.onclick = e => { e.preventDefault(); renderView(a.dataset.view); };
+    a.ondblclick = e => {
+      e.preventDefault(); e.stopPropagation();
+      const wrap = a.closest('.nav-custom-wrap');
+      const tName = wrap?.dataset.cetName;
+      const t = customEntityTypes.find(ct => ct.name === tName);
+      if (!t) return;
+
+      // Replace link with inline edit form
+      let editIconVal = t.icon || '📁';
+      const editIconId = `_cet-edit-icon-${tName}`;
+      const editInputId = `_cet-edit-input-${tName}`;
+      wrap.innerHTML = `
+        <div style="display:flex;align-items:center;gap:4px;padding:2px 8px">
+          <button id="${editIconId}" style="font-size:16px;background:none;border:1px solid var(--border);border-radius:4px;padding:1px 4px;cursor:pointer;line-height:1.4" title="Change icon">${editIconVal.startsWith('__svg:') ? renderEntityIcon(editIconVal, 16) : editIconVal}</button>
+          <input id="${editInputId}" type="text" value="${escHtml(t.display_name || t.name)}"
+            style="flex:1;font-size:13px;padding:2px 6px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text-primary);min-width:0" />
+          <button class="_cet-edit-save" style="font-size:11px;background:var(--accent);color:#fff;border:none;border-radius:4px;padding:2px 6px;cursor:pointer">✓</button>
+          <button class="_cet-edit-cancel" style="font-size:11px;background:none;border:1px solid var(--border);border-radius:4px;padding:2px 6px;cursor:pointer">✕</button>
+        </div>`;
+
+      const iconBtn = wrap.querySelector(`#${editIconId}`);
+      const inp = wrap.querySelector(`#${editInputId}`);
+      inp.focus(); inp.select();
+
+      iconBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        showIconPicker(iconBtn, null, null, editIconVal, (newIcon) => {
+          editIconVal = newIcon || '📁';
+          iconBtn.innerHTML = editIconVal.startsWith('__svg:') ? renderEntityIcon(editIconVal, 16) : editIconVal;
+        });
+      };
+
+      async function saveEdit() {
+        const newName = inp.value.trim();
+        if (!newName) { renderCustomEntityNav(); return; }
+        try {
+          await api('PUT', `/api/custom-types/${tName}`, {
+            display_name: newName,
+            icon: editIconVal,
+            prop_defs: t.prop_defs || '',
+            has_detail_view: t.has_detail_view,
+          });
+          t.display_name = newName;
+          t.icon = editIconVal;
+          renderCustomEntityNav();
+          showToast('Updated');
+        } catch(err) {
+          showToast('Failed to save', 'error');
+          renderCustomEntityNav();
+        }
+      }
+
+      wrap.querySelector('._cet-edit-save').onclick = (ev) => { ev.stopPropagation(); saveEdit(); };
+      wrap.querySelector('._cet-edit-cancel').onclick = (ev) => { ev.stopPropagation(); renderCustomEntityNav(); };
+      inp.onkeydown = (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); saveEdit(); }
+        if (ev.key === 'Escape') { ev.preventDefault(); renderCustomEntityNav(); }
+      };
+    };
   });
 }
 
@@ -4126,7 +4191,19 @@ const ENTITY_SECTION_DEFAULTS = {
 function getPropSections(entity) {
   try {
     const s = localStorage.getItem(`propSections_${entity}`);
-    if (s) return JSON.parse(s);
+    if (s) {
+      const stored = JSON.parse(s);
+      // Migration: inject ENTITY_ALL_PROPS keys that were added after the user's
+      // sections were last saved (e.g. 'tags' added to sprint/resource).
+      const allKeys = (ENTITY_ALL_PROPS[entity] || []).map(p => p.key);
+      const knownSet = new Set([...(stored.heading || []), ...(stored.body || [])]);
+      const missing = allKeys.filter(k => !knownSet.has(k));
+      if (missing.length > 0) {
+        stored.heading = [...(stored.heading || []), ...missing];
+        localStorage.setItem(`propSections_${entity}`, JSON.stringify(stored));
+      }
+      return stored;
+    }
   } catch(e) {}
   const d = ENTITY_SECTION_DEFAULTS[entity];
   return d ? { heading:[...d.heading], body:[...d.body] } : { heading:[], body:[] };
@@ -12812,11 +12889,6 @@ async function showSprintSlideover(sprintId, afterSave) {
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
 
   const sprintSections = getPropSections('sprint');
-  // Migrate: ensure tags is accessible for sessions with old stored sections
-  if (!sprintSections.heading.includes('tags') && !sprintSections.body.includes('tags')) {
-    sprintSections.heading.push('tags');
-    setPropSections('sprint', sprintSections);
-  }
   const sprintIsInHead = (k) => sprintSections.heading.includes(k);
   const SPRINT_CHIP_KEYS = ['status','dates','project','tags'];
   const sprintExtraHeadKeys = sprintSections.heading.filter(k => !SPRINT_CHIP_KEYS.includes(k));
@@ -13110,11 +13182,6 @@ async function showResourceSlideover(resource, afterSave) {
   const fileName = r.file_path ? r.file_path.split('/').pop() : '';
 
   const resSections = getPropSections('resource');
-  // Migrate: ensure tags is accessible for sessions with old stored sections
-  if (!resSections.heading.includes('tags') && !resSections.body.includes('tags')) {
-    resSections.body.push('tags');
-    setPropSections('resource', resSections);
-  }
   const resIsInHead = (k) => resSections.heading.includes(k);
   const RES_CHIP_KEYS = ['type','url','project','goal','tags'];
   const resExtraHeadKeys = resSections.heading.filter(k => !RES_CHIP_KEYS.includes(k));
@@ -14716,7 +14783,10 @@ async function openRaibisSettings(defaultTab = 'apps') {
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <span id="_data-count" style="font-size:12px;color:var(--text-muted)"></span>
-          <button class="btn btn-primary btn-sm" id="_data-create">+ New ${singularLabel}</button>
+          <div style="display:flex;gap:6px;align-items:center">
+            ${type.key.startsWith('custom_') ? `<button class="btn btn-ghost btn-sm" id="_data-del-type" style="color:var(--color-danger)">Delete Entity Type</button>` : ''}
+            <button class="btn btn-primary btn-sm" id="_data-create">+ New ${singularLabel}</button>
+          </div>
         </div>
         <div id="_data-content" style="color:var(--text-muted);font-size:13px;padding:8px 0">Loading…</div>`;
 
@@ -14725,6 +14795,20 @@ async function openRaibisSettings(defaultTab = 'apps') {
       });
       const createBtn = body.querySelector('#_data-create');
       if (createBtn) createBtn.onclick = type.createFn || (() => showToast('No create action for ' + type.label, 'info'));
+
+      const delTypeBtn = body.querySelector('#_data-del-type');
+      if (delTypeBtn) {
+        const ctName = type.key.replace(/^custom_/, '');
+        delTypeBtn.onclick = () => showConfirmModal(
+          `Delete entity type "${type.label}" and all its records? This cannot be undone.`,
+          async () => {
+            await api('DELETE', `/api/custom-types/${ctName}`);
+            customEntityTypes = customEntityTypes.filter(ct => ct.name !== ctName);
+            renderCustomEntityNav();
+            await loadEntities(ENTITY_TYPES[0]);
+          }
+        );
+      }
 
       const content = body.querySelector('#_data-content');
       const countEl  = body.querySelector('#_data-count');
