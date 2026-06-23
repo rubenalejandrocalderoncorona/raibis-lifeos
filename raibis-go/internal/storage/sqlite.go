@@ -453,9 +453,11 @@ SELECT t.id, t.goal_id, t.project_id, t.sprint_id, t.parent_task_id,
        t.pomodoros_planned, t.pomodoros_finished,
        COALESCE(c.name,'') AS category_name,
        COALESCE(t.pomodoro, 0),
-       COALESCE(t.content_json,'')
+       COALESCE(t.content_json,''),
+       COALESCE(g.title,'') AS goal_title
 FROM tasks t
-LEFT JOIN categories c ON t.category_id = c.id`
+LEFT JOIN categories c ON t.category_id = c.id
+LEFT JOIN goals g ON t.goal_id = g.id`
 
 // ── Goals ─────────────────────────────────────────────────────────────────────
 
@@ -1030,6 +1032,7 @@ func scanTask(sc scanner) (*domain.Task, error) {
 		&recurInterval, &recurUnit, &storyPoints,
 		&pomodorosPlanned, &pomodorosFinished,
 		&t.CategoryName, &pomodoro, &contentJSON,
+		&t.GoalTitle,
 	)
 	if err != nil {
 		return nil, err

@@ -428,7 +428,13 @@ const TASK_PROPS = [
 const TASK_PROP_DEFAULTS = TASK_PROPS.map(p => p.key); // all visible by default
 function getTaskVisProps(viewMode) {
   const stored = localStorage.getItem(`taskVisProps_${viewMode}`);
-  return stored ? JSON.parse(stored) : [...TASK_PROP_DEFAULTS];
+  if (!stored) return [...TASK_PROP_DEFAULTS];
+  const keys = JSON.parse(stored);
+  // Ensure any new default keys are present (migration for existing localStorage)
+  let changed = false;
+  TASK_PROP_DEFAULTS.forEach(k => { if (!keys.includes(k)) { keys.push(k); changed = true; } });
+  if (changed) localStorage.setItem(`taskVisProps_${viewMode}`, JSON.stringify(keys));
+  return keys;
 }
 function setTaskVisProps(viewMode, keys) {
   localStorage.setItem(`taskVisProps_${viewMode}`, JSON.stringify(keys));
@@ -3681,6 +3687,19 @@ function renderView(view, params) {
 
 async function loadCustomEntityTypes() {
   customEntityTypes = await api('GET', '/api/custom-types').catch(() => []) || [];
+  // Sync prop_defs from database → localStorage so getCustomPropDefs finds them
+  customEntityTypes.forEach(t => {
+    if (!t.prop_defs) return;
+    let dbDefs;
+    try { dbDefs = JSON.parse(t.prop_defs); } catch(e) { return; }
+    if (!Array.isArray(dbDefs) || !dbDefs.length) return;
+    const entityKey = `custom_${t.name}`;
+    let localDefs;
+    try { localDefs = JSON.parse(localStorage.getItem(`customPropDefs_${entityKey}`) || '[]'); } catch(e) { localDefs = []; }
+    const localKeys = new Set(localDefs.map(d => d.key));
+    const merged = [...localDefs, ...dbDefs.filter(d => !localKeys.has(d.key))];
+    localStorage.setItem(`customPropDefs_${entityKey}`, JSON.stringify(merged));
+  });
   renderCustomEntityNav();
 }
 
@@ -15495,14 +15514,72 @@ document.addEventListener('propDefsChanged', (e) => {
 
 /* ─── Init ───────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
-  // Nav click handlers
+  // Nav click handlers — built-in entity views support double-click rename
+  const RENAMEABLE_VIEWS = new Set(['tasks','goals','projects','notes','resources','sprints','habits','calendar','pomodoro','automations']);
+
+  // Apply any stored custom labels
   document.querySelectorAll('[data-view]').forEach(link => {
+    const view = link.dataset.view;
+    if (!RENAMEABLE_VIEWS.has(view)) return;
+    const saved = localStorage.getItem(`navLabel_${view}`);
+    if (!saved) return;
+    const span = link.querySelector('span:not(.nav-icon)');
+    if (span) span.textContent = saved;
+  });
+
+  document.querySelectorAll('[data-view]').forEach(link => {
+    let _lastClick = 0, _clickTimer = null;
     link.addEventListener('click', (e) => {
       e.preventDefault();
       const view = link.dataset.view;
-      document.querySelectorAll('[data-view]').forEach(l => l.classList.remove('active'));
-      document.querySelectorAll(`[data-view="${view}"]`).forEach(l => l.classList.add('active'));
-      renderView(view);
+
+      // Double-click rename for entity views
+      if (RENAMEABLE_VIEWS.has(view)) {
+        const now = Date.now();
+        if (now - _lastClick < 350) {
+          _lastClick = 0;
+          clearTimeout(_clickTimer); _clickTimer = null;
+          const span = link.querySelector('span:not(.nav-icon)');
+          if (!span) { renderView(view); return; }
+          const currentLabel = span.textContent;
+          const inp = document.createElement('input');
+          inp.type = 'text';
+          inp.value = currentLabel;
+          inp.style.cssText = 'font-size:13px;padding:0 4px;border:1px solid var(--accent);border-radius:3px;width:calc(100% - 4px);background:var(--bg-card);color:var(--text-primary);outline:none';
+          span.replaceWith(inp);
+          inp.focus(); inp.select();
+          inp.onclick = ev => ev.stopPropagation();
+          const saveLabel = () => {
+            const newLabel = inp.value.trim();
+            const newSpan = document.createElement('span');
+            if (newLabel) {
+              localStorage.setItem(`navLabel_${view}`, newLabel);
+              newSpan.textContent = newLabel;
+            } else {
+              localStorage.removeItem(`navLabel_${view}`);
+              newSpan.textContent = currentLabel;
+            }
+            inp.replaceWith(newSpan);
+          };
+          inp.onblur = saveLabel;
+          inp.onkeydown = ev => {
+            if (ev.key === 'Enter') { ev.preventDefault(); inp.blur(); }
+            if (ev.key === 'Escape') { inp.value = ''; inp.blur(); }
+          };
+          return;
+        }
+        _lastClick = now;
+        _clickTimer = setTimeout(() => {
+          _clickTimer = null;
+          document.querySelectorAll('[data-view]').forEach(l => l.classList.remove('active'));
+          document.querySelectorAll(`[data-view="${view}"]`).forEach(l => l.classList.add('active'));
+          renderView(view);
+        }, 320);
+      } else {
+        document.querySelectorAll('[data-view]').forEach(l => l.classList.remove('active'));
+        document.querySelectorAll(`[data-view="${view}"]`).forEach(l => l.classList.add('active'));
+        renderView(view);
+      }
     });
   });
 
