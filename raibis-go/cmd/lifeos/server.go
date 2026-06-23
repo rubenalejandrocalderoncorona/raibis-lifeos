@@ -3201,6 +3201,11 @@ func propertiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc
 		q := r.URL.Query()
 		entityType := q.Get("entity_type")
 		entityIDStr := q.Get("entity_id")
+		// Strip "custom_" prefix — custom entity props are stored under the bare
+		// type name (e.g. "repositories") to match what ListCustomEntities queries.
+		if strings.HasPrefix(entityType, "custom_") {
+			entityType = strings.TrimPrefix(entityType, "custom_")
+		}
 		// Bulk DELETE: entity_type + key, no entity_id required
 		if r.Method == http.MethodDelete && entityIDStr == "" {
 			key := q.Get("key")

@@ -482,6 +482,13 @@ function getEntityVisProps(entity) {
   let base;
   if (stored) {
     base = JSON.parse(stored);
+    if (entity.startsWith('custom_')) {
+      // Migration: include newly added prop defs not yet in stored visibility list
+      const allCustomKeys = getCustomPropDefs(entity).filter(d => !d._taxonomy).map(d => d.key);
+      const baseSet = new Set(base);
+      const newKeys = allCustomKeys.filter(k => !baseSet.has(k));
+      if (newKeys.length > 0) { base = [...base, ...newKeys]; localStorage.setItem(`entityVisProps_${entity}`, JSON.stringify(base)); }
+    }
   } else if (entity.startsWith('custom_')) {
     // Default: all defined props visible for custom entity types
     base = getCustomPropDefs(entity).filter(d => !d._taxonomy).map(d => d.key);
@@ -1604,6 +1611,23 @@ function setCustomPropDefs(entity, defs) {
   localStorage.setItem(`customPropDefs_${entity}`, JSON.stringify(entityDefs));
 }
 
+// ── Disabled Built-in Entities ────────────────────────────────────────────
+// Stores which built-in entity nav items the user has "deleted" (hidden).
+function getDisabledBuiltinEntities() {
+  try { return JSON.parse(localStorage.getItem('disabledBuiltinEntities') || '[]'); } catch { return []; }
+}
+function setDisabledBuiltinEntities(list) {
+  localStorage.setItem('disabledBuiltinEntities', JSON.stringify(list));
+}
+function applyDisabledBuiltinEntities() {
+  const disabled = new Set(getDisabledBuiltinEntities());
+  document.querySelectorAll('[data-view]').forEach(el => {
+    const view = el.dataset.view;
+    if (disabled.has(view)) el.style.display = 'none';
+    else if (el.style.display === 'none' && !disabled.has(view)) el.style.display = '';
+  });
+}
+
 // ── Global Taxonomy Props ─────────────────────────────────────────────────
 function getGlobalTaxonomyProps() {
   const s = localStorage.getItem('globalTaxonomyProps');
@@ -1751,15 +1775,19 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
 
   // Load saved content from entity's content_json field
   let savedData = null;
-  try {
-    const _epaths = { task: 'tasks', note: 'notes', goal: 'goals', project: 'projects', sprint: 'sprints', resource: 'resources' };
-    const _ent = await api('GET', `/api/${_epaths[entity] || entity + 's'}/${entityId}`);
-    if (_ent.content_json) { savedData = JSON.parse(_ent.content_json); }
-  } catch {}
-  // Fall back to local cache
+  const _isCustomEnt = entity.startsWith('custom_');
+  if (!_isCustomEnt) {
+    try {
+      const _epaths = { task: 'tasks', note: 'notes', goal: 'goals', project: 'projects', sprint: 'sprints', resource: 'resources' };
+      const _ent = await api('GET', `/api/${_epaths[entity] || entity + 's'}/${entityId}`);
+      if (_ent.content_json) { savedData = JSON.parse(_ent.content_json); }
+    } catch {}
+  }
+  // Fall back to local cache (primary for custom entities)
   if (!savedData) {
     const vals = getCustomPropValues(entity, entityId);
-    if (vals.rich_content) { try { savedData = JSON.parse(vals.rich_content); } catch {} }
+    const cached = vals._rich_content || vals.rich_content;
+    if (cached) { try { savedData = JSON.parse(cached); } catch {} }
   }
 
   const TOOLS = {};
@@ -1795,7 +1823,11 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
         try {
           const data = await editor.save();
           const json = JSON.stringify(data);
-          api('POST', '/api/content', { entity_type: entity, entity_id: parseInt(entityId), content_json: json }).catch(() => {});
+          if (_isCustomEnt) {
+            setCustomPropValue(entity, parseInt(entityId), '_rich_content', json);
+          } else {
+            api('POST', '/api/content', { entity_type: entity, entity_id: parseInt(entityId), content_json: json }).catch(() => {});
+          }
         } catch {}
       }, 900);
     },
@@ -3923,7 +3955,8 @@ async function renderCustomEntityList(typeName) {
     if (propVisBtn && propVisWrap) {
       propVisBtn.onclick = (e) => {
         e.stopPropagation();
-        const propList = propDefs.map(pd => ({ key: pd.key, label: pd.label || pd.key }));
+        // Use full prop defs (including taxonomy) for the visibility panel
+        const propList = getCustomPropDefs(entityKey).map(pd => ({ key: pd.key, label: pd.label || pd.key }));
         bindPropVisPanel(propVisWrap, propList, () => getEntityVisProps(entityKey), (keys) => setEntityVisProps(entityKey, keys), render);
       };
     }
@@ -3952,11 +3985,26 @@ async function renderCustomEntityList(typeName) {
       });
     }
 
+    // Use full prop defs (including taxonomy) for all view builders
+    const allCustomDefs = getCustomPropDefs(entityKey);
+
+    function renderPropVal(pd, rawVal) {
+      if (!rawVal) return '';
+      if (pd.type === 'multi_select' || pd.type === 'checkbox') {
+        try { const arr = JSON.parse(rawVal); if (Array.isArray(arr)) return arr.join(', '); } catch {}
+      }
+      if (pd.type === 'relation') {
+        try { const arr = JSON.parse(rawVal); if (Array.isArray(arr)) return arr.map(it => it.label || it.id).join(', '); } catch {}
+      }
+      return String(rawVal);
+    }
+
     function buildListView(items) {
       if (!items.length) return emptyState();
       return `<div class="entity-list-view">${items.map(e => {
-        const visProps = propDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 4).map(pd => {
-          const v = e.props?.[pd.key] || ''; return v ? `<span class="entity-list-meta">${escHtml(v)}</span>` : '';
+        const visProps = allCustomDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 4).map(pd => {
+          const v = renderPropVal(pd, e.props?.[pd.key] || '');
+          return v ? `<span class="entity-list-meta">${escHtml(v)}</span>` : '';
         }).filter(Boolean).join('');
         return `<div class="entity-list-row custom-entity-row" data-id="${e.id}" style="cursor:pointer">
           <span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
@@ -3970,8 +4018,8 @@ async function renderCustomEntityList(typeName) {
     function buildCardsView(items) {
       if (!items.length) return emptyState();
       return `<div class="entity-cards">${items.map(e => {
-        const visProps = propDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 5).map(pd => {
-          const v = e.props?.[pd.key] || '';
+        const visProps = allCustomDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 5).map(pd => {
+          const v = renderPropVal(pd, e.props?.[pd.key] || '');
           return v ? `<div style="display:flex;gap:6px;font-size:12px;padding:2px 0"><span style="color:var(--text-muted);min-width:80px;flex-shrink:0">${escHtml(pd.label)}</span><span>${escHtml(v)}</span></div>` : '';
         }).filter(Boolean).join('');
         return `<div class="entity-card custom-entity-row" data-id="${e.id}" style="cursor:pointer;display:flex;flex-direction:column;gap:4px">
@@ -3986,7 +4034,7 @@ async function renderCustomEntityList(typeName) {
 
     function buildTableView(items) {
       if (!items.length) return emptyState();
-      const visDefs = propDefs.filter(pd => entityPropVisible(entityKey, pd.key));
+      const visDefs = allCustomDefs.filter(pd => entityPropVisible(entityKey, pd.key));
       return `<div class="entity-table-wrap"><table class="entity-table">
         <thead><tr>
           <th class="ctx-handle-th"></th>
@@ -3997,7 +4045,7 @@ async function renderCustomEntityList(typeName) {
         <tbody>${items.map(e => `<tr class="custom-entity-row" data-id="${e.id}" style="cursor:pointer">
           <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span></td>
           <td style="font-weight:500">${escHtml(e.title)}</td>
-          ${visDefs.map(pd => `<td>${escHtml(e.props?.[pd.key] || '')}</td>`).join('')}
+          ${visDefs.map(pd => `<td>${escHtml(renderPropVal(pd, e.props?.[pd.key] || ''))}</td>`).join('')}
           <td style="color:var(--text-muted);font-size:11px">${fmtDate(e.created_at)}</td>
         </tr>`).join('')}
         </tbody>
@@ -4080,6 +4128,24 @@ async function openCustomEntitySlideover(typeName, id) {
   await loadEntityCustomProps(entityKey, id);
   const propPanel = buildInlinePropPanel(entityKey, id, []);
 
+  const cesSections = getPropSections(entityKey);
+  const cesHeadKeys = cesSections.heading;
+  const cesCustomVals = getCustomPropValues(entityKey, id);
+  const cesPropDefs = getCustomPropDefs(entityKey);
+
+  const cesHeadingChips = cesHeadKeys.filter(k => k !== 'tags').map(k => {
+    const def = cesPropDefs.find(d => d.key === k);
+    if (!def) return '';
+    const val = cesCustomVals[k] || '';
+    let displayVal;
+    if (def.type === 'multi_select') {
+      try { const arr = JSON.parse(val); displayVal = arr.length ? arr.map(v => `<span class="multi-chip" style="font-size:11px">${escHtml(v)}</span>`).join('') : '—'; } catch { displayVal = val || '—'; }
+    } else if (def.type === 'relation') {
+      try { const arr = JSON.parse(val); displayVal = arr.length ? arr.map(it => `<span class="multi-chip" style="font-size:11px">${escHtml(it.label||it.id)}</span>`).join('') : '—'; } catch { displayVal = val || '—'; }
+    } else { displayVal = val ? escHtml(String(val)) : '—'; }
+    return `<button class="prop-chip" id="chip-cus-${escHtml(k)}" data-key="${escHtml(k)}"><span class="chip-label">${escHtml(def.label)}</span><span class="chip-value">${displayVal}</span></button>`;
+  }).filter(Boolean).join('');
+
   const body = `
     <button class="entity-icon-add-btn" id="ces-icon-add-btn">
       <span id="ces-icon-display"></span>
@@ -4091,10 +4157,13 @@ async function openCustomEntitySlideover(typeName, id) {
 
     <div class="prop-chips" id="prop-chips">
       <button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${cesTags.length ? cesTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>
+      ${cesHeadingChips}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
 
     ${propPanel}
+
+    ${buildRichContentSection(entityKey, id)}
 
     ${buildCommentSection(entityKey, id)}
   `;
@@ -4157,6 +4226,17 @@ async function openCustomEntitySlideover(typeName, id) {
     }, { multiSelect: true, allowCreate: true, selectedIds: _curIds });
   });
 
+  // Heading custom prop chips → click triggers matching inline prop row editor
+  cesHeadKeys.filter(k => k !== 'tags').forEach(k => {
+    const chip = document.getElementById(`chip-cus-${k}`);
+    if (!chip) return;
+    chip.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const row = document.querySelector(`.inline-prop-panel[data-entity="${entityKey}"] .inline-prop-row[data-prop-key="${k}"]`);
+      if (row) { row.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); row.querySelector('.inline-prop-value')?.click(); }
+    });
+  });
+
   // ··· Section manager
   document.getElementById('prop-chips-more').onclick = (ev) => {
     ev.stopPropagation();
@@ -4165,11 +4245,13 @@ async function openCustomEntitySlideover(typeName, id) {
 
   bindInlinePropPanel(entityKey, id, {}, () => openCustomEntitySlideover(typeName, id));
   bindCommentSection(document.querySelector(`.comment-section[data-entity-type="${entityKey}"]`));
+  initRichEditor(`editorjs-${entityKey}-${id}`, entityKey, id, false);
 }
 
 async function openCustomEntityForm(typeName, entityOrNull) {
   const typeInfo = customEntityTypes.find(t => t.name === typeName);
   const displayName = typeInfo ? (typeInfo.display_name || typeName) : typeName;
+  const entityKey = `custom_${typeName}`;
   let propDefs = [];
   if (typeInfo && typeInfo.prop_defs) {
     try { propDefs = JSON.parse(typeInfo.prop_defs); } catch(e) { propDefs = []; }
@@ -4184,6 +4266,15 @@ async function openCustomEntityForm(typeName, entityOrNull) {
   const isEdit = !!(entity && entity.id);
   const props = (entity && entity.props) || {};
 
+  // Load existing tags for edit mode
+  let existingTags = [];
+  if (isEdit) {
+    try { existingTags = await api('GET', `/api/custom/${typeName}/${entity.id}/tags`); } catch {}
+  }
+
+  // Load global taxonomy props
+  const taxProps = getGlobalTaxonomyProps();
+
   const propFields = propDefs.map(pd => {
     const val = props[pd.key] || '';
     const inputType = pd.type === 'number' ? 'number' : pd.type === 'date' ? 'date' : pd.type === 'url' ? 'url' : 'text';
@@ -4194,12 +4285,35 @@ async function openCustomEntityForm(typeName, entityOrNull) {
       </div>`;
   }).join('');
 
+  // Tags field (always shown — taxonomy)
+  const existingTagNames = existingTags.map(t => t.name).join(', ');
+  const tagsField = `
+    <div class="form-group">
+      <label class="form-label">Tags <span style="font-size:10px;color:var(--text-muted);font-weight:400">(comma-separated)</span></label>
+      <input type="text" id="cf-_tags" value="${escHtml(existingTagNames)}" placeholder="tag1, tag2…" />
+    </div>`;
+
+  // Global taxonomy fields (always shown)
+  const taxFields = taxProps.map(tp => {
+    const opts = getTaxonomyOptions(tp.key);
+    const curVals = (() => { try { return JSON.parse(props[`tax_${tp.key}`] || '[]'); } catch { return []; } })();
+    return `
+      <div class="form-group">
+        <label class="form-label">${escHtml(tp.label)} <span style="font-size:10px;color:var(--text-muted);font-weight:400">(select multiple)</span></label>
+        <select id="cf-tax-${escHtml(tp.key)}" multiple size="3" style="width:100%;border:1px solid var(--border);border-radius:6px;background:var(--bg-surface);color:var(--text-primary);padding:4px">
+          ${opts.map(o => `<option value="${escHtml(o.name)}" ${curVals.includes(o.name)?'selected':''}>${escHtml(o.name)}</option>`).join('')}
+        </select>
+      </div>`;
+  }).join('');
+
   const formHtml = `
     <div class="form-group">
       <label class="form-label">Title <span style="color:var(--color-danger)">*</span></label>
       <input type="text" id="cf-title" value="${escHtml(entity ? entity.title : '')}" placeholder="${escHtml(displayName)} title…" />
     </div>
     ${propFields}
+    ${tagsField}
+    ${taxFields}
     <div class="form-actions">
       <button class="btn btn-ghost" id="cf-cancel">Cancel</button>
       <button class="btn btn-primary" id="cf-save">${isEdit ? 'Update' : 'Create'}</button>
@@ -4216,13 +4330,36 @@ async function openCustomEntityForm(typeName, entityOrNull) {
       const el = document.getElementById(`cf-${pd.key}`);
       if (el) newProps[pd.key] = el.value;
     });
+    // Collect taxonomy prop values
+    taxProps.forEach(tp => {
+      const sel = document.getElementById(`cf-tax-${tp.key}`);
+      if (sel) {
+        const selected = [...sel.selectedOptions].map(o => o.value);
+        newProps[`tax_${tp.key}`] = JSON.stringify(selected);
+      }
+    });
     try {
+      let entityId;
       if (isEdit) {
         await api('PUT', `/api/custom/${typeName}/${entity.id}`, { title, props: newProps });
+        entityId = entity.id;
         showToast(`${displayName} updated`);
       } else {
-        await api('POST', `/api/custom/${typeName}`, { title, props: newProps });
+        const created = await api('POST', `/api/custom/${typeName}`, { title, props: newProps });
+        entityId = created.id;
         showToast(`${displayName} created`);
+      }
+      // Save tags
+      const tagsInput = document.getElementById('cf-_tags')?.value.trim() || '';
+      if (tagsInput || isEdit) {
+        const tagNames = tagsInput ? tagsInput.split(',').map(s => s.trim()).filter(Boolean) : [];
+        const tagIds = [];
+        for (const name of tagNames) {
+          let t = allTags.find(x => x.name.toLowerCase() === name.toLowerCase());
+          if (!t) { try { t = await api('POST', '/api/tags', { name, color: 'blue' }); allTags.push(t); } catch {} }
+          if (t) tagIds.push(t.id);
+        }
+        await api('PUT', `/api/custom/${typeName}/${entityId}/tags`, { tag_ids: tagIds }).catch(() => {});
       }
       closeFormSlideover();
       renderView(currentView);
@@ -14389,12 +14526,13 @@ function showNewEntityTypeModal() {
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9100;display:flex;align-items:center;justify-content:center';
 
   const PROP_TYPES = ['text','number','date','select','multi_select','url','checkbox','relation'];
+  // Tags and global taxonomy props are always available on every entity via the taxonomy system.
+  // Only show non-taxonomy starter props here.
   const STARTER_PROPS = [
     { key: 'status',    label: 'Status',    type: 'select',       options: 'To Do,In Progress,Done' },
     { key: 'priority',  label: 'Priority',  type: 'select',       options: 'Low,Medium,High' },
     { key: 'due_date',  label: 'Due Date',  type: 'date',         options: '' },
-    { key: 'tags',      label: 'Tags',      type: 'multi_select', options: '' },
-    { key: 'category',  label: 'Category',  type: 'text',         options: '' },
+    { key: 'url',       label: 'URL',       type: 'url',          options: '' },
     { key: 'notes',     label: 'Notes',     type: 'text',         options: '' },
   ];
 
@@ -14416,8 +14554,11 @@ function showNewEntityTypeModal() {
       </div>
       <div style="margin-bottom:12px">
         <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Starter properties</div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
           ${STARTER_PROPS.map(sp => `<label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border);border-radius:20px;background:var(--bg-surface)"><input type="checkbox" data-starter="${sp.key}" style="accent-color:var(--accent)"> ${sp.label}</label>`).join('')}
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;padding:6px 8px;background:var(--bg-surface);border-radius:6px;border:1px solid var(--border)">
+          <strong>Tags</strong> and any <strong>Taxonomy properties</strong> (Categories, etc.) are always available on every entity — no need to add them here.
         </div>
         <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Custom properties</div>
         <div id="_net-propdefs" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
@@ -14920,19 +15061,19 @@ async function openRaibisSettings(defaultTab = 'apps') {
     };
 
     const ENTITY_TYPES = [
-      { key: 'tasks',      label: 'Tasks',      api: 'tasks',      titleKey: 'title', exportKey: 'tasks',
+      { key: 'tasks',      label: 'Tasks',      api: 'tasks',      titleKey: 'title', exportKey: 'tasks',      navView: 'tasks',
         createFn: () => { overlay.remove(); showNewTaskModal({}, renderCurrentView); } },
-      { key: 'goals',      label: 'Goals',      api: 'goals',      titleKey: 'title', exportKey: 'goals',
+      { key: 'goals',      label: 'Goals',      api: 'goals',      titleKey: 'title', exportKey: 'goals',      navView: 'goals',
         createFn: () => { overlay.remove(); showGoalModal(null, renderCurrentView); } },
-      { key: 'projects',   label: 'Projects',   api: 'projects',   titleKey: 'title', exportKey: 'projects',
+      { key: 'projects',   label: 'Projects',   api: 'projects',   titleKey: 'title', exportKey: 'projects',   navView: 'projects',
         createFn: () => { overlay.remove(); showProjectModal(null, [], renderCurrentView); } },
-      { key: 'notes',      label: 'Notes',      api: 'notes',      titleKey: 'title', exportKey: 'notes',
+      { key: 'notes',      label: 'Notes',      api: 'notes',      titleKey: 'title', exportKey: 'notes',      navView: 'notes',
         createFn: () => { overlay.remove(); showNoteModal(null, renderCurrentView); } },
-      { key: 'resources',  label: 'Resources',  api: 'resources',  titleKey: 'title', exportKey: 'resources',
+      { key: 'resources',  label: 'Resources',  api: 'resources',  titleKey: 'title', exportKey: 'resources',  navView: 'resources',
         createFn: () => { overlay.remove(); showResourceModal({}, renderCurrentView); } },
-      { key: 'sprints',    label: 'Sprints',    api: 'sprints',    titleKey: 'title', exportKey: 'sprints',
+      { key: 'sprints',    label: 'Sprints',    api: 'sprints',    titleKey: 'title', exportKey: 'sprints',    navView: 'sprints',
         createFn: () => showSprintCreateModal(loadEntities.bind(null, ENTITY_TYPES.find(t => t.key === 'sprints'))) },
-      { key: 'habits',     label: 'Habits',     api: 'habits',     titleKey: 'name',  exportKey: 'habits',
+      { key: 'habits',     label: 'Habits',     api: 'habits',     titleKey: 'name',  exportKey: 'habits',     navView: 'habits',
         createFn: () => { overlay.remove(); showHabitModal(null); } },
     ];
     // Append custom entity types as browsable tabs
@@ -14965,9 +15106,9 @@ async function openRaibisSettings(defaultTab = 'apps') {
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <span id="_data-count" style="font-size:12px;color:var(--text-muted)"></span>
           <div style="display:flex;gap:6px;align-items:center">
-            ${type.key.startsWith('custom_')
-              ? `<button class="btn btn-ghost btn-sm" id="_data-del-type" style="color:var(--color-danger)">Delete Entity Type</button>`
-              : `<button class="btn btn-ghost btn-sm" id="_data-clear-all" style="color:var(--color-danger)">Clear All Data</button>`}
+            <button class="btn btn-ghost btn-sm" id="_data-clear-all" style="color:var(--color-danger)">Clear All Data</button>
+            <button class="btn btn-ghost btn-sm" id="_data-del-entity" style="color:var(--color-danger)">Delete Entity</button>
+            ${type.key.startsWith('custom_') ? `<button class="btn btn-ghost btn-sm" id="_data-del-type" style="color:var(--color-danger)">Delete Type</button>` : ''}
             <button class="btn btn-primary btn-sm" id="_data-create">+ New ${singularLabel}</button>
           </div>
         </div>
@@ -14978,6 +15119,39 @@ async function openRaibisSettings(defaultTab = 'apps') {
       });
       const createBtn = dataSection.querySelector('#_data-create');
       if (createBtn) createBtn.onclick = type.createFn || (() => showToast('No create action for ' + type.label, 'info'));
+
+      // "Delete Entity" — deletes all records AND removes from nav (disables the entity)
+      const delEntityBtn = dataSection.querySelector('#_data-del-entity');
+      if (delEntityBtn) {
+        delEntityBtn.onclick = () => showConfirmModal(
+          `Completely delete "${type.label}"? This removes ALL records and hides the entity from the sidebar. This cannot be undone.`,
+          async () => {
+            try {
+              const items = await api('GET', `/api/${type.api}`);
+              const list = Array.isArray(items) ? items : (items[type.key] || []);
+              await Promise.all(list.map(item => api('DELETE', `/api/${type.api}/${item.id}`).catch(() => {})));
+              if (type.key.startsWith('custom_')) {
+                // For custom types: also delete the type definition
+                const ctName = type.key.replace(/^custom_/, '');
+                await api('DELETE', `/api/custom-types/${ctName}`);
+                customEntityTypes = customEntityTypes.filter(ct => ct.name !== ctName);
+                renderCustomEntityNav();
+                await renderCetList();
+                await loadEntities(ENTITY_TYPES[0]);
+              } else {
+                // For built-in types: hide from nav
+                const disabled = getDisabledBuiltinEntities();
+                if (!disabled.includes(type.navView || type.key)) disabled.push(type.navView || type.key);
+                setDisabledBuiltinEntities(disabled);
+                applyDisabledBuiltinEntities();
+                renderCurrentView();
+                await loadEntities(ENTITY_TYPES[0]);
+              }
+              showToast(`${type.label} deleted`);
+            } catch(e) { showToast('Failed to delete entity', 'error'); }
+          }
+        );
+      }
 
       const delTypeBtn = dataSection.querySelector('#_data-del-type');
       if (delTypeBtn) {
@@ -15052,6 +15226,35 @@ async function openRaibisSettings(defaultTab = 'apps') {
     }
 
     await loadEntities(activeType);
+
+    // ── Restore hidden entities ────────────────────────────────────────────
+    function renderRestoreSection() {
+      const disabled = getDisabledBuiltinEntities();
+      const restoreSection = body.querySelector('#_restore-section');
+      if (!disabled.length) { if (restoreSection) restoreSection.remove(); return; }
+      const LABELS = { tasks:'Tasks', goals:'Goals', projects:'Projects', notes:'Notes', resources:'Resources', sprints:'Sprints', habits:'Habits', calendar:'Calendar', pomodoro:'Pomodoro', automations:'Automations' };
+      const html = `<div id="_restore-section" style="border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:16px;background:var(--color-surface);margin-bottom:20px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:10px">Hidden entities</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          ${disabled.map(v => `<div style="display:flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--border);border-radius:20px;font-size:12px">
+            <span>${escHtml(LABELS[v] || v)}</span>
+            <button class="btn btn-sm btn-ghost _restore-btn" data-view="${escHtml(v)}" style="padding:0 4px;font-size:11px">Restore</button>
+          </div>`).join('')}
+        </div>
+      </div>`;
+      if (restoreSection) restoreSection.outerHTML = html;
+      else body.insertBefore(document.createRange().createContextualFragment(html), dataSection);
+      body.querySelectorAll('._restore-btn').forEach(btn => {
+        btn.onclick = () => {
+          const view = btn.dataset.view;
+          const updated = getDisabledBuiltinEntities().filter(v => v !== view);
+          setDisabledBuiltinEntities(updated);
+          applyDisabledBuiltinEntities();
+          renderRestoreSection();
+        };
+      });
+    }
+    renderRestoreSection();
 
     // ── Export section ────────────────────────────────────────────────────
     const builtinExportTypes = ENTITY_TYPES.filter(t => t.exportKey);
@@ -15520,6 +15723,9 @@ document.addEventListener('propDefsChanged', (e) => {
 
 /* ─── Init ───────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
+  // Hide any built-in entity nav items the user has deleted
+  applyDisabledBuiltinEntities();
+
   // Nav click handlers — built-in entity views support double-click rename
   const RENAMEABLE_VIEWS = new Set(['tasks','goals','projects','notes','resources','sprints','habits','calendar','pomodoro','automations']);
 
