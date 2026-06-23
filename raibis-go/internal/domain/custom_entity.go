@@ -19,6 +19,7 @@ type CustomEntity struct {
 	TypeName  string            `json:"type_name"`
 	Title     string            `json:"title"`
 	Props     map[string]string `json:"props"`
+	Tags      []Tag             `json:"tags,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
 }

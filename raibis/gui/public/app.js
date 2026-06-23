@@ -483,15 +483,16 @@ function getEntityVisProps(entity) {
   if (stored) {
     base = JSON.parse(stored);
     if (entity.startsWith('custom_')) {
-      // Migration: include newly added prop defs not yet in stored visibility list
-      const allCustomKeys = getCustomPropDefs(entity).filter(d => !d._taxonomy).map(d => d.key);
+      // Migration: include newly added prop defs (and tags) not yet in stored visibility list
+      const allCustomKeys = ['tags', ...getCustomPropDefs(entity).filter(d => !d._taxonomy).map(d => d.key)];
       const baseSet = new Set(base);
-      const newKeys = allCustomKeys.filter(k => !baseSet.has(k));
+      const hiddenCustom = new Set(JSON.parse(localStorage.getItem(`entityHiddenCustom_${entity}`) || '[]'));
+      const newKeys = allCustomKeys.filter(k => !baseSet.has(k) && !hiddenCustom.has(k));
       if (newKeys.length > 0) { base = [...base, ...newKeys]; localStorage.setItem(`entityVisProps_${entity}`, JSON.stringify(base)); }
     }
   } else if (entity.startsWith('custom_')) {
-    // Default: all defined props visible for custom entity types
-    base = getCustomPropDefs(entity).filter(d => !d._taxonomy).map(d => d.key);
+    // Default: tags + all defined props visible for custom entity types
+    base = ['tags', ...getCustomPropDefs(entity).filter(d => !d._taxonomy).map(d => d.key)];
   } else {
     base = (ENTITY_PROPS[entity] || []).map(p => p.key);
   }
@@ -511,6 +512,12 @@ function setEntityVisProps(entity, keys) {
   });
   if (hiddenTax.length > 0) localStorage.setItem(`entityHiddenTax_${entity}`, JSON.stringify(hiddenTax));
   else localStorage.removeItem(`entityHiddenTax_${entity}`);
+  if (entity.startsWith('custom_')) {
+    const allCustomKeys = ['tags', ...getCustomPropDefs(entity).filter(d => !d._taxonomy).map(d => d.key)];
+    const hiddenCustom = allCustomKeys.filter(k => !keySet.has(k));
+    if (hiddenCustom.length > 0) localStorage.setItem(`entityHiddenCustom_${entity}`, JSON.stringify(hiddenCustom));
+    else localStorage.removeItem(`entityHiddenCustom_${entity}`);
+  }
   localStorage.setItem(`entityVisProps_${entity}`, JSON.stringify(keys));
 }
 function entityPropVisible(entity, key) {
@@ -1054,6 +1061,7 @@ function openPropManager(btnEl, entity) {
         }).join('')
       : `<div class="prop-mgr-empty">No custom properties yet</div>`;
 
+    const curFmt = getDateFormat();
     panel.innerHTML = `
       <div class="prop-mgr-header">
         <span>Properties · ${entity.charAt(0).toUpperCase()+entity.slice(1)}</span>
@@ -1063,6 +1071,16 @@ function openPropManager(btnEl, entity) {
       <div class="prop-mgr-list">${rows}</div>
       <div class="prop-mgr-footer">
         <span class="add-prop-btn prop-mgr-add-btn" data-entity="${entity}">+ Add property</span>
+      </div>
+      <div style="border-top:1px solid var(--border);padding:10px 12px 8px">
+        <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:6px">Date display</div>
+        <select id="prop-mgr-date-fmt" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary);cursor:pointer">
+          <option value="short"${curFmt==='short'?' selected':''}>Jun 22 (Month + Day)</option>
+          <option value="long"${curFmt==='long'?' selected':''}>June 22, 2026 (Full)</option>
+          <option value="numeric"${curFmt==='numeric'?' selected':''}>6/22/2026 (US)</option>
+          <option value="eu"${curFmt==='eu'?' selected':''}>22/06/2026 (EU)</option>
+          <option value="iso"${curFmt==='iso'?' selected':''}>2026-06-22 (ISO)</option>
+        </select>
       </div>`;
 
     // Show edit button on hover (CSS already handles del; add same for edit)
@@ -1099,6 +1117,8 @@ function openPropManager(btnEl, entity) {
     };
     document.getElementById('prop-mgr-close-btn').onclick = () => panel.remove();
     bindAddPropBtn(entity, () => { render(); document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } })); });
+    const dateFmtSel = document.getElementById('prop-mgr-date-fmt');
+    if (dateFmtSel) dateFmtSel.onchange = () => { localStorage.setItem('_globalDateFormat', dateFmtSel.value); renderView(currentView); };
   }
 
   const panel = document.createElement('div');
@@ -1816,6 +1836,10 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
       if (redactor) redactor.style.paddingLeft = '60px';
       const toolbarContent = container.querySelector('.ce-toolbar__content');
       if (toolbarContent) { toolbarContent.style.maxWidth = '100%'; toolbarContent.style.marginLeft = '0'; toolbarContent.style.marginRight = '0'; }
+      if (!isFullscreen) {
+        const section = container.closest('.rich-content-section');
+        if (section) section.style.marginLeft = '44px';
+      }
     },
     onChange: async () => {
       clearTimeout(saveTimer);
@@ -2527,7 +2551,7 @@ function setEntityPropOrder(entity, order) {
 //   { key, label, icon, getValue(recordId), renderValue(val), onEdit(rowEl, recordId, patchFn) }
 // onReorder(newOrderKeys) is called after drag-drop.
 // Returns HTML string; call bindInlinePropPanel(entity, recordId, ...) after inserting into DOM.
-function buildInlinePropPanel(entity, recordId, builtinDefs) {
+function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
   const order = getEntityPropOrder(entity);
   const customDefs = getCustomPropDefs(entity);
   const customVals = recordId != null ? getCustomPropValues(entity, recordId) : {};
@@ -2537,9 +2561,11 @@ function buildInlinePropPanel(entity, recordId, builtinDefs) {
   // (e.g. 'projects' when 'project' is a built-in prop) — prevents duplicate rows
   // left over from before the _ensureRelProp fix.
   const allBuiltinKeys = builtinDefs.map(d => d.key);
+  const _excludeSet = new Set(excludeKeys || []);
   const entityBuiltinSingularKeys = new Set((ENTITY_ALL_PROPS[entity] || []).map(d => d.key));
   const allCustomKeys = customDefs.filter(d => {
     if (allBuiltinKeys.includes(d.key)) return false;
+    if (_excludeSet.has(d.key)) return false;
     if (d.type === 'relation' && entityBuiltinSingularKeys.has(d.key.replace(/s$/, ''))) return false;
     return true;
   }).map(d => d.key);
@@ -2966,10 +2992,18 @@ function stripDate(dateStr) {
   return typeof dateStr === 'string' ? dateStr.split('T')[0] : '';
 }
 
+function getDateFormat() {
+  return localStorage.getItem('_globalDateFormat') || 'short';
+}
 function fmtDate(dateStr) {
   if (!dateStr) return '';
   const s = stripDate(dateStr);
   const d = new Date(s + 'T00:00:00');
+  const fmt = getDateFormat();
+  if (fmt === 'iso') return s;
+  if (fmt === 'eu') { const [y,m,day] = s.split('-'); return `${day}/${m}/${y}`; }
+  if (fmt === 'numeric') return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' });
+  if (fmt === 'long') return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
@@ -3545,6 +3579,9 @@ function openSlideover(title, bodyHTML) {
   document.getElementById('slideover-title').textContent = title;
   document.getElementById('slideover-body').innerHTML = bodyHTML;
   setSlideoverExport(null, null); // reset export button
+  setSlideoverExpand(null);
+  setFsPropsBuilder(null);
+  setFsChipsBuilder(null);
   const panel = document.getElementById('slideover');
   panel.classList.add('open');
   document.getElementById('modal-backdrop').classList.add('open');
@@ -3956,7 +3993,7 @@ async function renderCustomEntityList(typeName) {
       propVisBtn.onclick = (e) => {
         e.stopPropagation();
         // Use full prop defs (including taxonomy) for the visibility panel
-        const propList = getCustomPropDefs(entityKey).map(pd => ({ key: pd.key, label: pd.label || pd.key }));
+        const propList = [{ key: 'tags', label: 'Tags' }, ...getCustomPropDefs(entityKey).map(pd => ({ key: pd.key, label: pd.label || pd.key }))];
         bindPropVisPanel(propVisWrap, propList, () => getEntityVisProps(entityKey), (keys) => setEntityVisProps(entityKey, keys), render);
       };
     }
@@ -4006,11 +4043,14 @@ async function renderCustomEntityList(typeName) {
           const v = renderPropVal(pd, e.props?.[pd.key] || '');
           return v ? `<span class="entity-list-meta">${escHtml(v)}</span>` : '';
         }).filter(Boolean).join('');
+        const tagSpan = entityPropVisible(entityKey, 'tags') && e.tags?.length
+          ? e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}" style="font-size:11px">${escHtml(t.name)}</span>`).join('')
+          : '';
         return `<div class="entity-list-row custom-entity-row" data-id="${e.id}" style="cursor:pointer">
           <span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
           <span class="list-icon-slot" data-icon-entity="${escHtml(entityKey)}" data-icon-id="${e.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
           <span class="entity-list-title">${escHtml(e.title)}</span>
-          ${visProps}
+          ${visProps}${tagSpan}
         </div>`;
       }).join('')}</div>`;
     }
@@ -4022,12 +4062,15 @@ async function renderCustomEntityList(typeName) {
           const v = renderPropVal(pd, e.props?.[pd.key] || '');
           return v ? `<div style="display:flex;gap:6px;font-size:12px;padding:2px 0"><span style="color:var(--text-muted);min-width:80px;flex-shrink:0">${escHtml(pd.label)}</span><span>${escHtml(v)}</span></div>` : '';
         }).filter(Boolean).join('');
+        const tagRow = entityPropVisible(entityKey, 'tags') && e.tags?.length
+          ? `<div style="display:flex;gap:4px;flex-wrap:wrap;padding:2px 0">${e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${escHtml(t.name)}</span>`).join('')}</div>`
+          : '';
         return `<div class="entity-card custom-entity-row" data-id="${e.id}" style="cursor:pointer;display:flex;flex-direction:column;gap:4px">
           <div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:4px">
             <span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
             <div class="entity-card-title" style="font-weight:600;font-size:14px;flex:1">${escHtml(e.title)}</div>
           </div>
-          ${visProps}
+          ${visProps}${tagRow}
         </div>`;
       }).join('')}</div>`;
     }
@@ -4035,17 +4078,20 @@ async function renderCustomEntityList(typeName) {
     function buildTableView(items) {
       if (!items.length) return emptyState();
       const visDefs = allCustomDefs.filter(pd => entityPropVisible(entityKey, pd.key));
+      const showTags = entityPropVisible(entityKey, 'tags');
       return `<div class="entity-table-wrap"><table class="entity-table">
         <thead><tr>
           <th class="ctx-handle-th"></th>
           <th>Title</th>
           ${visDefs.map(pd => `<th>${escHtml(pd.label)}</th>`).join('')}
+          ${showTags ? '<th>Tags</th>' : ''}
           <th>Created</th>
         </tr></thead>
         <tbody>${items.map(e => `<tr class="custom-entity-row" data-id="${e.id}" style="cursor:pointer">
           <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span></td>
           <td style="font-weight:500">${escHtml(e.title)}</td>
           ${visDefs.map(pd => `<td>${escHtml(renderPropVal(pd, e.props?.[pd.key] || ''))}</td>`).join('')}
+          ${showTags ? `<td>${e.tags?.length ? e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${escHtml(t.name)}</span>`).join('') : ''}</td>` : ''}
           <td style="color:var(--text-muted);font-size:11px">${fmtDate(e.created_at)}</td>
         </tr>`).join('')}
         </tbody>
@@ -4056,11 +4102,82 @@ async function renderCustomEntityList(typeName) {
       return `<div class="empty-state"><div class="empty-state-icon">${iconHtml}</div><div class="empty-state-text">No ${escHtml(displayName.toLowerCase())} yet.</div></div>`;
     }
 
-    function render() {
+    function buildKanbanView(items) {
+      const groupProp = allCustomDefs.find(d => d.type === 'select' || d.type === 'status');
+      if (!groupProp) {
+        return `<div class="empty-state"><div class="empty-state-text">Add a <strong>Select</strong> or <strong>Status</strong> property to use Kanban view.</div></div>`;
+      }
+      const colKeys = groupProp.options || [];
+      const grouped = {};
+      colKeys.forEach(k => { grouped[k] = []; });
+      grouped[''] = [];
+      items.forEach(item => {
+        const val = item.props?.[groupProp.key] || '';
+        if (!grouped[val]) grouped[val] = [];
+        grouped[val].push(item);
+      });
+      const extraKeys = Object.keys(grouped).filter(k => k && !colKeys.includes(k) && grouped[k].length > 0);
+      const allColKeys = [...colKeys, ...extraKeys];
+      if (grouped[''] && grouped[''].length > 0) allColKeys.push('');
+
+      const colsHtml = allColKeys.map(colKey => {
+        const colItems = grouped[colKey] || [];
+        const cardsHtml = colItems.map(item => {
+          const visProps = allCustomDefs.filter(d => d.key !== groupProp.key && entityPropVisible(entityKey, d.key)).slice(0, 3).map(pd => {
+            const v = renderPropVal(pd, item.props?.[pd.key] || '');
+            return v ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${escHtml(pd.label)}: ${escHtml(v)}</div>` : '';
+          }).filter(Boolean).join('');
+          const tagRow = entityPropVisible(entityKey, 'tags') && item.tags?.length
+            ? `<div style="display:flex;gap:3px;flex-wrap:wrap;margin-top:3px">${item.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}" style="font-size:10px">${escHtml(t.name)}</span>`).join('')}</div>`
+            : '';
+          return `<div class="kanban-card custom-entity-row" data-id="${item.id}" style="cursor:pointer">
+            <div class="kanban-card-header">
+              <div class="kanban-card-title">${escHtml(item.title)}</div>
+              <span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${item.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+            </div>
+            ${cardsHtml}${tagRow}
+          </div>`;
+        }).join('');
+        const label = colKey || '(None)';
+        return `<div class="kanban-col" data-col="${escHtml(colKey)}">
+          <div class="kanban-col-header">
+            <span>${escHtml(label)}</span>
+            <span class="kanban-count">${colItems.length}</span>
+          </div>
+          <div class="kanban-col-body">${cardsHtml || `<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No items</div>`}</div>
+        </div>`;
+      }).join('');
+
+      const colCount = Math.max(allColKeys.length, 1);
+      const boardStyle = `display:grid;grid-template-columns:repeat(${colCount},minmax(220px,1fr));gap:var(--space-4);align-items:start;padding-bottom:16px`;
+      return `<div style="overflow-x:auto;width:100%"><div class="kanban-board" data-groupby="${escHtml(groupProp.key)}" data-entity-key="${escHtml(entityKey)}" style="${boardStyle}">${colsHtml}</div></div>`;
+    }
+
+    async function render() {
       const container = document.getElementById('custom-entity-content');
       if (!container) return;
-      container.innerHTML = viewMode === 'cards' ? buildCardsView(list) : viewMode === 'table' ? buildTableView(list) : buildListView(list);
+      try {
+        const fresh = await api('GET', `/api/custom/${typeName}`);
+        if (Array.isArray(fresh)) list = fresh;
+      } catch (_) {}
+      if (viewMode === 'kanban') container.innerHTML = buildKanbanView(list);
+      else if (viewMode === 'cards') container.innerHTML = buildCardsView(list);
+      else if (viewMode === 'table') container.innerHTML = buildTableView(list);
+      else container.innerHTML = buildListView(list);
       bindRows();
+      if (viewMode === 'kanban') {
+        const board = container.querySelector('.kanban-board[data-entity-key]');
+        if (board) {
+          const gPropKey = board.dataset.groupby;
+          bindKanbanDrag(board, '.kanban-card.custom-entity-row[data-id]', 'id', async (itemId, colKey) => {
+            const item = list.find(x => String(x.id) === String(itemId));
+            if (!item) return;
+            const newProps = Object.assign({}, item.props || {}, { [gPropKey]: colKey });
+            await api('PUT', `/api/custom/${typeName}/${itemId}`, { title: item.title, props: newProps });
+            render();
+          });
+        }
+      }
     }
 
     render();
@@ -4126,10 +4243,10 @@ async function openCustomEntitySlideover(typeName, id) {
   }
 
   await loadEntityCustomProps(entityKey, id);
-  const propPanel = buildInlinePropPanel(entityKey, id, []);
 
   const cesSections = getPropSections(entityKey);
   const cesHeadKeys = cesSections.heading;
+  const propPanel = buildInlinePropPanel(entityKey, id, [], cesHeadKeys);
   const cesCustomVals = getCustomPropValues(entityKey, id);
   const cesPropDefs = getCustomPropDefs(entityKey);
 
@@ -4243,9 +4360,50 @@ async function openCustomEntitySlideover(typeName, id) {
     openPropSectionManager(ev.currentTarget, entityKey, () => openCustomEntitySlideover(typeName, id));
   };
 
+  setFsChipsBuilder((fsContainer) => {
+    fsContainer.querySelector('[data-key="tags"]')?.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const _curIds = cesTags.map(t => t.id);
+      openCombo(ev.currentTarget, allTags.map(t => ({ value: t.id, label: t.name, color: t.color })), null, async ({ multiIds, create }) => {
+        if (create) {
+          try {
+            const newTag = await api('POST', '/api/tags', { name: create, color: 'blue' });
+            allTags.push(newTag);
+            await api('PUT', `/api/custom/${typeName}/${id}/tags`, { tag_ids: [...new Set([..._curIds, newTag.id])] });
+          } catch(err) {}
+          closeCombo();
+          openCustomEntitySlideover(typeName, id);
+          return;
+        }
+        const ids = (multiIds || []).map(Number);
+        cesTags = allTags.filter(t => ids.includes(t.id));
+        const v = fsContainer.querySelector('[data-key="tags"] .chip-value');
+        if (v) v.innerHTML = cesTags.length ? cesTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
+        await api('PUT', `/api/custom/${typeName}/${id}/tags`, { tag_ids: ids });
+      }, { multiSelect: true, allowCreate: true, selectedIds: _curIds });
+    });
+    cesHeadKeys.filter(k => k !== 'tags').forEach(k => {
+      const chip = fsContainer.querySelector(`[data-key="${k}"]`);
+      if (!chip) return;
+      chip.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const fsProps = document.getElementById('fs-props');
+        const row = (fsProps || document).querySelector(`.inline-prop-panel[data-entity="${entityKey}"] .inline-prop-row[data-prop-key="${k}"]`);
+        if (row) { row.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); row.querySelector('.inline-prop-value')?.click(); }
+      });
+    });
+    fsContainer.querySelector('.prop-chips-more')?.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      openPropSectionManager(ev.currentTarget, entityKey, () => openCustomEntitySlideover(typeName, id));
+    });
+  });
+
   bindInlinePropPanel(entityKey, id, {}, () => openCustomEntitySlideover(typeName, id));
   bindCommentSection(document.querySelector(`.comment-section[data-entity-type="${entityKey}"]`));
   initRichEditor(`editorjs-${entityKey}-${id}`, entityKey, id, false);
+  setSlideoverExpand(() => openEntityFullscreen(entityKey, id, e.title || displayName, (t) => {
+    api('PUT', `/api/custom/${typeName}/${id}`, { title: t, props: e.props || {} }).catch(() => {});
+  }));
 }
 
 async function openCustomEntityForm(typeName, entityOrNull) {
@@ -4702,7 +4860,7 @@ function openMultiSelectPicker(anchorEl, def, entity, recordId, key, onRerender)
     const inp = popup.querySelector('#ms-picker-inp');
     inp.oninput = () => { filter = inp.value; renderPicker(); };
     inp.onclick = e => e.stopPropagation();
-    inp.focus();
+    inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
 
     popup.querySelectorAll('.ms-picker-opt').forEach(row => {
       row.onclick = (e) => {
@@ -4771,7 +4929,7 @@ function openMultiSelectPicker(anchorEl, def, entity, recordId, key, onRerender)
 }
 
 // ── openSingleSelectPicker ────────────────────────────────────────────────────
-// Single-value picker for select/status custom props with color assignment.
+// Single-value picker for select/status custom props with color assignment and create.
 function openSingleSelectPicker(anchorEl, def, entity, recordId, key, onRerender) {
   document.getElementById('ss-picker-popup')?.remove();
   const popup = document.createElement('div');
@@ -4779,18 +4937,26 @@ function openSingleSelectPicker(anchorEl, def, entity, recordId, key, onRerender
   popup.className = 'prop-vis-panel';
   const opts = [...(def.options || [])];
   const optColors = Object.assign({}, def.optionColors || {});
+  let filter = '';
 
-  function saveColors() {
+  function saveDefs() {
     const defs = getCustomPropDefs(entity);
     const idx = defs.findIndex(d => d.key === key);
-    if (idx >= 0) { defs[idx].optionColors = optColors; setCustomPropDefs(entity, defs); }
+    if (idx >= 0) { defs[idx].options = opts; defs[idx].optionColors = optColors; setCustomPropDefs(entity, defs); }
   }
 
   function renderPicker() {
+    const filtered = filter ? opts.filter(o => o.toLowerCase().includes(filter.toLowerCase())) : opts;
+    const exactMatch = opts.some(o => o.toLowerCase() === filter.toLowerCase().trim());
+    const createLabel = filter.trim();
+
     popup.innerHTML =
-      `<div style="padding:4px 10px 6px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">${escHtml(def.label)}</div>` +
+      `<div style="padding:5px 8px;border-bottom:1px solid var(--border)">
+        <input id="ss-picker-inp" class="form-input" placeholder="Search or create…" value="${filter.replace(/"/g,'&quot;')}"
+          style="width:100%;font-size:12px;padding:3px 6px;height:26px;box-sizing:border-box">
+       </div>` +
       `<div class="prop-vis-row" data-ss-clear style="cursor:pointer;color:var(--text-muted);font-size:12px;font-style:italic">— clear —</div>` +
-      opts.map(o => {
+      filtered.map(o => {
         const color = optColors[o];
         const chipHtml = color
           ? `<span class="multi-chip color-${color}" style="font-size:11px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${escHtml(o)}</span>`
@@ -4801,8 +4967,21 @@ function openSingleSelectPicker(anchorEl, def, entity, recordId, key, onRerender
           <button class="ss-color-btn btn btn-sm btn-ghost" data-opt="${o.replace(/"/g,'&quot;')}"
             title="Assign color" style="padding:0 4px;font-size:10px;opacity:0.5;flex-shrink:0">●</button>
         </div>`;
-      }).join('');
+      }).join('') +
+      (!exactMatch && createLabel
+        ? `<div class="prop-vis-row ss-picker-create" style="cursor:pointer;color:var(--accent);font-size:12px;padding:5px 10px">+ Create "${escHtml(createLabel)}"</div>`
+        : '');
 
+    const inp = popup.querySelector('#ss-picker-inp');
+    inp.oninput = () => { filter = inp.value; renderPicker(); };
+    inp.onclick = e => e.stopPropagation();
+    inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
+
+    popup.querySelector('.ss-picker-create')?.addEventListener('click', (e) => {
+      e.stopPropagation(); popup.remove();
+      opts.push(createLabel); saveDefs();
+      setCustomPropValue(entity, recordId, key, createLabel); onRerender();
+    });
     popup.querySelector('[data-ss-clear]').onclick = (e) => {
       e.stopPropagation(); popup.remove();
       setCustomPropValue(entity, recordId, key, ''); onRerender();
@@ -4827,7 +5006,7 @@ function openSingleSelectPicker(anchorEl, def, entity, recordId, key, onRerender
             <span class="multi-chip color-${c}" style="font-size:11px">${c}</span>
           </div>`).join('');
         cp.querySelectorAll('.ss-cpick-item').forEach(ci => {
-          ci.onclick = (ev) => { ev.stopPropagation(); optColors[o] = ci.dataset.color; saveColors(); cp.remove(); renderPicker(); };
+          ci.onclick = (ev) => { ev.stopPropagation(); optColors[o] = ci.dataset.color; saveDefs(); cp.remove(); renderPicker(); };
         });
         cp.style.cssText = `position:fixed;z-index:9400;min-width:110px`;
         clampPopup(cp, btn);
@@ -6628,6 +6807,14 @@ async function renderTasks() {
 
     // Kanban card click → slideover
     document.querySelectorAll('.kanban-card[data-task-id]').forEach(card => {
+      card.onclick = (e) => {
+        if (e.target.closest('.ctx-handle')) return;
+        showTaskSlideover(card.dataset.taskId);
+      };
+    });
+
+    // Cards view card click → slideover
+    document.querySelectorAll('.task-card-item[data-task-id]').forEach(card => {
       card.onclick = (e) => {
         if (e.target.closest('.ctx-handle')) return;
         showTaskSlideover(card.dataset.taskId);
@@ -14632,7 +14819,9 @@ function showNewEntityTypeModal() {
       if (!sp) return;
       if (chk.checked) {
         if (!propRows.find(r => r.key === sp.key)) {
-          propRows.push({ key: sp.key, label: sp.label, type: sp.type });
+          const row = { key: sp.key, label: sp.label, type: sp.type };
+          if (sp.options) row.options = sp.options.split(',').map(s => s.trim());
+          propRows.push(row);
           renderPropDefs();
         }
       } else {
@@ -14658,8 +14847,7 @@ function showNewEntityTypeModal() {
     const prop_defs = JSON.stringify(validRows);
     try {
       await api('POST', '/api/custom-types', { name, display_name, icon, prop_defs });
-      customEntityTypes = await api('GET', '/api/custom-types').catch(() => []) || [];
-      renderCustomEntityNav();
+      await loadCustomEntityTypes();
       showToast(`"${display_name}" created`);
       close();
     } catch(err) { showToast('Failed: ' + (err.message || err), 'error'); }
@@ -14800,8 +14988,8 @@ async function openRaibisSettings(defaultTab = 'apps') {
     async function renderCetList() {
       const list = document.getElementById('_cet-list');
       if (!list) return;
-      const types = await api('GET', '/api/custom-types').catch(() => []) || [];
-      customEntityTypes = types;
+      await loadCustomEntityTypes();
+      const types = customEntityTypes;
       renderCustomEntityNav();
       if (!types.length) {
         list.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">No custom entity types defined yet.</div>';

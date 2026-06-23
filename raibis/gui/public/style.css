@@ -4285,6 +4285,25 @@ tr:hover .ctx-handle,
   transform: translateY(-1px);
 }
 
+/* ─── Custom entity cards view ────────────────────────────────────────── */
+.entity-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  padding: 4px 0;
+}
+.entity-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  padding: 12px 14px;
+  transition: box-shadow 0.15s, transform 0.1s;
+}
+.entity-card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  transform: translateY(-1px);
+}
+
 /* ─── View content padding after tab bar ──────────────────────────────── */
 .view-tab-bar + div:not(.filter-sort-bar):not(.entity-search-bar),
 .filter-sort-bar + div,
@@ -5139,6 +5158,11 @@ tr:hover .ctx-handle,
   margin-top: 24px;
   padding-top: 16px;
   border-top: 1px solid var(--border);
+}
+/* Push editor right inside slideover so the EditorJS + gutter button
+   (at ~-34px from host left) lands within the slideover's left padding. */
+.slideover-body .rich-content-section {
+  margin-left: 44px;
 }
 .rich-section-label {
   font-size: 11px;

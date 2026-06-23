@@ -1701,7 +1701,6 @@ func (s *sqliteStorage) ListCustomEntities(typeName string) ([]*domain.CustomEnt
 	if err != nil {
 		return out, nil // props unavailable; return entities without props
 	}
-	defer propRows.Close()
 	for propRows.Next() {
 		var eid int64
 		var k, v string
@@ -1715,7 +1714,32 @@ func (s *sqliteStorage) ListCustomEntities(typeName string) ([]*domain.CustomEnt
 			}
 		}
 	}
-	return out, propRows.Err()
+	propErr := propRows.Err()
+	propRows.Close()
+
+	// Load tags for all entities of this type
+	tagRows, err := s.db.Query(
+		`SELECT et.entity_id, t.id, t.name, t.color FROM entity_tags et JOIN tags t ON t.id=et.tag_id WHERE et.entity_type=?`,
+		"custom_"+typeName,
+	)
+	if err == nil {
+		for tagRows.Next() {
+			var eid int64
+			var tag domain.Tag
+			if err := tagRows.Scan(&eid, &tag.ID, &tag.Name, &tag.Color); err != nil {
+				continue
+			}
+			for _, e := range out {
+				if e.ID == eid {
+					e.Tags = append(e.Tags, tag)
+					break
+				}
+			}
+		}
+		tagRows.Close()
+	}
+
+	return out, propErr
 }
 
 func (s *sqliteStorage) UpdateCustomEntity(e *domain.CustomEntity) error {
