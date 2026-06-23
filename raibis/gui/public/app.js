@@ -479,7 +479,15 @@ const ENTITY_PROPS = {
 };
 function getEntityVisProps(entity) {
   const stored = localStorage.getItem(`entityVisProps_${entity}`);
-  const base = stored ? JSON.parse(stored) : (ENTITY_PROPS[entity] || []).map(p => p.key);
+  let base;
+  if (stored) {
+    base = JSON.parse(stored);
+  } else if (entity.startsWith('custom_')) {
+    // Default: all defined props visible for custom entity types
+    base = getCustomPropDefs(entity).filter(d => !d._taxonomy).map(d => d.key);
+  } else {
+    base = (ENTITY_PROPS[entity] || []).map(p => p.key);
+  }
   // Inject taxonomy props that aren't explicitly hidden by the user for this entity
   const hiddenTax = new Set(JSON.parse(localStorage.getItem(`entityHiddenTax_${entity}`) || '[]'));
   const taxKeys = getGlobalTaxonomyProps().map(tp => `tax_${tp.key}`).filter(k => !hiddenTax.has(k));
@@ -1280,6 +1288,9 @@ function bindViewTabBar(entity, onTabSwitch, onViewsChanged) {
       if (e.target.tagName === 'INPUT') return; // rename mode
       if (tab.dataset.renaming) return;
       setActiveTabId(entity, tab.dataset.tabId);
+      // Update active class visually without waiting for full re-render
+      document.querySelectorAll(`#${entity}-view-tabs .view-tab`).forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
       onTabSwitch(tab.dataset.tabId);
     };
     // Double-click to rename
@@ -3927,9 +3938,11 @@ async function renderCustomEntityList(typeName) {
     }, () => renderCustomEntityList(typeName));
 
     function bindRows() {
+      bindCtxHandles(main);
+      injectListIcons(entityKey, list.map(e => e.id));
       main.querySelectorAll('.custom-entity-row[data-id]').forEach(row => {
         row.onclick = e => {
-          if (e.target.closest('button')) return;
+          if (e.target.closest('.ctx-handle')) return;
           if (typeInfo && typeInfo.has_detail_view) {
             renderView('custom-detail', `${typeName}/${row.dataset.id}`);
           } else {
@@ -3937,33 +3950,19 @@ async function renderCustomEntityList(typeName) {
           }
         };
       });
-      main.querySelectorAll('.custom-edit-btn').forEach(btn => {
-        btn.onclick = e => { e.stopPropagation(); openCustomEntityForm(typeName, { id: parseInt(btn.dataset.id) }); };
-      });
-      main.querySelectorAll('.custom-del-btn').forEach(btn => {
-        btn.onclick = e => {
-          e.stopPropagation();
-          showConfirmModal(`Delete this ${escHtml(displayName)}?`, async () => {
-            await api('DELETE', `/api/custom/${typeName}/${btn.dataset.id}`);
-            renderView(currentView);
-          });
-        };
-      });
     }
 
     function buildListView(items) {
       if (!items.length) return emptyState();
       return `<div class="entity-list-view">${items.map(e => {
-        const visProps = propDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 3).map(pd => {
+        const visProps = propDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 4).map(pd => {
           const v = e.props?.[pd.key] || ''; return v ? `<span class="entity-list-meta">${escHtml(v)}</span>` : '';
         }).filter(Boolean).join('');
         return `<div class="entity-list-row custom-entity-row" data-id="${e.id}" style="cursor:pointer">
+          <span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+          <span class="list-icon-slot" data-icon-entity="${escHtml(entityKey)}" data-icon-id="${e.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
           <span class="entity-list-title">${escHtml(e.title)}</span>
           ${visProps}
-          <span onclick="event.stopPropagation()" style="display:flex;gap:4px;margin-left:auto">
-            <button class="btn btn-sm btn-ghost custom-edit-btn" data-id="${e.id}">Edit</button>
-            <button class="btn btn-sm btn-ghost custom-del-btn" data-id="${e.id}" style="color:var(--color-danger)">Delete</button>
-          </span>
         </div>`;
       }).join('')}</div>`;
     }
@@ -3971,17 +3970,16 @@ async function renderCustomEntityList(typeName) {
     function buildCardsView(items) {
       if (!items.length) return emptyState();
       return `<div class="entity-cards">${items.map(e => {
-        const visProps = propDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 4).map(pd => {
+        const visProps = propDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 5).map(pd => {
           const v = e.props?.[pd.key] || '';
           return v ? `<div style="display:flex;gap:6px;font-size:12px;padding:2px 0"><span style="color:var(--text-muted);min-width:80px;flex-shrink:0">${escHtml(pd.label)}</span><span>${escHtml(v)}</span></div>` : '';
         }).filter(Boolean).join('');
         return `<div class="entity-card custom-entity-row" data-id="${e.id}" style="cursor:pointer;display:flex;flex-direction:column;gap:4px">
-          <div class="entity-card-title" style="font-weight:600;font-size:14px;margin-bottom:4px">${escHtml(e.title)}</div>
-          ${visProps}
-          <div style="display:flex;gap:6px;padding-top:8px;justify-content:flex-end;border-top:1px solid var(--color-border);margin-top:4px" onclick="event.stopPropagation()">
-            <button class="btn btn-sm btn-ghost custom-edit-btn" data-id="${e.id}">Edit</button>
-            <button class="btn btn-sm btn-ghost custom-del-btn" data-id="${e.id}" style="color:var(--color-danger)">Delete</button>
+          <div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:4px">
+            <span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+            <div class="entity-card-title" style="font-weight:600;font-size:14px;flex:1">${escHtml(e.title)}</div>
           </div>
+          ${visProps}
         </div>`;
       }).join('')}</div>`;
     }
@@ -3991,19 +3989,16 @@ async function renderCustomEntityList(typeName) {
       const visDefs = propDefs.filter(pd => entityPropVisible(entityKey, pd.key));
       return `<div class="entity-table-wrap"><table class="entity-table">
         <thead><tr>
+          <th class="ctx-handle-th"></th>
           <th>Title</th>
           ${visDefs.map(pd => `<th>${escHtml(pd.label)}</th>`).join('')}
           <th>Created</th>
-          <th></th>
         </tr></thead>
         <tbody>${items.map(e => `<tr class="custom-entity-row" data-id="${e.id}" style="cursor:pointer">
+          <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span></td>
           <td style="font-weight:500">${escHtml(e.title)}</td>
           ${visDefs.map(pd => `<td>${escHtml(e.props?.[pd.key] || '')}</td>`).join('')}
           <td style="color:var(--text-muted);font-size:11px">${fmtDate(e.created_at)}</td>
-          <td onclick="event.stopPropagation()" style="display:flex;gap:4px">
-            <button class="btn btn-sm btn-ghost custom-edit-btn" data-id="${e.id}">Edit</button>
-            <button class="btn btn-sm btn-ghost custom-del-btn" data-id="${e.id}" style="color:var(--color-danger)">Delete</button>
-          </td>
         </tr>`).join('')}
         </tbody>
       </table></div>`;
@@ -4102,11 +4097,6 @@ async function openCustomEntitySlideover(typeName, id) {
     ${propPanel}
 
     ${buildCommentSection(entityKey, id)}
-
-    <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
-      <button class="btn btn-ghost btn-sm" id="ces-edit-btn">Edit</button>
-      <button class="btn btn-ghost btn-sm" style="color:var(--danger)" id="ces-delete-btn">Delete</button>
-    </div>
   `;
 
   openSlideover(e.title || displayName, body);
@@ -4175,21 +4165,6 @@ async function openCustomEntitySlideover(typeName, id) {
 
   bindInlinePropPanel(entityKey, id, {}, () => openCustomEntitySlideover(typeName, id));
   bindCommentSection(document.querySelector(`.comment-section[data-entity-type="${entityKey}"]`));
-
-  document.getElementById('ces-edit-btn').onclick = () => {
-    closeSlideover();
-    openCustomEntityForm(typeName, e);
-  };
-  document.getElementById('ces-delete-btn').onclick = async () => {
-    if (!confirm(`Delete this ${displayName}?`)) return;
-    try {
-      await api('DELETE', `/api/custom/${typeName}/${id}`);
-      closeSlideover();
-      renderView(currentView);
-    } catch(err) {
-      showToast('Delete failed', 'error');
-    }
-  };
 }
 
 async function openCustomEntityForm(typeName, entityOrNull) {
@@ -4826,7 +4801,10 @@ function showContextMenu(entityType, entityId, anchorEl) {
   menu.className = 'ctx-menu';
 
   // Build items with search filter support
+  const editIcon2 = svgIcon('<path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>');
+  const isCustom = entityType.startsWith('custom_');
   const items = [
+    ...(isCustom ? [{ action: 'custom-edit', icon: editIcon2, label: 'Edit', shortcut: '' }] : []),
     { action: 'edit-icon', icon: icons.editIcon, label: 'Edit icon', shortcut: '' },
     { action: 'comment',   icon: icons.comment,  label: 'Comment',   shortcut: '⌘⇧M' },
     { action: 'duplicate', icon: icons.duplicate,label: 'Duplicate', shortcut: '⌘D' },
@@ -4882,7 +4860,11 @@ function showContextMenu(entityType, entityId, anchorEl) {
         e.stopPropagation();
         menu.remove();
         const action = el.dataset.action;
-        if (action === 'edit-icon') {
+        if (action === 'custom-edit') {
+          const typeName = entityType.slice(7);
+          const typeInfo = customEntityTypes.find(t => t.name === typeName);
+          openCustomEntityForm(typeName, typeInfo ? { id: parseInt(entityId) } : null);
+        } else if (action === 'edit-icon') {
           // Find the icon slot for this entity and open picker
           const slot = document.querySelector(`[data-icon-entity="${entityType}"][data-icon-id="${entityId}"]`);
           if (slot) showIconPicker(slot, entityType, entityId, null, () => {});
@@ -4945,9 +4927,14 @@ function showConfirmModal(message, onConfirm) {
 }
 
 async function deleteEntity(entityType, entityId) {
-  const apiPath = ENTITY_API_MAP[entityType];
+  let apiPath;
+  if (entityType.startsWith('custom_')) {
+    apiPath = `custom/${entityType.slice(7)}`;
+  } else {
+    apiPath = ENTITY_API_MAP[entityType];
+  }
   if (!apiPath) return;
-  showConfirmModal(`Delete this ${entityType}?`, async () => {
+  showConfirmModal(`Delete this ${entityType.startsWith('custom_') ? entityType.slice(7) : entityType}?`, async () => {
     await api('DELETE', `/api/${apiPath}/${entityId}`);
     closeSlideover();
     renderCurrentView();
@@ -14978,7 +14965,9 @@ async function openRaibisSettings(defaultTab = 'apps') {
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <span id="_data-count" style="font-size:12px;color:var(--text-muted)"></span>
           <div style="display:flex;gap:6px;align-items:center">
-            ${type.key.startsWith('custom_') ? `<button class="btn btn-ghost btn-sm" id="_data-del-type" style="color:var(--color-danger)">Delete Entity Type</button>` : ''}
+            ${type.key.startsWith('custom_')
+              ? `<button class="btn btn-ghost btn-sm" id="_data-del-type" style="color:var(--color-danger)">Delete Entity Type</button>`
+              : `<button class="btn btn-ghost btn-sm" id="_data-clear-all" style="color:var(--color-danger)">Clear All Data</button>`}
             <button class="btn btn-primary btn-sm" id="_data-create">+ New ${singularLabel}</button>
           </div>
         </div>
@@ -15001,6 +14990,23 @@ async function openRaibisSettings(defaultTab = 'apps') {
             renderCustomEntityNav();
             await renderCetList();
             await loadEntities(ENTITY_TYPES[0]);
+          }
+        );
+      }
+
+      const clearAllBtn = dataSection.querySelector('#_data-clear-all');
+      if (clearAllBtn) {
+        clearAllBtn.onclick = () => showConfirmModal(
+          `Delete ALL ${type.label.toLowerCase()}? This permanently removes all records and cannot be undone.`,
+          async () => {
+            try {
+              const items = await api('GET', `/api/${type.api}`);
+              const list = Array.isArray(items) ? items : (items[type.key] || []);
+              await Promise.all(list.map(item => api('DELETE', `/api/${type.api}/${item.id}`).catch(() => {})));
+              renderCurrentView();
+              loadEntities(type);
+              showToast(`All ${type.label.toLowerCase()} deleted`);
+            } catch(e) { showToast('Failed to clear data', 'error'); }
           }
         );
       }
