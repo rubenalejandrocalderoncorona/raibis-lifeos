@@ -1054,9 +1054,9 @@ function openPropManager(btnEl, entity) {
           return `<div class="prop-mgr-row" data-key="${d.key}">
             <span class="prop-mgr-icon">${iconHtml}</span>
             <span class="prop-mgr-label">${escHtml(labelText)}</span>
-            <span class="prop-mgr-type">${d.type}</span>
-            <button class="prop-mgr-edit" data-key="${d.key}" title="Edit" style="background:none;border:none;cursor:pointer;opacity:0;color:var(--text-muted);font-size:13px;padding:0 2px;flex-shrink:0;transition:opacity 80ms">✏</button>
-            <button class="prop-mgr-del" data-key="${d.key}" title="Remove">×</button>
+            <span class="prop-mgr-type">${d._taxonomy ? 'taxonomy' : d.type}</span>
+            ${!d._taxonomy ? `<button class="prop-mgr-edit" data-key="${d.key}" title="Edit" style="background:none;border:none;cursor:pointer;opacity:0;color:var(--text-muted);font-size:13px;padding:0 2px;flex-shrink:0;transition:opacity 80ms">✏</button>` : ''}
+            ${!d._taxonomy ? `<button class="prop-mgr-del" data-key="${d.key}" title="Remove">×</button>` : ''}
           </div>`;
         }).join('')
       : `<div class="prop-mgr-empty">No custom properties yet</div>`;
@@ -2492,8 +2492,7 @@ const CAL_EVENT_TYPES = ['task','goal','project','sprint'];
 // ── Modal date chip helpers (shared across all forms) ────────────────────
 function _dateChipDisplay(iso) {
   if (!iso) return 'Pick date';
-  const d = new Date(iso + 'T00:00:00');
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return fmtDate(iso) || iso;
 }
 function _rangeDateChipDisplay(startIso, endIso) {
   if (!startIso && !endIso) return 'Pick date range';
@@ -4027,6 +4026,7 @@ async function renderCustomEntityList(typeName) {
 
     function renderPropVal(pd, rawVal) {
       if (!rawVal) return '';
+      if (pd.type === 'date') return fmtDate(rawVal) || rawVal;
       if (pd.type === 'multi_select' || pd.type === 'checkbox') {
         try { const arr = JSON.parse(rawVal); if (Array.isArray(arr)) return arr.join(', '); } catch {}
       }
@@ -4929,96 +4929,141 @@ function openMultiSelectPicker(anchorEl, def, entity, recordId, key, onRerender)
 }
 
 // ── openSingleSelectPicker ────────────────────────────────────────────────────
-// Single-value picker for select/status custom props with color assignment and create.
+// Single-value picker styled like the task status/priority combo-popover.
 function openSingleSelectPicker(anchorEl, def, entity, recordId, key, onRerender) {
   document.getElementById('ss-picker-popup')?.remove();
   const popup = document.createElement('div');
   popup.id = 'ss-picker-popup';
-  popup.className = 'prop-vis-panel';
+  popup.className = 'combo-popover';
+  popup.style.minWidth = '220px';
+
   const opts = [...(def.options || [])];
   const optColors = Object.assign({}, def.optionColors || {});
+  const currentVal = getCustomPropValues(entity, recordId)[key] || '';
   let filter = '';
+  let editingVal = null;
+  let editInputVal = '';
+  let colorPickerVal = null;
+  const COLOR_PRESETS = ['#e07070','#fb923c','#d4a84b','#6dcc8a','#378ADD','#a78bfa','#f472b6','#22d3ee','#94a3b8'];
 
   function saveDefs() {
     const defs = getCustomPropDefs(entity);
     const idx = defs.findIndex(d => d.key === key);
-    if (idx >= 0) { defs[idx].options = opts; defs[idx].optionColors = optColors; setCustomPropDefs(entity, defs); }
+    if (idx >= 0) { defs[idx].options = [...opts]; defs[idx].optionColors = Object.assign({}, optColors); setCustomPropDefs(entity, defs); }
   }
 
   function renderPicker() {
     const filtered = filter ? opts.filter(o => o.toLowerCase().includes(filter.toLowerCase())) : opts;
-    const exactMatch = opts.some(o => o.toLowerCase() === filter.toLowerCase().trim());
-    const createLabel = filter.trim();
+    const showCreate = filter.trim() && !opts.some(o => o.toLowerCase() === filter.trim().toLowerCase());
 
-    popup.innerHTML =
-      `<div style="padding:5px 8px;border-bottom:1px solid var(--border)">
-        <input id="ss-picker-inp" class="form-input" placeholder="Search or create…" value="${filter.replace(/"/g,'&quot;')}"
-          style="width:100%;font-size:12px;padding:3px 6px;height:26px;box-sizing:border-box">
-       </div>` +
-      `<div class="prop-vis-row" data-ss-clear style="cursor:pointer;color:var(--text-muted);font-size:12px;font-style:italic">— clear —</div>` +
-      filtered.map(o => {
-        const color = optColors[o];
-        const chipHtml = color
-          ? `<span class="multi-chip color-${color}" style="font-size:11px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${escHtml(o)}</span>`
-          : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${escHtml(o)}</span>`;
-        return `<div class="prop-vis-row ss-pick-opt" data-val="${o.replace(/"/g,'&quot;')}"
-          style="display:flex;align-items:center;gap:5px;cursor:pointer">
-          ${chipHtml}
-          <button class="ss-color-btn btn btn-sm btn-ghost" data-opt="${o.replace(/"/g,'&quot;')}"
-            title="Assign color" style="padding:0 4px;font-size:10px;opacity:0.5;flex-shrink:0">●</button>
+    const items = filtered.map(v => {
+      const isSel = v === currentVal;
+      const color = optColors[v] || '';
+      const dot = `<span class="combo-color-dot" data-colorpicker="${v.replace(/"/g,'&quot;')}" title="Set color" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color||'var(--border)'};border:1px solid ${color||'var(--border)'};cursor:pointer;flex-shrink:0;margin-right:2px"></span>`;
+      if (editingVal === v) {
+        return `<div class="combo-item combo-item-editing" data-val="${v.replace(/"/g,'&quot;')}">
+          ${dot}
+          <input class="combo-edit-input" value="${(editInputVal || v).replace(/"/g,'&quot;')}" data-editing="${v.replace(/"/g,'&quot;')}" style="flex:1;font-size:12px;padding:2px 4px;border:1px solid var(--accent);border-radius:3px;background:var(--bg-surface);color:var(--text-primary)" />
+          <button class="combo-edit-save" data-editing="${v.replace(/"/g,'&quot;')}" style="font-size:11px;padding:2px 6px;margin-left:4px;background:var(--accent);color:#fff;border:none;border-radius:3px;cursor:pointer">✓</button>
+          <button class="combo-edit-cancel" style="font-size:11px;padding:2px 6px;margin-left:2px;background:transparent;border:none;cursor:pointer;color:var(--text-muted)">✕</button>
         </div>`;
-      }).join('') +
-      (!exactMatch && createLabel
-        ? `<div class="prop-vis-row ss-picker-create" style="cursor:pointer;color:var(--accent);font-size:12px;padding:5px 10px">+ Create "${escHtml(createLabel)}"</div>`
-        : '');
+      }
+      const colorPickerHtml = colorPickerVal === v ? `<div class="combo-color-picker" data-for="${v.replace(/"/g,'&quot;')}" style="display:flex;flex-wrap:wrap;gap:4px;padding:6px;border-top:1px solid var(--border)">
+        ${COLOR_PRESETS.map(c => `<span class="combo-color-swatch${color===c?' active':''}" data-color="${c}" data-for-val="${v.replace(/"/g,'&quot;')}" style="display:inline-block;width:16px;height:16px;border-radius:3px;background:${c};cursor:pointer;border:2px solid ${color===c?'var(--text-primary)':'transparent'}"></span>`).join('')}
+        <span class="combo-color-swatch combo-color-clear" data-color="" data-for-val="${v.replace(/"/g,'&quot;')}" title="Clear" style="display:inline-block;width:16px;height:16px;border-radius:3px;background:var(--border);cursor:pointer;border:2px solid transparent;font-size:9px;line-height:16px;text-align:center;color:var(--text-muted)">✕</span>
+      </div>` : '';
+      return `<div class="combo-item editable-val-item${isSel?' selected':''}" data-val="${v.replace(/"/g,'&quot;')}" style="display:flex;align-items:center;gap:4px;justify-content:space-between;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:6px;flex:1">
+          ${dot}<span style="color:${color||'inherit'}">${v.replace(/_/g,' ')}</span>
+        </div>
+        <button class="combo-rename-btn" data-rename="${v.replace(/"/g,'&quot;')}" title="Rename" style="opacity:0.4;background:none;border:none;cursor:pointer;font-size:11px;padding:0 4px;color:var(--text-muted)">✎</button>
+        ${colorPickerHtml}
+      </div>`;
+    }).join('');
 
-    const inp = popup.querySelector('#ss-picker-inp');
-    inp.oninput = () => { filter = inp.value; renderPicker(); };
-    inp.onclick = e => e.stopPropagation();
+    const clearRow = `<div class="combo-item" data-ss-clear style="color:var(--text-muted);font-style:italic;cursor:pointer">— clear —</div>`;
+
+    popup.innerHTML = `
+      <div class="combo-search-wrap">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input class="combo-search" placeholder="Search or add…" value="${filter.replace(/"/g,'&quot;')}" />
+      </div>
+      <div class="combo-list">
+        ${clearRow}
+        ${items || '<div class="combo-empty">No options</div>'}
+        ${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Add "${filter.trim()}"</div>` : ''}
+      </div>`;
+
+    const inp = popup.querySelector('.combo-search');
     inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length);
-
-    popup.querySelector('.ss-picker-create')?.addEventListener('click', (e) => {
-      e.stopPropagation(); popup.remove();
-      opts.push(createLabel); saveDefs();
-      setCustomPropValue(entity, recordId, key, createLabel); onRerender();
-    });
-    popup.querySelector('[data-ss-clear]').onclick = (e) => {
-      e.stopPropagation(); popup.remove();
-      setCustomPropValue(entity, recordId, key, ''); onRerender();
+    inp.oninput = (e) => { filter = e.target.value; editingVal = null; renderPicker(); };
+    inp.onkeydown = (e) => {
+      if (e.key === 'Enter' && filter.trim()) {
+        const exact = opts.find(o => o.toLowerCase() === filter.trim().toLowerCase());
+        if (exact) { setCustomPropValue(entity, recordId, key, exact); popup.remove(); onRerender(); }
+        else { const nv = filter.trim(); opts.push(nv); saveDefs(); setCustomPropValue(entity, recordId, key, nv); popup.remove(); onRerender(); }
+      } else if (e.key === 'Escape') popup.remove();
     };
-    popup.querySelectorAll('.ss-pick-opt').forEach(row => {
-      row.onclick = (e) => {
-        if (e.target.closest('.ss-color-btn')) return;
-        e.stopPropagation(); popup.remove();
-        setCustomPropValue(entity, recordId, key, row.dataset.val); onRerender();
+
+    popup.querySelector('[data-ss-clear]').onclick = (e) => { e.stopPropagation(); popup.remove(); setCustomPropValue(entity, recordId, key, ''); onRerender(); };
+
+    popup.querySelectorAll('.editable-val-item[data-val]').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.combo-rename-btn') || e.target.closest('.combo-color-dot') || e.target.closest('.combo-color-picker')) return;
+        e.stopPropagation(); popup.remove(); setCustomPropValue(entity, recordId, key, el.dataset.val); onRerender();
       };
     });
-    popup.querySelectorAll('.ss-color-btn').forEach(btn => {
+
+    popup.querySelectorAll('.combo-rename-btn').forEach(btn => {
+      btn.onclick = (e) => { e.stopPropagation(); editingVal = btn.dataset.rename; editInputVal = editingVal; renderPicker(); };
+    });
+    popup.querySelectorAll('.combo-edit-save').forEach(btn => {
       btn.onclick = (e) => {
         e.stopPropagation();
-        document.getElementById('ss-cpicker')?.remove();
-        const o = btn.dataset.opt;
-        const cp = document.createElement('div');
-        cp.id = 'ss-cpicker';
-        cp.className = 'prop-vis-panel';
-        cp.innerHTML = MS_COLORS.map(c =>
-          `<div class="prop-vis-row ss-cpick-item" data-color="${c}" style="cursor:pointer">
-            <span class="multi-chip color-${c}" style="font-size:11px">${c}</span>
-          </div>`).join('');
-        cp.querySelectorAll('.ss-cpick-item').forEach(ci => {
-          ci.onclick = (ev) => { ev.stopPropagation(); optColors[o] = ci.dataset.color; saveDefs(); cp.remove(); renderPicker(); };
-        });
-        cp.style.cssText = `position:fixed;z-index:9400;min-width:110px`;
-        clampPopup(cp, btn);
-        setTimeout(() => document.addEventListener('click', function h(ev) { if (!cp.contains(ev.target)) { cp.remove(); document.removeEventListener('click', h); } }), 0);
+        const oldVal = btn.dataset.editing;
+        const inputEl = popup.querySelector(`.combo-edit-input[data-editing="${oldVal}"]`);
+        const newVal = (inputEl ? inputEl.value.trim() : oldVal);
+        if (newVal && newVal !== oldVal) {
+          const idx = opts.indexOf(oldVal);
+          if (idx >= 0) { opts[idx] = newVal; if (optColors[oldVal]) { optColors[newVal] = optColors[oldVal]; delete optColors[oldVal]; } }
+          saveDefs();
+          if (currentVal === oldVal) { setCustomPropValue(entity, recordId, key, newVal); popup.remove(); onRerender(); return; }
+        }
+        editingVal = null; renderPicker();
       };
+    });
+    popup.querySelectorAll('.combo-edit-cancel').forEach(btn => {
+      btn.onclick = (e) => { e.stopPropagation(); editingVal = null; renderPicker(); };
+    });
+    popup.querySelectorAll('.combo-edit-input').forEach(inp2 => {
+      inp2.oninput = (e) => { editInputVal = e.target.value; };
+      inp2.onkeydown = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); popup.querySelector('.combo-edit-save').click(); }
+        else if (e.key === 'Escape') { e.stopPropagation(); editingVal = null; renderPicker(); }
+      };
+    });
+
+    const createEl = popup.querySelector('.create-new[data-create]');
+    if (createEl) {
+      createEl.onclick = () => { const nv = createEl.dataset.create; opts.push(nv); saveDefs(); setCustomPropValue(entity, recordId, key, nv); popup.remove(); onRerender(); };
+    }
+
+    popup.querySelectorAll('.combo-color-dot[data-colorpicker]').forEach(dot => {
+      dot.onclick = (e) => { e.stopPropagation(); const v = dot.dataset.colorpicker; colorPickerVal = colorPickerVal === v ? null : v; renderPicker(); };
+    });
+    popup.querySelectorAll('.combo-color-swatch[data-for-val]').forEach(swatch => {
+      swatch.onclick = (e) => { e.stopPropagation(); const v = swatch.dataset.forVal; optColors[v] = swatch.dataset.color; saveDefs(); colorPickerVal = null; renderPicker(); };
     });
   }
 
   renderPicker();
-  popup.style.cssText = `position:fixed;z-index:9200;min-width:200px;max-height:320px;overflow-y:auto`;
-  clampPopup(popup, anchorEl);
+  const rect = anchorEl.getBoundingClientRect();
+  popup.style.cssText = `position:fixed;z-index:9200;top:${rect.bottom+4}px;left:${rect.left}px`;
   document.body.appendChild(popup);
+  requestAnimationFrame(() => {
+    const cr = popup.getBoundingClientRect();
+    if (cr.right > window.innerWidth - 8) popup.style.left = (window.innerWidth - cr.width - 8) + 'px';
+  });
   setTimeout(() => document.addEventListener('click', function h(ev) { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', h); } }), 0);
 }
 
@@ -7742,6 +7787,24 @@ async function renderSprints() {
           <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pctSP}%;background:${color}"></div></div>
         </div>`;
       })() : ''}
+      ${(() => {
+        const customVals = getCustomPropValues('sprint', s.id);
+        return getCustomPropDefs('sprint').filter(d => entityPropVisible('sprint', d.key)).map(d => {
+          const v = customVals[d.key] || '';
+          if (!v) return '';
+          if (d.type === 'multi_select') {
+            const arr = (() => { try { const a = JSON.parse(v); return Array.isArray(a) ? a : (v ? [v] : []); } catch { return v ? [v] : []; } })();
+            const oc = d.optionColors || {};
+            if (!arr.length) return '';
+            return `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">${arr.map(x => oc[x] ? `<span class="multi-chip color-${oc[x]}" style="font-size:11px">${escHtml(x)}</span>` : `<span class="multi-chip" style="font-size:11px">${escHtml(x)}</span>`).join('')}</div>`;
+          }
+          if (d.type === 'select' || d.type === 'status') {
+            const oc = d.optionColors || {};
+            return `<div style="margin-top:4px">${oc[v] ? `<span class="multi-chip color-${oc[v]}" style="font-size:11px">${escHtml(v)}</span>` : `<span class="entity-list-meta">${escHtml(d.label)}: ${escHtml(v)}</span>`}</div>`;
+          }
+          return `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${escHtml(d.label)}: ${escHtml(d.type === 'date' ? (fmtDate(v)||v) : String(v))}</div>`;
+        }).filter(Boolean).join('');
+      })()}
     </div>`;
   }
 
@@ -9135,6 +9198,16 @@ async function renderResources() {
         ${vis('goal') && r.goal_title ? `<span class="entity-list-meta">→ ${r.goal_title}</span>` : ''}
         ${vis('url') && r.url ? `<span class="entity-list-meta" onclick="event.stopPropagation()"><a href="${r.url}" target="_blank" rel="noopener" style="color:var(--accent)">${r.url.length > 40 ? r.url.slice(0,40)+'…' : r.url}</a></span>` : ''}
         ${vis('tags') ? (r.tags || []).map(t => tagHtml(t)).join('') : ''}
+        ${getCustomPropDefs('resource').filter(d => entityPropVisible('resource', d.key)).map(d => {
+          const v = (getCustomPropValues('resource', r.id) || {})[d.key] || '';
+          if (!v) return '';
+          if (d.type === 'multi_select') {
+            const arr = (() => { try { const a = JSON.parse(v); return Array.isArray(a) ? a : (v ? [v] : []); } catch { return v ? [v] : []; } })();
+            const oc = d.optionColors || {};
+            return arr.map(x => oc[x] ? `<span class="multi-chip color-${oc[x]}" style="font-size:11px">${escHtml(x)}</span>` : `<span class="multi-chip" style="font-size:11px">${escHtml(x)}</span>`).join('');
+          }
+          return `<span class="entity-list-meta">${escHtml(String(v))}</span>`;
+        }).join('')}
       </div>`;
     }).join('')}</div>`;
   }
@@ -9208,6 +9281,25 @@ async function renderResources() {
         ${vis('linked') && linked ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">→ ${linked}</div>` : ''}
         ${vis('url') && rawUrl ? `<div style="margin-top:6px" onclick="event.stopPropagation()"><a href="${rawUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent)">${rawUrl.length > 60 ? rawUrl.slice(0,60)+'…' : rawUrl}</a></div>` : ''}
         ${r.body ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${r.body.slice(0,120)}${r.body.length>120?'…':''}</div>` : ''}
+        ${vis('tags') ? (r.tags || []).map(t => tagHtml(t)).join('') : ''}
+        ${(() => {
+          const customVals = getCustomPropValues('resource', r.id);
+          return getCustomPropDefs('resource').filter(d => entityPropVisible('resource', d.key)).map(d => {
+            const v = customVals[d.key] || '';
+            if (!v) return '';
+            if (d.type === 'multi_select') {
+              const arr = (() => { try { const a = JSON.parse(v); return Array.isArray(a) ? a : (v ? [v] : []); } catch { return v ? [v] : []; } })();
+              const oc = d.optionColors || {};
+              if (!arr.length) return '';
+              return arr.map(x => oc[x] ? `<span class="multi-chip color-${oc[x]}" style="font-size:11px">${escHtml(x)}</span>` : `<span class="multi-chip" style="font-size:11px">${escHtml(x)}</span>`).join('');
+            }
+            if (d.type === 'select' || d.type === 'status') {
+              const oc = d.optionColors || {};
+              return oc[v] ? `<span class="multi-chip color-${oc[v]}" style="font-size:11px">${escHtml(v)}</span>` : `<span class="entity-list-meta">${escHtml(v)}</span>`;
+            }
+            return `<span class="entity-list-meta">${escHtml(d.label)}: ${escHtml(d.type === 'date' ? (fmtDate(v)||v) : String(v))}</span>`;
+          }).filter(Boolean).join('');
+        })()}
       </div>`;
     }).join('')}</div>`;
   }
