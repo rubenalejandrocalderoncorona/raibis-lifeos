@@ -5423,3 +5423,11 @@ body.fullscreen-open .fab-group { right: var(--space-6) !important; bottom: var(
 }
 .habit-heat-cell:hover { transform: scale(1.25); opacity: 1 !important; }
 .habit-heat-cell.today { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+
+/* ─── Slideover cover image ─────────────────────────────────────────── */
+.slideover-cover-wrap { flex-shrink: 0; min-height: 0; overflow: hidden; }
+.slideover-cover-wrap.has-cover { height: 160px; background-size: cover; background-position: center; background-repeat: no-repeat; position: relative; }
+.slideover-cover-wrap .sc-cover-btn { position: absolute; bottom: 8px; right: 12px; background: rgba(0,0,0,0.45); color: #fff; border: none; border-radius: 5px; padding: 3px 8px; font-size: 11px; cursor: pointer; opacity: 0; transition: opacity 0.15s; }
+.slideover-cover-wrap:hover .sc-cover-btn { opacity: 1; }
+.slideover-cover-wrap .sc-add-btn { display: block; margin: 5px 16px; background: none; border: 1px dashed var(--border); border-radius: 5px; padding: 4px 12px; font-size: 11px; color: var(--text-muted); cursor: pointer; text-align: left; }
+.slideover-cover-wrap .sc-add-btn:hover { border-color: var(--accent); color: var(--accent); }
