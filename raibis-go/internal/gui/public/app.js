@@ -3220,6 +3220,25 @@ function isToday(dateStr) {
   return d.getTime() === today.getTime();
 }
 
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const d = new Date(stripDate(dateStr) + 'T00:00:00');
+  return Math.round((d - today) / 86400000);
+}
+
+// Returns an inline color string based on how near/far the due date is.
+// overdue → red; today → orange; 1-2d → amber; 3-6d → yellow-green; 7+ → green
+function dueDateColor(dateStr) {
+  const days = daysUntil(dateStr);
+  if (days === null) return '';
+  if (days < 0)  return '#ef4444';
+  if (days === 0) return '#f97316';
+  if (days <= 2)  return '#f59e0b';
+  if (days <= 6)  return '#84cc16';
+  return '#22c55e';
+}
+
 function statusBadge(status) {
   const map = { todo: 'badge-todo', in_progress: 'badge-progress', blocked: 'badge-blocked', done: 'badge-done' };
   const label = (status || 'todo').replace('_', ' ');
@@ -3280,10 +3299,8 @@ function tagHtml(tag) {
 
 function dueBadgeHtml(dateStr) {
   if (!dateStr) return '';
-  let cls = '';
-  if (isOverdue(dateStr)) cls = 'overdue';
-  else if (isToday(dateStr)) cls = 'today';
-  return `<span class="task-due ${cls}">${fmtDate(dateStr)}</span>`;
+  const color = dueDateColor(dateStr);
+  return `<span class="task-due" style="color:${color}">${fmtDate(dateStr)}</span>`;
 }
 
 function downloadJSON(data, filename) {
@@ -4772,7 +4789,7 @@ const ENTITY_ALL_PROPS = {
   task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goals'},{key:'project',label:'Projects'},{key:'category',label:'Category'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'}],
   goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'due',label:'Due Date'},{key:'metrics',label:'Metrics'}],
   project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goals'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
-  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'}],
+  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'},{key:'category',label:'Category'}],
   note:     [{key:'date',label:'Date'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'}],
   resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'}],
 };
@@ -4781,7 +4798,7 @@ const ENTITY_SECTION_DEFAULTS = {
   task:     { heading:['status','priority','due','focus','tags'],   body:['goal','project','category','points','recur'] },
   goal:     { heading:['status','type','year','tags'],              body:['category','due','metrics'] },
   project:  { heading:['status','due','goal','tags'],              body:['category','macro','kanban','archived'] },
-  sprint:   { heading:['status','dates','project','tags'],         body:['points'] },
+  sprint:   { heading:['status','dates','project','tags'],         body:['points','category'] },
   note:     { heading:['date','project','goal','tags'],            body:['category'] },
   resource: { heading:['type','url','project','goal'],             body:['tags','category'] },
 };
@@ -6759,8 +6776,7 @@ async function renderTasks() {
   function buildCardsView(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">✓</div><div class="empty-state-text">No tasks found</div></div>`;
     const cards = list.map(t => {
-      const dueCls = isOverdue(t.due_date) ? 'overdue' : isToday(t.due_date) ? 'today' : '';
-      const dueLine = t.due_date ? `<span class="task-due ${dueCls}" style="font-size:11px">${fmtDate(t.due_date)}</span>` : '';
+      const dueLine = t.due_date ? `<span class="task-due" style="font-size:11px;color:${dueDateColor(t.due_date)}">${fmtDate(t.due_date)}</span>` : '';
       const projLine = t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${t.project_title}</div>` : '';
       const tags = (t.tags||[]).slice(0,3).map(tg => tagHtml(tg)).join('');
       const storyPts = t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
@@ -6792,7 +6808,7 @@ async function renderTasks() {
       { key: 'goal',         header: 'Goals',         cell: (t) => `<td>${t.goal_title ? `<span class="badge badge-todo">${t.goal_title}</span>` : '—'}</td>` },
       { key: 'status',       header: 'Status',        cell: (t) => { const sopts = TASK_STATUSES.map(s => `<option value="${s}" ${t.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join(''); return `<td><select class="inline-status-select" data-task-id="${t.id}" style="font-size:11px;padding:2px 6px;border-radius:3px">${sopts}</select></td>`; } },
       { key: 'priority',     header: 'Priority',      cell: (t) => `<td>${priorityBadge(t.priority)}</td>` },
-      { key: 'due_date',     header: 'Due',           cell: (t) => `<td class="${isOverdue(t.due_date)?'task-due overdue':isToday(t.due_date)?'task-due today':''}">${fmtDate(t.due_date)||'—'}</td>` },
+      { key: 'due_date',     header: 'Due',           cell: (t) => `<td style="${t.due_date?'color:'+dueDateColor(t.due_date):''}">${fmtDate(t.due_date)||'—'}</td>` },
       { key: 'tags',         header: 'Tags',          cell: (t) => `<td>${(t.tags||[]).map(tg=>tagHtml(tg)).join('')}</td>` },
       { key: 'story_points', header: 'Points',        cell: (t) => `<td>${t.story_points ? `<span style="font-size:11px;border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '—'}</td>` },
       { key: 'category',     header: 'Category',      cell: (t) => { const cn = t.category_name || t.category || ''; return `<td>${cn ? `<span style="font-size:11px;color:var(--text-muted)">${cn}</span>` : '—'}</td>`; } },
@@ -6899,12 +6915,11 @@ async function renderTasks() {
     const colsHtml = allKeys.map(colKey => {
       const tasks = grouped[colKey] || [];
       const cards = tasks.map(t => {
-        const dueCls = isOverdue(t.due_date) ? 'overdue' : isToday(t.due_date) ? 'today' : '';
         const kVis = (key) => propVisible('kanban', key);
         const recurBadge = kVis('recurrence') && t.recur_interval > 0 ? ' <span class="task-recur-badge">↺</span>' : '';
         const projLine = kVis('project') && t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t.project_title}</div>` : '';
         const statusLine = kVis('status') ? (groupBy === 'status' ? (kVis('priority') ? priorityBadge(t.priority) : '') : statusBadge(t.status)) : '';
-        const dueLine = kVis('due_date') && t.due_date ? `<span class="task-due ${dueCls}" style="font-size:10px">${fmtDate(t.due_date)}</span>` : '';
+        const dueLine = kVis('due_date') && t.due_date ? `<span class="task-due" style="font-size:10px;color:${dueDateColor(t.due_date)}">${fmtDate(t.due_date)}</span>` : '';
         const tagLine = kVis('tags') ? (t.tags||[]).slice(0,2).map(tg => tagHtml(tg)).join('') : '';
         const storyPts = kVis('story_points') && t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
         const metaLine = [statusLine, dueLine, tagLine, storyPts].some(Boolean)
@@ -13666,6 +13681,7 @@ async function showSprintSlideover(sprintId, afterSave) {
     ]);
     try { sprintTags = await api('GET', `/api/sprints/${sprintId}/tags`); } catch(e) { sprintTags = []; }
   } catch(e) { return; }
+  if (!allCategories.length) { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} }
 
   const tasks = (s.tasks || []).filter(t => !t.parent_task_id);
   const projName = allProjects.find(p => String(p.id) === String(s.project_id))?.title || null;
@@ -13679,12 +13695,16 @@ async function showSprintSlideover(sprintId, afterSave) {
 
   const sprintSections = getPropSections('sprint');
   const sprintIsInHead = (k) => sprintSections.heading.includes(k);
-  const SPRINT_CHIP_KEYS = ['status','dates','project','tags'];
+  const SPRINT_CHIP_KEYS = ['status','dates','project','tags','category'];
   const sprintExtraHeadKeys = sprintSections.heading.filter(k => !SPRINT_CHIP_KEYS.includes(k));
+
+  await loadEntityCustomProps('sprint', sprintId);
+  const _sprintCatId = getCustomPropValues('sprint', sprintId)._category_id || null;
+  const sprintCatName = _sprintCatId ? (allCategories.find(c => String(c.id) === String(_sprintCatId)) || {}).name : null;
 
   const allSprintBuiltinDefs = [
     { key: 'status',  label: 'Status',    icon: pIco('<circle cx="12" cy="12" r="10"/>'),
-      renderValue: () => `<span>${s.status || 'planned'}</span>` },
+      renderValue: () => `<span style="${sprintStatusStyle(s.status)}">${(s.status||'planned').replace('_',' ')}</span>` },
     { key: 'dates',   label: 'Dates',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => { const dr = s.start_date && s.end_date ? `${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}` : fmtDate(s.start_date||s.end_date)||''; return dr ? `<span>${dr}</span>` : ''; } },
     { key: 'project', label: 'Projects',  icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
@@ -13693,9 +13713,10 @@ async function showSprintSlideover(sprintId, afterSave) {
       renderValue: () => sprintTags.length ? sprintTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'points',  label: 'Capacity (pts)', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
       renderValue: () => s.story_points != null ? `<span>${s.story_points}</span>` : '' },
+    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => sprintCatName ? `<span>${sprintCatName}</span>` : '' },
   ];
   const sprintBodyDefs = allSprintBuiltinDefs.filter(d => sprintSections.body.includes(d.key));
-  await loadEntityCustomProps('sprint', sprintId);
   const sprintInlinePropPanel = buildInlinePropPanel('sprint', sprintId, sprintBodyDefs);
 
   const projCrumb = projName
@@ -13715,6 +13736,11 @@ async function showSprintSlideover(sprintId, afterSave) {
     : fmtDate(s.start_date || s.end_date) || '—';
 
   const SPRINT_STATUSES = ['planned','active','completed'];
+  const SPRINT_STATUS_COLORS = { planned: '#94a3b8', active: '#22c55e', completed: '#a78bfa' };
+  function sprintStatusStyle(st) {
+    const c = getValueColor('sprintStatuses', st) || SPRINT_STATUS_COLORS[st] || '';
+    return c ? `background:${c}22;color:${c};border-radius:3px;padding:1px 6px;font-weight:600` : '';
+  }
 
   const body = `
     <button class="entity-icon-add-btn" id="sprint-icon-add-btn">
@@ -13727,10 +13753,11 @@ async function showSprintSlideover(sprintId, afterSave) {
     </div>
 
     <div class="prop-chips" id="prop-chips">
-      ${sprintIsInHead('status') ? `<button class="prop-chip" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value">${s.status || 'planned'}</span></button>` : ''}
+      ${sprintIsInHead('status') ? `<button class="prop-chip chip-sprint-status-${s.status||'planned'}" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value" id="chip-status-val" style="${sprintStatusStyle(s.status)}">${(s.status||'planned').replace('_',' ')}</span></button>` : ''}
       ${sprintIsInHead('dates') ? `<button class="prop-chip" id="chip-dates" data-key="dates"><span class="chip-label">Dates</span><span class="chip-value" id="chip-dates-val">${dateRange}</span></button>` : ''}
       ${sprintIsInHead('project') ? `<button class="prop-chip" id="chip-project" data-key="project"><span class="chip-label">Project</span><span class="chip-value" id="chip-project-val">${projName || '—'}</span></button>` : ''}
       ${sprintIsInHead('tags') ? `<button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${sprintTags.length ? sprintTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>` : ''}
+      ${sprintIsInHead('category') ? `<button class="prop-chip${sprintCatName ? '' : ' chip-empty'}" id="chip-category" data-key="category"><span class="chip-label">Category</span><span class="chip-value" id="chip-category-val">${sprintCatName || '—'}</span></button>` : ''}
       ${sprintExtraHeadKeys.map(k => { const def = allSprintBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
@@ -13789,9 +13816,19 @@ async function showSprintSlideover(sprintId, afterSave) {
   // Prop chips
   document.getElementById('chip-status')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openValuePicker(e.currentTarget, SPRINT_STATUSES.map(v => ({ value: v, label: v })), async (val) => {
-      const el = document.getElementById('chip-status'); if (el) el.querySelector('.chip-value').textContent = val;
-      await patchSprint({ status: val });
+    const items = SPRINT_STATUSES.map(v => {
+      const c = getValueColor('sprintStatuses', v) || SPRINT_STATUS_COLORS[v] || '';
+      return { value: v, label: v.replace('_',' '), _color: c };
+    });
+    openCombo(e.currentTarget, items, s.status || 'planned', async ({ value }) => {
+      const chipEl = document.getElementById('chip-status');
+      if (chipEl) {
+        chipEl.className = `prop-chip chip-sprint-status-${value}`;
+        const valEl = chipEl.querySelector('.chip-value');
+        if (valEl) { valEl.textContent = value.replace('_',' '); valEl.setAttribute('style', sprintStatusStyle(value)); }
+      }
+      s.status = value;
+      await patchSprint({ status: value });
     });
   });
   document.getElementById('chip-dates')?.addEventListener('click', (e) => {
@@ -13832,7 +13869,7 @@ async function showSprintSlideover(sprintId, afterSave) {
   });
 
   const sprintInlinePropEditFns = {
-    status:  (valEl) => { openValuePicker(valEl, SPRINT_STATUSES.map(v => ({ value: v, label: v })), async (val) => { await patchSprint({ status: val }); showSprintSlideover(sprintId, afterSave); }); },
+    status:  (valEl) => { openCombo(valEl, SPRINT_STATUSES.map(v => ({ value: v, label: v.replace('_',' ') })), s.status||'planned', async ({ value }) => { s.status = value; await patchSprint({ status: value }); showSprintSlideover(sprintId, afterSave); }); },
     dates:   (valEl) => { openDateRangePickerGlobal(valEl, stripDate(s.start_date), stripDate(s.end_date), async (start, end) => { await patchSprint({ start_date: start||null, end_date: end||null }); showSprintSlideover(sprintId, afterSave); }); },
     project: (valEl) => openMultiRelationPicker(valEl, 'sprint', sprintId, 'project', 'project', allProjects, s, patchSprint, 'project_id', () => showSprintSlideover(sprintId, afterSave)),
     tags:    (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = sprintTags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showSprintSlideover(sprintId, afterSave); return; } await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showSprintSlideover(sprintId, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
@@ -13844,7 +13881,20 @@ async function showSprintSlideover(sprintId, afterSave) {
       inp.onblur = async () => { await patchSprint({ story_points: parseInt(inp.value) || null }); showSprintSlideover(sprintId, afterSave); };
       inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); };
     },
+    category: async (valEl) => {
+      if (!allCategories.length) { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} }
+      const items = [{ value: '', label: '— None —' }, ...allCategories.map(c => ({ value: c.id, label: c.name }))];
+      openCombo(valEl, items, _sprintCatId || '', async ({ value }) => {
+        await api('POST', `/api/properties?entity_type=sprint&entity_id=${sprintId}`, { key: '_category_id', value: String(value||'') });
+        showSprintSlideover(sprintId, afterSave);
+      });
+    },
   };
+
+  document.getElementById('chip-category')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    sprintInlinePropEditFns.category(e.currentTarget.querySelector('.chip-value'));
+  });
 
   sprintExtraHeadKeys.forEach(k => {
     const el = document.getElementById(`chip-extra-${k}`);

@@ -283,6 +283,75 @@ function navIcon(view, size = 18) {
   return c.outerHTML;
 }
 
+// Returns icon HTML for a built-in view, respecting any stored custom icon
+function viewIconHtml(view, size = 20) {
+  const saved = localStorage.getItem(`navIcon_${view}`);
+  if (saved) return `<span style="display:inline-flex;align-items:center;justify-content:center;width:${size}px;height:${size}px;flex-shrink:0;margin-right:6px;vertical-align:middle">${renderEntityIcon(saved, size)}</span>`;
+  return navIcon(view, size);
+}
+// Returns label for a built-in view, respecting any stored custom label
+function viewDisplayName(view, fallback) {
+  return escHtml(localStorage.getItem(`navLabel_${view}`) || fallback);
+}
+
+// Wires up double-click rename+icon on a built-in entity view title element
+function addBuiltinViewTitleRename(viewTitleEl, view, fallback) {
+  if (!viewTitleEl) return;
+  viewTitleEl.style.cursor = 'default';
+  viewTitleEl.title = 'Double-click to rename';
+  viewTitleEl.addEventListener('dblclick', (e) => {
+    e.stopPropagation();
+    const navLink = document.querySelector(`[data-view="${view}"]`);
+    const currentLabel = localStorage.getItem(`navLabel_${view}`)
+      || navLink?.querySelector('span:not(.nav-icon)')?.textContent
+      || fallback;
+    let newIconVal = localStorage.getItem(`navIcon_${view}`) || '';
+    const iconBtnEl = document.createElement('button');
+    iconBtnEl.style.cssText = 'font-size:16px;background:none;border:1px solid var(--border);border-radius:4px;padding:1px 5px;cursor:pointer;line-height:1.4;min-width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0';
+    iconBtnEl.innerHTML = newIconVal ? renderEntityIcon(newIconVal, 16) : navIcon(view, 16);
+    const inp = document.createElement('input');
+    inp.type = 'text'; inp.value = currentLabel;
+    inp.style.cssText = 'font-size:inherit;padding:2px 8px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text-primary);flex:1;min-width:80px;outline:none';
+    const saveBtn = document.createElement('button');
+    saveBtn.style.cssText = 'font-size:11px;background:var(--accent);color:#fff;border:none;border-radius:4px;padding:2px 8px;cursor:pointer';
+    saveBtn.textContent = '✓';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.style.cssText = 'font-size:11px;background:none;border:1px solid var(--border);border-radius:4px;padding:2px 8px;cursor:pointer';
+    cancelBtn.textContent = '✕';
+    const wrap = document.createElement('span');
+    wrap.style.cssText = 'display:inline-flex;align-items:center;gap:6px';
+    wrap.append(iconBtnEl, inp, saveBtn, cancelBtn);
+    viewTitleEl.innerHTML = ''; viewTitleEl.appendChild(wrap);
+    inp.focus(); inp.select();
+    iconBtnEl.onclick = (ev) => {
+      ev.stopPropagation();
+      showIconPicker(iconBtnEl, null, null, newIconVal, (icon) => {
+        newIconVal = icon || '';
+        iconBtnEl.innerHTML = newIconVal ? renderEntityIcon(newIconVal, 16) : navIcon(view, 16);
+      });
+    };
+    const doRestore = () => { viewTitleEl.innerHTML = `${viewIconHtml(view, 20)}${viewDisplayName(view, fallback)}`; };
+    const doSave = () => {
+      const newLabel = inp.value.trim() || currentLabel;
+      if (inp.value.trim()) localStorage.setItem(`navLabel_${view}`, newLabel);
+      else localStorage.removeItem(`navLabel_${view}`);
+      if (newIconVal) localStorage.setItem(`navIcon_${view}`, newIconVal);
+      else localStorage.removeItem(`navIcon_${view}`);
+      if (navLink) {
+        const navSpan = navLink.querySelector('span:not(.nav-icon)');
+        if (navSpan) navSpan.textContent = newLabel;
+        const navIconEl = navLink.querySelector('.nav-icon');
+        if (navIconEl && newIconVal) navIconEl.outerHTML = `<span class="nav-icon" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;flex-shrink:0">${renderEntityIcon(newIconVal, 16)}</span>`;
+      }
+      viewTitleEl.innerHTML = `${viewIconHtml(view, 20)}${escHtml(newLabel)}`;
+    };
+    saveBtn.onclick = (ev) => { ev.stopPropagation(); doSave(); };
+    cancelBtn.onclick = (ev) => { ev.stopPropagation(); doRestore(); };
+    inp.onclick = ev => ev.stopPropagation();
+    inp.onkeydown = ev => { if (ev.key === 'Enter') { ev.preventDefault(); doSave(); } if (ev.key === 'Escape') { ev.preventDefault(); doRestore(); } };
+  });
+}
+
 async function injectListIcons(entityType, ids) {
   if (!ids || !ids.length) return;
   const unique = [...new Set(ids.map(String))];
@@ -1866,6 +1935,54 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
   _activeEditors[hostId] = editor;
 }
 
+/* ─── Slideover cover image ──────────────────────────────────────────── */
+async function initSlideoverCoverArea(entity, id) {
+  const wrap = document.getElementById('slideover-cover-wrap');
+  if (!wrap) return;
+  const applyScCover = (dataUrl) => {
+    wrap.innerHTML = '';
+    if (dataUrl) {
+      wrap.classList.add('has-cover');
+      wrap.style.backgroundImage = `url(${dataUrl})`;
+      const chgBtn = document.createElement('button');
+      chgBtn.className = 'sc-cover-btn'; chgBtn.textContent = 'Change cover';
+      chgBtn.onclick = () => pickScCover();
+      const rmBtn = document.createElement('button');
+      rmBtn.className = 'sc-cover-btn'; rmBtn.style.right = '120px'; rmBtn.textContent = 'Remove cover';
+      rmBtn.onclick = async () => {
+        await api('DELETE', `/api/properties?entity_type=${entity}&entity_id=${id}&key=_cover`).catch(() => {});
+        applyScCover('');
+      };
+      wrap.append(chgBtn, rmBtn);
+    } else {
+      wrap.classList.remove('has-cover');
+      wrap.style.backgroundImage = '';
+      const addBtn = document.createElement('button');
+      addBtn.className = 'sc-add-btn'; addBtn.textContent = '+ Add cover';
+      addBtn.onclick = () => pickScCover();
+      wrap.appendChild(addBtn);
+    }
+  };
+  const pickScCover = () => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*';
+    inp.onchange = async () => {
+      const file = inp.files[0]; if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        const dataUrl = ev.target.result;
+        await api('POST', `/api/properties?entity_type=${entity}&entity_id=${id}`, { key: '_cover', value: dataUrl });
+        applyScCover(dataUrl);
+      };
+      reader.readAsDataURL(file);
+    };
+    inp.click();
+  };
+  api('GET', `/api/properties?entity_type=${entity}&entity_id=${id}`)
+    .then(props => applyScCover(props?._cover || ''))
+    .catch(() => applyScCover(''));
+}
+
 /* ─── Fullscreen entity overlay ──────────────────────────────────────── */
 let _currentSlideoverExpand = null;
 function setSlideoverExpand(fn) { _currentSlideoverExpand = fn; }
@@ -1939,7 +2056,7 @@ function openEntityFullscreen(entity, entityId, title, patchTitleFn) {
     const renderFsIcon = (icon) => {
       fsIconRow.innerHTML = icon
         ? `<span style="cursor:pointer;font-size:36px;line-height:1" title="Click to change icon">${renderEntityIcon(icon, 36)}</span>`
-        : `<span style="cursor:pointer;font-size:22px;opacity:0.35;line-height:1" title="Click to add icon">+icon</span>`;
+        : `<span style="cursor:pointer;font-size:13px;color:var(--text-muted);font-weight:500;display:inline-block;padding:2px 0" title="Click to add icon">Add icon</span>`;
       fsIconRow.querySelector('span').onclick = () => {
         showIconPicker(fsIconRow, null, null, icon || '', async (newIcon) => {
           await saveEntityIcon(entity, entityId, newIcon || '');
@@ -3103,6 +3220,25 @@ function isToday(dateStr) {
   return d.getTime() === today.getTime();
 }
 
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const d = new Date(stripDate(dateStr) + 'T00:00:00');
+  return Math.round((d - today) / 86400000);
+}
+
+// Returns an inline color string based on how near/far the due date is.
+// overdue → red; today → orange; 1-2d → amber; 3-6d → yellow-green; 7+ → green
+function dueDateColor(dateStr) {
+  const days = daysUntil(dateStr);
+  if (days === null) return '';
+  if (days < 0)  return '#ef4444';
+  if (days === 0) return '#f97316';
+  if (days <= 2)  return '#f59e0b';
+  if (days <= 6)  return '#84cc16';
+  return '#22c55e';
+}
+
 function statusBadge(status) {
   const map = { todo: 'badge-todo', in_progress: 'badge-progress', blocked: 'badge-blocked', done: 'badge-done' };
   const label = (status || 'todo').replace('_', ' ');
@@ -3163,10 +3299,8 @@ function tagHtml(tag) {
 
 function dueBadgeHtml(dateStr) {
   if (!dateStr) return '';
-  let cls = '';
-  if (isOverdue(dateStr)) cls = 'overdue';
-  else if (isToday(dateStr)) cls = 'today';
-  return `<span class="task-due ${cls}">${fmtDate(dateStr)}</span>`;
+  const color = dueDateColor(dateStr);
+  return `<span class="task-due" style="color:${color}">${fmtDate(dateStr)}</span>`;
 }
 
 function downloadJSON(data, filename) {
@@ -3653,6 +3787,8 @@ function closeModal() {
 function openSlideover(title, bodyHTML) {
   document.getElementById('slideover-title').textContent = title;
   document.getElementById('slideover-body').innerHTML = bodyHTML;
+  const _scw = document.getElementById('slideover-cover-wrap');
+  if (_scw) { _scw.innerHTML = ''; _scw.classList.remove('has-cover'); _scw.style.backgroundImage = ''; }
   setSlideoverExport(null, null); // reset export button
   setSlideoverExpand(null);
   setFsPropsBuilder(null);
@@ -4319,12 +4455,15 @@ async function openCustomEntitySlideover(typeName, id) {
   }
 
   await loadEntityCustomProps(entityKey, id);
+  if (!allCategories.length) { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} }
 
   const cesSections = getPropSections(entityKey);
   const cesHeadKeys = cesSections.heading;
   const propPanel = buildInlinePropPanel(entityKey, id, [], cesHeadKeys);
   const cesCustomVals = getCustomPropValues(entityKey, id);
   const cesPropDefs = getCustomPropDefs(entityKey);
+  const cesCatId = cesCustomVals._category_id || null;
+  const cesCatName = cesCatId ? (allCategories.find(c => String(c.id) === String(cesCatId)) || {}).name : null;
 
   const cesHeadingChips = cesHeadKeys.filter(k => k !== 'tags').map(k => {
     const def = cesPropDefs.find(d => d.key === k);
@@ -4350,6 +4489,7 @@ async function openCustomEntitySlideover(typeName, id) {
 
     <div class="prop-chips" id="prop-chips">
       <button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${cesTags.length ? cesTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>
+      <button class="prop-chip${cesCatName ? '' : ' chip-empty'}" id="chip-category" data-key="category"><span class="chip-label">Category</span><span class="chip-value" id="chip-category-val">${cesCatName || '—'}</span></button>
       ${cesHeadingChips}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
@@ -4363,6 +4503,7 @@ async function openCustomEntitySlideover(typeName, id) {
 
   openSlideover(e.title || displayName, body);
   setSlideoverExport(entityKey, id);
+  initSlideoverCoverArea(entityKey, id);
 
   // Icon
   const cesIconAddBtn = document.getElementById('ces-icon-add-btn');
@@ -4417,6 +4558,18 @@ async function openCustomEntitySlideover(typeName, id) {
       const v = document.getElementById('chip-tags-val'); if (v) v.innerHTML = cesTags.length ? cesTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—';
       await api('PUT', `/api/custom/${typeName}/${id}/tags`, { tag_ids: ids });
     }, { multiSelect: true, allowCreate: true, selectedIds: _curIds });
+  });
+
+  // Category chip
+  document.getElementById('chip-category')?.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const _catItems = [{ value: '', label: '— None —' }, ...allCategories.map(c => ({ value: c.id, label: c.name }))];
+    openCombo(ev.currentTarget, _catItems, cesCatId || '', async ({ value }) => {
+      const newId = String(value || '');
+      await api('POST', `/api/properties?entity_type=${typeName}&entity_id=${id}`, { key: '_category_id', value: newId });
+      if (e.props) e.props._category_id = newId;
+      openCustomEntitySlideover(typeName, id);
+    });
   });
 
   // Heading custom prop chips → click triggers matching inline prop row editor
@@ -4636,18 +4789,18 @@ const ENTITY_ALL_PROPS = {
   task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goals'},{key:'project',label:'Projects'},{key:'category',label:'Category'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'}],
   goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'due',label:'Due Date'},{key:'metrics',label:'Metrics'}],
   project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goals'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
-  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'}],
+  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'},{key:'category',label:'Category'}],
   note:     [{key:'date',label:'Date'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'}],
-  resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'}],
+  resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'}],
 };
 
 const ENTITY_SECTION_DEFAULTS = {
   task:     { heading:['status','priority','due','focus','tags'],   body:['goal','project','category','points','recur'] },
   goal:     { heading:['status','type','year','tags'],              body:['category','due','metrics'] },
   project:  { heading:['status','due','goal','tags'],              body:['category','macro','kanban','archived'] },
-  sprint:   { heading:['status','dates','project','tags'],         body:['points'] },
+  sprint:   { heading:['status','dates','project','tags'],         body:['points','category'] },
   note:     { heading:['date','project','goal','tags'],            body:['category'] },
-  resource: { heading:['type','url','project','goal'],             body:['tags'] },
+  resource: { heading:['type','url','project','goal'],             body:['tags','category'] },
 };
 
 function getPropSections(entity) {
@@ -6518,7 +6671,7 @@ async function renderTasks() {
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
-      <h1 class="view-title">${navIcon('tasks')}Tasks</h1>
+      <h1 class="view-title">${viewIconHtml('tasks')}${viewDisplayName('tasks','Tasks')}</h1>
     </div>
     ${buildViewTabBar('task', taskViews, activeTaskView.id).replace('id="new-task-btn"', 'id="new-task-btn" style="display:none"')}
     <div id="tasks-content"></div>
@@ -6536,6 +6689,7 @@ async function renderTasks() {
   }
 
   document.getElementById('new-task-btn').onclick = () => showNewTaskModal({});
+  addBuiltinViewTitleRename(document.querySelector('#main-content .view-title'), 'tasks', 'Tasks');
 
   // Column picker
   const colPickerBtn = document.getElementById('col-picker-btn');
@@ -6622,8 +6776,7 @@ async function renderTasks() {
   function buildCardsView(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">✓</div><div class="empty-state-text">No tasks found</div></div>`;
     const cards = list.map(t => {
-      const dueCls = isOverdue(t.due_date) ? 'overdue' : isToday(t.due_date) ? 'today' : '';
-      const dueLine = t.due_date ? `<span class="task-due ${dueCls}" style="font-size:11px">${fmtDate(t.due_date)}</span>` : '';
+      const dueLine = t.due_date ? `<span class="task-due" style="font-size:11px;color:${dueDateColor(t.due_date)}">${fmtDate(t.due_date)}</span>` : '';
       const projLine = t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${t.project_title}</div>` : '';
       const tags = (t.tags||[]).slice(0,3).map(tg => tagHtml(tg)).join('');
       const storyPts = t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
@@ -6655,7 +6808,7 @@ async function renderTasks() {
       { key: 'goal',         header: 'Goals',         cell: (t) => `<td>${t.goal_title ? `<span class="badge badge-todo">${t.goal_title}</span>` : '—'}</td>` },
       { key: 'status',       header: 'Status',        cell: (t) => { const sopts = TASK_STATUSES.map(s => `<option value="${s}" ${t.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join(''); return `<td><select class="inline-status-select" data-task-id="${t.id}" style="font-size:11px;padding:2px 6px;border-radius:3px">${sopts}</select></td>`; } },
       { key: 'priority',     header: 'Priority',      cell: (t) => `<td>${priorityBadge(t.priority)}</td>` },
-      { key: 'due_date',     header: 'Due',           cell: (t) => `<td class="${isOverdue(t.due_date)?'task-due overdue':isToday(t.due_date)?'task-due today':''}">${fmtDate(t.due_date)||'—'}</td>` },
+      { key: 'due_date',     header: 'Due',           cell: (t) => `<td style="${t.due_date?'color:'+dueDateColor(t.due_date):''}">${fmtDate(t.due_date)||'—'}</td>` },
       { key: 'tags',         header: 'Tags',          cell: (t) => `<td>${(t.tags||[]).map(tg=>tagHtml(tg)).join('')}</td>` },
       { key: 'story_points', header: 'Points',        cell: (t) => `<td>${t.story_points ? `<span style="font-size:11px;border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '—'}</td>` },
       { key: 'category',     header: 'Category',      cell: (t) => { const cn = t.category_name || t.category || ''; return `<td>${cn ? `<span style="font-size:11px;color:var(--text-muted)">${cn}</span>` : '—'}</td>`; } },
@@ -6762,12 +6915,11 @@ async function renderTasks() {
     const colsHtml = allKeys.map(colKey => {
       const tasks = grouped[colKey] || [];
       const cards = tasks.map(t => {
-        const dueCls = isOverdue(t.due_date) ? 'overdue' : isToday(t.due_date) ? 'today' : '';
         const kVis = (key) => propVisible('kanban', key);
         const recurBadge = kVis('recurrence') && t.recur_interval > 0 ? ' <span class="task-recur-badge">↺</span>' : '';
         const projLine = kVis('project') && t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t.project_title}</div>` : '';
         const statusLine = kVis('status') ? (groupBy === 'status' ? (kVis('priority') ? priorityBadge(t.priority) : '') : statusBadge(t.status)) : '';
-        const dueLine = kVis('due_date') && t.due_date ? `<span class="task-due ${dueCls}" style="font-size:10px">${fmtDate(t.due_date)}</span>` : '';
+        const dueLine = kVis('due_date') && t.due_date ? `<span class="task-due" style="font-size:10px;color:${dueDateColor(t.due_date)}">${fmtDate(t.due_date)}</span>` : '';
         const tagLine = kVis('tags') ? (t.tags||[]).slice(0,2).map(tg => tagHtml(tg)).join('') : '';
         const storyPts = kVis('story_points') && t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
         const metaLine = [statusLine, dueLine, tagLine, storyPts].some(Boolean)
@@ -7133,7 +7285,7 @@ async function renderProjects() {
   const projPropVisHtml = `<div class="prop-vis-wrap" id="proj-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="proj-prop-vis-btn" title="Property visibility">${projEyeSvg}</button></div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header"><h1 class="view-title">${navIcon('projects')}Projects</h1></div>
+    <div class="view-header"><h1 class="view-title">${viewIconHtml('projects')}${viewDisplayName('projects','Projects')}</h1></div>
     ${buildViewTabBar('project', projViews, activeProjView.id).replace('id="new-project-btn"', 'id="new-project-btn" style="display:none"')}
     <div id="proj-list"></div>
   </div>`;
@@ -7156,6 +7308,7 @@ async function renderProjects() {
 
   // Wire new project button
   document.getElementById('new-project-btn').onclick = () => showProjectModal(null, goals);
+  addBuiltinViewTitleRename(document.querySelector('#main-content .view-title'), 'projects', 'Projects');
 
   // Bind tab bar
   bindViewTabBar('project', (newActiveId) => {
@@ -7308,7 +7461,7 @@ async function renderGoals() {
   const goalPropVisHtml = `<div class="prop-vis-wrap" id="goal-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="goal-prop-vis-btn" title="Property visibility">${goalEyeSvg}</button></div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header"><h1 class="view-title">${navIcon('goals')}Goals</h1></div>
+    <div class="view-header"><h1 class="view-title">${viewIconHtml('goals')}${viewDisplayName('goals','Goals')}</h1></div>
     ${buildViewTabBar('goal', goalViews, activeGoalView.id).replace('id="new-goal-btn"', 'id="new-goal-btn" style="display:none"')}
     <div id="goal-list"></div>
   </div>`;
@@ -7329,6 +7482,7 @@ async function renderGoals() {
   }
 
   document.getElementById('new-goal-btn').onclick = () => showGoalModal(null);
+  addBuiltinViewTitleRename(document.querySelector('#main-content .view-title'), 'goals', 'Goals');
 
   bindViewTabBar('goal', (newActiveId) => {
     setActiveTabId('goal', newActiveId);
@@ -7627,7 +7781,7 @@ async function renderNotes() {
   const notePropVisHtml = `<div class="prop-vis-wrap" id="note-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="note-prop-vis-btn" title="Property visibility">${noteEyeSvg}</button></div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header"><h1 class="view-title">${navIcon('notes')}Notes</h1></div>
+    <div class="view-header"><h1 class="view-title">${viewIconHtml('notes')}${viewDisplayName('notes','Notes')}</h1></div>
     ${buildViewTabBar('note', noteViews, activeNoteView.id).replace('id="new-note-btn"', 'id="new-note-btn" style="display:none"')}
     <div id="notes-list"></div>
   </div>`;
@@ -7648,6 +7802,7 @@ async function renderNotes() {
   }
 
   document.getElementById('new-note-btn').onclick = () => showNoteModal(null, () => renderNotes());
+  addBuiltinViewTitleRename(document.querySelector('#main-content .view-title'), 'notes', 'Notes');
 
   bindViewTabBar('note', (newActiveId) => {
     setActiveTabId('note', newActiveId);
@@ -7934,7 +8089,7 @@ async function renderSprints() {
   const sprintPropVisHtml = `<div class="prop-vis-wrap" id="sprint-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="sprint-prop-vis-btn" title="Property visibility">${sprintEyeSvg}</button></div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header"><h1 class="view-title">${navIcon('sprints')}Sprints</h1></div>
+    <div class="view-header"><h1 class="view-title">${viewIconHtml('sprints')}${viewDisplayName('sprints','Sprints')}</h1></div>
     ${buildViewTabBar('sprint', sprintViews, activeSprintView.id).replace('id="new-sprint-btn"', 'id="new-sprint-btn" style="display:none"')}
     <div id="sprints-list"></div>
   </div>`;
@@ -7955,6 +8110,7 @@ async function renderSprints() {
   }
 
   document.getElementById('new-sprint-btn').onclick = () => showSprintModal(projects);
+  addBuiltinViewTitleRename(document.querySelector('#main-content .view-title'), 'sprints', 'Sprints');
 
   bindViewTabBar('sprint', (newActiveId) => {
     setActiveTabId('sprint', newActiveId);
@@ -8991,7 +9147,7 @@ async function renderHabits() {
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
       <div>
-        <h1 class="view-title">${navIcon('habits')}Habits</h1>
+        <h1 class="view-title">${viewIconHtml('habits')}${viewDisplayName('habits','Habits')}</h1>
         <div class="view-subtitle">${habits.length} habit${habits.length !== 1 ? 's' : ''} tracked</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -9012,6 +9168,8 @@ async function renderHabits() {
     { key: 'streak',     label: 'Streak'  },
     { key: 'created_at', label: 'Created' },
   ];
+
+  addBuiltinViewTitleRename(document.querySelector('#main-content .view-title'), 'habits', 'Habits');
 
   if (habitsViewMode !== 'calendar') {
     const viewEl   = document.querySelector('#main-content .view');
@@ -9215,7 +9373,7 @@ async function renderResources() {
   const resPropVisHtml = `<div class="prop-vis-wrap" id="res-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="res-prop-vis-btn" title="Property visibility">${resEyeSvg}</button></div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header"><h1 class="view-title">${navIcon('resources')}Resources</h1></div>
+    <div class="view-header"><h1 class="view-title">${viewIconHtml('resources')}${viewDisplayName('resources','Resources')}</h1></div>
     ${buildViewTabBar('resource', resViews, activeResView.id).replace('id="new-resource-btn"', 'id="new-resource-btn" style="display:none"')}
     <div id="res-table"></div>
   </div>`;
@@ -9236,6 +9394,7 @@ async function renderResources() {
   }
 
   document.getElementById('new-resource-btn').onclick = () => showResourceModal(null, () => renderResources());
+  addBuiltinViewTitleRename(document.querySelector('#main-content .view-title'), 'resources', 'Resources');
 
   bindViewTabBar('resource', (newActiveId) => {
     setActiveTabId('resource', newActiveId);
@@ -10623,6 +10782,7 @@ async function showTaskSlideover(taskId) {
 
   openSlideover(task.title, body);
   setSlideoverExport('task', task.id);
+  initSlideoverCoverArea('task', task.id);
 
   // Render interactive subtask table now that DOM is present
   renderSubtaskTable();
@@ -12811,6 +12971,7 @@ async function showProjectSlideover(project, goals, afterSave) {
 
   openSlideover(p.title, body);
   setSlideoverExport('project', p.id);
+  initSlideoverCoverArea('project', p.id);
 
   // Icon
   const projIconAddBtn = document.getElementById('proj-icon-add-btn');
@@ -13025,6 +13186,7 @@ async function showGoalSlideover(goal, afterSave) {
 
   openSlideover(g.title, body);
   setSlideoverExport('goal', g.id);
+  initSlideoverCoverArea('goal', g.id);
 
   // Icon
   const goalIconAddBtn = document.getElementById('goal-icon-add-btn');
@@ -13397,6 +13559,7 @@ async function showNoteSlideover(noteId, afterSave) {
 
   openSlideover(n.title || 'Note', body);
   setSlideoverExport('note', n.id);
+  initSlideoverCoverArea('note', n.id);
 
   // Icon
   const noteIconAddBtn = document.getElementById('note-icon-add-btn');
@@ -13518,6 +13681,7 @@ async function showSprintSlideover(sprintId, afterSave) {
     ]);
     try { sprintTags = await api('GET', `/api/sprints/${sprintId}/tags`); } catch(e) { sprintTags = []; }
   } catch(e) { return; }
+  if (!allCategories.length) { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} }
 
   const tasks = (s.tasks || []).filter(t => !t.parent_task_id);
   const projName = allProjects.find(p => String(p.id) === String(s.project_id))?.title || null;
@@ -13531,12 +13695,16 @@ async function showSprintSlideover(sprintId, afterSave) {
 
   const sprintSections = getPropSections('sprint');
   const sprintIsInHead = (k) => sprintSections.heading.includes(k);
-  const SPRINT_CHIP_KEYS = ['status','dates','project','tags'];
+  const SPRINT_CHIP_KEYS = ['status','dates','project','tags','category'];
   const sprintExtraHeadKeys = sprintSections.heading.filter(k => !SPRINT_CHIP_KEYS.includes(k));
+
+  await loadEntityCustomProps('sprint', sprintId);
+  const _sprintCatId = getCustomPropValues('sprint', sprintId)._category_id || null;
+  const sprintCatName = _sprintCatId ? (allCategories.find(c => String(c.id) === String(_sprintCatId)) || {}).name : null;
 
   const allSprintBuiltinDefs = [
     { key: 'status',  label: 'Status',    icon: pIco('<circle cx="12" cy="12" r="10"/>'),
-      renderValue: () => `<span>${s.status || 'planned'}</span>` },
+      renderValue: () => `<span style="${sprintStatusStyle(s.status)}">${(s.status||'planned').replace('_',' ')}</span>` },
     { key: 'dates',   label: 'Dates',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => { const dr = s.start_date && s.end_date ? `${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}` : fmtDate(s.start_date||s.end_date)||''; return dr ? `<span>${dr}</span>` : ''; } },
     { key: 'project', label: 'Projects',  icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
@@ -13545,9 +13713,10 @@ async function showSprintSlideover(sprintId, afterSave) {
       renderValue: () => sprintTags.length ? sprintTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'points',  label: 'Capacity (pts)', icon: pIco('<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>'),
       renderValue: () => s.story_points != null ? `<span>${s.story_points}</span>` : '' },
+    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => sprintCatName ? `<span>${sprintCatName}</span>` : '' },
   ];
   const sprintBodyDefs = allSprintBuiltinDefs.filter(d => sprintSections.body.includes(d.key));
-  await loadEntityCustomProps('sprint', sprintId);
   const sprintInlinePropPanel = buildInlinePropPanel('sprint', sprintId, sprintBodyDefs);
 
   const projCrumb = projName
@@ -13567,6 +13736,11 @@ async function showSprintSlideover(sprintId, afterSave) {
     : fmtDate(s.start_date || s.end_date) || '—';
 
   const SPRINT_STATUSES = ['planned','active','completed'];
+  const SPRINT_STATUS_COLORS = { planned: '#94a3b8', active: '#22c55e', completed: '#a78bfa' };
+  function sprintStatusStyle(st) {
+    const c = getValueColor('sprintStatuses', st) || SPRINT_STATUS_COLORS[st] || '';
+    return c ? `background:${c}22;color:${c};border-radius:3px;padding:1px 6px;font-weight:600` : '';
+  }
 
   const body = `
     <button class="entity-icon-add-btn" id="sprint-icon-add-btn">
@@ -13579,10 +13753,11 @@ async function showSprintSlideover(sprintId, afterSave) {
     </div>
 
     <div class="prop-chips" id="prop-chips">
-      ${sprintIsInHead('status') ? `<button class="prop-chip" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value">${s.status || 'planned'}</span></button>` : ''}
+      ${sprintIsInHead('status') ? `<button class="prop-chip chip-sprint-status-${s.status||'planned'}" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value" id="chip-status-val" style="${sprintStatusStyle(s.status)}">${(s.status||'planned').replace('_',' ')}</span></button>` : ''}
       ${sprintIsInHead('dates') ? `<button class="prop-chip" id="chip-dates" data-key="dates"><span class="chip-label">Dates</span><span class="chip-value" id="chip-dates-val">${dateRange}</span></button>` : ''}
       ${sprintIsInHead('project') ? `<button class="prop-chip" id="chip-project" data-key="project"><span class="chip-label">Project</span><span class="chip-value" id="chip-project-val">${projName || '—'}</span></button>` : ''}
       ${sprintIsInHead('tags') ? `<button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${sprintTags.length ? sprintTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>` : ''}
+      ${sprintIsInHead('category') ? `<button class="prop-chip${sprintCatName ? '' : ' chip-empty'}" id="chip-category" data-key="category"><span class="chip-label">Category</span><span class="chip-value" id="chip-category-val">${sprintCatName || '—'}</span></button>` : ''}
       ${sprintExtraHeadKeys.map(k => { const def = allSprintBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
@@ -13608,6 +13783,7 @@ async function showSprintSlideover(sprintId, afterSave) {
 
   openSlideover(s.title, body);
   setSlideoverExport('sprint', s.id);
+  initSlideoverCoverArea('sprint', s.id);
 
   // Icon
   const sprintIconAddBtn = document.getElementById('sprint-icon-add-btn');
@@ -13640,9 +13816,19 @@ async function showSprintSlideover(sprintId, afterSave) {
   // Prop chips
   document.getElementById('chip-status')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openValuePicker(e.currentTarget, SPRINT_STATUSES.map(v => ({ value: v, label: v })), async (val) => {
-      const el = document.getElementById('chip-status'); if (el) el.querySelector('.chip-value').textContent = val;
-      await patchSprint({ status: val });
+    const items = SPRINT_STATUSES.map(v => {
+      const c = getValueColor('sprintStatuses', v) || SPRINT_STATUS_COLORS[v] || '';
+      return { value: v, label: v.replace('_',' '), _color: c };
+    });
+    openCombo(e.currentTarget, items, s.status || 'planned', async ({ value }) => {
+      const chipEl = document.getElementById('chip-status');
+      if (chipEl) {
+        chipEl.className = `prop-chip chip-sprint-status-${value}`;
+        const valEl = chipEl.querySelector('.chip-value');
+        if (valEl) { valEl.textContent = value.replace('_',' '); valEl.setAttribute('style', sprintStatusStyle(value)); }
+      }
+      s.status = value;
+      await patchSprint({ status: value });
     });
   });
   document.getElementById('chip-dates')?.addEventListener('click', (e) => {
@@ -13683,7 +13869,7 @@ async function showSprintSlideover(sprintId, afterSave) {
   });
 
   const sprintInlinePropEditFns = {
-    status:  (valEl) => { openValuePicker(valEl, SPRINT_STATUSES.map(v => ({ value: v, label: v })), async (val) => { await patchSprint({ status: val }); showSprintSlideover(sprintId, afterSave); }); },
+    status:  (valEl) => { openCombo(valEl, SPRINT_STATUSES.map(v => ({ value: v, label: v.replace('_',' ') })), s.status||'planned', async ({ value }) => { s.status = value; await patchSprint({ status: value }); showSprintSlideover(sprintId, afterSave); }); },
     dates:   (valEl) => { openDateRangePickerGlobal(valEl, stripDate(s.start_date), stripDate(s.end_date), async (start, end) => { await patchSprint({ start_date: start||null, end_date: end||null }); showSprintSlideover(sprintId, afterSave); }); },
     project: (valEl) => openMultiRelationPicker(valEl, 'sprint', sprintId, 'project', 'project', allProjects, s, patchSprint, 'project_id', () => showSprintSlideover(sprintId, afterSave)),
     tags:    (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = sprintTags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showSprintSlideover(sprintId, afterSave); return; } await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showSprintSlideover(sprintId, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
@@ -13695,7 +13881,20 @@ async function showSprintSlideover(sprintId, afterSave) {
       inp.onblur = async () => { await patchSprint({ story_points: parseInt(inp.value) || null }); showSprintSlideover(sprintId, afterSave); };
       inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); };
     },
+    category: async (valEl) => {
+      if (!allCategories.length) { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} }
+      const items = [{ value: '', label: '— None —' }, ...allCategories.map(c => ({ value: c.id, label: c.name }))];
+      openCombo(valEl, items, _sprintCatId || '', async ({ value }) => {
+        await api('POST', `/api/properties?entity_type=sprint&entity_id=${sprintId}`, { key: '_category_id', value: String(value||'') });
+        showSprintSlideover(sprintId, afterSave);
+      });
+    },
   };
+
+  document.getElementById('chip-category')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    sprintInlinePropEditFns.category(e.currentTarget.querySelector('.chip-value'));
+  });
 
   sprintExtraHeadKeys.forEach(k => {
     const el = document.getElementById(`chip-extra-${k}`);
@@ -13823,6 +14022,7 @@ async function showResourceSlideover(resource, afterSave) {
     ]);
     try { resTags = await api('GET', `/api/resources/${resId}/tags`); } catch(e) { resTags = []; }
   } catch(e) { return; }
+  try { allCategories = await api('GET', '/api/categories'); } catch(e) {}
 
   async function patchResource(data) {
     try { await api('PATCH', `/api/resources/${resId}`, data); } catch(e) { return; }
@@ -13837,8 +14037,12 @@ async function showResourceSlideover(resource, afterSave) {
 
   const resSections = getPropSections('resource');
   const resIsInHead = (k) => resSections.heading.includes(k);
-  const RES_CHIP_KEYS = ['type','url','project','goal','tags'];
+  const RES_CHIP_KEYS = ['type','url','project','goal','tags','category'];
   const resExtraHeadKeys = resSections.heading.filter(k => !RES_CHIP_KEYS.includes(k));
+
+  await loadEntityCustomProps('resource', resId);
+  const _resCatId = getCustomPropValues('resource', resId)._category_id || null;
+  const resCatName = _resCatId ? (allCategories.find(c => String(c.id) === String(_resCatId)) || {}).name : null;
 
   const allResBuiltinDefs = [
     { key: 'type',    label: 'Type',    icon: pIco('<path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z"/>'),
@@ -13851,6 +14055,8 @@ async function showResourceSlideover(resource, afterSave) {
       renderValue: () => renderMultiRelationValue('resource', resId, 'goal', goalName) },
     { key: 'tags',    label: 'Tags',    icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
       renderValue: () => resTags.length ? resTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
+    { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
+      renderValue: () => resCatName ? `<span>${resCatName}</span>` : '' },
   ];
   const resBodyDefs = allResBuiltinDefs.filter(d => resSections.body.includes(d.key));
   await loadEntityCustomProps('resource', resId);
@@ -13871,6 +14077,7 @@ async function showResourceSlideover(resource, afterSave) {
       ${resIsInHead('project') ? `<button class="prop-chip" id="chip-project" data-key="project"><span class="chip-label">Project</span><span class="chip-value" id="chip-project-val">${projName || '—'}</span></button>` : ''}
       ${resIsInHead('goal') ? `<button class="prop-chip" id="chip-goal" data-key="goal"><span class="chip-label">Goal</span><span class="chip-value" id="chip-goal-val">${goalName || '—'}</span></button>` : ''}
       ${resIsInHead('tags') ? `<button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${resTags.length ? resTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>` : ''}
+      ${resIsInHead('category') ? `<button class="prop-chip${resCatName ? '' : ' chip-empty'}" id="chip-category" data-key="category"><span class="chip-label">Category</span><span class="chip-value" id="chip-category-val">${resCatName || '—'}</span></button>` : ''}
       ${resExtraHeadKeys.map(k => { const def = allResBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
@@ -13908,6 +14115,7 @@ async function showResourceSlideover(resource, afterSave) {
 
   openSlideover(r.title || 'Resource', body);
   setSlideoverExport('resource', r.id);
+  initSlideoverCoverArea('resource', r.id);
 
   // Icon button
   const resIconBtn = document.getElementById('res-icon-add-btn');
@@ -13996,6 +14204,14 @@ async function showResourceSlideover(resource, afterSave) {
       if (afterSave) afterSave();
     }, { multiSelect: true, allowCreate: true, selectedIds: _curIds });
   });
+  document.getElementById('chip-category')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const _items = [{ value: '', label: '— None —' }, ...allCategories.map(c => ({ value: c.id, label: c.name }))];
+    openCombo(e.currentTarget, _items, _resCatId || '', async ({ value }) => {
+      await api('POST', `/api/properties?entity_type=resource&entity_id=${resId}`, { key: '_category_id', value: String(value || '') });
+      showResourceSlideover({ id: resId }, afterSave);
+    });
+  });
 
   const resInlinePropEditFns = {
     type:    (valEl) => {
@@ -14015,6 +14231,7 @@ async function showResourceSlideover(resource, afterSave) {
     project: (valEl) => openMultiRelationPicker(valEl, 'resource', resId, 'project', 'project', projects, r, patchResource, 'project_id', () => showResourceSlideover({ id: resId }, afterSave)),
     goal:    (valEl) => openMultiRelationPicker(valEl, 'resource', resId, 'goal', 'goal', goals, r, patchResource, 'goal_id', () => showResourceSlideover({ id: resId }, afterSave)),
     tags:    (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = resTags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showResourceSlideover({ id: resId }, afterSave); return; } await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showResourceSlideover({ id: resId }, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
+    category: (valEl) => { const _i = [{ value: '', label: '— None —' }, ...allCategories.map(c => ({ value: c.id, label: c.name }))]; openCombo(valEl, _i, _resCatId || '', async ({ value }) => { await api('POST', `/api/properties?entity_type=resource&entity_id=${resId}`, { key: '_category_id', value: String(value || '') }); showResourceSlideover({ id: resId }, afterSave); }); },
   };
 
   resExtraHeadKeys.forEach(k => {
