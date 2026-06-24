@@ -5107,6 +5107,57 @@ tr:hover .ctx-handle,
   padding: 0 32px;
   box-sizing: border-box;
 }
+
+/* Cover image — full-width strip between topbar and content */
+#fs-cover-row {
+  position: relative;
+  width: 100%;
+  flex-shrink: 0;
+  min-height: 0;
+}
+#fs-cover-row.has-cover {
+  height: 220px;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+#fs-cover-row .fs-cover-btn {
+  position: absolute;
+  bottom: 10px;
+  right: 16px;
+  background: rgba(0,0,0,0.45);
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+#fs-cover-row:hover .fs-cover-btn { opacity: 1; }
+#fs-cover-row .fs-cover-add-btn {
+  display: inline-block;
+  margin: 6px 32px;
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 5px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+#fs-cover-row .fs-cover-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Icon overlaps cover bottom by half its height when cover present */
+.entity-fullscreen.has-cover #fs-icon-row {
+  margin-top: -24px;
+  position: relative;
+  z-index: 1;
+}
+.entity-fullscreen.has-cover .entity-fs-content {
+  padding-top: 12px;
+}
 .entity-fs-topbar {
   position: sticky;
   top: 0;

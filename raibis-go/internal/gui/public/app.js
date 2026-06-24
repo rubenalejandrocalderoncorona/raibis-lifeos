@@ -1880,12 +1880,78 @@ function openEntityFullscreen(entity, entityId, title, patchTitleFn) {
   overlay.style.display = 'flex';
   document.body.classList.add('fullscreen-open');
 
-  // Load entity icon
+  // Cover image
+  const fsCoverRow = document.getElementById('fs-cover-row');
+  if (fsCoverRow) {
+    const applyCover = (dataUrl) => {
+      fsCoverRow.innerHTML = '';
+      if (dataUrl) {
+        fsCoverRow.classList.add('has-cover');
+        fsCoverRow.style.backgroundImage = `url(${dataUrl})`;
+        overlay.classList.add('has-cover');
+        const changeBtn = document.createElement('button');
+        changeBtn.className = 'fs-cover-btn';
+        changeBtn.textContent = 'Change cover';
+        changeBtn.onclick = () => pickCover();
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'fs-cover-btn';
+        removeBtn.style.right = '130px';
+        removeBtn.textContent = 'Remove cover';
+        removeBtn.onclick = async () => {
+          await api('DELETE', `/api/properties?entity_type=${entity}&entity_id=${entityId}&key=_cover`).catch(() => {});
+          applyCover('');
+        };
+        fsCoverRow.append(changeBtn, removeBtn);
+      } else {
+        fsCoverRow.classList.remove('has-cover');
+        fsCoverRow.style.backgroundImage = '';
+        overlay.classList.remove('has-cover');
+        const addBtn = document.createElement('button');
+        addBtn.className = 'fs-cover-add-btn';
+        addBtn.textContent = '+ Add cover';
+        addBtn.onclick = () => pickCover();
+        fsCoverRow.appendChild(addBtn);
+      }
+    };
+    const pickCover = () => {
+      const inp = document.createElement('input');
+      inp.type = 'file'; inp.accept = 'image/*';
+      inp.onchange = async () => {
+        const file = inp.files[0]; if (!file) return;
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          const dataUrl = e.target.result;
+          await api('POST', `/api/properties?entity_type=${entity}&entity_id=${entityId}`, { key: '_cover', value: dataUrl });
+          applyCover(dataUrl);
+        };
+        reader.readAsDataURL(file);
+      };
+      inp.click();
+    };
+    api('GET', `/api/properties?entity_type=${entity}&entity_id=${entityId}`)
+      .then(props => applyCover(props?._cover || ''))
+      .catch(() => applyCover(''));
+  }
+
+  // Load entity icon (clickable to change)
   const fsIconRow = document.getElementById('fs-icon-row');
   if (fsIconRow) {
-    loadEntityIcon(entity, entityId).then(icon => {
-      fsIconRow.innerHTML = icon ? renderEntityIcon(icon, 36) : '';
-    }).catch(() => { fsIconRow.innerHTML = ''; });
+    const renderFsIcon = (icon) => {
+      fsIconRow.innerHTML = icon
+        ? `<span style="cursor:pointer;font-size:36px;line-height:1" title="Click to change icon">${renderEntityIcon(icon, 36)}</span>`
+        : `<span style="cursor:pointer;font-size:22px;opacity:0.35;line-height:1" title="Click to add icon">+icon</span>`;
+      fsIconRow.querySelector('span').onclick = () => {
+        showIconPicker(fsIconRow, null, null, icon || '', async (newIcon) => {
+          await saveEntityIcon(entity, entityId, newIcon || '');
+          renderFsIcon(newIcon || '');
+          // Also refresh icon in open slideover list slot if present
+          document.querySelectorAll(`[data-entity-id="${entityId}"] .list-icon-slot`).forEach(el => {
+            el.innerHTML = newIcon ? renderEntityIcon(newIcon, 18) : '';
+          });
+        });
+      };
+    };
+    loadEntityIcon(entity, entityId).then(renderFsIcon).catch(() => renderFsIcon(''));
   }
 
   // Set title (editable)
@@ -1940,8 +2006,10 @@ function openEntityFullscreen(entity, entityId, title, patchTitleFn) {
 
 function closeEntityFullscreen() {
   const overlay = document.getElementById('entity-fullscreen');
-  if (overlay) overlay.style.display = 'none';
+  if (overlay) { overlay.style.display = 'none'; overlay.classList.remove('has-cover'); }
   document.body.classList.remove('fullscreen-open');
+  const coverRow = document.getElementById('fs-cover-row');
+  if (coverRow) { coverRow.innerHTML = ''; coverRow.classList.remove('has-cover'); coverRow.style.backgroundImage = ''; }
   const chipsRow = document.getElementById('fs-prop-chips-row');
   if (chipsRow) chipsRow.innerHTML = '';
   const key = 'editorjs-fullscreen';
@@ -13789,6 +13857,10 @@ async function showResourceSlideover(resource, afterSave) {
   const resInlinePropPanel = buildInlinePropPanel('resource', resId, resBodyDefs);
 
   const body = `
+    <button class="entity-icon-add-btn" id="res-icon-add-btn">
+      <span id="res-icon-display"></span>
+      <span id="res-icon-add-label">Add icon</span>
+    </button>
     <div class="detail-title-area">
       <textarea class="detail-title-input" id="detail-title" rows="1">${(r.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
     </div>
@@ -13836,6 +13908,28 @@ async function showResourceSlideover(resource, afterSave) {
 
   openSlideover(r.title || 'Resource', body);
   setSlideoverExport('resource', r.id);
+
+  // Icon button
+  const resIconBtn = document.getElementById('res-icon-add-btn');
+  const resIconDisplay = document.getElementById('res-icon-display');
+  const resIconAddLabel = document.getElementById('res-icon-add-label');
+  if (resIconBtn) {
+    loadEntityIcon('resource', resId).then(icon => {
+      if (icon) { resIconDisplay.innerHTML = renderEntityIcon(icon, 28); resIconAddLabel.style.display = 'none'; }
+    });
+    resIconBtn.addEventListener('click', () => {
+      const cur = resIconDisplay.innerHTML ? resIconDisplay.textContent : '';
+      showIconPicker(resIconBtn, null, null, cur, async (icon) => {
+        await saveEntityIcon('resource', resId, icon || '');
+        resIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 28) : '';
+        resIconAddLabel.style.display = icon ? 'none' : '';
+        document.querySelectorAll(`[data-icon-entity="resource"][data-icon-id="${resId}"]`).forEach(el => {
+          el.innerHTML = icon ? renderEntityIcon(icon, parseInt(el.dataset.iconSize) || 16) : '';
+          el.style.display = icon ? '' : 'none';
+        });
+      });
+    });
+  }
 
   // Title
   const titleTA = document.getElementById('detail-title');
@@ -15101,14 +15195,23 @@ async function openRaibisSettings(defaultTab = 'apps') {
           : `<span style="font-size:16px">📁</span>`;
         let propDefs = [];
         try { propDefs = t.prop_defs ? JSON.parse(t.prop_defs) : []; } catch(e) {}
-        const propDefsHtml = propDefs.length
-          ? propDefs.map((pd, i) => `
-            <div style="display:flex;align-items:center;gap:6px;padding:3px 0" data-prop-idx="${i}" data-type-name="${escHtml(t.name)}">
-              <span style="font-size:11px;color:var(--text-muted);width:70px;flex-shrink:0">${escHtml(pd.key)}</span>
-              <span style="font-size:11px;flex:1">${escHtml(pd.label || pd.key)}</span>
-              <span style="font-size:10px;color:var(--text-muted);width:60px;flex-shrink:0">${escHtml(pd.type || 'text')}</span>
-              <button class="btn btn-sm btn-ghost _cet-prop-del" data-type-name="${escHtml(t.name)}" data-prop-idx="${i}" style="color:var(--color-danger);padding:0 4px;font-size:12px" title="Delete property">×</button>
-            </div>`).join('')
+        const taxProps = getGlobalTaxonomyProps();
+        const propDefsHtml = (propDefs.length || taxProps.length)
+          ? [
+              ...propDefs.map((pd, i) => `
+                <div style="display:flex;align-items:center;gap:6px;padding:3px 0" data-prop-idx="${i}" data-type-name="${escHtml(t.name)}">
+                  <span style="font-size:11px;color:var(--text-muted);width:70px;flex-shrink:0">${escHtml(pd.key)}</span>
+                  <span style="font-size:11px;flex:1">${escHtml(pd.label || pd.key)}</span>
+                  <span style="font-size:10px;color:var(--text-muted);width:60px;flex-shrink:0">${escHtml(pd.type || 'text')}</span>
+                  <button class="btn btn-sm btn-ghost _cet-prop-del" data-type-name="${escHtml(t.name)}" data-prop-idx="${i}" style="color:var(--color-danger);padding:0 4px;font-size:12px" title="Delete property">×</button>
+                </div>`),
+              ...taxProps.map(tp => `
+                <div style="display:flex;align-items:center;gap:6px;padding:3px 0;opacity:0.7">
+                  <span style="font-size:11px;color:var(--text-muted);width:70px;flex-shrink:0">tax_${escHtml(tp.key)}</span>
+                  <span style="font-size:11px;flex:1">${escHtml(tp.label)}</span>
+                  <span style="font-size:10px;color:var(--accent);width:60px;flex-shrink:0">taxonomy</span>
+                </div>`),
+            ].join('')
           : '<div style="font-size:11px;color:var(--text-muted);padding:4px 0">No custom properties defined.</div>';
         return `
         <div style="border-bottom:1px solid var(--color-border);padding:6px 0">
@@ -16002,14 +16105,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Nav click handlers — built-in entity views support double-click rename
   const RENAMEABLE_VIEWS = new Set(['tasks','goals','projects','notes','resources','sprints','habits','calendar','pomodoro','automations']);
 
-  // Apply any stored custom labels
+  // Apply any stored custom labels and icons to built-in nav items
   document.querySelectorAll('[data-view]').forEach(link => {
     const view = link.dataset.view;
     if (!RENAMEABLE_VIEWS.has(view)) return;
-    const saved = localStorage.getItem(`navLabel_${view}`);
-    if (!saved) return;
-    const span = link.querySelector('span:not(.nav-icon)');
-    if (span) span.textContent = saved;
+    const savedLabel = localStorage.getItem(`navLabel_${view}`);
+    if (savedLabel) {
+      const span = link.querySelector('span:not(.nav-icon)');
+      if (span) span.textContent = savedLabel;
+    }
+    const savedIcon = localStorage.getItem(`navIcon_${view}`);
+    if (savedIcon) {
+      const iconEl = link.querySelector('.nav-icon');
+      if (iconEl) iconEl.outerHTML = `<span class="nav-icon" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;flex-shrink:0">${renderEntityIcon(savedIcon, 16)}</span>`;
+    }
   });
 
   document.querySelectorAll('[data-view]').forEach(link => {
@@ -16018,7 +16127,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       e.preventDefault();
       const view = link.dataset.view;
 
-      // Double-click rename for entity views
+      // Double-click rename + icon for entity views
       if (RENAMEABLE_VIEWS.has(view)) {
         const now = Date.now();
         if (now - _lastClick < 350) {
@@ -16027,29 +16136,62 @@ document.addEventListener('DOMContentLoaded', async () => {
           const span = link.querySelector('span:not(.nav-icon)');
           if (!span) { renderView(view); return; }
           const currentLabel = span.textContent;
+          const currentIconEl = link.querySelector('.nav-icon');
+          const currentIconHtml = currentIconEl ? currentIconEl.outerHTML : '';
+          let newIconVal = localStorage.getItem(`navIcon_${view}`) || '';
+
+          const editWrap = document.createElement('div');
+          editWrap.style.cssText = 'display:flex;align-items:center;gap:3px;padding:2px 0;width:100%';
+          const iconBtnEl = document.createElement('button');
+          iconBtnEl.style.cssText = 'background:none;border:1px solid var(--border);border-radius:4px;padding:1px 3px;cursor:pointer;line-height:1.2;min-width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0';
+          iconBtnEl.innerHTML = newIconVal ? renderEntityIcon(newIconVal, 14) : (currentIconEl ? currentIconEl.outerHTML : '☰');
           const inp = document.createElement('input');
-          inp.type = 'text';
-          inp.value = currentLabel;
-          inp.style.cssText = 'font-size:13px;padding:0 4px;border:1px solid var(--accent);border-radius:3px;width:calc(100% - 4px);background:var(--bg-card);color:var(--text-primary);outline:none';
-          span.replaceWith(inp);
+          inp.type = 'text'; inp.value = currentLabel;
+          inp.style.cssText = 'flex:1;font-size:13px;padding:2px 4px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text-primary);min-width:0;outline:none';
+          const saveBtn = document.createElement('button');
+          saveBtn.style.cssText = 'font-size:11px;background:var(--accent);color:#fff;border:none;border-radius:4px;padding:2px 5px;cursor:pointer;flex-shrink:0';
+          saveBtn.textContent = '✓';
+          const cancelBtn = document.createElement('button');
+          cancelBtn.style.cssText = 'font-size:11px;background:none;border:1px solid var(--border);border-radius:4px;padding:2px 5px;cursor:pointer;flex-shrink:0';
+          cancelBtn.textContent = '✕';
+          editWrap.append(iconBtnEl, inp, saveBtn, cancelBtn);
+
+          // Replace link content with editor
+          link.innerHTML = '';
+          link.appendChild(editWrap);
           inp.focus(); inp.select();
-          inp.onclick = ev => ev.stopPropagation();
-          const saveLabel = () => {
-            const newLabel = inp.value.trim();
-            const newSpan = document.createElement('span');
-            if (newLabel) {
-              localStorage.setItem(`navLabel_${view}`, newLabel);
-              newSpan.textContent = newLabel;
-            } else {
-              localStorage.removeItem(`navLabel_${view}`);
-              newSpan.textContent = currentLabel;
-            }
-            inp.replaceWith(newSpan);
+
+          iconBtnEl.onclick = (ev) => {
+            ev.stopPropagation();
+            showIconPicker(iconBtnEl, null, null, newIconVal, (icon) => {
+              newIconVal = icon || '';
+              iconBtnEl.innerHTML = newIconVal ? renderEntityIcon(newIconVal, 14) : (currentIconEl ? currentIconEl.outerHTML : '☰');
+            });
           };
-          inp.onblur = saveLabel;
+
+          const restoreLink = (label, iconHtml) => {
+            link.innerHTML = `${iconHtml}<span>${label}</span>`;
+          };
+
+          const doSave = () => {
+            const newLabel = inp.value.trim() || currentLabel;
+            if (inp.value.trim()) localStorage.setItem(`navLabel_${view}`, newLabel);
+            else localStorage.removeItem(`navLabel_${view}`);
+            if (newIconVal) localStorage.setItem(`navIcon_${view}`, newIconVal);
+            else localStorage.removeItem(`navIcon_${view}`);
+            const iconHtml = newIconVal
+              ? `<span class="nav-icon" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;flex-shrink:0">${renderEntityIcon(newIconVal, 16)}</span>`
+              : currentIconHtml;
+            restoreLink(newLabel, iconHtml);
+          };
+          const doCancel = () => restoreLink(currentLabel, currentIconHtml);
+
+          saveBtn.onclick  = ev => { ev.stopPropagation(); doSave(); };
+          cancelBtn.onclick = ev => { ev.stopPropagation(); doCancel(); };
+          inp.onclick = ev => ev.stopPropagation();
           inp.onkeydown = ev => {
-            if (ev.key === 'Enter') { ev.preventDefault(); inp.blur(); }
-            if (ev.key === 'Escape') { inp.value = ''; inp.blur(); }
+            if (ev.key === 'Enter') { ev.preventDefault(); doSave(); }
+            if (ev.key === 'Escape') { ev.preventDefault(); doCancel(); }
           };
           return;
         }
