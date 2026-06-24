@@ -274,6 +274,15 @@ function renderEntityIcon(icon, size = 22) {
 // ── Lazy icon injection for list views ────────────────────────────────
 // Renders placeholders with data-icon-entity and data-icon-id, then
 // fetches icons in parallel and injects them without a full re-render.
+function navIcon(view, size = 18) {
+  const el = document.querySelector(`[data-view="${view}"] svg.nav-icon`);
+  if (!el) return '';
+  const c = el.cloneNode(true);
+  c.setAttribute('width', size); c.setAttribute('height', size);
+  c.style.verticalAlign = 'middle'; c.style.marginRight = '6px'; c.style.flexShrink = '0';
+  return c.outerHTML;
+}
+
 async function injectListIcons(entityType, ids) {
   if (!ids || !ids.length) return;
   const unique = [...new Set(ids.map(String))];
@@ -1834,8 +1843,6 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
     onReady: () => {
       const redactor = container.querySelector('.codex-editor__redactor');
       if (redactor) redactor.style.paddingLeft = '60px';
-      const toolbarContent = container.querySelector('.ce-toolbar__content');
-      if (toolbarContent) { toolbarContent.style.maxWidth = '100%'; toolbarContent.style.marginLeft = '0'; toolbarContent.style.marginRight = '0'; }
       if (!isFullscreen) {
         const section = container.closest('.rich-content-section');
         if (section) section.style.marginLeft = '44px';
@@ -2618,6 +2625,7 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
             return `<div class="ms-chips-wrap" style="display:flex;flex-wrap:wrap;gap:3px;align-items:center;min-height:20px">${chips}<button class="btn btn-sm btn-ghost ms-add-btn" data-prop-key="${key}" style="font-size:11px;padding:1px 5px;height:20px;line-height:1" title="Add option">+</button></div>`;
           }
           if (!val) return `<span class="empty">—</span>`;
+          if (custom.type === 'date') return `<span style="font-size:12px">${fmtDate(val)||val}</span>`;
           if (custom.type === 'select' || custom.type === 'status') {
             const color = (custom.optionColors || {})[val] || '';
             return color
@@ -6442,7 +6450,7 @@ async function renderTasks() {
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
-      <h1 class="view-title">Tasks</h1>
+      <h1 class="view-title">${navIcon('tasks')}Tasks</h1>
     </div>
     ${buildViewTabBar('task', taskViews, activeTaskView.id).replace('id="new-task-btn"', 'id="new-task-btn" style="display:none"')}
     <div id="tasks-content"></div>
@@ -7057,7 +7065,7 @@ async function renderProjects() {
   const projPropVisHtml = `<div class="prop-vis-wrap" id="proj-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="proj-prop-vis-btn" title="Property visibility">${projEyeSvg}</button></div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header"><h1 class="view-title">Projects</h1></div>
+    <div class="view-header"><h1 class="view-title">${navIcon('projects')}Projects</h1></div>
     ${buildViewTabBar('project', projViews, activeProjView.id).replace('id="new-project-btn"', 'id="new-project-btn" style="display:none"')}
     <div id="proj-list"></div>
   </div>`;
@@ -7232,7 +7240,7 @@ async function renderGoals() {
   const goalPropVisHtml = `<div class="prop-vis-wrap" id="goal-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="goal-prop-vis-btn" title="Property visibility">${goalEyeSvg}</button></div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header"><h1 class="view-title">Goals</h1></div>
+    <div class="view-header"><h1 class="view-title">${navIcon('goals')}Goals</h1></div>
     ${buildViewTabBar('goal', goalViews, activeGoalView.id).replace('id="new-goal-btn"', 'id="new-goal-btn" style="display:none"')}
     <div id="goal-list"></div>
   </div>`;
@@ -7551,7 +7559,7 @@ async function renderNotes() {
   const notePropVisHtml = `<div class="prop-vis-wrap" id="note-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="note-prop-vis-btn" title="Property visibility">${noteEyeSvg}</button></div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header"><h1 class="view-title">Notes</h1></div>
+    <div class="view-header"><h1 class="view-title">${navIcon('notes')}Notes</h1></div>
     ${buildViewTabBar('note', noteViews, activeNoteView.id).replace('id="new-note-btn"', 'id="new-note-btn" style="display:none"')}
     <div id="notes-list"></div>
   </div>`;
@@ -7858,7 +7866,7 @@ async function renderSprints() {
   const sprintPropVisHtml = `<div class="prop-vis-wrap" id="sprint-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="sprint-prop-vis-btn" title="Property visibility">${sprintEyeSvg}</button></div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header"><h1 class="view-title">Sprints</h1></div>
+    <div class="view-header"><h1 class="view-title">${navIcon('sprints')}Sprints</h1></div>
     ${buildViewTabBar('sprint', sprintViews, activeSprintView.id).replace('id="new-sprint-btn"', 'id="new-sprint-btn" style="display:none"')}
     <div id="sprints-list"></div>
   </div>`;
@@ -8915,7 +8923,7 @@ async function renderHabits() {
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
       <div>
-        <h1 class="view-title">Habits</h1>
+        <h1 class="view-title">${navIcon('habits')}Habits</h1>
         <div class="view-subtitle">${habits.length} habit${habits.length !== 1 ? 's' : ''} tracked</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -9139,7 +9147,7 @@ async function renderResources() {
   const resPropVisHtml = `<div class="prop-vis-wrap" id="res-prop-vis-wrap" style="margin-right:4px"><button class="btn btn-sm btn-ghost" id="res-prop-vis-btn" title="Property visibility">${resEyeSvg}</button></div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
-    <div class="view-header"><h1 class="view-title">Resources</h1></div>
+    <div class="view-header"><h1 class="view-title">${navIcon('resources')}Resources</h1></div>
     ${buildViewTabBar('resource', resViews, activeResView.id).replace('id="new-resource-btn"', 'id="new-resource-btn" style="display:none"')}
     <div id="res-table"></div>
   </div>`;
@@ -11635,7 +11643,7 @@ async function renderCalendarView() {
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
-      <h1 class="view-title">Calendar</h1>
+      <h1 class="view-title">${navIcon('calendar')}Calendar</h1>
       <div class="col-picker-wrap" style="position:relative">
         <button class="btn btn-sm btn-ghost" id="cal-filter-btn" title="Filter event types">⊟ Filter</button>
         <div class="col-picker-dropdown hidden" id="cal-filter-dropdown">
@@ -11908,7 +11916,7 @@ async function renderPomodoro() {
 
   document.getElementById('main-content').innerHTML = `<div class="view pom-view">
     <div class="view-header">
-      <h1 class="view-title">Pomodoro</h1>
+      <h1 class="view-title">${navIcon('pomodoro')}Pomodoro</h1>
     </div>
 
     <div class="pom-layout">
@@ -15388,7 +15396,6 @@ async function openRaibisSettings(defaultTab = 'apps') {
           <div style="display:flex;gap:6px;align-items:center">
             <button class="btn btn-ghost btn-sm" id="_data-clear-all" style="color:var(--color-danger)">Clear All Data</button>
             <button class="btn btn-ghost btn-sm" id="_data-del-entity" style="color:var(--color-danger)">Delete Entity</button>
-            ${type.key.startsWith('custom_') ? `<button class="btn btn-ghost btn-sm" id="_data-del-type" style="color:var(--color-danger)">Delete Type</button>` : ''}
             <button class="btn btn-primary btn-sm" id="_data-create">+ New ${singularLabel}</button>
           </div>
         </div>
@@ -15433,20 +15440,6 @@ async function openRaibisSettings(defaultTab = 'apps') {
         );
       }
 
-      const delTypeBtn = dataSection.querySelector('#_data-del-type');
-      if (delTypeBtn) {
-        const ctName = type.key.replace(/^custom_/, '');
-        delTypeBtn.onclick = () => showConfirmModal(
-          `Delete entity type "${type.label}" and all its records? This cannot be undone.`,
-          async () => {
-            await api('DELETE', `/api/custom-types/${ctName}`);
-            customEntityTypes = customEntityTypes.filter(ct => ct.name !== ctName);
-            renderCustomEntityNav();
-            await renderCetList();
-            await loadEntities(ENTITY_TYPES[0]);
-          }
-        );
-      }
 
       const clearAllBtn = dataSection.querySelector('#_data-clear-all');
       if (clearAllBtn) {
