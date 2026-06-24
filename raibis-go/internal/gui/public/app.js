@@ -3784,11 +3784,90 @@ function closeModal() {
 }
 
 /* ─── Slideover ──────────────────────────────────────────────────────── */
+// Creates HTML for entity action toolbar (icon, cover, layout buttons)
+function buildEntityActionToolbar(entity, id) {
+  return `<div class="entity-action-toolbar">
+    <button class="entity-action-btn" id="${entity}-icon-btn" title="Add or change icon">
+      <span id="${entity}-icon-display" class="entity-action-display"></span>
+      <span class="entity-action-label">Icon</span>
+    </button>
+    <button class="entity-action-btn" id="${entity}-cover-btn" title="Add or change cover image">
+      <span class="entity-action-icon">🖼️</span>
+      <span class="entity-action-label">Cover</span>
+    </button>
+    <button class="entity-action-btn" id="${entity}-layout-btn" title="Customize layout">
+      <span class="entity-action-icon">⊟</span>
+      <span class="entity-action-label">Layout</span>
+    </button>
+  </div>`;
+}
+
+// Binds icon and cover buttons for any entity in slideover
+function setupEntityToolbar(entity, id) {
+  const iconBtn = document.getElementById(`${entity}-icon-btn`);
+  const iconDisplay = document.getElementById(`${entity}-icon-display`);
+  const coverBtn = document.getElementById(`${entity}-cover-btn`);
+
+  // Setup icon button
+  if (iconBtn && iconDisplay) {
+    loadEntityIcon(entity, id).then(icon => {
+      if (icon) {
+        iconDisplay.innerHTML = renderEntityIcon(icon, 20);
+        iconDisplay.dataset.icon = icon;
+      }
+    });
+    iconBtn.onclick = (e) => {
+      e.stopPropagation();
+      const cur = iconDisplay.dataset.icon || '';
+      showIconPicker(iconBtn, entity, id, cur, (newIcon) => {
+        iconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 20) : '';
+        iconDisplay.dataset.icon = newIcon;
+        saveEntityIcon(entity, id, newIcon).catch(() => {
+          iconDisplay.innerHTML = cur ? renderEntityIcon(cur, 20) : '';
+          iconDisplay.dataset.icon = cur;
+        });
+      });
+    };
+  }
+
+  // Setup cover button
+  if (coverBtn) {
+    coverBtn.onclick = (e) => {
+      e.stopPropagation();
+      const coverInput = document.createElement('input');
+      coverInput.type = 'file';
+      coverInput.accept = 'image/*';
+      coverInput.onchange = async () => {
+        if (!coverInput.files.length) return;
+        const file = coverInput.files[0];
+        const reader = new FileReader();
+        reader.onload = async (evt) => {
+          try {
+            await api('POST', `/api/properties?entity_type=${entity}&entity_id=${id}`, { key: '_cover', value: evt.target.result });
+            initSlideoverCoverArea(entity, id);
+          } catch(e) { showToast('Failed to save cover', 'error'); }
+        };
+        reader.readAsDataURL(file);
+      };
+      coverInput.click();
+    };
+  }
+}
+
 function openSlideover(title, bodyHTML) {
   document.getElementById('slideover-title').textContent = title;
-  document.getElementById('slideover-body').innerHTML = bodyHTML;
-  const _scw = document.getElementById('slideover-cover-wrap');
-  if (_scw) { _scw.innerHTML = ''; _scw.classList.remove('has-cover'); _scw.style.backgroundImage = ''; }
+  const bodyEl = document.getElementById('slideover-body');
+  const coverWrap = document.getElementById('slideover-cover-wrap');
+  // Save and remove cover-wrap before setting innerHTML to preserve it
+  if (coverWrap) coverWrap.remove();
+  bodyEl.innerHTML = bodyHTML;
+  // Re-append cover-wrap at the start of body so it's sticky at top
+  if (coverWrap) {
+    coverWrap.innerHTML = '';
+    coverWrap.classList.remove('has-cover');
+    coverWrap.style.backgroundImage = '';
+    bodyEl.insertBefore(coverWrap, bodyEl.firstChild);
+  }
   setSlideoverExport(null, null); // reset export button
   setSlideoverExpand(null);
   setFsPropsBuilder(null);
@@ -10714,10 +10793,7 @@ async function showTaskSlideover(taskId) {
   const taskInlinePropPanel = buildInlinePropPanel('task', taskId, taskBodyDefs);
 
   const body = `
-    <button class="entity-icon-add-btn" id="task-icon-add-btn">
-      <span id="task-icon-display"></span>
-      <span id="task-icon-add-label">Add icon</span>
-    </button>
+    ${buildEntityActionToolbar('task', taskId)}
     <div class="detail-title-area">
       ${bcPrefix}
       <textarea class="detail-title-input" id="detail-title" rows="1">${(task.title || '').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
@@ -10814,31 +10890,8 @@ async function showTaskSlideover(taskId) {
   titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
   titleTA.onblur = (e) => patchTask({ title: e.target.value });
 
-  // ── Task icon add button (above title) ────────────────────────────────
-  const taskIconAddBtn = document.getElementById('task-icon-add-btn');
-  const taskIconDisplay = document.getElementById('task-icon-display');
-  const taskIconAddLabel = document.getElementById('task-icon-add-label');
-  loadEntityIcon('task', taskId).then(icon => {
-    if (icon) {
-      taskIconDisplay.innerHTML = renderEntityIcon(icon, 32);
-      taskIconDisplay.dataset.icon = icon;
-      taskIconAddLabel.textContent = '';
-    }
-  });
-  taskIconAddBtn.onclick = (e) => {
-    e.stopPropagation();
-    const cur = taskIconDisplay.dataset.icon || '';
-    showIconPicker(taskIconAddBtn, 'task', taskId, cur, (newIcon) => {
-      taskIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
-      taskIconDisplay.dataset.icon = newIcon;
-      taskIconAddLabel.textContent = newIcon ? '' : 'Add icon';
-      saveEntityIcon('task', taskId, newIcon).catch(() => {
-        taskIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 32) : '';
-        taskIconDisplay.dataset.icon = cur;
-        taskIconAddLabel.textContent = cur ? '' : 'Add icon';
-      });
-    });
-  };
+  // Setup action toolbar (icon, cover, layout buttons)
+  setupEntityToolbar('task', taskId);
 
 
   // ── Bind inline prop panel (extra built-in + custom props) ───────────────

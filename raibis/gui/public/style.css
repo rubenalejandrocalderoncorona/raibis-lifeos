@@ -1442,7 +1442,7 @@ body.kanban-dragging-active * {
   flex: 1;
   overflow-y: auto;
   padding: var(--space-5) var(--space-6);
-  padding-top: calc(var(--space-5) + 20px); /* extra room so content starts below close button */
+  padding-top: calc(var(--space-5) + 20px);
 }
 
 /* ─── Command Center Dashboard ────────────────────────────────────── */
@@ -5423,3 +5423,20 @@ body.fullscreen-open .fab-group { right: var(--space-6) !important; bottom: var(
 }
 .habit-heat-cell:hover { transform: scale(1.25); opacity: 1 !important; }
 .habit-heat-cell.today { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+
+/* ─── Slideover cover image ─────────────────────────────────────────── */
+.slideover-cover-wrap { position: sticky; top: 0; z-index: 15; min-height: 0; overflow: hidden; background: var(--color-surface); margin: 0 calc(var(--space-6) * -1) 0 calc(var(--space-6) * -1); }
+.slideover-cover-wrap.has-cover { height: 160px; background-size: cover; background-position: center; background-repeat: no-repeat; }
+
+/* ─── Entity action toolbar (icon, cover, layout) ──────────────────── */
+.entity-action-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+.entity-action-btn { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 12px; border: none; background: var(--bg-card); border-radius: 6px; cursor: pointer; color: var(--text-muted); font-size: 12px; transition: all 0.15s; }
+.entity-action-btn:hover { background: var(--hover); color: var(--text-primary); }
+.entity-action-icon { font-size: 20px; line-height: 1; }
+.entity-action-display { font-size: 20px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; }
+.entity-action-display:empty::before { content: '😊'; }
+.entity-action-label { font-weight: 500; }
+.slideover-cover-wrap .sc-cover-btn { position: absolute; bottom: 8px; right: 12px; background: rgba(0,0,0,0.45); color: #fff; border: none; border-radius: 5px; padding: 3px 8px; font-size: 11px; cursor: pointer; opacity: 0; transition: opacity 0.15s; }
+.slideover-cover-wrap:hover .sc-cover-btn { opacity: 1; }
+.slideover-cover-wrap .sc-add-btn { display: block; margin: 5px 16px; background: none; border: 1px dashed var(--border); border-radius: 5px; padding: 4px 12px; font-size: 11px; color: var(--text-muted); cursor: pointer; text-align: left; }
+.slideover-cover-wrap .sc-add-btn:hover { border-color: var(--accent); color: var(--accent); }
