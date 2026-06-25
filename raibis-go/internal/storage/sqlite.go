@@ -704,6 +704,27 @@ func (s *sqliteStorage) UpdateSprintStoryPoints(id int64, pts *int) error {
 	return err
 }
 
+func (s *sqliteStorage) DeleteSprint(id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stmts := []struct {
+		q    string
+		args []any
+	}{
+		{`DELETE FROM entity_children   WHERE (entity_type='sprint' AND entity_id=?) OR (child_type='sprint' AND child_id=?)`, []any{id, id}},
+		{`DELETE FROM entity_relations  WHERE (entity_type='sprint' AND entity_id=?) OR (related_entity_type='sprint' AND related_entity_id=?)`, []any{id, id}},
+		{`DELETE FROM entity_properties WHERE entity_type='sprint' AND entity_id=?`, []any{id}},
+		{`DELETE FROM entity_tags       WHERE entity_type='sprint' AND entity_id=?`, []any{id}},
+		{`DELETE FROM sprints           WHERE id=?`, []any{id}},
+	}
+	for _, st := range stmts {
+		if _, err := s.db.Exec(st.q, st.args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ── Notes ─────────────────────────────────────────────────────────────────────
 
 func (s *sqliteStorage) CreateNote(n *domain.Note) (int64, error) {

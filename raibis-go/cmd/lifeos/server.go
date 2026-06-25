@@ -217,7 +217,7 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 	mux.HandleFunc("/api/integrations/probe", withCORS(integrationsProbeHandler()))
 
 	// Comments
-	mux.HandleFunc("/api/comments", withCORS(commentsHandler(store)))
+	mux.HandleFunc("/api/comments", withCORS(commentsHandler(store, v)))
 
 	// Entity children (generic parent→child hierarchy)
 	mux.HandleFunc("/api/children/", withCORS(entityChildrenHandler(store, v)))
@@ -799,7 +799,7 @@ func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 			}
 			created, _ := store.GetGoal(id)
 			go func() {
-				if err := vlt.WriteEntityMD("goal", created.ID, mergeFMWithProps(goalFM(created), store, "goal", created.ID), childrenLinksBody("goal", created.ID, store)); err != nil {
+				if err := vlt.WriteEntityMD("goal", created.ID, mergeFMWithProps(goalFM(created), store, "goal", created.ID), childrenLinksBody("goal", created.ID, store)+commentsSection("goal", created.ID, store)); err != nil {
 					log.Printf("vault: write goal %d: %v", created.ID, err)
 				}
 			}()
@@ -948,7 +948,7 @@ func goalHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.Ha
 			updated, _ := store.GetGoal(id)
 			updated.Tags, _ = store.GetEntityTags("goal", id)
 			go func() {
-				if err := vlt.WriteEntityMD("goal", updated.ID, mergeFMWithProps(goalFM(updated), store, "goal", updated.ID), childrenLinksBody("goal", updated.ID, store)); err != nil {
+				if err := vlt.WriteEntityMD("goal", updated.ID, mergeFMWithProps(goalFM(updated), store, "goal", updated.ID), childrenLinksBody("goal", updated.ID, store)+commentsSection("goal", updated.ID, store)); err != nil {
 					log.Printf("vault: update goal %d: %v", updated.ID, err)
 				}
 			}()
@@ -1019,7 +1019,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 			}
 			created, _ := store.GetProject(id)
 			go func() {
-				if err := vlt.WriteEntityMD("project", created.ID, mergeFMWithProps(projectFM(created), store, "project", created.ID), projectLinksBody(created, store)+childrenLinksBody("project", created.ID, store)); err != nil {
+				if err := vlt.WriteEntityMD("project", created.ID, mergeFMWithProps(projectFM(created), store, "project", created.ID), projectLinksBody(created, store)+childrenLinksBody("project", created.ID, store)+commentsSection("project", created.ID, store)); err != nil {
 					log.Printf("vault: write project %d: %v", created.ID, err)
 				}
 			}()
@@ -1148,7 +1148,7 @@ func projectHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http
 			updated, _ := store.GetProject(id)
 			updated.Tags, _ = store.GetEntityTags("project", id)
 			go func() {
-				if err := vlt.WriteEntityMD("project", updated.ID, mergeFMWithProps(projectFM(updated), store, "project", updated.ID), projectLinksBody(updated, store)+childrenLinksBody("project", updated.ID, store)); err != nil {
+				if err := vlt.WriteEntityMD("project", updated.ID, mergeFMWithProps(projectFM(updated), store, "project", updated.ID), projectLinksBody(updated, store)+childrenLinksBody("project", updated.ID, store)+commentsSection("project", updated.ID, store)); err != nil {
 					log.Printf("vault: update project %d: %v", updated.ID, err)
 				}
 			}()
@@ -1329,6 +1329,16 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 						log.Printf("vault: update sprint %d: %v", sp.ID, err)
 					}
 				}()
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+
+		case http.MethodDelete:
+			if err := store.DeleteSprint(id); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			if err := vlt.DeleteEntityMD("sprint", id); err != nil {
+				log.Printf("vault: delete sprint %d: %v", id, err)
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
@@ -2929,7 +2939,7 @@ func searchHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 
 // ── Comments ──────────────────────────────────────────────────────────────────
 
-func commentsHandler(store storage.Storage) http.HandlerFunc {
+func commentsHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -2985,6 +2995,7 @@ func commentsHandler(store storage.Storage) http.HandlerFunc {
 				return
 			}
 			c.ID = id
+			go resyncEntityVault(c.EntityType, c.EntityID, store, vlt)
 			writeJSON(w, 201, c)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -4696,7 +4707,7 @@ func taskLinksBody(t *domain.Task, store storage.Storage) string {
 			lines = append(lines, fmt.Sprintf("- [[resource-%d|%s]]", r.ID, r.Title))
 		}
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n") + commentsSection("task", t.ID, store)
 }
 
 func projectLinksBody(p *domain.Project, store storage.Storage) string {
@@ -4709,10 +4720,24 @@ func projectLinksBody(p *domain.Project, store storage.Storage) string {
 }
 
 func sprintLinksBody(s *domain.Sprint, store storage.Storage) string {
+	var out string
 	if p, err := store.GetProject(s.ProjectID); err == nil {
-		return fmt.Sprintf("Project: [[project-%d|%s]]", p.ID, p.Title)
+		out = fmt.Sprintf("Project: [[project-%d|%s]]", p.ID, p.Title)
 	}
-	return ""
+	return out + commentsSection("sprint", s.ID, store)
+}
+
+// commentsSection returns a ## Comments markdown block for an entity.
+func commentsSection(entityType string, entityID int64, store storage.Storage) string {
+	comments, err := store.ListComments(entityType, entityID)
+	if err != nil || len(comments) == 0 {
+		return ""
+	}
+	lines := []string{"\n## Comments"}
+	for _, c := range comments {
+		lines = append(lines, fmt.Sprintf("- **%s**: %s", c.Author, c.Body))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // childrenLinksBody appends a ## Sub-items section of [[wikilinks]] for any
@@ -4796,17 +4821,21 @@ func resyncEntityVault(entityType string, entityID int64, store storage.Storage,
 	switch entityType {
 	case "goal":
 		if g, err := store.GetGoal(entityID); err == nil {
-			body := childrenLinksBody("goal", g.ID, store) + relationsLinksBody("goal", g.ID, store)
+			body := childrenLinksBody("goal", g.ID, store) + relationsLinksBody("goal", g.ID, store) + commentsSection("goal", g.ID, store)
 			_ = vlt.WriteEntityMD("goal", g.ID, mergeFMWithProps(goalFM(g), store, "goal", g.ID), body)
 		}
 	case "project":
 		if p, err := store.GetProject(entityID); err == nil {
-			body := projectLinksBody(p, store) + childrenLinksBody("project", p.ID, store) + relationsLinksBody("project", p.ID, store)
+			body := projectLinksBody(p, store) + childrenLinksBody("project", p.ID, store) + relationsLinksBody("project", p.ID, store) + commentsSection("project", p.ID, store)
 			_ = vlt.WriteEntityMD("project", p.ID, mergeFMWithProps(projectFM(p), store, "project", p.ID), body)
 		}
 	case "task":
 		if t, err := store.GetTask(entityID); err == nil {
 			_ = vlt.WriteEntityMD("task", t.ID, mergeFMWithProps(taskFM(t), store, "task", t.ID), taskLinksBody(t, store)+relationsLinksBody("task", t.ID, store))
+		}
+	case "sprint":
+		if sp, err := store.GetSprint(entityID); err == nil {
+			_ = vlt.WriteEntityMD("sprint", sp.ID, mergeFMWithProps(sprintFM(sp), store, "sprint", sp.ID), sprintLinksBody(sp, store))
 		}
 	}
 }

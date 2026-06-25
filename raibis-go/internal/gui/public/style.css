@@ -5118,10 +5118,9 @@ tr:hover .ctx-handle,
 #fs-cover-row.has-cover {
   height: 220px;
   background-size: cover;
-  background-position: center;
   background-repeat: no-repeat;
 }
-#fs-cover-row .fs-cover-btn {
+#fs-cover-row .fs-cover-btn, .entity-view-cover .fs-cover-btn {
   position: absolute;
   bottom: 10px;
   right: 16px;
@@ -5135,7 +5134,7 @@ tr:hover .ctx-handle,
   opacity: 0;
   transition: opacity 0.15s;
 }
-#fs-cover-row:hover .fs-cover-btn { opacity: 1; }
+#fs-cover-row:hover .fs-cover-btn, .entity-view-cover:hover .fs-cover-btn { opacity: 1; }
 #fs-cover-row .fs-cover-add-btn {
   display: inline-block;
   margin: 6px 32px;
@@ -5149,11 +5148,14 @@ tr:hover .ctx-handle,
 }
 #fs-cover-row .fs-cover-add-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-/* Icon overlaps cover bottom by half its height when cover present */
-.entity-fullscreen.has-cover #fs-icon-row {
+/* Icon straddles cover only when actual icon is set */
+.entity-fullscreen.has-cover #fs-icon-row.has-entity-icon {
   margin-top: -24px;
   position: relative;
   z-index: 1;
+}
+.entity-fullscreen.has-cover #fs-icon-row:not(.has-entity-icon) {
+  margin-top: 8px;
 }
 .entity-fullscreen.has-cover .entity-fs-content {
   padding-top: 12px;
@@ -5247,6 +5249,14 @@ tr:hover .ctx-handle,
 }
 .ce-block__content {
   max-width: 100% !important;
+  position: relative !important;
+}
+/* EditorJS 2.26.5 renders placeholder as display:block ::before, pushing cursor
+   to a new line below the placeholder. Fix: absolute so it overlays cursor pos. */
+.ce-paragraph[data-placeholder]:empty::before {
+  position: absolute !important;
+  top: 0; left: 0;
+  pointer-events: none;
 }
 .ce-toolbar__plus, .ce-toolbar__settings-btn {
   color: var(--text-muted) !important;
@@ -5425,18 +5435,28 @@ body.fullscreen-open .fab-group { right: var(--space-6) !important; bottom: var(
 .habit-heat-cell.today { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 
 /* ─── Slideover cover image ─────────────────────────────────────────── */
-.slideover-cover-wrap { position: sticky; top: 0; z-index: 15; min-height: 0; overflow: hidden; background: var(--color-surface); margin: 0 calc(var(--space-6) * -1) 0 calc(var(--space-6) * -1); }
-.slideover-cover-wrap.has-cover { height: 160px; background-size: cover; background-position: center; background-repeat: no-repeat; }
+.slideover-cover-wrap { position: relative; z-index: 15; min-height: 0; overflow: hidden; background: var(--color-surface); margin: 0 calc(var(--space-6) * -1) 0 calc(var(--space-6) * -1); }
+.slideover-cover-wrap.has-cover { height: 160px; background-size: cover; background-repeat: no-repeat; }
 
-/* ─── Entity action toolbar (icon, cover, layout) ──────────────────── */
-.entity-action-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
-.entity-action-btn { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 12px; border: none; background: var(--bg-card); border-radius: 6px; cursor: pointer; color: var(--text-muted); font-size: 12px; transition: all 0.15s; }
-.entity-action-btn:hover { background: var(--hover); color: var(--text-primary); }
-.entity-action-icon { font-size: 20px; line-height: 1; }
-.entity-action-display { font-size: 20px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; }
-.entity-action-display:empty::before { content: '😊'; }
-.entity-action-label { font-weight: 500; }
+
 .slideover-cover-wrap .sc-cover-btn { position: absolute; bottom: 8px; right: 12px; background: rgba(0,0,0,0.45); color: #fff; border: none; border-radius: 5px; padding: 3px 8px; font-size: 11px; cursor: pointer; opacity: 0; transition: opacity 0.15s; }
 .slideover-cover-wrap:hover .sc-cover-btn { opacity: 1; }
 .slideover-cover-wrap .sc-add-btn { display: block; margin: 5px 16px; background: none; border: 1px dashed var(--border); border-radius: 5px; padding: 4px 12px; font-size: 11px; color: var(--text-muted); cursor: pointer; text-align: left; }
 .slideover-cover-wrap .sc-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+/* ─── Cover reposition mode ─────────────────────────────────────────── */
+.cover-reposition-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 10px 14px; background: rgba(0,0,0,0.32); user-select: none; z-index: 20; }
+.cover-reposition-hint { color: #fff; font-size: 12px; font-weight: 500; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+.cover-reposition-actions { display: flex; gap: 8px; }
+.cover-reposition-save, .cover-reposition-cancel { background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.4); border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; font-weight: 500; transition: background 0.12s; }
+.cover-reposition-save:hover { background: rgba(30,100,220,0.75); }
+.cover-reposition-cancel:hover { background: rgba(80,80,80,0.7); }
+.sc-repositioning .sc-cover-btn, .fs-repositioning .fs-cover-btn { display: none !important; }
+
+/* ─── Individual view (project/goal) cover + action area ────────────── */
+.entity-view-cover { position: relative; width: auto; min-height: 0; overflow: hidden; margin: calc(var(--space-10) * -1) calc(var(--space-10) * -1) 0; }
+.entity-view-cover.has-cover { height: 220px; background-size: cover; background-repeat: no-repeat; }
+.entity-view-action { display: flex; gap: 16px; align-items: center; padding: 8px 0 4px; }
+.entity-view-cover.has-cover + .entity-view-action.has-entity-icon { margin-top: -18px; position: relative; z-index: 1; }
+.entity-view-cover.has-cover + .entity-view-action:not(.has-entity-icon) { margin-top: 8px; }
+.ev-cover-add-link { cursor: pointer; font-size: 13px; color: var(--text-muted); font-weight: 500; display: inline-flex; align-items: center; padding: 2px 0; }
+.ev-cover-add-link:hover { color: var(--accent); }

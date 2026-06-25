@@ -792,6 +792,10 @@ const TB_ICONS = {
   expand:   `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`,
   settings: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
 };
+const ACT_ICONS = {
+  addIcon:  `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:3px"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>`,
+  addCover: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:3px"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`,
+};
 
 function buildViewTabBar(entity, views, activeId) {
   const activeView = views.find(v => v.id === activeId) || views[0];
@@ -1935,30 +1939,93 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
   _activeEditors[hostId] = editor;
 }
 
+/* ─── Cover reposition drag ──────────────────────────────────────────── */
+function enterCoverRepositionMode(el, entity, id, onDone) {
+  const origPos = el.style.backgroundPosition;
+  el.classList.add('sc-repositioning', 'fs-repositioning');
+  el.style.cursor = 'ns-resize';
+
+  const overlay = document.createElement('div');
+  overlay.className = 'cover-reposition-overlay';
+  overlay.innerHTML = `<span class="cover-reposition-hint">Drag to reposition</span><div class="cover-reposition-actions"><button class="cover-reposition-save">Save</button><button class="cover-reposition-cancel">Cancel</button></div>`;
+  el.appendChild(overlay);
+
+  let dragging = false, startY = 0, startPct = 0;
+  const getPct = () => {
+    const m = el.style.backgroundPosition.match(/(\d+(?:\.\d+)?)%/);
+    return m ? parseFloat(m[1]) : 50;
+  };
+
+  function onDown(e) {
+    if (e.target.closest('button')) return;
+    dragging = true; startY = e.clientY; startPct = getPct();
+    el.style.cursor = 'grabbing'; e.preventDefault();
+  }
+  function onMove(e) {
+    if (!dragging) return;
+    let p = startPct - (e.clientY - startY) / el.offsetHeight * 100;
+    el.style.backgroundPosition = `center ${Math.max(0, Math.min(100, p)).toFixed(1)}%`;
+  }
+  function onUp() { if (dragging) { dragging = false; el.style.cursor = 'ns-resize'; } }
+
+  el.addEventListener('mousedown', onDown);
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+
+  function cleanup() {
+    el.removeEventListener('mousedown', onDown);
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    el.classList.remove('sc-repositioning', 'fs-repositioning');
+    el.style.cursor = '';
+    overlay.remove();
+  }
+
+  overlay.querySelector('.cover-reposition-save').onclick = async (e) => {
+    e.stopPropagation();
+    const pos = `${getPct().toFixed(1)}%`;
+    await api('POST', `/api/properties?entity_type=${entity}&entity_id=${id}`, { key: '_cover_pos', value: pos }).catch(() => {});
+    cleanup(); onDone(pos);
+  };
+  overlay.querySelector('.cover-reposition-cancel').onclick = (e) => {
+    e.stopPropagation();
+    el.style.backgroundPosition = origPos;
+    cleanup(); onDone(null);
+  };
+}
+
 /* ─── Slideover cover image ──────────────────────────────────────────── */
 async function initSlideoverCoverArea(entity, id) {
   const wrap = document.getElementById('slideover-cover-wrap');
   if (!wrap) return;
-  const applyScCover = (dataUrl) => {
+  let _dataUrl = '', _posY = '50%';
+  const applyScCover = (dataUrl, posY = '50%') => {
+    _dataUrl = dataUrl; _posY = posY;
     wrap.innerHTML = '';
     if (dataUrl) {
       wrap.classList.add('has-cover');
       wrap.style.backgroundImage = `url(${dataUrl})`;
+      wrap.style.backgroundPosition = `center ${posY}`;
       const chgBtn = document.createElement('button');
       chgBtn.className = 'sc-cover-btn'; chgBtn.textContent = 'Change cover';
       chgBtn.onclick = () => pickScCover();
       const rmBtn = document.createElement('button');
-      rmBtn.className = 'sc-cover-btn'; rmBtn.style.right = '120px'; rmBtn.textContent = 'Remove cover';
+      rmBtn.className = 'sc-cover-btn'; rmBtn.style.right = '130px'; rmBtn.textContent = 'Remove cover';
       rmBtn.onclick = async () => {
         await api('DELETE', `/api/properties?entity_type=${entity}&entity_id=${id}&key=_cover`).catch(() => {});
         applyScCover('');
       };
-      wrap.append(chgBtn, rmBtn);
+      const reposBtn = document.createElement('button');
+      reposBtn.className = 'sc-cover-btn'; reposBtn.style.right = '255px'; reposBtn.textContent = 'Edit position';
+      reposBtn.onclick = () => enterCoverRepositionMode(wrap, entity, id, (newPos) => {
+        applyScCover(_dataUrl, newPos || _posY);
+      });
+      wrap.append(chgBtn, rmBtn, reposBtn);
     } else {
       wrap.classList.remove('has-cover');
-      wrap.style.backgroundImage = '';
+      wrap.style.backgroundImage = ''; wrap.style.backgroundPosition = '';
       const addBtn = document.createElement('button');
-      addBtn.className = 'sc-add-btn'; addBtn.textContent = '+ Add cover';
+      addBtn.className = 'sc-add-btn'; addBtn.innerHTML = ACT_ICONS.addCover + 'Add cover';
       addBtn.onclick = () => pickScCover();
       wrap.appendChild(addBtn);
     }
@@ -1972,15 +2039,84 @@ async function initSlideoverCoverArea(entity, id) {
       reader.onload = async (ev) => {
         const dataUrl = ev.target.result;
         await api('POST', `/api/properties?entity_type=${entity}&entity_id=${id}`, { key: '_cover', value: dataUrl });
-        applyScCover(dataUrl);
+        applyScCover(dataUrl, _posY);
       };
       reader.readAsDataURL(file);
     };
     inp.click();
   };
   api('GET', `/api/properties?entity_type=${entity}&entity_id=${id}`)
-    .then(props => applyScCover(props?._cover || ''))
+    .then(props => applyScCover(props?._cover || '', props?._cover_pos || '50%'))
     .catch(() => applyScCover(''));
+}
+
+/* ─── Individual view (project/goal) cover + action init ────────────── */
+function initDetailViewCover(entity, id, coverRowId, actionRowId) {
+  const coverRow = document.getElementById(coverRowId);
+  const actionRow = document.getElementById(actionRowId);
+  if (!coverRow || !actionRow) return;
+
+  let _dataUrl = '', _posY = '50%';
+
+  const pick = () => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*';
+    inp.onchange = async () => {
+      const file = inp.files[0]; if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const dataUrl = e.target.result;
+        await api('POST', `/api/properties?entity_type=${entity}&entity_id=${id}`, { key: '_cover', value: dataUrl });
+        apply(dataUrl, _posY);
+      };
+      reader.readAsDataURL(file);
+    };
+    inp.click();
+  };
+
+  const apply = (dataUrl, posY = '50%') => {
+    _dataUrl = dataUrl; _posY = posY;
+    coverRow.innerHTML = '';
+    if (dataUrl) {
+      coverRow.classList.add('has-cover');
+      coverRow.style.backgroundImage = `url(${dataUrl})`;
+      coverRow.style.backgroundPosition = `center ${posY}`;
+      const changeBtn = document.createElement('button');
+      changeBtn.className = 'fs-cover-btn';
+      changeBtn.textContent = 'Change cover';
+      changeBtn.onclick = () => pick();
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'fs-cover-btn';
+      removeBtn.style.right = '130px';
+      removeBtn.textContent = 'Remove cover';
+      removeBtn.onclick = async () => {
+        await api('DELETE', `/api/properties?entity_type=${entity}&entity_id=${id}&key=_cover`).catch(() => {});
+        apply('');
+      };
+      const reposBtn = document.createElement('button');
+      reposBtn.className = 'fs-cover-btn';
+      reposBtn.style.right = '255px';
+      reposBtn.textContent = 'Edit position';
+      reposBtn.onclick = () => enterCoverRepositionMode(coverRow, entity, id, (newPos) => apply(_dataUrl, newPos || _posY));
+      coverRow.append(changeBtn, removeBtn, reposBtn);
+    } else {
+      coverRow.classList.remove('has-cover');
+      coverRow.style.backgroundImage = ''; coverRow.style.backgroundPosition = '';
+    }
+    // Add/remove "Add cover" link in action row
+    actionRow.querySelectorAll('.ev-cover-add-link').forEach(el => el.remove());
+    if (!dataUrl) {
+      const addCoverLink = document.createElement('span');
+      addCoverLink.className = 'ev-cover-add-link';
+      addCoverLink.innerHTML = ACT_ICONS.addCover + 'Add cover';
+      addCoverLink.onclick = () => pick();
+      actionRow.appendChild(addCoverLink);
+    }
+  };
+
+  api('GET', `/api/properties?entity_type=${entity}&entity_id=${id}`)
+    .then(props => apply(props?._cover || '', props?._cover_pos || '50%'))
+    .catch(() => apply(''));
 }
 
 /* ─── Fullscreen entity overlay ──────────────────────────────────────── */
@@ -1997,78 +2133,116 @@ function openEntityFullscreen(entity, entityId, title, patchTitleFn) {
   overlay.style.display = 'flex';
   document.body.classList.add('fullscreen-open');
 
-  // Cover image
   const fsCoverRow = document.getElementById('fs-cover-row');
-  if (fsCoverRow) {
-    const applyCover = (dataUrl) => {
-      fsCoverRow.innerHTML = '';
-      if (dataUrl) {
-        fsCoverRow.classList.add('has-cover');
-        fsCoverRow.style.backgroundImage = `url(${dataUrl})`;
-        overlay.classList.add('has-cover');
-        const changeBtn = document.createElement('button');
-        changeBtn.className = 'fs-cover-btn';
-        changeBtn.textContent = 'Change cover';
-        changeBtn.onclick = () => pickCover();
-        const removeBtn = document.createElement('button');
-        removeBtn.className = 'fs-cover-btn';
-        removeBtn.style.right = '130px';
-        removeBtn.textContent = 'Remove cover';
-        removeBtn.onclick = async () => {
-          await api('DELETE', `/api/properties?entity_type=${entity}&entity_id=${entityId}&key=_cover`).catch(() => {});
-          applyCover('');
-        };
-        fsCoverRow.append(changeBtn, removeBtn);
-      } else {
-        fsCoverRow.classList.remove('has-cover');
-        fsCoverRow.style.backgroundImage = '';
-        overlay.classList.remove('has-cover');
-        const addBtn = document.createElement('button');
-        addBtn.className = 'fs-cover-add-btn';
-        addBtn.textContent = '+ Add cover';
-        addBtn.onclick = () => pickCover();
-        fsCoverRow.appendChild(addBtn);
+  const fsIconRow = document.getElementById('fs-icon-row');
+  let _fsDataUrl = '', _fsPosY = '50%', _fsIcon = '';
+
+  const renderFsActions = () => {
+    if (!fsIconRow) return;
+    fsIconRow.innerHTML = '';
+    if (_fsIcon) {
+      fsIconRow.classList.add('has-entity-icon');
+      const iconSpan = document.createElement('span');
+      iconSpan.style.cssText = 'cursor:pointer;font-size:36px;line-height:1';
+      iconSpan.title = 'Click to change icon';
+      iconSpan.innerHTML = renderEntityIcon(_fsIcon, 36);
+      iconSpan.onclick = () => showIconPicker(fsIconRow, null, null, _fsIcon, async (newIcon) => {
+        await saveEntityIcon(entity, entityId, newIcon || '');
+        _fsIcon = newIcon || '';
+        renderFsActions();
+        document.querySelectorAll(`[data-entity-id="${entityId}"] .list-icon-slot`).forEach(el => {
+          el.innerHTML = newIcon ? renderEntityIcon(newIcon, 18) : '';
+        });
+      });
+      fsIconRow.appendChild(iconSpan);
+    } else {
+      fsIconRow.classList.remove('has-entity-icon');
+      const addIconSpan = document.createElement('span');
+      addIconSpan.style.cssText = 'cursor:pointer;font-size:13px;color:var(--text-muted);font-weight:500;display:inline-flex;align-items:center;padding:2px 0;margin-right:16px';
+      addIconSpan.title = 'Click to add icon';
+      addIconSpan.innerHTML = ACT_ICONS.addIcon + 'Add icon';
+      addIconSpan.onclick = () => showIconPicker(fsIconRow, null, null, '', async (newIcon) => {
+        await saveEntityIcon(entity, entityId, newIcon || '');
+        _fsIcon = newIcon || '';
+        renderFsActions();
+        document.querySelectorAll(`[data-entity-id="${entityId}"] .list-icon-slot`).forEach(el => {
+          el.innerHTML = newIcon ? renderEntityIcon(newIcon, 18) : '';
+        });
+      });
+      fsIconRow.appendChild(addIconSpan);
+      if (!_fsDataUrl) {
+        const addCoverSpan = document.createElement('span');
+        addCoverSpan.style.cssText = 'cursor:pointer;font-size:13px;color:var(--text-muted);font-weight:500;display:inline-flex;align-items:center;padding:2px 0';
+        addCoverSpan.innerHTML = ACT_ICONS.addCover + 'Add cover';
+        addCoverSpan.onclick = () => fsPick();
+        fsIconRow.appendChild(addCoverSpan);
       }
-    };
-    const pickCover = () => {
-      const inp = document.createElement('input');
-      inp.type = 'file'; inp.accept = 'image/*';
-      inp.onchange = async () => {
-        const file = inp.files[0]; if (!file) return;
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-          const dataUrl = e.target.result;
-          await api('POST', `/api/properties?entity_type=${entity}&entity_id=${entityId}`, { key: '_cover', value: dataUrl });
-          applyCover(dataUrl);
-        };
-        reader.readAsDataURL(file);
+    }
+  };
+
+  const fsPick = () => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*';
+    inp.onchange = async () => {
+      const file = inp.files[0]; if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const dataUrl = e.target.result;
+        await api('POST', `/api/properties?entity_type=${entity}&entity_id=${entityId}`, { key: '_cover', value: dataUrl });
+        fsApplyCover(dataUrl, _fsPosY);
       };
-      inp.click();
+      reader.readAsDataURL(file);
     };
+    inp.click();
+  };
+
+  const fsApplyCover = (dataUrl, posY = '50%') => {
+    _fsDataUrl = dataUrl; _fsPosY = posY;
+    if (!fsCoverRow) return;
+    fsCoverRow.innerHTML = '';
+    if (dataUrl) {
+      fsCoverRow.classList.add('has-cover');
+      fsCoverRow.style.backgroundImage = `url(${dataUrl})`;
+      fsCoverRow.style.backgroundPosition = `center ${posY}`;
+      overlay.classList.add('has-cover');
+      const changeBtn = document.createElement('button');
+      changeBtn.className = 'fs-cover-btn';
+      changeBtn.textContent = 'Change cover';
+      changeBtn.onclick = () => fsPick();
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'fs-cover-btn';
+      removeBtn.style.right = '130px';
+      removeBtn.textContent = 'Remove cover';
+      removeBtn.onclick = async () => {
+        await api('DELETE', `/api/properties?entity_type=${entity}&entity_id=${entityId}&key=_cover`).catch(() => {});
+        fsApplyCover('');
+      };
+      const reposBtn = document.createElement('button');
+      reposBtn.className = 'fs-cover-btn';
+      reposBtn.style.right = '255px';
+      reposBtn.textContent = 'Edit position';
+      reposBtn.onclick = () => enterCoverRepositionMode(fsCoverRow, entity, entityId, (newPos) => {
+        fsApplyCover(_fsDataUrl, newPos || _fsPosY);
+      });
+      fsCoverRow.append(changeBtn, removeBtn, reposBtn);
+    } else {
+      fsCoverRow.classList.remove('has-cover');
+      fsCoverRow.style.backgroundImage = ''; fsCoverRow.style.backgroundPosition = '';
+      overlay.classList.remove('has-cover');
+    }
+    renderFsActions();
+  };
+
+  // Cover image
+  if (fsCoverRow) {
     api('GET', `/api/properties?entity_type=${entity}&entity_id=${entityId}`)
-      .then(props => applyCover(props?._cover || ''))
-      .catch(() => applyCover(''));
+      .then(props => fsApplyCover(props?._cover || '', props?._cover_pos || '50%'))
+      .catch(() => fsApplyCover(''));
   }
 
-  // Load entity icon (clickable to change)
-  const fsIconRow = document.getElementById('fs-icon-row');
+  // Load entity icon
   if (fsIconRow) {
-    const renderFsIcon = (icon) => {
-      fsIconRow.innerHTML = icon
-        ? `<span style="cursor:pointer;font-size:36px;line-height:1" title="Click to change icon">${renderEntityIcon(icon, 36)}</span>`
-        : `<span style="cursor:pointer;font-size:13px;color:var(--text-muted);font-weight:500;display:inline-block;padding:2px 0" title="Click to add icon">Add icon</span>`;
-      fsIconRow.querySelector('span').onclick = () => {
-        showIconPicker(fsIconRow, null, null, icon || '', async (newIcon) => {
-          await saveEntityIcon(entity, entityId, newIcon || '');
-          renderFsIcon(newIcon || '');
-          // Also refresh icon in open slideover list slot if present
-          document.querySelectorAll(`[data-entity-id="${entityId}"] .list-icon-slot`).forEach(el => {
-            el.innerHTML = newIcon ? renderEntityIcon(newIcon, 18) : '';
-          });
-        });
-      };
-    };
-    loadEntityIcon(entity, entityId).then(renderFsIcon).catch(() => renderFsIcon(''));
+    loadEntityIcon(entity, entityId).then(icon => { _fsIcon = icon || ''; renderFsActions(); }).catch(() => { _fsIcon = ''; renderFsActions(); });
   }
 
   // Set title (editable)
@@ -2127,6 +2301,8 @@ function closeEntityFullscreen() {
   document.body.classList.remove('fullscreen-open');
   const coverRow = document.getElementById('fs-cover-row');
   if (coverRow) { coverRow.innerHTML = ''; coverRow.classList.remove('has-cover'); coverRow.style.backgroundImage = ''; }
+  const iconRow = document.getElementById('fs-icon-row');
+  if (iconRow) { iconRow.innerHTML = ''; iconRow.classList.remove('has-entity-icon'); }
   const chipsRow = document.getElementById('fs-prop-chips-row');
   if (chipsRow) chipsRow.innerHTML = '';
   const key = 'editorjs-fullscreen';
@@ -3784,75 +3960,7 @@ function closeModal() {
 }
 
 /* ─── Slideover ──────────────────────────────────────────────────────── */
-// Creates HTML for entity action toolbar (icon, cover, layout buttons)
-function buildEntityActionToolbar(entity, id) {
-  return `<div class="entity-action-toolbar">
-    <button class="entity-action-btn" id="${entity}-icon-btn" title="Add or change icon">
-      <span id="${entity}-icon-display" class="entity-action-display"></span>
-      <span class="entity-action-label">Icon</span>
-    </button>
-    <button class="entity-action-btn" id="${entity}-cover-btn" title="Add or change cover image">
-      <span class="entity-action-icon">🖼️</span>
-      <span class="entity-action-label">Cover</span>
-    </button>
-    <button class="entity-action-btn" id="${entity}-layout-btn" title="Customize layout">
-      <span class="entity-action-icon">⊟</span>
-      <span class="entity-action-label">Layout</span>
-    </button>
-  </div>`;
-}
-
-// Binds icon and cover buttons for any entity in slideover
-function setupEntityToolbar(entity, id) {
-  const iconBtn = document.getElementById(`${entity}-icon-btn`);
-  const iconDisplay = document.getElementById(`${entity}-icon-display`);
-  const coverBtn = document.getElementById(`${entity}-cover-btn`);
-
-  // Setup icon button
-  if (iconBtn && iconDisplay) {
-    loadEntityIcon(entity, id).then(icon => {
-      if (icon) {
-        iconDisplay.innerHTML = renderEntityIcon(icon, 20);
-        iconDisplay.dataset.icon = icon;
-      }
-    });
-    iconBtn.onclick = (e) => {
-      e.stopPropagation();
-      const cur = iconDisplay.dataset.icon || '';
-      showIconPicker(iconBtn, entity, id, cur, (newIcon) => {
-        iconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 20) : '';
-        iconDisplay.dataset.icon = newIcon;
-        saveEntityIcon(entity, id, newIcon).catch(() => {
-          iconDisplay.innerHTML = cur ? renderEntityIcon(cur, 20) : '';
-          iconDisplay.dataset.icon = cur;
-        });
-      });
-    };
-  }
-
-  // Setup cover button
-  if (coverBtn) {
-    coverBtn.onclick = (e) => {
-      e.stopPropagation();
-      const coverInput = document.createElement('input');
-      coverInput.type = 'file';
-      coverInput.accept = 'image/*';
-      coverInput.onchange = async () => {
-        if (!coverInput.files.length) return;
-        const file = coverInput.files[0];
-        const reader = new FileReader();
-        reader.onload = async (evt) => {
-          try {
-            await api('POST', `/api/properties?entity_type=${entity}&entity_id=${id}`, { key: '_cover', value: evt.target.result });
-            initSlideoverCoverArea(entity, id);
-          } catch(e) { showToast('Failed to save cover', 'error'); }
-        };
-        reader.readAsDataURL(file);
-      };
-      coverInput.click();
-    };
-  }
-}
+// Creates HTML for entity action toolbar (icon, cover buttons)
 
 function openSlideover(title, bodyHTML) {
   document.getElementById('slideover-title').textContent = title;
@@ -4488,10 +4596,17 @@ async function renderCustomEntityDetail(typeName, entityId) {
     const e = await api('GET', `/api/custom/${typeName}/${entityId}`);
     const propPanel = buildInlinePropPanel(entityKey, parseInt(entityId), []);
     main.innerHTML = `<div class="view">
+      <div class="entity-view-cover" id="ced-cover-row"></div>
+      <div class="entity-view-action" id="ced-action-row">
+        <button class="entity-icon-add-btn" id="ced-icon-btn">
+          <span id="ced-icon-display"></span>
+          <span id="ced-icon-add-label">${ACT_ICONS.addIcon}Add icon</span>
+        </button>
+      </div>
       <div class="view-header">
         <div>
           <div style="color:var(--text-muted);font-size:12px;cursor:pointer;margin-bottom:4px" id="ced-back-crumb">← ${escHtml(displayName)}</div>
-          <h1 class="view-title">${iconHtml} ${escHtml(e.title)}</h1>
+          <h1 class="view-title">${escHtml(e.title)}</h1>
         </div>
         <div class="flex gap-8">
           <button class="btn btn-ghost btn-sm" id="ced-manage-btn">Widgets ⚙</button>
@@ -4512,6 +4627,27 @@ async function renderCustomEntityDetail(typeName, entityId) {
     const container = document.getElementById('ced-widget-grid');
     initWidgetGrid(entityKey, parseInt(entityId), container, () => renderCustomEntityDetail(typeName, entityId));
     bindInlinePropPanel(entityKey, parseInt(entityId), {}, () => renderCustomEntityDetail(typeName, entityId));
+
+    const cedIconBtn = document.getElementById('ced-icon-btn');
+    const cedIconDisplay = document.getElementById('ced-icon-display');
+    const cedIconLabel = document.getElementById('ced-icon-add-label');
+    const cedActionRow = document.getElementById('ced-action-row');
+    const setCedIcon = (icon) => {
+      cedIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 32) : '';
+      cedIconDisplay.dataset.icon = icon || '';
+      cedIconLabel.innerHTML = icon ? '' : ACT_ICONS.addIcon + 'Add icon';
+      cedActionRow?.classList.toggle('has-entity-icon', !!icon);
+    };
+    loadEntityIcon(entityKey, entityId).then(icon => setCedIcon(icon || ''));
+    cedIconBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      const cur = cedIconDisplay.dataset.icon || '';
+      showIconPicker(cedIconBtn, entityKey, entityId, cur, (newIcon) => {
+        setCedIcon(newIcon || '');
+        saveEntityIcon(entityKey, entityId, newIcon || '').catch(() => setCedIcon(cur));
+      });
+    };
+    if (typeInfo?.has_detail_view) initDetailViewCover(entityKey, entityId, 'ced-cover-row', 'ced-action-row');
   } catch(err) {
     main.innerHTML = `<div class="view"><div class="empty-state"><div class="empty-state-text" style="color:var(--color-danger)">Failed to load: ${escHtml(String(err))}</div></div></div>`;
   }
@@ -4560,7 +4696,7 @@ async function openCustomEntitySlideover(typeName, id) {
   const body = `
     <button class="entity-icon-add-btn" id="ces-icon-add-btn">
       <span id="ces-icon-display"></span>
-      <span id="ces-icon-add-label">Add icon</span>
+      <span id="ces-icon-add-label">${ACT_ICONS.addIcon}Add icon</span>
     </button>
     <div class="detail-title-area">
       <textarea class="detail-title-input" id="detail-title" rows="1">${(e.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
@@ -4597,7 +4733,7 @@ async function openCustomEntitySlideover(typeName, id) {
     showIconPicker(cesIconAddBtn, entityKey, id, cur, (newIcon) => {
       cesIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
       cesIconDisplay.dataset.icon = newIcon || '';
-      cesIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      cesIconAddLabel.innerHTML = newIcon ? '' : ACT_ICONS.addIcon + 'Add icon';
       saveEntityIcon(entityKey, id, newIcon);
     });
   };
@@ -4709,9 +4845,13 @@ async function openCustomEntitySlideover(typeName, id) {
   bindInlinePropPanel(entityKey, id, {}, () => openCustomEntitySlideover(typeName, id));
   bindCommentSection(document.querySelector(`.comment-section[data-entity-type="${entityKey}"]`));
   initRichEditor(`editorjs-${entityKey}-${id}`, entityKey, id, false);
-  setSlideoverExpand(() => openEntityFullscreen(entityKey, id, e.title || displayName, (t) => {
-    api('PUT', `/api/custom/${typeName}/${id}`, { title: t, props: e.props || {} }).catch(() => {});
-  }));
+  if (typeInfo?.has_detail_view) {
+    setSlideoverExpand(() => { closeSlideover(); renderView('custom-detail', `${typeName}/${id}`); });
+  } else {
+    setSlideoverExpand(() => openEntityFullscreen(entityKey, id, e.title || displayName, (t) => {
+      api('PUT', `/api/custom/${typeName}/${id}`, { title: t, props: e.props || {} }).catch(() => {});
+    }));
+  }
 }
 
 async function openCustomEntityForm(typeName, entityOrNull) {
@@ -8786,10 +8926,17 @@ async function renderSprintDetail(sprintId) {
   const prevLabel = sprint.status === 'active' ? '↩ Revert to Planned' : sprint.status === 'completed' ? '↩ Revert to Active' : null;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
+    <div class="entity-view-cover" id="sprint-cover-row"></div>
+    <div class="entity-view-action" id="sprint-action-row">
+      <button class="entity-icon-add-btn" id="sprint-det-icon-btn">
+        <span id="sprint-det-icon-display"></span>
+        <span id="sprint-det-icon-add-label">${ACT_ICONS.addIcon}Add icon</span>
+      </button>
+    </div>
     <div class="view-header">
       <div>
         ${sprint.project_title ? `<div class="breadcrumb" style="margin-bottom:6px"><span class="bc-crumb bc-proj" style="cursor:pointer" data-proj-id="${sprint.project_id}">◆ ${sprint.project_title}</span></div>` : ''}
-        <h1 class="view-title">⚡ ${sprint.title}</h1>
+        <h1 class="view-title">${sprint.title}</h1>
         <div class="flex gap-8" style="margin-top:6px">
           ${statusBadge(sprint.status)}
           ${sprint.start_date ? `<span class="badge badge-todo">${fmtDate(sprint.start_date)} → ${fmtDate(sprint.end_date)}</span>` : ''}
@@ -9041,6 +9188,28 @@ async function renderSprintDetail(sprintId) {
   const sdwg = document.getElementById('sd-widget-grid');
   initWidgetGrid('sprint', sprintId, sdwg, () => renderSprintDetail(sprintId));
   bindInlinePropPanel('sprint', sprintId, sprintDetailEditFns, () => renderSprintDetail(sprintId));
+
+  // Icon + cover for sprint individual view
+  const spDetIconBtn = document.getElementById('sprint-det-icon-btn');
+  const spDetIconDisplay = document.getElementById('sprint-det-icon-display');
+  const spDetIconLabel = document.getElementById('sprint-det-icon-add-label');
+  const spDetActionRow = document.getElementById('sprint-action-row');
+  const setSpDetIcon = (icon) => {
+    spDetIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 32) : '';
+    spDetIconDisplay.dataset.icon = icon || '';
+    spDetIconLabel.innerHTML = icon ? '' : ACT_ICONS.addIcon + 'Add icon';
+    spDetActionRow?.classList.toggle('has-entity-icon', !!icon);
+  };
+  loadEntityIcon('sprint', sprintId).then(icon => setSpDetIcon(icon || ''));
+  spDetIconBtn.onclick = (e) => {
+    e.stopPropagation();
+    const cur = spDetIconDisplay.dataset.icon || '';
+    showIconPicker(spDetIconBtn, 'sprint', sprintId, cur, (newIcon) => {
+      setSpDetIcon(newIcon || '');
+      saveEntityIcon('sprint', sprintId, newIcon || '').catch(() => setSpDetIcon(cur));
+    });
+  };
+  initDetailViewCover('sprint', sprintId, 'sprint-cover-row', 'sprint-action-row');
 }
 
 /* ─── Habits View ─────────────────────────────────────────────────────── */
@@ -9936,13 +10105,16 @@ async function renderProjectDetail(projectId) {
     : '';
 
   document.getElementById('main-content').innerHTML = `<div class="view">
+    <div class="entity-view-cover" id="proj-cover-row"></div>
+    <div class="entity-view-action" id="proj-action-row">
+      <button class="entity-icon-add-btn" id="proj-icon-btn">
+        <span id="proj-icon-display"></span>
+        <span id="proj-icon-add-label">${ACT_ICONS.addIcon}Add icon</span>
+      </button>
+    </div>
     <div class="view-header">
       <div>
         ${goalLink ? `<div class="breadcrumb" style="margin-bottom:6px">${goalLink}</div>` : ''}
-        <button class="entity-icon-add-btn" id="proj-icon-btn">
-          <span id="proj-icon-display"></span>
-          <span id="proj-icon-add-label">Add icon</span>
-        </button>
         <h1 class="view-title">${p.title}</h1>
         <div class="flex gap-8" style="margin-top:6px">
           ${statusBadge(p.status)}
@@ -9991,31 +10163,28 @@ async function renderProjectDetail(projectId) {
   document.getElementById('pd-export-btn').onclick = () =>
     showJSONModal(`/api/export/project/${projectId}`, `project-${p.title}.json`);
   document.getElementById('pd-manage-btn').onclick = (e) => openWidgetManager('project', e.currentTarget, () => renderProjectDetail(projectId));
-  // ── Project icon picker ──────────────────────────────────────────────
+  // ── Project icon + cover ─────────────────────────────────────────────
   const projIconBtn = document.getElementById('proj-icon-btn');
   const projIconDisplay = document.getElementById('proj-icon-display');
   const projIconAddLabel = document.getElementById('proj-icon-add-label');
-  loadEntityIcon('project', projectId).then(icon => {
-    if (projIconDisplay) {
-      projIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 32) : '';
-      projIconDisplay.dataset.icon = icon || '';
-      if (projIconAddLabel) projIconAddLabel.textContent = icon ? '' : 'Add icon';
-    }
-  });
+  const projActionRow = document.getElementById('proj-action-row');
+  const setProjIcon = (icon) => {
+    if (projIconDisplay) { projIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 32) : ''; projIconDisplay.dataset.icon = icon || ''; }
+    if (projIconAddLabel) projIconAddLabel.innerHTML = icon ? '' : ACT_ICONS.addIcon + 'Add icon';
+    if (projActionRow) projActionRow.classList.toggle('has-entity-icon', !!icon);
+  };
+  loadEntityIcon('project', projectId).then(setProjIcon).catch(() => setProjIcon(''));
   if (projIconBtn) {
     projIconBtn.onclick = (e) => {
       e.stopPropagation();
       const cur = projIconDisplay ? projIconDisplay.dataset.icon || '' : '';
       showIconPicker(projIconBtn, 'project', projectId, cur, (newIcon) => {
-        if (projIconDisplay) { projIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : ''; projIconDisplay.dataset.icon = newIcon; }
-        if (projIconAddLabel) projIconAddLabel.textContent = newIcon ? '' : 'Add icon';
-        saveEntityIcon('project', projectId, newIcon).catch(() => {
-          if (projIconDisplay) { projIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; projIconDisplay.dataset.icon = cur; }
-          if (projIconAddLabel) projIconAddLabel.textContent = cur ? '' : 'Add icon';
-        });
+        setProjIcon(newIcon || '');
+        saveEntityIcon('project', projectId, newIcon).catch(() => setProjIcon(cur));
       });
     };
   }
+  initDetailViewCover('project', projectId, 'proj-cover-row', 'proj-action-row');
   if (goalLink) {
     document.querySelectorAll('.bc-goal').forEach(el => {
       el.onclick = () => renderView('goal-detail', el.dataset.goalId);
@@ -10156,12 +10325,15 @@ async function renderGoalDetail(goalId) {
     </div>` : '';
 
   document.getElementById('main-content').innerHTML = `<div class="view">
+    <div class="entity-view-cover" id="goal-cover-row"></div>
+    <div class="entity-view-action" id="goal-action-row">
+      <button class="entity-icon-add-btn" id="goal-icon-btn">
+        <span id="goal-icon-display"></span>
+        <span id="goal-icon-add-label">${ACT_ICONS.addIcon}Add icon</span>
+      </button>
+    </div>
     <div class="view-header">
       <div>
-        <button class="entity-icon-add-btn" id="goal-icon-btn">
-          <span id="goal-icon-display"></span>
-          <span id="goal-icon-add-label">Add icon</span>
-        </button>
         <h1 class="view-title">${g.title}</h1>
         <div class="flex gap-8" style="margin-top:6px">
           ${statusBadge(g.status)}
@@ -10219,31 +10391,28 @@ async function renderGoalDetail(goalId) {
   document.getElementById('gd-add-note-btn').onclick = () => showNoteModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
   document.getElementById('gd-add-res-btn').onclick = () => showResourceModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
   document.getElementById('gd-manage-btn').onclick = (e) => openWidgetManager('goal', e.currentTarget, () => renderGoalDetail(goalId));
-  // ── Goal icon picker ──────────────────────────────────────────────────
+  // ── Goal icon + cover ─────────────────────────────────────────────────
   const goalIconBtn = document.getElementById('goal-icon-btn');
   const goalIconDisplay = document.getElementById('goal-icon-display');
   const goalIconAddLabel = document.getElementById('goal-icon-add-label');
-  loadEntityIcon('goal', goalId).then(icon => {
-    if (goalIconDisplay) {
-      goalIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 32) : '';
-      goalIconDisplay.dataset.icon = icon || '';
-      if (goalIconAddLabel) goalIconAddLabel.textContent = icon ? '' : 'Add icon';
-    }
-  });
+  const goalActionRow = document.getElementById('goal-action-row');
+  const setGoalIcon = (icon) => {
+    if (goalIconDisplay) { goalIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 32) : ''; goalIconDisplay.dataset.icon = icon || ''; }
+    if (goalIconAddLabel) goalIconAddLabel.innerHTML = icon ? '' : ACT_ICONS.addIcon + 'Add icon';
+    if (goalActionRow) goalActionRow.classList.toggle('has-entity-icon', !!icon);
+  };
+  loadEntityIcon('goal', goalId).then(setGoalIcon).catch(() => setGoalIcon(''));
   if (goalIconBtn) {
     goalIconBtn.onclick = (e) => {
       e.stopPropagation();
       const cur = goalIconDisplay ? goalIconDisplay.dataset.icon || '' : '';
       showIconPicker(goalIconBtn, 'goal', goalId, cur, (newIcon) => {
-        if (goalIconDisplay) { goalIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : ''; goalIconDisplay.dataset.icon = newIcon; }
-        if (goalIconAddLabel) goalIconAddLabel.textContent = newIcon ? '' : 'Add icon';
-        saveEntityIcon('goal', goalId, newIcon).catch(() => {
-          if (goalIconDisplay) { goalIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 32) : ''; goalIconDisplay.dataset.icon = cur; }
-          if (goalIconAddLabel) goalIconAddLabel.textContent = cur ? '' : 'Add icon';
-        });
+        setGoalIcon(newIcon || '');
+        saveEntityIcon('goal', goalId, newIcon).catch(() => setGoalIcon(cur));
       });
     };
   }
+  initDetailViewCover('goal', goalId, 'goal-cover-row', 'goal-action-row');
   document.querySelectorAll('#gd-proj-list .detail-nav').forEach(el => {
     el.onclick = () => renderView('project-detail', el.dataset.projId);
   });
@@ -10793,7 +10962,10 @@ async function showTaskSlideover(taskId) {
   const taskInlinePropPanel = buildInlinePropPanel('task', taskId, taskBodyDefs);
 
   const body = `
-    ${buildEntityActionToolbar('task', taskId)}
+    <button class="entity-icon-add-btn" id="task-icon-add-btn">
+      <span id="task-icon-display"></span>
+      <span id="task-icon-add-label">${ACT_ICONS.addIcon}Add icon</span>
+    </button>
     <div class="detail-title-area">
       ${bcPrefix}
       <textarea class="detail-title-input" id="detail-title" rows="1">${(task.title || '').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
@@ -10890,8 +11062,23 @@ async function showTaskSlideover(taskId) {
   titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
   titleTA.onblur = (e) => patchTask({ title: e.target.value });
 
-  // Setup action toolbar (icon, cover, layout buttons)
-  setupEntityToolbar('task', taskId);
+  // Icon
+  const taskIconAddBtn = document.getElementById('task-icon-add-btn');
+  const taskIconDisplay = document.getElementById('task-icon-display');
+  const taskIconAddLabel = document.getElementById('task-icon-add-label');
+  loadEntityIcon('task', taskId).then(icon => {
+    if (icon) { taskIconDisplay.innerHTML = renderEntityIcon(icon, 32); taskIconDisplay.dataset.icon = icon; taskIconAddLabel.textContent = ''; }
+  });
+  taskIconAddBtn.onclick = (e) => {
+    e.stopPropagation();
+    const cur = taskIconDisplay.dataset.icon || '';
+    showIconPicker(taskIconAddBtn, 'task', taskId, cur, (newIcon) => {
+      taskIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
+      taskIconDisplay.dataset.icon = newIcon || '';
+      taskIconAddLabel.innerHTML = newIcon ? '' : ACT_ICONS.addIcon + 'Add icon';
+      saveEntityIcon('task', taskId, newIcon);
+    });
+  };
 
 
   // ── Bind inline prop panel (extra built-in + custom props) ───────────────
@@ -12981,7 +13168,7 @@ async function showProjectSlideover(project, goals, afterSave) {
   const body = `
     <button class="entity-icon-add-btn" id="proj-icon-add-btn">
       <span id="proj-icon-display"></span>
-      <span id="proj-icon-add-label">Add icon</span>
+      <span id="proj-icon-add-label">${ACT_ICONS.addIcon}Add icon</span>
     </button>
     <div class="detail-title-area">
       ${goalCrumb}
@@ -13039,7 +13226,7 @@ async function showProjectSlideover(project, goals, afterSave) {
     showIconPicker(projIconAddBtn, 'project', projectId, cur, (newIcon) => {
       projIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
       projIconDisplay.dataset.icon = newIcon || '';
-      projIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      projIconAddLabel.innerHTML = newIcon ? '' : ACT_ICONS.addIcon + 'Add icon';
       saveEntityIcon('project', projectId, newIcon);
     });
   };
@@ -13197,7 +13384,7 @@ async function showGoalSlideover(goal, afterSave) {
   const body = `
     <button class="entity-icon-add-btn" id="goal-icon-add-btn">
       <span id="goal-icon-display"></span>
-      <span id="goal-icon-add-label">Add icon</span>
+      <span id="goal-icon-add-label">${ACT_ICONS.addIcon}Add icon</span>
     </button>
     <div class="detail-title-area">
       <textarea class="detail-title-input" id="detail-title" rows="1">${(g.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
@@ -13254,7 +13441,7 @@ async function showGoalSlideover(goal, afterSave) {
     showIconPicker(goalIconAddBtn, 'goal', goalId, cur, (newIcon) => {
       goalIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
       goalIconDisplay.dataset.icon = newIcon || '';
-      goalIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      goalIconAddLabel.innerHTML = newIcon ? '' : ACT_ICONS.addIcon + 'Add icon';
       saveEntityIcon('goal', goalId, newIcon);
     });
   };
@@ -13577,7 +13764,7 @@ async function showNoteSlideover(noteId, afterSave) {
   const body = `
     <button class="entity-icon-add-btn" id="note-icon-add-btn">
       <span id="note-icon-display"></span>
-      <span id="note-icon-add-label">Add icon</span>
+      <span id="note-icon-add-label">${ACT_ICONS.addIcon}Add icon</span>
     </button>
     <div class="detail-title-area">
       <textarea class="detail-title-input" id="detail-title" rows="1">${(n.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
@@ -13627,7 +13814,7 @@ async function showNoteSlideover(noteId, afterSave) {
     showIconPicker(noteIconAddBtn, 'note', noteId, cur, (newIcon) => {
       noteIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
       noteIconDisplay.dataset.icon = newIcon || '';
-      noteIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      noteIconAddLabel.innerHTML = newIcon ? '' : ACT_ICONS.addIcon + 'Add icon';
       saveEntityIcon('note', noteId, newIcon);
     });
   };
@@ -13798,7 +13985,7 @@ async function showSprintSlideover(sprintId, afterSave) {
   const body = `
     <button class="entity-icon-add-btn" id="sprint-icon-add-btn">
       <span id="sprint-icon-display"></span>
-      <span id="sprint-icon-add-label">Add icon</span>
+      <span id="sprint-icon-add-label">${ACT_ICONS.addIcon}Add icon</span>
     </button>
     <div class="detail-title-area">
       ${projCrumb}
@@ -13851,7 +14038,7 @@ async function showSprintSlideover(sprintId, afterSave) {
     showIconPicker(sprintIconAddBtn, 'sprint', sprintId, cur, (newIcon) => {
       sprintIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
       sprintIconDisplay.dataset.icon = newIcon || '';
-      sprintIconAddLabel.textContent = newIcon ? '' : 'Add icon';
+      sprintIconAddLabel.innerHTML = newIcon ? '' : ACT_ICONS.addIcon + 'Add icon';
       saveEntityIcon('sprint', sprintId, newIcon);
     });
   };
@@ -13971,7 +14158,7 @@ async function showSprintSlideover(sprintId, afterSave) {
     fsPropsEl.innerHTML = buildInlinePropPanel('sprint', sprintId, sprintBodyDefs);
     bindInlinePropPanel('sprint', sprintId, sprintInlinePropEditFns, rerender, fsPropsEl);
   });
-  setSlideoverExpand(() => openEntityFullscreen('sprint', sprintId, s.title, (t) => patchSprint({ title: t })));
+  setSlideoverExpand(() => { closeSlideover(); renderView('sprint-detail', sprintId); });
 
   // Task rows
   document.querySelectorAll('#sprint-task-list [data-task-id]').forEach(el => {
@@ -14118,7 +14305,7 @@ async function showResourceSlideover(resource, afterSave) {
   const body = `
     <button class="entity-icon-add-btn" id="res-icon-add-btn">
       <span id="res-icon-display"></span>
-      <span id="res-icon-add-label">Add icon</span>
+      <span id="res-icon-add-label">${ACT_ICONS.addIcon}Add icon</span>
     </button>
     <div class="detail-title-area">
       <textarea class="detail-title-input" id="detail-title" rows="1">${(r.title||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
@@ -15215,7 +15402,13 @@ function showNewEntityTypeModal() {
         <div id="_net-propdefs" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
         <button id="_net-addprop" class="btn btn-sm btn-ghost" style="font-size:12px">+ Add property</button>
       </div>
-      <div style="display:flex;gap:10px;justify-content:flex-end;padding-top:16px;border-top:1px solid var(--border)">
+      <div style="padding:12px 0 16px;border-top:1px solid var(--border);margin-top:4px">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="_net-indview" style="accent-color:var(--accent)">
+          <span><strong>Individual view</strong> — each record gets its own full-page detail view (like Projects &amp; Goals)</span>
+        </label>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;padding-top:0;border-top:1px solid var(--border)">
         <button id="_net-cancel" class="btn btn-ghost">Cancel</button>
         <button id="_net-create" class="btn btn-primary">Create entity</button>
       </div>
@@ -15309,8 +15502,9 @@ function showNewEntityTypeModal() {
     const icon = iconSelected || '📁';
     const validRows = propRows.filter(r => r.key && r.label);
     const prop_defs = JSON.stringify(validRows);
+    const has_detail_view = overlay.querySelector('#_net-indview')?.checked ? 1 : 0;
     try {
-      await api('POST', '/api/custom-types', { name, display_name, icon, prop_defs });
+      await api('POST', '/api/custom-types', { name, display_name, icon, prop_defs, has_detail_view });
       await loadCustomEntityTypes();
       showToast(`"${display_name}" created`);
       close();
