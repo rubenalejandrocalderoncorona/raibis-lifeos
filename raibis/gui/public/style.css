@@ -5243,9 +5243,12 @@ tr:hover .ctx-handle,
   padding-left: 60px !important;
   padding-bottom: 80px !important;
 }
+.ce-toolbar__content {
+  max-width: 100% !important;
+}
 .ce-toolbar__actions {
   right: auto !important;
-  left: -52px !important;
+  left: 32px !important;
 }
 .ce-block__content {
   max-width: 100% !important;

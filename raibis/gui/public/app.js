@@ -1920,6 +1920,31 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
         const section = container.closest('.rich-content-section');
         if (section) section.style.marginLeft = '44px';
       }
+      // Fix popover (slash-menu / toolbox) being clipped by overflow-y:auto parents
+      new MutationObserver(() => {
+        container.querySelectorAll('.ce-popover--opened:not([data-lifted])').forEach(pop => {
+          pop.dataset.lifted = '1';
+          requestAnimationFrame(() => {
+            const r = pop.getBoundingClientRect();
+            if (!r.width) return;
+            const maxH = 290;
+            const top = Math.max(8, Math.min(r.top, window.innerHeight - maxH - 8));
+            pop.style.position = 'fixed';
+            pop.style.top = top + 'px';
+            pop.style.left = r.left + 'px';
+            pop.style.zIndex = '9999';
+            pop.style.width = r.width + 'px';
+          });
+        });
+        container.querySelectorAll('.ce-popover[data-lifted]:not(.ce-popover--opened)').forEach(pop => {
+          delete pop.dataset.lifted;
+          pop.style.position = '';
+          pop.style.top = '';
+          pop.style.left = '';
+          pop.style.zIndex = '';
+          pop.style.width = '';
+        });
+      }).observe(container, { subtree: true, attributes: true, attributeFilter: ['class'] });
     },
     onChange: async () => {
       clearTimeout(saveTimer);
@@ -15502,7 +15527,7 @@ function showNewEntityTypeModal() {
     const icon = iconSelected || '📁';
     const validRows = propRows.filter(r => r.key && r.label);
     const prop_defs = JSON.stringify(validRows);
-    const has_detail_view = overlay.querySelector('#_net-indview')?.checked ? 1 : 0;
+    const has_detail_view = !!(overlay.querySelector('#_net-indview')?.checked);
     try {
       await api('POST', '/api/custom-types', { name, display_name, icon, prop_defs, has_detail_view });
       await loadCustomEntityTypes();
