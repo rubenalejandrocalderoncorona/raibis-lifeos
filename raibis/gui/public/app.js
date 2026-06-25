@@ -1915,23 +1915,28 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
     minHeight: isFullscreen ? 600 : 200,
     onReady: () => {
       const redactor = container.querySelector('.codex-editor__redactor');
-      if (redactor) redactor.style.paddingLeft = '60px';
+      if (redactor) redactor.style.paddingLeft = '80px';
       if (!isFullscreen) {
         const section = container.closest('.rich-content-section');
         if (section) section.style.marginLeft = '44px';
       }
-      // Fix popover (slash-menu / toolbox) being clipped by overflow-y:auto parents
+      // Fix popover (slash-menu / toolbox) clipped by overflow-y:auto parents.
+      // The slideover uses transform:translateX(0) when open, which makes it the
+      // containing block for position:fixed children — so we offset coordinates
+      // by the slideover's own bounding rect instead of using raw viewport coords.
+      const _slideover = container.closest('.slideover');
       new MutationObserver(() => {
         container.querySelectorAll('.ce-popover--opened:not([data-lifted])').forEach(pop => {
           pop.dataset.lifted = '1';
           requestAnimationFrame(() => {
             const r = pop.getBoundingClientRect();
             if (!r.width) return;
+            const off = _slideover ? _slideover.getBoundingClientRect() : { top: 0, left: 0 };
             const maxH = 290;
-            const top = Math.max(8, Math.min(r.top, window.innerHeight - maxH - 8));
+            const top = Math.max(8, Math.min(r.top - off.top, window.innerHeight - off.top - maxH - 8));
             pop.style.position = 'fixed';
             pop.style.top = top + 'px';
-            pop.style.left = r.left + 'px';
+            pop.style.left = (r.left - off.left) + 'px';
             pop.style.zIndex = '9999';
             pop.style.width = r.width + 'px';
           });
@@ -10055,6 +10060,8 @@ async function renderProjectDetail(projectId) {
       renderValue: () => p.kanban_col ? `<span>${p.kanban_col}</span>` : '' },
     { key: 'archived', label: 'Archived',  icon: pIco('<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/>'),
       renderValue: () => p.archived ? `<span>Yes</span>` : '' },
+    { key: 'description', label: 'Description', icon: pIco('<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>'),
+      renderValue: () => p.description ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(p.description)}</span>` : '' },
   ];
   await loadEntityCustomProps('project', projectId);
   const projDetailPropPanel = buildInlinePropPanel('project', projectId, allProjDetailBuiltinDefs);
@@ -10067,6 +10074,15 @@ async function renderProjectDetail(projectId) {
     macro:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => { await patchProject({ macro_area: val||null }); }); },
     kanban:   (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...KANBAN_COLS.map(k => ({ value: k, label: k }))], async (val) => { await patchProject({ kanban_col: val||null }); }); },
     archived: (valEl) => { patchProject({ archived: !p.archived }); },
+    description: (valEl) => {
+      const cur = p.description || '';
+      const ta = Object.assign(document.createElement('textarea'), { value: cur });
+      ta.style.cssText = 'width:100%;min-height:72px;border:1px solid var(--accent);border-radius:4px;padding:6px 8px;font-size:13px;background:var(--bg-card);color:var(--text-primary);resize:vertical;box-sizing:border-box';
+      valEl.innerHTML = ''; valEl.appendChild(ta); ta.focus();
+      const save = async () => { await patchProject({ description: ta.value }); p.description = ta.value; valEl.innerHTML = ta.value ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(ta.value)}</span>` : '<span class="empty">—</span>'; };
+      ta.onblur = save;
+      ta.onkeydown = (ke) => { if (ke.key === 'Escape') { valEl.innerHTML = cur ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(cur)}</span>` : '<span class="empty">—</span>'; } };
+    },
   };
 
   const tasks = p.tasks || [];
@@ -10156,7 +10172,6 @@ async function renderProjectDetail(projectId) {
         <button class="btn btn-ghost" id="pd-add-res-btn">+ Resource</button>
       </div>
     </div>
-    ${p.description ? `<div class="card" style="margin-bottom:16px"><p style="color:var(--text-muted)">${p.description}</p></div>` : ''}
     <div class="cc-grid wide">
       <div class="widget">
         <div class="widget-header"><span class="widget-title">Tasks (${tasks.length})</span></div>
@@ -10256,6 +10271,8 @@ async function renderGoalDetail(goalId) {
       renderValue: () => g.due_date ? `<span>${fmtDate(g.due_date)}</span>` : '' },
     { key: 'metrics',  label: 'Metrics',  icon: pIco('<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
       renderValue: () => g.target != null ? `<span>${g.current_value ?? '—'}/${g.target}</span>` : '' },
+    { key: 'description', label: 'Description', icon: pIco('<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>'),
+      renderValue: () => g.description ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(g.description)}</span>` : '' },
   ];
   await loadEntityCustomProps('goal', goalId);
   const goalDetailPropPanel = buildInlinePropPanel('goal', goalId, allGoalDetailBuiltinDefs);
@@ -10278,6 +10295,15 @@ async function renderGoalDetail(goalId) {
         await patchGoal({ start_value: isNaN(sv)?null:sv, current_value: isNaN(cv)?null:cv, target: isNaN(t)?null:t });
       };
       ['gdm-sv','gdm-cv','gdm-t'].forEach(id => { document.getElementById(id)?.addEventListener('blur', () => setTimeout(save, 150)); document.getElementById(id)?.addEventListener('keydown', e => { if (e.key==='Enter') save(); }); });
+    },
+    description: (valEl) => {
+      const cur = g.description || '';
+      const ta = Object.assign(document.createElement('textarea'), { value: cur });
+      ta.style.cssText = 'width:100%;min-height:72px;border:1px solid var(--accent);border-radius:4px;padding:6px 8px;font-size:13px;background:var(--bg-card);color:var(--text-primary);resize:vertical;box-sizing:border-box';
+      valEl.innerHTML = ''; valEl.appendChild(ta); ta.focus();
+      const save = async () => { await patchGoal({ description: ta.value }); g.description = ta.value; valEl.innerHTML = ta.value ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(ta.value)}</span>` : '<span class="empty">—</span>'; };
+      ta.onblur = save;
+      ta.onkeydown = (ke) => { if (ke.key === 'Escape') { valEl.innerHTML = cur ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(cur)}</span>` : '<span class="empty">—</span>'; } };
     },
   };
 
@@ -10375,7 +10401,6 @@ async function renderGoalDetail(goalId) {
         <button class="btn btn-ghost" id="gd-add-res-btn">+ Resource</button>
       </div>
     </div>
-    ${g.description ? `<div class="card" style="margin-bottom:16px"><p style="color:var(--text-muted)">${g.description}</p></div>` : ''}
     ${metricsHtml}
     <div class="cc-grid" style="margin-bottom:16px">
       <div class="widget">
