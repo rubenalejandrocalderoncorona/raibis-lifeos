@@ -240,7 +240,7 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 	mux.HandleFunc("/api/custom-types/", withCORS(customTypeHandler(store)))
 
 	// Custom Entities — /api/custom/{type} and /api/custom/{type}/{id}
-	mux.HandleFunc("/api/custom/", withCORS(customEntitiesHandler(store)))
+	mux.HandleFunc("/api/custom/", withCORS(customEntitiesHandler(store, v)))
 
 	// Vault sync (on-demand)
 	mux.HandleFunc("/api/sync", withCORS(vaultSyncHandler(v, dbPath)))
@@ -4370,7 +4370,21 @@ func customTypeHandler(store storage.Storage) http.HandlerFunc {
 // ── Custom Entities Handler ───────────────────────────────────────────────────
 
 // customEntitiesHandler handles all /api/custom/{type} and /api/custom/{type}/{id} requests.
-func customEntitiesHandler(store storage.Storage) http.HandlerFunc {
+func customEntityFM(e *domain.CustomEntity) map[string]any {
+	fm := map[string]any{
+		"id":         e.ID,
+		"title":      e.Title,
+		"aliases":    []string{e.Title},
+		"type_name":  e.TypeName,
+		"created_at": e.CreatedAt.Format(time.RFC3339),
+	}
+	for k, v := range e.Props {
+		fm[k] = v
+	}
+	return fm
+}
+
+func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Parse path: /api/custom/{type} or /api/custom/{type}/{id}
 		// Strip prefix "/api/custom/"
@@ -4413,6 +4427,9 @@ func customEntitiesHandler(store storage.Storage) http.HandlerFunc {
 					return
 				}
 				e.ID = id
+				if vlt != nil {
+					_ = vlt.WriteEntityMD("custom_"+typeName, id, customEntityFM(&e), "")
+				}
 				writeJSON(w, 201, e)
 
 			default:
@@ -4463,12 +4480,18 @@ func customEntitiesHandler(store storage.Storage) http.HandlerFunc {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			if vlt != nil {
+				_ = vlt.WriteEntityMD("custom_"+typeName, entityID, customEntityFM(&e), "")
+			}
 			writeJSON(w, 200, e)
 
 		case http.MethodDelete:
 			if err := store.DeleteCustomEntity(typeName, entityID); err != nil {
 				errJSON(w, 500, err.Error())
 				return
+			}
+			if vlt != nil {
+				_ = vlt.DeleteEntityMD("custom_"+typeName, entityID)
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
 

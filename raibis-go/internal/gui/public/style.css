@@ -1196,6 +1196,12 @@ body.kanban-dragging-active * {
 }
 
 .modal-body { padding: var(--space-5) var(--space-6) var(--space-6); }
+.modal-footer {
+  display: flex;
+  align-items: center;
+  padding: var(--space-4) var(--space-6);
+  border-top: 1px solid var(--color-border);
+}
 .json-modal { overflow: hidden; }
 .json-modal .modal-body { padding: 0; }
 .json-preview {
@@ -2785,19 +2791,21 @@ body.kanban-dragging-active * {
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-float);
   z-index: var(--z-dropdown);
-  overflow: hidden;
   max-height: 220px;
   overflow-y: auto;
+  padding: 4px;
 }
 .csel.open .csel-dropdown { display: block; }
 .csel-option {
-  padding: 7px var(--space-3);
+  padding: 6px var(--space-3);
   cursor: pointer;
   color: var(--color-text);
   font-size: var(--text-sm);
   transition: background var(--duration-fast) var(--ease-out);
   white-space: nowrap;
+  border-radius: var(--radius-sm);
 }
+.csel-option:hover { background: var(--color-surface-hover); }
 /* ─── FAB Group (AI + Quick Note) ────────────────────────────────── */
 .fab-group {
   position: fixed;
@@ -3599,17 +3607,18 @@ body.kanban-dragging-active * {
   min-width: 220px;
   max-height: 400px;
   overflow-y: auto;
-  padding: 6px 0;
+  padding: 4px;
 }
 .prop-vis-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 12px;
+  padding: 5px 10px;
   cursor: pointer;
   font-size: 13px;
   color: var(--text);
   transition: background 0.1s;
+  border-radius: var(--radius-sm);
 }
 .prop-vis-row:hover { background: var(--bg-surface); }
 .prop-vis-name { flex: 1; }
@@ -4535,7 +4544,7 @@ tr:hover .ctx-handle,
   color: var(--text-muted);
   border: none; background: none;
   text-align: left; width: 100%;
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   transition: background 0.1s, color 0.1s;
   display: flex; align-items: center; gap: 8px;
 }
@@ -5240,8 +5249,8 @@ tr:hover .ctx-handle,
   overflow: visible !important;
 }
 .codex-editor__redactor {
-  padding-left: 80px !important;
-  padding-bottom: 80px !important;
+  padding-left: 100px !important;
+  padding-bottom: 300px !important;
 }
 .ce-toolbar__content {
   max-width: 100% !important;
@@ -5366,6 +5375,29 @@ body.fullscreen-open .fab-group { right: var(--space-6) !important; bottom: var(
 .wm-toggle-wrap input:checked + .wm-toggle-slider { background: var(--color-accent); }
 .wm-toggle-wrap input:checked + .wm-toggle-slider::before { transform: translateX(14px); }
 .wm-add { display: flex; gap: 6px; margin-top: 2px; }
+
+/* Two-column task list inside a widget */
+.widget-body.task-list-2col .task-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 12px;
+}
+.widget-body.task-list-2col .task-list > * { break-inside: avoid; }
+
+/* Column toggle button in widget header */
+.widget-col-btn {
+  font-size: 10px;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  padding: 2px 6px;
+  cursor: pointer;
+  line-height: 1.4;
+  transition: background var(--duration-fast), color var(--duration-fast);
+}
+.widget-col-btn:hover { background: var(--color-surface-hover); }
+.widget-col-btn.active { background: var(--color-accent-subtle); color: var(--color-accent); border-color: var(--color-accent); }
 
 /* Custom widget editor hint */
 .cwe-hint {

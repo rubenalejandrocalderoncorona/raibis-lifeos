@@ -211,6 +211,7 @@ func applyMigrations(db *sql.DB) error {
 			created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`ALTER TABLE custom_entity_types ADD COLUMN has_detail_view INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE custom_entity_types ADD COLUMN has_subentities INTEGER NOT NULL DEFAULT 0`,
 
 		// ── custom_entities: records for user-defined types ───────────────────
 		`CREATE TABLE IF NOT EXISTS custom_entities (
@@ -1581,9 +1582,13 @@ func (s *sqliteStorage) CreateCustomEntityType(t *domain.CustomEntityType) (int6
 	if t.HasDetailView {
 		hdv = 1
 	}
+	hsub := 0
+	if t.HasSubentities {
+		hsub = 1
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO custom_entity_types (name, display_name, icon, prop_defs, has_detail_view) VALUES (?,?,?,?,?)`,
-		t.Name, t.DisplayName, t.Icon, t.PropDefs, hdv,
+		`INSERT INTO custom_entity_types (name, display_name, icon, prop_defs, has_detail_view, has_subentities) VALUES (?,?,?,?,?,?)`,
+		t.Name, t.DisplayName, t.Icon, t.PropDefs, hdv, hsub,
 	)
 	if err != nil {
 		return 0, err
@@ -1595,7 +1600,7 @@ func (s *sqliteStorage) ListCustomEntityTypes() ([]*domain.CustomEntityType, err
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rows, err := s.db.Query(
-		`SELECT id, name, display_name, icon, prop_defs, has_detail_view, created_at FROM custom_entity_types ORDER BY id ASC`,
+		`SELECT id, name, display_name, icon, prop_defs, has_detail_view, has_subentities, created_at FROM custom_entity_types ORDER BY id ASC`,
 	)
 	if err != nil {
 		return nil, err
@@ -1604,11 +1609,12 @@ func (s *sqliteStorage) ListCustomEntityTypes() ([]*domain.CustomEntityType, err
 	var out []*domain.CustomEntityType
 	for rows.Next() {
 		t := &domain.CustomEntityType{}
-		var hdv int
-		if err := rows.Scan(&t.ID, &t.Name, &t.DisplayName, &t.Icon, &t.PropDefs, &hdv, &t.CreatedAt); err != nil {
+		var hdv, hsub int
+		if err := rows.Scan(&t.ID, &t.Name, &t.DisplayName, &t.Icon, &t.PropDefs, &hdv, &hsub, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		t.HasDetailView = hdv != 0
+		t.HasSubentities = hsub != 0
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -1621,9 +1627,13 @@ func (s *sqliteStorage) UpdateCustomEntityType(t *domain.CustomEntityType) error
 	if t.HasDetailView {
 		hdv = 1
 	}
+	hsub := 0
+	if t.HasSubentities {
+		hsub = 1
+	}
 	_, err := s.db.Exec(
-		`UPDATE custom_entity_types SET display_name=?, icon=?, prop_defs=?, has_detail_view=? WHERE name=?`,
-		t.DisplayName, t.Icon, t.PropDefs, hdv, t.Name,
+		`UPDATE custom_entity_types SET display_name=?, icon=?, prop_defs=?, has_detail_view=?, has_subentities=? WHERE name=?`,
+		t.DisplayName, t.Icon, t.PropDefs, hdv, hsub, t.Name,
 	)
 	return err
 }

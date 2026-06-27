@@ -1915,39 +1915,29 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
     minHeight: isFullscreen ? 600 : 200,
     onReady: () => {
       const redactor = container.querySelector('.codex-editor__redactor');
-      if (redactor) redactor.style.paddingLeft = '80px';
+      if (redactor) redactor.style.paddingLeft = '100px';
       if (!isFullscreen) {
         const section = container.closest('.rich-content-section');
         if (section) section.style.marginLeft = '44px';
       }
-      // Fix popover (slash-menu / toolbox) clipped by overflow-y:auto parents.
-      // The slideover uses transform:translateX(0) when open, which makes it the
-      // containing block for position:fixed children — so we offset coordinates
-      // by the slideover's own bounding rect instead of using raw viewport coords.
-      const _slideover = container.closest('.slideover');
+      // When a popover (slash-menu/toolbox) opens inside a scrollable container,
+      // scroll the container so the popover stays fully visible instead of using
+      // position:fixed (which is clipped by slideover's transform:translateX(0)).
+      const _scrollCtx = container.closest('.slideover-body') || container.closest('.entity-fullscreen');
       new MutationObserver(() => {
         container.querySelectorAll('.ce-popover--opened:not([data-lifted])').forEach(pop => {
           pop.dataset.lifted = '1';
           requestAnimationFrame(() => {
+            if (!_scrollCtx) return;
             const r = pop.getBoundingClientRect();
             if (!r.width) return;
-            const off = _slideover ? _slideover.getBoundingClientRect() : { top: 0, left: 0 };
-            const maxH = 290;
-            const top = Math.max(8, Math.min(r.top - off.top, window.innerHeight - off.top - maxH - 8));
-            pop.style.position = 'fixed';
-            pop.style.top = top + 'px';
-            pop.style.left = (r.left - off.left) + 'px';
-            pop.style.zIndex = '9999';
-            pop.style.width = r.width + 'px';
+            const srect = _scrollCtx.getBoundingClientRect();
+            const overshoot = r.top + 290 - srect.bottom;
+            if (overshoot > 0) _scrollCtx.scrollTop += overshoot + 16;
           });
         });
         container.querySelectorAll('.ce-popover[data-lifted]:not(.ce-popover--opened)').forEach(pop => {
           delete pop.dataset.lifted;
-          pop.style.position = '';
-          pop.style.top = '';
-          pop.style.left = '';
-          pop.style.zIndex = '';
-          pop.style.width = '';
         });
       }).observe(container, { subtree: true, attributes: true, attributeFilter: ['class'] });
     },
@@ -2275,6 +2265,19 @@ function openEntityFullscreen(entity, entityId, title, patchTitleFn) {
     loadEntityIcon(entity, entityId).then(icon => { _fsIcon = icon || ''; renderFsActions(); }).catch(() => { _fsIcon = ''; renderFsActions(); });
   }
 
+  // Set fullscreen breadcrumb
+  const fsBc = document.getElementById('fs-breadcrumb');
+  if (fsBc) {
+    const _fsDispName = entity.startsWith('custom_')
+      ? (() => { const tn = entity.slice(7); const t = customEntityTypes.find(x => x.name === tn); return t ? (t.display_name || tn) : tn; })()
+      : (VIEW_LABELS[entity + 's'] || (entity[0].toUpperCase() + entity.slice(1)));
+    fsBc.innerHTML = `<span class="bc-item bc-link" id="fs-bc-entity" style="cursor:pointer">${escHtml(_fsDispName)}</span><span class="bc-sep">›</span><span class="bc-item"><span>${escHtml(title || '')}</span></span>`;
+    document.getElementById('fs-bc-entity')?.addEventListener('click', () => {
+      closeEntityFullscreen();
+      renderView(entity.startsWith('custom_') ? `custom:${entity.slice(7)}` : entity + 's');
+    });
+  }
+
   // Set title (editable)
   const titleEl = document.getElementById('fs-title');
   if (titleEl) {
@@ -2335,6 +2338,8 @@ function closeEntityFullscreen() {
   if (iconRow) { iconRow.innerHTML = ''; iconRow.classList.remove('has-entity-icon'); }
   const chipsRow = document.getElementById('fs-prop-chips-row');
   if (chipsRow) chipsRow.innerHTML = '';
+  const fsBcClear = document.getElementById('fs-breadcrumb');
+  if (fsBcClear) fsBcClear.innerHTML = '';
   const key = 'editorjs-fullscreen';
   if (_activeEditors[key]) {
     try { _activeEditors[key].destroy(); } catch {}
@@ -4106,6 +4111,10 @@ function updateBreadcrumb(view, params, detailLabel) {
   const parentMap = { 'project-detail': 'projects', 'goal-detail': 'goals', 'sprint-detail': 'sprints' };
   if (parentMap[view]) {
     crumbs.push({ label: VIEW_LABELS[parentMap[view]], view: parentMap[view] });
+  } else if (view === 'custom-detail' && params) {
+    const [_bcTn] = params.split('/');
+    const _bcTi = customEntityTypes.find(t => t.name === _bcTn);
+    crumbs.push({ label: _bcTi ? (_bcTi.display_name || _bcTn) : _bcTn, view: `custom:${_bcTn}` });
   } else if (view !== 'dashboard') {
     // Add Dashboard as root only if not already dashboard
   }
@@ -4276,6 +4285,7 @@ function renderCustomEntityNav() {
             icon: editIconVal,
             prop_defs: t.prop_defs || '',
             has_detail_view: t.has_detail_view,
+            has_subentities: t.has_subentities,
           });
           t.display_name = newName;
           t.icon = editIconVal;
@@ -4381,6 +4391,7 @@ async function renderCustomEntityList(typeName) {
                 icon: editIconVal,
                 prop_defs: typeInfo.prop_defs || '',
                 has_detail_view: typeInfo.has_detail_view,
+                has_subentities: typeInfo.has_subentities,
               });
               typeInfo.display_name = newName;
               typeInfo.icon = editIconVal;
@@ -4441,11 +4452,11 @@ async function renderCustomEntityList(typeName) {
       main.querySelectorAll('.custom-entity-row[data-id]').forEach(row => {
         row.onclick = e => {
           if (e.target.closest('.ctx-handle')) return;
-          if (typeInfo && typeInfo.has_detail_view) {
+          if (typeInfo?.has_detail_view && e.target.closest('.entity-list-title, .entity-card-title, .kanban-card-title, [data-title-cell]')) {
             renderView('custom-detail', `${typeName}/${row.dataset.id}`);
-          } else {
-            openCustomEntitySlideover(typeName, parseInt(row.dataset.id));
+            return;
           }
+          openCustomEntitySlideover(typeName, parseInt(row.dataset.id));
         };
       });
     }
@@ -4518,7 +4529,7 @@ async function renderCustomEntityList(typeName) {
         </tr></thead>
         <tbody>${items.map(e => `<tr class="custom-entity-row" data-id="${e.id}" style="cursor:pointer">
           <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span></td>
-          <td style="font-weight:500">${escHtml(e.title)}</td>
+          <td data-title-cell style="font-weight:500">${escHtml(e.title)}</td>
           ${visDefs.map(pd => `<td>${escHtml(renderPropVal(pd, e.props?.[pd.key] || ''))}</td>`).join('')}
           ${showTags ? `<td>${e.tags?.length ? e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${escHtml(t.name)}</span>`).join('') : ''}</td>` : ''}
           <td style="color:var(--text-muted);font-size:11px">${fmtDate(e.created_at)}</td>
@@ -4624,6 +4635,7 @@ async function renderCustomEntityDetail(typeName, entityId) {
   const main = document.getElementById('main-content');
   try {
     const e = await api('GET', `/api/custom/${typeName}/${entityId}`);
+    updateBreadcrumb('custom-detail', `${typeName}/${entityId}`, e.title);
     const propPanel = buildInlinePropPanel(entityKey, parseInt(entityId), []);
     main.innerHTML = `<div class="view">
       <div class="entity-view-cover" id="ced-cover-row"></div>
@@ -6318,6 +6330,22 @@ async function ensureEVBilateral(parentType, parentId, parentTitle, childType, c
 async function removeEVBilateral(parentType, parentId, childType, childId) {
   await _removeRelProp(childType, childId, parentType, parentId);
   await _removeRelProp(parentType, parentId, childType, childId);
+}
+
+/* ─── Entity capabilities ────────────────────────────────────────────── */
+
+// Built-in entities that support subentities (parent-child records of the same type)
+const ENTITY_SUPPORTS_SUBENTITIES = { task: true };
+
+// Returns true if the entity type supports subentities
+function entitySupportsSubentities(entityType) {
+  if (ENTITY_SUPPORTS_SUBENTITIES[entityType]) return true;
+  if (entityType && entityType.startsWith('custom_')) {
+    const name = entityType.slice(7);
+    const ct = (customEntityTypes || []).find(t => t.name === name);
+    return !!(ct && ct.has_subentities);
+  }
+  return false;
 }
 
 /* ─── Relations Section (bidirectional peer links) ───────────────────── */
@@ -8654,12 +8682,17 @@ function buildWidgetGrid(entity, entityId, wData) {
       }
       default: body = `<div class="empty-state-text">Unknown widget: ${escHtml(w.type)}</div>`;
     }
+    const is2col = w.type === 'tasks' && w.cols === 2;
+    const colBtn = w.type === 'tasks'
+      ? `<button class="widget-col-btn${is2col?' active':''}" data-col-toggle="${escHtml(w.id)}" title="${is2col?'1 column':'2 columns'}">⊞</button>`
+      : '';
     return `<div class="widget widget-item" data-widget-id="${escHtml(w.id)}" data-widget-type="${w.type}" style="margin-bottom:16px">
       <div class="widget-header">
         ${dgh}
         <span class="widget-title">${escHtml(w.label)}</span>
+        ${colBtn}
       </div>
-      <div class="widget-body">${body}</div>
+      <div class="widget-body${is2col?' task-list-2col':''}">${body}</div>
     </div>`;
   }).join('');
 }
@@ -8679,6 +8712,20 @@ function initWidgetGrid(entity, entityId, container, onRerender) {
       }
     });
   }
+  container.addEventListener('click', e => {
+    const btn = e.target.closest('[data-col-toggle]');
+    if (!btn) return;
+    const wid = btn.dataset.colToggle;
+    const layout = getWidgetLayout(entity);
+    const w = layout.find(x => x.id === wid);
+    if (!w) return;
+    w.cols = w.cols === 2 ? 1 : 2;
+    saveWidgetLayout(entity, layout);
+    const body = btn.closest('.widget-item')?.querySelector('.widget-body');
+    if (body) body.classList.toggle('task-list-2col', w.cols === 2);
+    btn.classList.toggle('active', w.cols === 2);
+    btn.title = w.cols === 2 ? '1 column' : '2 columns';
+  });
   const editorHost = container.querySelector('.rich-editor-host[id]');
   if (editorHost) initRichEditor(editorHost.id, entity, entityId, false);
   const cmt = container.querySelector('.comment-section');
@@ -10101,46 +10148,6 @@ async function renderProjectDetail(projectId) {
     t.sub_task_count = allTasksCache.filter(s => s.parent_task_id === t.id).length;
   });
 
-  function buildTaskTreeRows(taskList, depth) {
-    let html = '';
-    for (const t of taskList) {
-      html += taskRowHtml(t, false, depth);
-      const isExp = expandedTasks.has(String(t.id));
-      const children = allTasksCache.filter(s => s.parent_task_id === t.id);
-      if (isExp && children.length > 0) {
-        html += buildTaskTreeRows(children, depth + 1);
-        html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
-          <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px">+ Add Subtask</button>
-        </li>`;
-      }
-    }
-    return html;
-  }
-
-  function buildTaskList() {
-    if (!tasks.length) return `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No tasks</div></div>`;
-    const taskIds = new Set(tasks.map(t => t.id));
-    const topLevel = tasks.filter(t => !t.parent_task_id || !taskIds.has(t.parent_task_id));
-    return '<ul class="task-list">' + buildTaskTreeRows(topLevel, 0) + '</ul>';
-  }
-
-  function renderTaskList() {
-    document.getElementById('pd-task-list').innerHTML = buildTaskList();
-    bindDetailTaskEvents(() => renderProjectDetail(projectId));
-  }
-
-  const noteCards = notes.map(n => `<div class="note-card clickable-note" data-note-id="${n.id}" style="cursor:pointer">
-    <div class="note-title">${n.title || 'Untitled'}</div>
-    <div class="note-body-preview">${n.body || ''}</div>
-    <div class="note-meta">${fmtDate(n.note_date) || ''}</div>
-  </div>`).join('') || `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No notes</div></div>`;
-
-  const resRows = resources.map(r => `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
-    <span class="badge badge-todo">${r.resource_type || 'link'}</span>
-    <span style="flex:1">${r.title}</span>
-    ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" class="btn btn-sm btn-ghost">↗ Open</a>` : ''}
-  </div>`).join('') || `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No resources</div></div>`;
-
   const goalLink = p.goal_title
     ? `<span class="bc-crumb bc-goal" style="cursor:pointer" data-goal-id="${p.goal_id}">◈ ${p.goal_title}</span>`
     : '';
@@ -10172,28 +10179,9 @@ async function renderProjectDetail(projectId) {
         <button class="btn btn-ghost" id="pd-add-res-btn">+ Resource</button>
       </div>
     </div>
-    <div class="cc-grid wide">
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Tasks (${tasks.length})</span></div>
-        <div id="pd-task-list">${buildTaskList()}</div>
-      </div>
+    <div id="pd-widget-grid">
+      ${buildWidgetGrid('project', projectId, { tasks, notes, resources, propPanelHtml: projDetailPropPanel })}
     </div>
-    <div class="cc-grid" style="margin-top:16px">
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Notes (${notes.length})</span></div>
-        <div id="pd-notes">${noteCards}</div>
-      </div>
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Resources (${resources.length})</span></div>
-        <div>${resRows}</div>
-      </div>
-    </div>
-    <div class="widget" style="margin-top:16px">
-      <div class="widget-header"><span class="widget-title">Properties</span></div>
-      ${projDetailPropPanel}
-    </div>
-    ${buildRichContentSection('project', projectId)}
-    ${buildCommentSection('project', projectId)}
   </div>`;
 
   document.getElementById('pd-back-btn').onclick = () => renderView('projects');
@@ -10230,16 +10218,16 @@ async function renderProjectDetail(projectId) {
       el.onclick = () => renderView('goal-detail', el.dataset.goalId);
     });
   }
+  bindDetailTaskEvents(() => renderProjectDetail(projectId));
+  bindInlinePropPanel('project', projectId, projDetailEditFns, () => renderProjectDetail(projectId));
   document.querySelectorAll('.clickable-note').forEach(el => {
     el.onclick = () => {
       const n = notes.find(x => String(x.id) === el.dataset.noteId);
       if (n) showNoteModal(n, () => renderProjectDetail(projectId));
     };
   });
-  bindDetailTaskEvents(() => renderProjectDetail(projectId));
-  bindInlinePropPanel('project', projectId, projDetailEditFns, () => renderProjectDetail(projectId));
-  bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
-  initRichEditor(`editorjs-project-${projectId}`, 'project', projectId, false);
+  const pdwg = document.getElementById('pd-widget-grid');
+  initWidgetGrid('project', projectId, pdwg, () => renderProjectDetail(projectId));
 }
 async function renderGoalDetail(goalId) {
   let g;
@@ -10324,49 +10312,6 @@ async function renderGoalDetail(goalId) {
     t.sub_task_count = allTasksCache.filter(s => s.parent_task_id === t.id).length;
   });
 
-  const projCards = projects.map(p => {
-    const prog = p.progress || {};
-    const pct = prog.pct || 0;
-    return `<div class="card detail-nav" data-proj-id="${p.id}" style="cursor:pointer;margin-bottom:8px">
-      <div class="flex-between gap-8">
-        <span class="card-title">${p.title}</span>
-        ${statusBadge(p.status)}
-      </div>
-      <div class="progress-wrap" style="margin-top:8px">
-        <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0}</span></div>
-        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
-      </div>
-    </div>`;
-  }).join('') || `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No projects</div></div>`;
-
-  function buildGoalTaskTreeRows(taskList, depth) {
-    let html = '';
-    for (const t of taskList) {
-      html += taskRowHtml(t, false, depth);
-      const isExp = expandedTasks.has(String(t.id));
-      const children = allTasksCache.filter(s => s.parent_task_id === t.id);
-      if (isExp && children.length > 0) {
-        html += buildGoalTaskTreeRows(children, depth + 1);
-        html += `<li class="inline-subtask-input-row" data-parent-id="${t.id}" style="padding-left:${(depth+1)*20+8}px">
-          <button class="btn btn-sm btn-ghost add-subtask-inline-btn" data-parent-id="${t.id}" style="font-size:11px">+ Add Subtask</button>
-        </li>`;
-      }
-    }
-    return html;
-  }
-
-  const taskIds = new Set(tasks.map(t => t.id));
-  const topLevelTasks = tasks.filter(t => !t.parent_task_id || !taskIds.has(t.parent_task_id));
-  const taskRows = tasks.length
-    ? '<ul class="task-list">' + buildGoalTaskTreeRows(topLevelTasks, 0) + '</ul>'
-    : `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No direct tasks</div></div>`;
-
-  const noteCards = notes.map(n => `<div class="note-card clickable-note" data-note-id="${n.id}" style="cursor:pointer">
-    <div class="note-title">${n.title || 'Untitled'}</div>
-    <div class="note-body-preview">${n.body || ''}</div>
-    <div class="note-meta">${fmtDate(n.note_date) || ''}</div>
-  </div>`).join('') || `<div class="empty-state" style="padding:20px"><div class="empty-state-text">No notes</div></div>`;
-
   // Metrics row
   const metricsHtml = (g.start_value != null || g.target != null) ? `
     <div class="stats-row" style="margin-bottom:16px">
@@ -10402,36 +10347,9 @@ async function renderGoalDetail(goalId) {
       </div>
     </div>
     ${metricsHtml}
-    <div class="cc-grid" style="margin-bottom:16px">
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Projects (${projects.length})</span></div>
-        <div id="gd-proj-list">${projCards}</div>
-      </div>
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Direct Tasks (${tasks.length})</span></div>
-        <div id="gd-task-list">${taskRows}</div>
-      </div>
+    <div id="gd-widget-grid">
+      ${buildWidgetGrid('goal', goalId, { tasks, notes, resources, projects, propPanelHtml: goalDetailPropPanel })}
     </div>
-    <div class="cc-grid">
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Notes (${notes.length})</span></div>
-        <div id="gd-notes">${noteCards}</div>
-      </div>
-      <div class="widget">
-        <div class="widget-header"><span class="widget-title">Resources (${resources.length})</span></div>
-        <div>${resources.map(r => `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
-          <span class="badge badge-todo">${r.resource_type || 'link'}</span>
-          <span style="flex:1">${r.title}</span>
-          ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" class="btn btn-sm btn-ghost">↗</a>` : ''}
-        </div>`).join('') || '<div class="empty-state" style="padding:20px"><div class="empty-state-text">No resources</div></div>'}</div>
-      </div>
-    </div>
-    <div class="widget" style="margin-top:16px">
-      <div class="widget-header"><span class="widget-title">Properties</span></div>
-      ${goalDetailPropPanel}
-    </div>
-    ${buildRichContentSection('goal', goalId)}
-    ${buildCommentSection('goal', goalId)}
   </div>`;
 
   document.getElementById('gd-back-btn').onclick = () => renderView('goals');
@@ -10463,7 +10381,7 @@ async function renderGoalDetail(goalId) {
     };
   }
   initDetailViewCover('goal', goalId, 'goal-cover-row', 'goal-action-row');
-  document.querySelectorAll('#gd-proj-list .detail-nav').forEach(el => {
+  document.querySelectorAll('.detail-nav[data-proj-id]').forEach(el => {
     el.onclick = () => renderView('project-detail', el.dataset.projId);
   });
   document.querySelectorAll('.clickable-note').forEach(el => {
@@ -10474,8 +10392,8 @@ async function renderGoalDetail(goalId) {
   });
   bindDetailTaskEvents(() => renderGoalDetail(goalId));
   bindInlinePropPanel('goal', goalId, goalDetailEditFns, () => renderGoalDetail(goalId));
-  bindCommentSection(document.querySelector('.comment-section[data-entity-type="goal"]'));
-  initRichEditor(`editorjs-goal-${goalId}`, 'goal', goalId, false);
+  const gdwg = document.getElementById('gd-widget-grid');
+  initWidgetGrid('goal', goalId, gdwg, () => renderGoalDetail(goalId));
 }
 
 /* ─── Properties Widget ──────────────────────────────────────────────── */
@@ -13198,8 +13116,10 @@ async function showProjectSlideover(project, goals, afterSave) {
       renderValue: () => p.kanban_col ? `<span>${p.kanban_col}</span>` : '' },
     { key: 'archived', label: 'Archived',  icon: pIco('<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>'),
       renderValue: () => p.archived ? `<span>Yes</span>` : '' },
+    { key: 'description', label: 'Description', icon: pIco('<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>'),
+      renderValue: () => p.description ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(p.description)}</span>` : '' },
   ];
-  const projBodyDefs = allProjBuiltinDefs.filter(d => projSections.body.includes(d.key));
+  const projBodyDefs = allProjBuiltinDefs.filter(d => projSections.body.includes(d.key) || d.key === 'description');
   await loadEntityCustomProps('project', projectId);
   const projInlinePropPanel = buildInlinePropPanel('project', projectId, projBodyDefs);
 
@@ -13236,11 +13156,6 @@ async function showProjectSlideover(project, goals, afterSave) {
 
     ${projInlinePropPanel}
 
-    <div class="form-group">
-      <label class="form-label">Description</label>
-      <textarea id="detail-desc" style="width:100%;min-height:80px">${p.description || ''}</textarea>
-    </div>
-
     <div class="subtask-section">
       <div class="subtask-section-title">
         <span>Tasks (${tasks.length})</span>
@@ -13250,6 +13165,8 @@ async function showProjectSlideover(project, goals, afterSave) {
     </div>
 
     ${buildEntityViewsSection('project', projectId)}
+
+    ${buildRichContentSection('project', projectId)}
 
     ${buildCommentSection('project', projectId)}
 
@@ -13287,8 +13204,6 @@ async function showProjectSlideover(project, goals, afterSave) {
   titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
   titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
   titleTA.onblur = (e) => { if (e.target.value.trim()) patchProject({ title: e.target.value.trim() }); };
-
-  document.getElementById('detail-desc').onblur = (e) => patchProject({ description: e.target.value });
 
   // Breadcrumb goal nav
   document.querySelector('.bc-goal')?.addEventListener('click', () => { closeSlideover(); renderView('goal-detail', p.goal_id); });
@@ -13349,6 +13264,15 @@ async function showProjectSlideover(project, goals, afterSave) {
     macro:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => { await patchProject({ macro_area: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     kanban:   (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...KANBAN_COLS.map(k => ({ value: k, label: k }))], async (val) => { await patchProject({ kanban_col: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     archived: (valEl) => { patchProject({ archived: !p.archived }).then(() => showProjectSlideover({ id: projectId }, goals, afterSave)); },
+    description: (valEl) => {
+      const cur = p.description || '';
+      const ta = Object.assign(document.createElement('textarea'), { value: cur });
+      ta.style.cssText = 'width:100%;min-height:72px;border:1px solid var(--accent);border-radius:4px;padding:6px 8px;font-size:13px;background:var(--bg-card);color:var(--text-primary);resize:vertical;box-sizing:border-box';
+      valEl.innerHTML = ''; valEl.appendChild(ta); ta.focus();
+      const save = async () => { await patchProject({ description: ta.value }); p.description = ta.value; valEl.innerHTML = ta.value ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(ta.value)}</span>` : '<span class="empty">—</span>'; };
+      ta.onblur = save;
+      ta.onkeydown = (ke) => { if (ke.key === 'Escape') { valEl.innerHTML = cur ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(cur)}</span>` : '<span class="empty">—</span>'; } };
+    },
   };
   projExtraHeadKeys.forEach(k => {
     const el = document.getElementById(`chip-extra-${k}`);
@@ -13367,6 +13291,7 @@ async function showProjectSlideover(project, goals, afterSave) {
   bindInlinePropPanel('project', projectId, projInlinePropEditFns, () => showProjectSlideover({ id: projectId }, goals, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="project"]'));
   initEntityViewsSection('project', projectId, p);
+  initRichEditor(`editorjs-project-${projectId}`, 'project', projectId, false);
   setSlideoverExpand(() => { closeSlideover(); renderView('project-detail', projectId); });
 
   // Task rows click → task sideview
@@ -13419,8 +13344,10 @@ async function showGoalSlideover(goal, afterSave) {
       renderValue: () => g.due_date ? `<span>${fmtDate(g.due_date)}</span>` : '' },
     { key: 'metrics',  label: 'Metrics',  icon: pIco('<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
       renderValue: () => g.target != null ? `<span>${g.current_value ?? '—'}/${g.target}</span>` : '' },
+    { key: 'description', label: 'Description', icon: pIco('<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>'),
+      renderValue: () => g.description ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(g.description)}</span>` : '' },
   ];
-  const goalBodyDefs = allGoalBuiltinDefs.filter(d => goalSections.body.includes(d.key));
+  const goalBodyDefs = allGoalBuiltinDefs.filter(d => goalSections.body.includes(d.key) || d.key === 'description');
   await loadEntityCustomProps('goal', goalId);
   const goalInlinePropPanel = buildInlinePropPanel('goal', goalId, goalBodyDefs);
 
@@ -13451,11 +13378,6 @@ async function showGoalSlideover(goal, afterSave) {
 
     ${goalInlinePropPanel}
 
-    <div class="form-group">
-      <label class="form-label">Description</label>
-      <textarea id="detail-desc" style="width:100%;min-height:80px">${g.description || ''}</textarea>
-    </div>
-
     <div class="subtask-section">
       <div class="subtask-section-title">
         <span>Projects (${projects.length})</span>
@@ -13465,6 +13387,8 @@ async function showGoalSlideover(goal, afterSave) {
     </div>
 
     ${buildEntityViewsSection('goal', goalId)}
+
+    ${buildRichContentSection('goal', goalId)}
 
     ${buildCommentSection('goal', goalId)}
 
@@ -13502,9 +13426,6 @@ async function showGoalSlideover(goal, afterSave) {
   titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
   titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
   titleTA.onblur = (e) => { if (e.target.value.trim()) patchGoal({ title: e.target.value.trim() }); };
-
-  // Description
-  document.getElementById('detail-desc').onblur = (e) => patchGoal({ description: e.target.value });
 
   // Prop chips
   document.getElementById('chip-status')?.addEventListener('click', (e) => {
@@ -13572,6 +13493,15 @@ async function showGoalSlideover(goal, afterSave) {
       };
       ['gm-sv','gm-cv','gm-t'].forEach(id => { document.getElementById(id)?.addEventListener('blur', () => setTimeout(save, 150)); document.getElementById(id)?.addEventListener('keydown', e => { if (e.key==='Enter') save(); }); });
     },
+    description: (valEl) => {
+      const cur = g.description || '';
+      const ta = Object.assign(document.createElement('textarea'), { value: cur });
+      ta.style.cssText = 'width:100%;min-height:72px;border:1px solid var(--accent);border-radius:4px;padding:6px 8px;font-size:13px;background:var(--bg-card);color:var(--text-primary);resize:vertical;box-sizing:border-box';
+      valEl.innerHTML = ''; valEl.appendChild(ta); ta.focus();
+      const save = async () => { await patchGoal({ description: ta.value }); g.description = ta.value; valEl.innerHTML = ta.value ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(ta.value)}</span>` : '<span class="empty">—</span>'; };
+      ta.onblur = save;
+      ta.onkeydown = (ke) => { if (ke.key === 'Escape') { valEl.innerHTML = cur ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(cur)}</span>` : '<span class="empty">—</span>'; } };
+    },
   };
 
   goalExtraHeadKeys.forEach(k => {
@@ -13591,6 +13521,7 @@ async function showGoalSlideover(goal, afterSave) {
   bindInlinePropPanel('goal', goalId, goalInlinePropEditFns, () => showGoalSlideover({ id: goalId }, afterSave));
   bindCommentSection(document.querySelector('.comment-section[data-entity-type="goal"]'));
   initEntityViewsSection('goal', goalId, g);
+  initRichEditor(`editorjs-goal-${goalId}`, 'goal', goalId, false);
   setSlideoverExpand(() => { closeSlideover(); renderView('goal-detail', goalId); });
 
   // Project cards nav
@@ -13831,11 +13762,6 @@ async function showNoteSlideover(noteId, afterSave) {
 
     ${noteInlinePropPanel}
 
-    <div class="form-group" style="margin-top:16px">
-      <label class="form-label">Content</label>
-      <textarea id="detail-body" style="width:100%;min-height:200px">${n.body || ''}</textarea>
-    </div>
-
     ${buildEntityViewsSection('note', noteId)}
 
     ${buildCommentSection('note', noteId)}
@@ -13875,13 +13801,6 @@ async function showNoteSlideover(noteId, afterSave) {
   titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
   titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
   titleTA.onblur = (e) => { if (e.target.value.trim()) patchNote({ title: e.target.value.trim() }); };
-
-  // Body
-  let bodyTimer = null;
-  document.getElementById('detail-body').addEventListener('input', () => {
-    clearTimeout(bodyTimer);
-    bodyTimer = setTimeout(() => patchNote({ body: document.getElementById('detail-body').value }), 800);
-  });
 
   // Prop chips
   document.getElementById('chip-date')?.addEventListener('click', (e) => {
@@ -14374,11 +14293,6 @@ async function showResourceSlideover(resource, afterSave) {
 
     ${resInlinePropPanel}
 
-    <div class="form-group" style="margin-top:16px">
-      <label class="form-label">Body / Notes</label>
-      <textarea id="detail-body" style="width:100%;min-height:120px">${r.body || ''}</textarea>
-    </div>
-
     <div class="subtask-section">
       <div class="subtask-section-title"><span>File Attachment</span></div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0">
@@ -14435,13 +14349,6 @@ async function showResourceSlideover(resource, afterSave) {
   titleTA.addEventListener('input', () => { titleTA.style.height = 'auto'; titleTA.style.height = titleTA.scrollHeight + 'px'; });
   titleTA.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); titleTA.blur(); } });
   titleTA.onblur = (e) => { if (e.target.value.trim()) patchResource({ title: e.target.value.trim() }); };
-
-  // Body auto-save
-  let bodyTimer = null;
-  document.getElementById('detail-body').addEventListener('input', () => {
-    clearTimeout(bodyTimer);
-    bodyTimer = setTimeout(() => patchResource({ body: document.getElementById('detail-body').value }), 800);
-  });
 
   // Prop chips
   document.getElementById('chip-type')?.addEventListener('click', (e) => {
@@ -15452,10 +15359,14 @@ function showNewEntityTypeModal() {
         <div id="_net-propdefs" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
         <button id="_net-addprop" class="btn btn-sm btn-ghost" style="font-size:12px">+ Add property</button>
       </div>
-      <div style="padding:12px 0 16px;border-top:1px solid var(--border);margin-top:4px">
+      <div style="padding:12px 0 16px;border-top:1px solid var(--border);margin-top:4px;display:flex;flex-direction:column;gap:10px">
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
           <input type="checkbox" id="_net-indview" style="accent-color:var(--accent)">
           <span><strong>Individual view</strong> — each record gets its own full-page detail view (like Projects &amp; Goals)</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="_net-subentities" style="accent-color:var(--accent)">
+          <span><strong>Subentities</strong> — records can have child records of the same type (like Tasks has Subtasks)</span>
         </label>
       </div>
       <div style="display:flex;gap:10px;justify-content:flex-end;padding-top:0;border-top:1px solid var(--border)">
@@ -15553,8 +15464,9 @@ function showNewEntityTypeModal() {
     const validRows = propRows.filter(r => r.key && r.label);
     const prop_defs = JSON.stringify(validRows);
     const has_detail_view = !!(overlay.querySelector('#_net-indview')?.checked);
+    const has_subentities = !!(overlay.querySelector('#_net-subentities')?.checked);
     try {
-      await api('POST', '/api/custom-types', { name, display_name, icon, prop_defs, has_detail_view });
+      await api('POST', '/api/custom-types', { name, display_name, icon, prop_defs, has_detail_view, has_subentities });
       await loadCustomEntityTypes();
       showToast(`"${display_name}" created`);
       close();
@@ -15680,10 +15592,14 @@ async function openRaibisSettings(defaultTab = 'apps') {
             <div id="_cet-propdefs" style="display:flex;flex-direction:column;gap:6px"></div>
             <button class="btn btn-sm btn-ghost" id="_cet-addprop" style="margin-top:6px">+ Add property</button>
           </div>
-          <div style="display:flex;align-items:center;gap:10px">
+          <div style="display:flex;flex-direction:column;gap:6px">
             <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
               <input type="checkbox" id="_cet-has-detail-view" style="cursor:pointer;accent-color:var(--accent)">
               Individual view (full page with widgets, like Goals/Projects)
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+              <input type="checkbox" id="_cet-subentities" style="cursor:pointer;accent-color:var(--accent)">
+              Subentities (records can have child records of same type, like Tasks has Subtasks)
             </label>
           </div>
           <div>
@@ -15756,7 +15672,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
           showIconPicker(btn, null, null, t.icon || '📁', async (newIcon) => {
             const icon = newIcon || '📁';
             try {
-              await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon, prop_defs: t.prop_defs || '', has_detail_view: t.has_detail_view });
+              await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon, prop_defs: t.prop_defs || '', has_detail_view: t.has_detail_view, has_subentities: t.has_subentities });
               await renderCetList();
             } catch(err) { showToast('Failed to update icon: ' + (err.message || err), 'error'); }
           });
@@ -15772,7 +15688,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
           const newName = inp.value.trim();
           if (!newName) { inp.value = t.display_name; return; }
           try {
-            await api('PUT', `/api/custom-types/${tName}`, { display_name: newName, icon: t.icon || '📁', prop_defs: t.prop_defs || '', has_detail_view: t.has_detail_view });
+            await api('PUT', `/api/custom-types/${tName}`, { display_name: newName, icon: t.icon || '📁', prop_defs: t.prop_defs || '', has_detail_view: t.has_detail_view, has_subentities: t.has_subentities });
             t.display_name = newName;
             renderCustomEntityNav();
             showToast('Renamed');
@@ -15800,7 +15716,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
           defs.splice(idx, 1);
           const newPropDefs = JSON.stringify(defs);
           try {
-            await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon: t.icon || '📁', prop_defs: newPropDefs, has_detail_view: t.has_detail_view });
+            await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon: t.icon || '📁', prop_defs: newPropDefs, has_detail_view: t.has_detail_view, has_subentities: t.has_subentities });
             t.prop_defs = newPropDefs;
             await renderCetList();
             // Re-open the props panel for that type
@@ -15840,7 +15756,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
             defs.push({ key, label, type });
             const newPropDefs = JSON.stringify(defs);
             try {
-              await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon: t.icon || '📁', prop_defs: newPropDefs, has_detail_view: t.has_detail_view });
+              await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon: t.icon || '📁', prop_defs: newPropDefs, has_detail_view: t.has_detail_view, has_subentities: t.has_subentities });
               t.prop_defs = newPropDefs;
               await renderCetList();
               const panel = list.querySelector(`._cet-props-panel[data-name="${tName}"]`);
@@ -15856,7 +15772,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
           const t = customEntityTypes.find(ct => ct.name === tName);
           if (!t) return;
           try {
-            await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon: t.icon || '📁', prop_defs: t.prop_defs || '', has_detail_view: chk.checked });
+            await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon: t.icon || '📁', prop_defs: t.prop_defs || '', has_detail_view: chk.checked, has_subentities: t.has_subentities });
             // Update in-memory cache without full reload
             t.has_detail_view = chk.checked;
           } catch(err) { showToast('Failed to update: ' + (err.message || err), 'error'); chk.checked = !chk.checked; }
@@ -15947,10 +15863,11 @@ async function openRaibisSettings(defaultTab = 'apps') {
       const display_name = (cetSection.querySelector('#_cet-display').value || '').trim();
       const icon = cetIconSelected || '📁';
       const has_detail_view = !!(cetSection.querySelector('#_cet-has-detail-view')?.checked);
+      const has_subentities = !!(cetSection.querySelector('#_cet-subentities')?.checked);
       if (!name || !display_name) { showToast('Name and display name are required', 'error'); return; }
       const prop_defs = JSON.stringify(propDefsRows.filter(r => r.key));
       try {
-        await api('POST', '/api/custom-types', { name, display_name, icon, prop_defs, has_detail_view });
+        await api('POST', '/api/custom-types', { name, display_name, icon, prop_defs, has_detail_view, has_subentities });
         showToast(`Type "${display_name}" created`);
         propDefsRows = [];
         cetIconSelected = '📁';
@@ -15959,6 +15876,8 @@ async function openRaibisSettings(defaultTab = 'apps') {
         cetSection.querySelector('#_cet-display').value = '';
         const hdvChk = cetSection.querySelector('#_cet-has-detail-view');
         if (hdvChk) hdvChk.checked = false;
+        const subChk = cetSection.querySelector('#_cet-subentities');
+        if (subChk) subChk.checked = false;
         cetSection.querySelectorAll('[data-starter]').forEach(chk => { chk.checked = false; });
         renderPropDefsUI();
         await renderCetList();
