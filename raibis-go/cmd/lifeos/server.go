@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	ioFs "io/fs"
 	"io"
 	"log"
 	"net"
@@ -254,7 +256,23 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 	if err != nil {
 		log.Fatalf("lifeos: embed GUI FS: %v", err)
 	}
-	mux.Handle("/", noCacheHeaders(http.FileServer(http.FS(sub))))
+	// Inject startup timestamp into index.html to bust WKWebView asset cache on every launch.
+	startupVer := fmt.Sprintf("%d", time.Now().Unix())
+	fileServer := http.FileServer(http.FS(sub))
+	mux.Handle("/", noCacheHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if p == "/" || p == "/index.html" {
+			raw, e := ioFs.ReadFile(sub, "index.html")
+			if e != nil {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(bytes.ReplaceAll(raw, []byte("__VER__"), []byte(startupVer)))
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	})))
 
 	return mux
 }
