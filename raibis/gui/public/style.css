@@ -29,7 +29,6 @@
   --scrollbar-track: transparent;
   --scrollbar-thumb: #D3D3CF;
   --shadow:          var(--shadow-float);
-  --radius-sm:       var(--radius-sm);
   --radius:          var(--radius-md);
 }
 
@@ -53,7 +52,6 @@
   --scrollbar-track: transparent;
   --scrollbar-thumb: #3D3D3D;
   --shadow:          var(--shadow-float);
-  --radius-sm:       var(--radius-sm);
   --radius:          var(--radius-md);
 }
 
@@ -5421,13 +5419,16 @@ body.fullscreen-open .fab-group { right: var(--space-6) !important; bottom: var(
 .widget-col-btn:hover { background: var(--color-surface-hover); }
 .widget-col-btn.active { background: var(--color-accent-subtle); color: var(--color-accent); border-color: var(--color-accent); }
 
-/* Half-width toggle — hidden until hover, always visible when active */
-.widget-half-btn {
+/* Both widget header buttons hidden until hover, always visible when active */
+.widget-half-btn,
+.widget-col-btn:not(.active) {
   opacity: 0;
-  font-variant-emoji: text;  /* prevent emoji rendering of ½ */
+  font-variant-emoji: text;
 }
 .widget-item:hover .widget-half-btn,
+.widget-item:hover .widget-col-btn,
 .widget-half-btn.active { opacity: 1; }
+.widget-col-btn.active { opacity: 1; }
 
 /* Custom widget editor hint */
 .cwe-hint {
