@@ -4656,7 +4656,7 @@ async function renderCustomEntityDetail(typeName, entityId) {
           <button class="btn btn-primary btn-sm" id="ced-edit-btn">Edit</button>
         </div>
       </div>
-      <div id="ced-widget-grid">
+      <div id="ced-widget-grid" class="widget-grid">
         ${buildWidgetGrid(entityKey, parseInt(entityId), { propPanelHtml: propPanel })}
       </div>
     </div>`;
@@ -8686,11 +8686,12 @@ function buildWidgetGrid(entity, entityId, wData) {
     const colBtn = w.type === 'tasks'
       ? `<button class="widget-col-btn${is2col?' active':''}" data-col-toggle="${escHtml(w.id)}" title="${is2col?'1 column':'2 columns'}">⊞</button>`
       : '';
-    return `<div class="widget widget-item" data-widget-id="${escHtml(w.id)}" data-widget-type="${w.type}" style="margin-bottom:16px">
+    const halfBtn = `<button class="widget-col-btn${w.half?' active':''}" data-half-toggle="${escHtml(w.id)}" title="${w.half?'Full width':'Half width'}">⊟</button>`;
+    return `<div class="widget widget-item${w.half?' widget-half':''}" data-widget-id="${escHtml(w.id)}" data-widget-type="${w.type}">
       <div class="widget-header">
         ${dgh}
         <span class="widget-title">${escHtml(w.label)}</span>
-        ${colBtn}
+        ${halfBtn}${colBtn}
       </div>
       <div class="widget-body${is2col?' task-list-2col':''}">${body}</div>
     </div>`;
@@ -8713,18 +8714,33 @@ function initWidgetGrid(entity, entityId, container, onRerender) {
     });
   }
   container.addEventListener('click', e => {
-    const btn = e.target.closest('[data-col-toggle]');
-    if (!btn) return;
-    const wid = btn.dataset.colToggle;
-    const layout = getWidgetLayout(entity);
-    const w = layout.find(x => x.id === wid);
-    if (!w) return;
-    w.cols = w.cols === 2 ? 1 : 2;
-    saveWidgetLayout(entity, layout);
-    const body = btn.closest('.widget-item')?.querySelector('.widget-body');
-    if (body) body.classList.toggle('task-list-2col', w.cols === 2);
-    btn.classList.toggle('active', w.cols === 2);
-    btn.title = w.cols === 2 ? '1 column' : '2 columns';
+    const colBtn = e.target.closest('[data-col-toggle]');
+    if (colBtn) {
+      const wid = colBtn.dataset.colToggle;
+      const layout = getWidgetLayout(entity);
+      const w = layout.find(x => x.id === wid);
+      if (!w) return;
+      w.cols = w.cols === 2 ? 1 : 2;
+      saveWidgetLayout(entity, layout);
+      const body = colBtn.closest('.widget-item')?.querySelector('.widget-body');
+      if (body) body.classList.toggle('task-list-2col', w.cols === 2);
+      colBtn.classList.toggle('active', w.cols === 2);
+      colBtn.title = w.cols === 2 ? '1 column' : '2 columns';
+      return;
+    }
+    const halfBtn = e.target.closest('[data-half-toggle]');
+    if (halfBtn) {
+      const wid = halfBtn.dataset.halfToggle;
+      const layout = getWidgetLayout(entity);
+      const w = layout.find(x => x.id === wid);
+      if (!w) return;
+      w.half = !w.half;
+      saveWidgetLayout(entity, layout);
+      const item = halfBtn.closest('.widget-item');
+      if (item) item.classList.toggle('widget-half', w.half);
+      halfBtn.classList.toggle('active', w.half);
+      halfBtn.title = w.half ? 'Full width' : 'Half width';
+    }
   });
   const editorHost = container.querySelector('.rich-editor-host[id]');
   if (editorHost) initRichEditor(editorHost.id, entity, entityId, false);
@@ -9058,7 +9074,7 @@ async function renderSprintDetail(sprintId) {
         <div id="sd-assigned-list" style="max-height:320px;overflow-y:auto"></div>
       </div>
     </div>
-    <div id="sd-widget-grid" style="margin-top:12px">
+    <div id="sd-widget-grid" class="widget-grid" style="margin-top:12px">
       ${buildWidgetGrid('sprint', sprintId, { tasks, propPanelHtml: sprintDetailPropPanel, entityData: sprint })}
     </div>
   </div>`;
@@ -10179,7 +10195,7 @@ async function renderProjectDetail(projectId) {
         <button class="btn btn-ghost" id="pd-add-res-btn">+ Resource</button>
       </div>
     </div>
-    <div id="pd-widget-grid">
+    <div id="pd-widget-grid" class="widget-grid">
       ${buildWidgetGrid('project', projectId, { tasks, notes, resources, propPanelHtml: projDetailPropPanel })}
     </div>
   </div>`;
@@ -10347,7 +10363,7 @@ async function renderGoalDetail(goalId) {
       </div>
     </div>
     ${metricsHtml}
-    <div id="gd-widget-grid">
+    <div id="gd-widget-grid" class="widget-grid">
       ${buildWidgetGrid('goal', goalId, { tasks, notes, resources, projects, propPanelHtml: goalDetailPropPanel })}
     </div>
   </div>`;

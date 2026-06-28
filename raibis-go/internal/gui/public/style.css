@@ -833,6 +833,7 @@ body.kanban-dragging-active * {
 .pom-picker-body {
   flex: 1;
   overflow-y: auto;
+  padding: 4px 0;
 }
 .pom-picker-empty {
   padding: var(--space-8) var(--space-5);
@@ -850,6 +851,8 @@ body.kanban-dragging-active * {
   border-bottom: 1px solid var(--color-border);
   cursor: pointer;
   transition: background var(--duration-fast) var(--ease-out);
+  border-radius: var(--radius-sm);
+  margin: 0 4px;
 }
 .pom-picker-item:last-child { border-bottom: none; }
 .pom-picker-item:hover { background: var(--color-surface-hover); }
@@ -892,7 +895,8 @@ body.kanban-dragging-active * {
 /* Table view */
 .pom-picker-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: var(--text-sm);
 }
 .pom-picker-table thead th {
@@ -907,14 +911,14 @@ body.kanban-dragging-active * {
   background: var(--color-bg-elevated);
 }
 .pom-picker-row {
-  border-bottom: 1px solid var(--color-border);
   cursor: pointer;
   transition: background var(--duration-fast) var(--ease-out);
+  border-radius: var(--radius-sm);
 }
-.pom-picker-row:last-child { border-bottom: none; }
+.pom-picker-row td { padding: var(--space-2) var(--space-4); color: var(--color-text); border-bottom: 1px solid var(--color-border); }
+.pom-picker-row:last-child td { border-bottom: none; }
 .pom-picker-row:hover { background: var(--color-surface-hover); }
 .pom-picker-row.selected { background: var(--color-accent-subtle); }
-.pom-picker-row td { padding: var(--space-2) var(--space-4); color: var(--color-text); }
 .pom-td-num { text-align: right; color: var(--color-text-secondary) !important; font-variant-numeric: tabular-nums; }
 
 /* ─── Timer column ────────────────────────────────────────────────── */
@@ -2249,7 +2253,8 @@ body.kanban-dragging-active * {
 .notion-table {
   width: 100%;
   min-width: 0;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: var(--text-base);
   table-layout: auto;
   background: transparent;
@@ -2273,7 +2278,8 @@ body.kanban-dragging-active * {
   background: transparent;
 }
 .notion-table tr:last-child td { border-bottom: none; }
-.notion-table tr:hover td { background: var(--color-accent-subtle); }
+.notion-table tr:hover { background: var(--color-accent-subtle); border-radius: var(--radius-sm); }
+.notion-table tr:hover td { background: transparent; }
 .task-table-row:hover .task-add-sub-btn,
 .notion-table tr:hover .task-add-sub-btn { opacity: 0.35; }
 .notion-table tbody tr { cursor: pointer; }
@@ -2379,6 +2385,7 @@ body.kanban-dragging-active * {
   max-height: 200px;
   overflow-y: auto;
   margin-top: 3px;
+  padding: 4px;
 }
 .pom-suggestion {
   padding: 8px 12px;
@@ -2386,6 +2393,7 @@ body.kanban-dragging-active * {
   font-size: 13px;
   border-bottom: 1px solid var(--border-light);
   transition: background 100ms ease;
+  border-radius: var(--radius-sm);
 }
 .pom-suggestion:last-child { border-bottom: none; }
 .pom-suggestion:hover { background: var(--accent-dim); color: var(--accent); }
@@ -3059,17 +3067,18 @@ body.kanban-dragging-active * {
   box-shadow: var(--shadow);
   z-index: 400;
   min-width: 140px;
-  padding: 6px 0;
+  padding: 4px;
 }
 .col-picker-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 14px;
+  padding: 5px 10px;
   font-size: 12px;
   cursor: pointer;
   color: var(--text);
   white-space: nowrap;
+  border-radius: var(--radius-sm);
 }
 .col-picker-item:hover { background: var(--accent-glow); }
 .col-picker-item input[type="checkbox"] { width: auto; margin: 0; cursor: pointer; }
@@ -3164,17 +3173,18 @@ body.kanban-dragging-active * {
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-float);
   min-width: 180px;
-  padding: var(--space-1) 0;
+  padding: 4px;
 }
 .sort-dropdown-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
   cursor: pointer;
   gap: var(--space-2);
   transition: background var(--duration-fast) var(--ease-out);
+  border-radius: var(--radius-sm);
 }
 .sort-dropdown-row:hover { background: var(--color-accent-subtle); }
 .sort-dropdown-row.active { color: var(--color-accent); }
@@ -3842,13 +3852,15 @@ tr:hover .ctx-handle,
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 7px 14px;
+  padding: 7px 10px;
   font-size: 13.5px;
   cursor: pointer;
   color: var(--text);
   transition: background 0.08s;
+  border-radius: var(--radius-sm);
+  margin: 2px 4px;
 }
-.ctx-menu-item:hover { background: var(--bg-hover, rgba(255,255,255,0.07)); }
+.ctx-menu-item:hover { background: var(--bg-hover, rgba(0,0,0,0.05)); }
 .ctx-menu-item--danger { color: var(--color-red, #e53935); }
 .ctx-menu-item--danger:hover { background: rgba(229,57,53,0.08); }
 .ctx-menu-shortcut {
@@ -5383,6 +5395,15 @@ body.fullscreen-open .fab-group { right: var(--space-6) !important; bottom: var(
   gap: 0 12px;
 }
 .widget-body.task-list-2col .task-list > * { break-inside: avoid; }
+
+/* 2-column widget grid layout */
+.widget-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.widget-grid .widget-item { grid-column: 1 / -1; }
+.widget-grid .widget-item.widget-half { grid-column: auto; }
 
 /* Column toggle button in widget header */
 .widget-col-btn {
