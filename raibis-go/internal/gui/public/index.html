@@ -277,6 +277,25 @@
     </div>
   </div>
 
+  <!-- Content-only fullscreen with TOC rail -->
+  <div id="content-fullscreen" style="display:none">
+    <div id="cf-topbar">
+      <button id="cf-close-btn" class="btn btn-ghost btn-sm">&#8592; Back</button>
+      <span id="cf-title"></span>
+    </div>
+    <div id="cf-body">
+      <div id="cf-scroll">
+        <div id="cf-inner">
+          <div id="editorjs-contentfull" class="rich-editor-host"></div>
+        </div>
+      </div>
+      <div id="cf-rail-zone">
+        <div id="cf-rail"></div>
+        <div id="cf-toc"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- SortableJS for widget drag-and-drop -->
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
 

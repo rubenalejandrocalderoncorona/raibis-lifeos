@@ -8687,11 +8687,14 @@ function buildWidgetGrid(entity, entityId, wData) {
       ? `<button class="widget-col-btn${is2col?' active':''}" data-col-toggle="${escHtml(w.id)}" title="${is2col?'1 column':'2 columns'}">⊞</button>`
       : '';
     const halfBtn = `<button class="widget-col-btn widget-half-btn${w.half?' active':''}" data-half-toggle="${escHtml(w.id)}" title="${w.half?'Full width':'Half width'}">½</button>`;
+    const expandBtn = w.type === 'editor'
+      ? `<button class="widget-col-btn widget-expand-btn" data-cf-expand="${escHtml(w.id)}" title="Content fullscreen">⤡</button>`
+      : '';
     return `<div class="widget widget-item${w.half?' widget-half':''}" data-widget-id="${escHtml(w.id)}" data-widget-type="${w.type}">
       <div class="widget-header">
         ${dgh}
         <span class="widget-title">${escHtml(w.label)}</span>
-        ${halfBtn}${colBtn}
+        ${halfBtn}${colBtn}${expandBtn}
       </div>
       <div class="widget-body${is2col?' task-list-2col':''}">${body}</div>
     </div>`;
@@ -8740,6 +8743,13 @@ function initWidgetGrid(entity, entityId, container, onRerender) {
       if (item) item.classList.toggle('widget-half', w.half);
       halfBtn.classList.toggle('active', w.half);
       halfBtn.title = w.half ? 'Full width' : 'Half width';
+      return;
+    }
+    const cfBtn = e.target.closest('[data-cf-expand]');
+    if (cfBtn) {
+      const view = cfBtn.closest('.view');
+      const title = view?.querySelector('.view-title')?.textContent || '';
+      openContentFullscreen(entity, entityId, title);
     }
   });
   const editorHost = container.querySelector('.rich-editor-host[id]');
@@ -17013,3 +17023,114 @@ function aiAddThinking() {
 
   observer.observe(main, { childList: true, subtree: false });
 })();
+
+/* ─── Content-only fullscreen with TOC rail ─────────────────────────────── */
+let _cfTocTimer = null;
+let _cfHeadings = []; // [{el, idx}] for active-heading tracking
+
+async function openContentFullscreen(entity, entityId, title) {
+  const overlay = document.getElementById('content-fullscreen');
+  if (!overlay) return;
+  overlay.style.display = 'flex';
+  document.body.classList.add('fullscreen-open');
+  document.getElementById('cf-title').textContent = title || '';
+  document.getElementById('cf-close-btn').onclick = closeContentFullscreen;
+
+  // Rail + TOC hover with delay so mouse can travel from rail to panel
+  const railZone = document.getElementById('cf-rail-zone');
+  const tocEl = document.getElementById('cf-toc');
+  const showToc = () => { clearTimeout(_cfTocTimer); tocEl.classList.add('visible'); };
+  const hideToc = () => { _cfTocTimer = setTimeout(() => tocEl.classList.remove('visible'), 350); };
+  railZone.onmouseenter = showToc;
+  railZone.onmouseleave = hideToc;
+  tocEl.onmouseenter = showToc;
+  tocEl.onmouseleave = hideToc;
+
+  // Scroll tracking
+  const scroll = document.getElementById('cf-scroll');
+  scroll.onscroll = () => _updateCFActive(scroll);
+
+  // Init editor and build TOC once ready
+  await initRichEditor('editorjs-contentfull', entity, entityId, true);
+  const ed = _activeEditors['editorjs-contentfull'];
+  if (ed) ed.isReady.then(() => setTimeout(() => _buildCFToc(scroll), 100));
+}
+
+function closeContentFullscreen() {
+  const overlay = document.getElementById('content-fullscreen');
+  if (overlay) overlay.style.display = 'none';
+  document.body.classList.remove('fullscreen-open');
+  const key = 'editorjs-contentfull';
+  if (_activeEditors[key]) { try { _activeEditors[key].destroy(); } catch {} delete _activeEditors[key]; }
+  const rail = document.getElementById('cf-rail');
+  const tocEl = document.getElementById('cf-toc');
+  if (rail) rail.innerHTML = '';
+  if (tocEl) { tocEl.innerHTML = ''; tocEl.classList.remove('visible'); }
+  _cfHeadings = [];
+  clearTimeout(_cfTocTimer);
+}
+
+function _buildCFToc(scroll) {
+  const ed = _activeEditors['editorjs-contentfull'];
+  if (!ed) return;
+  const rail = document.getElementById('cf-rail');
+  const tocEl = document.getElementById('cf-toc');
+  const inner = document.getElementById('cf-inner');
+  if (!rail || !tocEl || !inner) return;
+
+  ed.save().then(data => {
+    const headingBlocks = (data.blocks || []).filter(b => b.type === 'header');
+    if (!headingBlocks.length) return;
+
+    rail.innerHTML = '';
+    tocEl.innerHTML = '';
+    _cfHeadings = [];
+
+    const totalH = inner.scrollHeight;
+
+    headingBlocks.forEach((b, i) => {
+      const level = b.data.level || 1;
+      const text = (b.data.text || '').replace(/<[^>]*>/g, '');
+      const blockEl = inner.querySelector(`.ce-block[data-id="${b.id}"]`);
+
+      // TOC item
+      const item = document.createElement('div');
+      item.className = `cf-toc-item cf-toc-h${level}`;
+      item.dataset.idx = i;
+      item.textContent = text;
+      item.onclick = () => { if (blockEl) { blockEl.scrollIntoView({ behavior: 'smooth', block: 'start' }); } };
+      tocEl.appendChild(item);
+
+      // Tick mark (proportionally positioned on rail)
+      if (blockEl && totalH > 0) {
+        const pct = blockEl.offsetTop / totalH * 100;
+        const tick = document.createElement('div');
+        tick.className = 'cf-tick';
+        tick.dataset.idx = i;
+        tick.style.top = pct + '%';
+        tick.style.width = (level === 1 ? 14 : level === 2 ? 10 : 7) + 'px';
+        tick.onclick = () => { if (blockEl) blockEl.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+        rail.appendChild(tick);
+        _cfHeadings.push({ el: blockEl, idx: i });
+      }
+    });
+  });
+}
+
+function _updateCFActive(scroll) {
+  if (!_cfHeadings.length) return;
+  const threshold = scroll.scrollTop + 80;
+  let activeIdx = _cfHeadings[0].idx;
+  for (const h of _cfHeadings) {
+    if (h.el.offsetTop <= threshold) activeIdx = h.idx;
+  }
+  document.querySelectorAll('#cf-rail .cf-tick').forEach(t => t.classList.toggle('active', +t.dataset.idx === activeIdx));
+  document.querySelectorAll('#cf-toc .cf-toc-item').forEach(t => t.classList.toggle('active', +t.dataset.idx === activeIdx));
+}
+
+// Escape key closes content fullscreen
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.getElementById('content-fullscreen')?.style.display !== 'none') {
+    closeContentFullscreen();
+  }
+}, true);
