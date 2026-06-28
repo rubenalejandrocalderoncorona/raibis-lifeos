@@ -1768,6 +1768,7 @@ body.kanban-dragging-active * {
   gap: 8px;
   padding: 6px 8px;
   border-radius: var(--radius-sm);
+  margin: 0 2px;
   font-size: 13px;
   color: var(--text);
   cursor: pointer;
@@ -5405,7 +5406,7 @@ body.fullscreen-open .fab-group { right: var(--space-6) !important; bottom: var(
 .widget-grid .widget-item { grid-column: 1 / -1; }
 .widget-grid .widget-item.widget-half { grid-column: auto; }
 
-/* Column toggle button in widget header */
+/* Column / half-width toggle buttons in widget header */
 .widget-col-btn {
   font-size: 10px;
   background: none;
@@ -5415,10 +5416,18 @@ body.fullscreen-open .fab-group { right: var(--space-6) !important; bottom: var(
   padding: 2px 6px;
   cursor: pointer;
   line-height: 1.4;
-  transition: background var(--duration-fast), color var(--duration-fast);
+  transition: background var(--duration-fast), color var(--duration-fast), opacity var(--duration-fast);
 }
 .widget-col-btn:hover { background: var(--color-surface-hover); }
 .widget-col-btn.active { background: var(--color-accent-subtle); color: var(--color-accent); border-color: var(--color-accent); }
+
+/* Half-width toggle — hidden until hover, always visible when active */
+.widget-half-btn {
+  opacity: 0;
+  font-variant-emoji: text;  /* prevent emoji rendering of ½ */
+}
+.widget-item:hover .widget-half-btn,
+.widget-half-btn.active { opacity: 1; }
 
 /* Custom widget editor hint */
 .cwe-hint {

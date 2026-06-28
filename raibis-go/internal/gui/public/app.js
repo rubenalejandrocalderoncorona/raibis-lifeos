@@ -8686,7 +8686,7 @@ function buildWidgetGrid(entity, entityId, wData) {
     const colBtn = w.type === 'tasks'
       ? `<button class="widget-col-btn${is2col?' active':''}" data-col-toggle="${escHtml(w.id)}" title="${is2col?'1 column':'2 columns'}">⊞</button>`
       : '';
-    const halfBtn = `<button class="widget-col-btn${w.half?' active':''}" data-half-toggle="${escHtml(w.id)}" title="${w.half?'Full width':'Half width'}">⊟</button>`;
+    const halfBtn = `<button class="widget-col-btn widget-half-btn${w.half?' active':''}" data-half-toggle="${escHtml(w.id)}" title="${w.half?'Full width':'Half width'}">½</button>`;
     return `<div class="widget widget-item${w.half?' widget-half':''}" data-widget-id="${escHtml(w.id)}" data-widget-type="${w.type}">
       <div class="widget-header">
         ${dgh}

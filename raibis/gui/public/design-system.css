@@ -139,8 +139,8 @@
 
   /* ── Border radii — Notion geometry ─────────────── */
   --radius-xs:  4px;    /* tag chips                    */
-  --radius-sm:  6px;    /* type badges                  */
-  --radius-md:  8px;    /* buttons, inputs — RECT not pill */
+  --radius-sm:  8px;    /* type badges / hover items    */
+  --radius-md:  10px;   /* buttons, inputs — RECT not pill */
   --radius-lg:  12px;   /* cards, pricing tiers         */
   --radius-xl:  16px;   /* larger panels                */
   --radius-xxl: 20px;   /* featured showcases           */
