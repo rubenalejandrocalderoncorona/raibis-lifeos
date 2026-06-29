@@ -1368,6 +1368,29 @@ func (s *sqliteStorage) GetEntityChildren(parentType string, parentID int64) ([]
 	return children, rows.Err()
 }
 
+func (s *sqliteStorage) GetEntityParents(childType string, childID int64) ([]*domain.EntityChild, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(
+		`SELECT id, parent_entity_type, parent_entity_id, position FROM entity_children
+		 WHERE child_entity_type=? AND child_entity_id=? ORDER BY id`,
+		childType, childID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var parents []*domain.EntityChild
+	for rows.Next() {
+		c := &domain.EntityChild{ChildEntityType: childType, ChildEntityID: childID}
+		if err := rows.Scan(&c.ID, &c.ParentEntityType, &c.ParentEntityID, &c.Position); err != nil {
+			return nil, err
+		}
+		parents = append(parents, c)
+	}
+	return parents, rows.Err()
+}
+
 func (s *sqliteStorage) AddEntityChild(parentType string, parentID int64, childType string, childID int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1618,6 +1641,23 @@ func (s *sqliteStorage) ListCustomEntityTypes() ([]*domain.CustomEntityType, err
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+func (s *sqliteStorage) GetCustomEntityType(name string) (*domain.CustomEntityType, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	row := s.db.QueryRow(
+		`SELECT id, name, display_name, icon, prop_defs, has_detail_view, has_subentities, created_at FROM custom_entity_types WHERE name=?`,
+		name,
+	)
+	t := &domain.CustomEntityType{}
+	var hdv, hsub int
+	if err := row.Scan(&t.ID, &t.Name, &t.DisplayName, &t.Icon, &t.PropDefs, &hdv, &hsub, &t.CreatedAt); err != nil {
+		return nil, err
+	}
+	t.HasDetailView = hdv != 0
+	t.HasSubentities = hsub != 0
+	return t, nil
 }
 
 func (s *sqliteStorage) UpdateCustomEntityType(t *domain.CustomEntityType) error {

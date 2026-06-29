@@ -1658,6 +1658,7 @@ const CUSTOM_PROP_TYPES = [
   { type: 'phone',        label: 'Phone',        icon: '<path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 8.81 19.79 19.79 0 01.02 2.18 2 2 0 012 0h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L6.09 7.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/>' },
   { type: 'email',        label: 'Email',        icon: '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>' },
   { type: 'relation',     label: 'Relation',     icon: '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="15 6 21 12 15 18"/><polyline points="9 6 3 12 9 18"/>' },
+  { type: 'rollup',      label: 'Rollup',       icon: '<line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/>' },
 ];
 
 async function getConnectedPropTypes() {
@@ -2573,6 +2574,174 @@ function showAddRelationPanel(anchorBtn, key, name, entity, onAdd) {
   }, 0);
 }
 
+// ── showAddRollupPanel ─────────────────────────────────────────────────────
+// Cascading config panel for a Rollup-typed property.
+// Builds: child_entity_type → target_property → operation → conditional UI.
+function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup) {
+  document.getElementById('add-prop-rollup-picker')?.remove();
+  const panel = document.createElement('div');
+  panel.id = 'add-prop-rollup-picker';
+  panel.className = 'prop-vis-panel';
+
+  // Mutable config state
+  const cfg = Object.assign({
+    child_entity_type: '', target_property: '', operation: 'percentage_match',
+    condition: { match_value: '' }, value_map: {}
+  }, existingRollup || {});
+
+  function getChildDefs(typeName) {
+    if (!typeName) return [];
+    const t = customEntityTypes.find(ct => ct.name === typeName);
+    if (!t || !t.prop_defs) return [];
+    try { return JSON.parse(t.prop_defs); } catch { return []; }
+  }
+  function getPropOptions(typeName, propKey) {
+    const pd = getChildDefs(typeName).find(d => d.key === propKey);
+    if (!pd || !pd.options) return [];
+    return Array.isArray(pd.options) ? pd.options : String(pd.options).split(',').map(s => s.trim()).filter(Boolean);
+  }
+
+  function render() {
+    const propDefs = getChildDefs(cfg.child_entity_type);
+    const propOptions = getPropOptions(cfg.child_entity_type, cfg.target_property);
+
+    panel.innerHTML = `
+      <div style="padding:6px 10px 4px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">Rollup: "${escHtml(name)}"</div>
+
+      <div style="padding:4px 10px 2px">
+        <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Child entity type <span style="font-weight:400">(optional filter)</span></div>
+        <select id="rl-child-type" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
+          <option value="">All children</option>
+          ${customEntityTypes.map(ct => `<option value="${escHtml(ct.name)}" ${cfg.child_entity_type===ct.name?'selected':''}>${escHtml(ct.display_name||ct.name)}</option>`).join('')}
+        </select>
+      </div>
+
+      <div style="padding:4px 10px 2px">
+        <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Property to aggregate</div>
+        <select id="rl-target-prop" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
+          <option value="">— select property —</option>
+          ${propDefs.map(pd => `<option value="${escHtml(pd.key)}" ${cfg.target_property===pd.key?'selected':''}>${escHtml(pd.label||pd.key)}</option>`).join('')}
+        </select>
+      </div>
+
+      <div style="padding:4px 10px 2px">
+        <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Operation</div>
+        <select id="rl-operation" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
+          <option value="percentage_match" ${cfg.operation==='percentage_match'?'selected':''}>% Exact Match</option>
+          <option value="sum" ${cfg.operation==='sum'?'selected':''}>Sum</option>
+          <option value="average" ${cfg.operation==='average'?'selected':''}>Average (assign values)</option>
+        </select>
+      </div>
+
+      ${cfg.operation === 'percentage_match' && propOptions.length ? `
+        <div style="padding:4px 10px 2px">
+          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Match value</div>
+          <select id="rl-match-val" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
+            <option value="">— select value —</option>
+            ${propOptions.map(o => `<option value="${escHtml(o)}" ${(cfg.condition?.match_value||'')=== o?'selected':''}>${escHtml(o)}</option>`).join('')}
+          </select>
+        </div>
+      ` : cfg.operation === 'percentage_match' && cfg.target_property ? `
+        <div style="padding:4px 10px 2px">
+          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Match value</div>
+          <input id="rl-match-val-txt" type="text" value="${escHtml(cfg.condition?.match_value||'')}" placeholder="Exact value to match…"
+            style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box"/>
+        </div>
+      ` : ''}
+
+      ${cfg.operation === 'average' && propOptions.length ? `
+        <div style="padding:4px 10px 2px">
+          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:4px">Assign numeric values</div>
+          <div style="display:grid;grid-template-columns:1fr 72px;gap:3px;align-items:center">
+            ${propOptions.map(o => `
+              <div style="font-size:12px;padding:3px 6px;background:var(--bg-surface);border-radius:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(o)}</div>
+              <input type="number" class="rl-vm-inp" data-opt="${escHtml(o)}" value="${cfg.value_map?.[o] ?? ''}" placeholder="0"
+                style="font-size:12px;padding:3px 6px;border:1px solid var(--border);border-radius:3px;text-align:right;width:100%;box-sizing:border-box"/>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      <div style="padding:8px 10px;display:flex;justify-content:flex-end;gap:6px;border-top:1px solid var(--border);margin-top:6px">
+        <button id="rl-cancel" class="btn btn-sm btn-ghost">Cancel</button>
+        <button id="rl-save" class="btn btn-sm btn-primary">Save Rollup</button>
+      </div>`;
+
+    panel.querySelector('#rl-child-type').onchange = (e) => {
+      cfg.child_entity_type = e.target.value;
+      cfg.target_property = '';
+      cfg.condition = { match_value: '' };
+      cfg.value_map = {};
+      render();
+    };
+    panel.querySelector('#rl-target-prop').onchange = (e) => {
+      cfg.target_property = e.target.value;
+      cfg.condition = { match_value: '' };
+      cfg.value_map = {};
+      render();
+    };
+    panel.querySelector('#rl-operation').onchange = (e) => {
+      cfg.operation = e.target.value;
+      cfg.condition = { match_value: '' };
+      cfg.value_map = {};
+      render();
+    };
+    panel.querySelector('#rl-match-val')?.addEventListener('change', (e) => { cfg.condition = { match_value: e.target.value }; });
+    panel.querySelector('#rl-match-val-txt')?.addEventListener('input', (e) => { cfg.condition = { match_value: e.target.value }; });
+    panel.querySelectorAll('.rl-vm-inp').forEach(inp => {
+      inp.oninput = () => {
+        if (!cfg.value_map) cfg.value_map = {};
+        const val = parseFloat(inp.value);
+        if (!isNaN(val)) cfg.value_map[inp.dataset.opt] = val;
+        else delete cfg.value_map[inp.dataset.opt];
+      };
+    });
+
+    panel.querySelector('#rl-cancel').onclick = (e) => { e.stopPropagation(); panel.remove(); };
+    panel.querySelector('#rl-save').onclick = (e) => {
+      e.stopPropagation();
+      if (!cfg.target_property) { showToast('Select a property to aggregate', 'error'); return; }
+      if (cfg.operation === 'percentage_match' && !cfg.condition?.match_value) {
+        showToast('Enter a match value', 'error'); return;
+      }
+
+      // Build final rollup config (only include non-empty fields)
+      const rollupConfig = { target_property: cfg.target_property, operation: cfg.operation };
+      if (cfg.child_entity_type) rollupConfig.child_entity_type = cfg.child_entity_type;
+      if (cfg.operation === 'percentage_match') rollupConfig.condition = { match_value: cfg.condition.match_value };
+      if (cfg.operation === 'average' && Object.keys(cfg.value_map || {}).length > 0) rollupConfig.value_map = cfg.value_map;
+
+      const defs = getCustomPropDefs(entity);
+      if (!defs.some(d => d.key === key)) {
+        defs.push({ key, label: name, type: 'rollup', rollup: rollupConfig });
+        setCustomPropDefs(entity, defs);
+        const v = getEntityVisProps(entity);
+        if (!v.includes(key)) setEntityVisProps(entity, [...v, key]);
+      }
+      panel.remove();
+      onAdd();
+      document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
+    };
+  }
+
+  render();
+  const rect = anchorBtn.getBoundingClientRect();
+  panel.style.cssText = `position:fixed;z-index:9200;min-width:286px;max-height:70vh;overflow-y:auto;top:${rect.bottom+4}px;left:${rect.left}px`;
+  document.body.appendChild(panel);
+  requestAnimationFrame(() => {
+    const cr = panel.getBoundingClientRect();
+    if (cr.right > window.innerWidth - 8) panel.style.left = (window.innerWidth - cr.width - 8) + 'px';
+    if (cr.bottom > window.innerHeight - 8) panel.style.top = (rect.top - cr.height - 4) + 'px';
+  });
+  setTimeout(() => {
+    document.addEventListener('click', function outsideRollup(ev) {
+      if (!panel.contains(ev.target) && !anchorBtn.contains(ev.target)) {
+        panel.remove(); document.removeEventListener('click', outsideRollup);
+      }
+    });
+  }, 0);
+}
+
 function bindAddPropBtn(entity, onAdd) {
   document.querySelectorAll(`.add-prop-btn[data-entity="${entity}"]`).forEach(btn => {
     btn.onclick = async (e) => {
@@ -2652,6 +2821,10 @@ function bindAddPropBtn(entity, onAdd) {
             }
             if (!isConnected && rawType === 'relation') {
               showAddRelationPanel(btn, key, name, entity, onAdd);
+              return;
+            }
+            if (!isConnected && rawType === 'rollup') {
+              showAddRollupPanel(btn, key, name, entity, onAdd);
               return;
             }
             // Simple types: save immediately
@@ -3028,6 +3201,12 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
               ? `<span class="multi-chip color-${color}" style="font-size:11px">${escHtml(val)}</span>`
               : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${escHtml(val)}</span>`;
           }
+          if (custom.type === 'rollup') {
+            const num = parseFloat(val);
+            if (!val || isNaN(num)) return `<span class="empty" title="Not yet calculated">∑ —</span>`;
+            const disp = Number.isInteger(num) ? String(num) : num.toFixed(2);
+            return `<span style="font-size:12px;font-variant-numeric:tabular-nums;color:var(--text-secondary)" title="Calculated rollup">∑ ${disp}</span>`;
+          }
           if (custom.type === 'url') {
             return `<a href="${val}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);text-decoration:underline;font-size:12px" onclick="event.stopPropagation()">${val}</a>`;
           }
@@ -3092,6 +3271,7 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
     const def = defs.find(d => d.key === key);
     if (!def) return;
     if (def.type === 'checkbox') return; // handled by input directly
+    if (def.type === 'rollup') return;   // calculated value — not user-editable
     valEl.onclick = (e) => {
       e.stopPropagation();
       if (valEl.querySelector('input,textarea')) return;
@@ -4636,6 +4816,7 @@ async function renderCustomEntityDetail(typeName, entityId) {
   try {
     const e = await api('GET', `/api/custom/${typeName}/${entityId}`);
     updateBreadcrumb('custom-detail', `${typeName}/${entityId}`, e.title);
+    await loadEntityCustomProps(entityKey, parseInt(entityId));
     const propPanel = buildInlinePropPanel(entityKey, parseInt(entityId), []);
     main.innerHTML = `<div class="view">
       <div class="entity-view-cover" id="ced-cover-row"></div>
@@ -15346,7 +15527,7 @@ function showNewEntityTypeModal() {
   overlay.className = 'modal-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9100;display:flex;align-items:center;justify-content:center';
 
-  const PROP_TYPES = ['text','number','date','select','multi_select','url','checkbox','relation'];
+  const PROP_TYPES = ['text','number','date','select','multi_select','url','checkbox','relation','rollup'];
   // Tags and global taxonomy props are always available on every entity via the taxonomy system.
   // Only show non-taxonomy starter props here.
   const STARTER_PROPS = [
@@ -15765,7 +15946,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
             <input type="text" placeholder="key" style="width:80px;font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:3px" class="_new-prop-key" />
             <input type="text" placeholder="Label" style="width:90px;font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:3px" class="_new-prop-label" />
             <select style="font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:3px" class="_new-prop-type">
-              ${['text','number','date','select','url','multi_select'].map(o => `<option value="${o}">${o}</option>`).join('')}
+              ${['text','number','date','select','url','multi_select','rollup'].map(o => `<option value="${o}">${o}</option>`).join('')}
             </select>
             <button class="btn btn-sm btn-primary _new-prop-save" style="font-size:11px;padding:2px 8px">Add</button>
             <button class="btn btn-sm btn-ghost _new-prop-cancel" style="font-size:11px;padding:2px 6px">×</button>`;
@@ -15779,6 +15960,25 @@ async function openRaibisSettings(defaultTab = 'apps') {
             let defs = [];
             try { defs = t.prop_defs ? JSON.parse(t.prop_defs) : []; } catch(e) {}
             if (defs.some(d => d.key === key)) { showToast('Property key already exists', 'error'); return; }
+            // Rollup type: open config panel before saving to the DB
+            if (type === 'rollup') {
+              const saveBtn = addRow.querySelector('._new-prop-save');
+              showAddRollupPanel(saveBtn, key, label, `custom_${tName}`, async () => {
+                // After user configures rollup, sync prop_defs from localStorage back to DB
+                let localDefs = getCustomPropDefs(`custom_${tName}`);
+                const newPd = JSON.stringify(localDefs.filter(d => !d._taxonomy));
+                try {
+                  await api('PUT', `/api/custom-types/${tName}`, { display_name: t.display_name, icon: t.icon || '📁', prop_defs: newPd, has_detail_view: t.has_detail_view, has_subentities: t.has_subentities });
+                  t.prop_defs = newPd;
+                  await renderCetList();
+                  const panel2 = list.querySelector(`._cet-props-panel[data-name="${tName}"]`);
+                  if (panel2) { panel2.style.display = 'block'; const tb2 = list.querySelector(`._cet-toggle-props[data-name="${tName}"]`); if (tb2) tb2.textContent = 'Props ▴'; }
+                  showToast('Rollup property added');
+                } catch(err) { showToast('Failed: ' + (err.message || err), 'error'); }
+              });
+              addRow.remove();
+              return;
+            }
             defs.push({ key, label, type });
             const newPropDefs = JSON.stringify(defs);
             try {

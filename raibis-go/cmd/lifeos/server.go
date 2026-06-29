@@ -28,6 +28,7 @@ import (
 	"github.com/raibis/raibis-go/internal/domain"
 	"github.com/raibis/raibis-go/internal/gui"
 	"github.com/raibis/raibis-go/internal/richtext"
+	"github.com/raibis/raibis-go/internal/rollup"
 	"github.com/raibis/raibis-go/internal/service"
 	"github.com/raibis/raibis-go/internal/storage"
 	"github.com/raibis/raibis-go/internal/vault"
@@ -3278,6 +3279,8 @@ func propertiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc
 				errJSON(w, 500, err.Error())
 				return
 			}
+			// Propagate rollup recalculation up the hierarchy (non-blocking)
+			go rollup.TriggerPropagation(store, entityType, entityID)
 			// Sync non-internal keys to the Obsidian vault frontmatter
 			if !strings.HasPrefix(body.Key, "_") {
 				go func() {
@@ -4501,6 +4504,7 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 			if vlt != nil {
 				_ = vlt.WriteEntityMD("custom_"+typeName, entityID, customEntityFM(&e), "")
 			}
+			go rollup.TriggerPropagation(store, typeName, entityID)
 			writeJSON(w, 200, e)
 
 		case http.MethodDelete:

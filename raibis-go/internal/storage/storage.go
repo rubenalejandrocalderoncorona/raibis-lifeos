@@ -93,6 +93,7 @@ type Storage interface {
 
 	// ── Entity children (generic parent→child hierarchy) ──────────────────
 	GetEntityChildren(parentType string, parentID int64) ([]*domain.EntityChild, error)
+	GetEntityParents(childType string, childID int64) ([]*domain.EntityChild, error)
 	AddEntityChild(parentType string, parentID int64, childType string, childID int64) error
 	RemoveEntityChild(parentType string, parentID int64, childType string, childID int64) error
 
@@ -113,6 +114,7 @@ type Storage interface {
 
 	// ── Custom Entity Types ───────────────────────────────────────────────────
 	CreateCustomEntityType(t *domain.CustomEntityType) (int64, error)
+	GetCustomEntityType(name string) (*domain.CustomEntityType, error)
 	ListCustomEntityTypes() ([]*domain.CustomEntityType, error)
 	UpdateCustomEntityType(t *domain.CustomEntityType) error
 	DeleteCustomEntityType(name string) error
