@@ -1921,25 +1921,13 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
         const section = container.closest('.rich-content-section');
         if (section) section.style.marginLeft = '44px';
       }
-      // When a popover (slash-menu/toolbox) opens inside a scrollable container,
-      // scroll the container so the popover stays fully visible instead of using
-      // position:fixed (which is clipped by slideover's transform:translateX(0)).
-      const _scrollCtx = container.closest('.slideover-body') || container.closest('.entity-fullscreen');
+      // When a popover (slash-menu/toolbox) opens inside overflow:auto, it gets clipped.
+      // Must set both axes to visible — CSS spec silently converts overflow-y:visible
+      // back to auto whenever overflow-x is non-visible, so overflowY alone is a no-op.
+      const _popoverCtx = container.closest('.slideover-body') || container.closest('.entity-fullscreen');
       new MutationObserver(() => {
-        container.querySelectorAll('.ce-popover--opened:not([data-lifted])').forEach(pop => {
-          pop.dataset.lifted = '1';
-          requestAnimationFrame(() => {
-            if (!_scrollCtx) return;
-            const r = pop.getBoundingClientRect();
-            if (!r.width) return;
-            const srect = _scrollCtx.getBoundingClientRect();
-            const overshoot = r.top + 290 - srect.bottom;
-            if (overshoot > 0) _scrollCtx.scrollTop += overshoot + 16;
-          });
-        });
-        container.querySelectorAll('.ce-popover[data-lifted]:not(.ce-popover--opened)').forEach(pop => {
-          delete pop.dataset.lifted;
-        });
+        const hasOpen = !!container.querySelector('.ce-popover--opened');
+        if (_popoverCtx) _popoverCtx.style.overflow = hasOpen ? 'visible' : '';
       }).observe(container, { subtree: true, attributes: true, attributeFilter: ['class'] });
     },
     onChange: async () => {
@@ -2590,7 +2578,12 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup)
   }, existingRollup || {});
 
   function getChildDefs(typeName) {
-    if (!typeName) return [];
+    if (!typeName) {
+      const seen = new Set();
+      return customEntityTypes.flatMap(ct => {
+        try { return JSON.parse(ct.prop_defs || '[]'); } catch { return []; }
+      }).filter(d => { if (seen.has(d.key)) return false; seen.add(d.key); return true; });
+    }
     const t = customEntityTypes.find(ct => ct.name === typeName);
     if (!t || !t.prop_defs) return [];
     try { return JSON.parse(t.prop_defs); } catch { return []; }
@@ -4936,12 +4929,85 @@ async function openCustomEntitySlideover(typeName, id) {
 
     ${buildRichContentSection(entityKey, id)}
 
+    ${typeInfo?.has_subentities ? `
+    <div class="subtask-section" id="subents-section">
+      <div class="subtask-section-title">
+        <span>Sub-${escHtml(displayName)}</span>
+        <button class="btn btn-sm btn-ghost" id="subents-add-btn">+ Add</button>
+      </div>
+      <div id="subents-list" style="margin-top:6px">
+        <div style="color:var(--text-muted);font-size:12px">Loading…</div>
+      </div>
+    </div>
+    ` : ''}
+
     ${buildCommentSection(entityKey, id)}
   `;
 
   openSlideover(e.title || displayName, body);
   setSlideoverExport(entityKey, id);
   initSlideoverCoverArea(entityKey, id);
+
+  if (typeInfo?.has_subentities) {
+    const _subList = document.getElementById('subents-list');
+    const _loadSubs = async () => {
+      let children = [];
+      try { children = await api('GET', `/api/children/${entityKey}/${id}`); } catch {}
+      const same = (children || []).filter(c => c.child_entity_type === entityKey);
+      if (!same.length) {
+        _subList.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:4px 0">No sub-${escHtml(displayName.toLowerCase())}s yet</div>`;
+        return;
+      }
+      _subList.innerHTML = same.map(c =>
+        `<div class="subtask-row" style="cursor:pointer" data-sub-id="${c.child_entity_id}">
+          <span class="subtask-title">${escHtml(c.child_title || '—')}</span>
+          <button class="btn btn-sm btn-ghost" data-unlink="${c.child_entity_id}" title="Unlink" style="opacity:0.5;flex-shrink:0">×</button>
+        </div>`
+      ).join('');
+      _subList.querySelectorAll('[data-unlink]').forEach(btn => {
+        btn.onclick = async (ev) => {
+          ev.stopPropagation();
+          await api('DELETE', `/api/children/${entityKey}/${id}/${entityKey}/${btn.dataset.unlink}`).catch(() => {});
+          _loadSubs();
+        };
+      });
+      _subList.querySelectorAll('[data-sub-id]').forEach(row => {
+        row.onclick = (ev) => {
+          if (ev.target.dataset.unlink) return;
+          openCustomEntitySlideover(typeName, parseInt(row.dataset.subId));
+        };
+      });
+    };
+    _loadSubs();
+    document.getElementById('subents-add-btn').onclick = () => {
+      if (document.getElementById('subents-new-row')) return;
+      const row = document.createElement('div');
+      row.id = 'subents-new-row';
+      row.className = 'subtask-row';
+      row.innerHTML = `<input type="text" id="subents-new-inp" placeholder="${escHtml(displayName)} title…"
+        style="flex:1;font-size:13px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)"/>
+        <button class="btn btn-sm btn-primary" id="subents-new-save">Add</button>
+        <button class="btn btn-sm btn-ghost" id="subents-new-cancel">×</button>`;
+      _subList.prepend(row);
+      const inp = document.getElementById('subents-new-inp');
+      inp.focus();
+      const doSave = async () => {
+        const title = inp.value.trim();
+        if (!title) { row.remove(); return; }
+        try {
+          const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
+          await api('POST', `/api/children/${entityKey}/${id}`, { child_entity_type: entityKey, child_entity_id: newE.id });
+          _loadSubs();
+        } catch(err) { console.error('Subentity creation failed:', err); }
+      };
+      document.getElementById('subents-new-save').onclick = doSave;
+      document.getElementById('subents-new-cancel').onclick = () => row.remove();
+      inp.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); doSave(); }
+        if (ev.key === 'Escape') row.remove();
+      });
+    };
+  }
 
   // Icon
   const cesIconAddBtn = document.getElementById('ces-icon-add-btn');
