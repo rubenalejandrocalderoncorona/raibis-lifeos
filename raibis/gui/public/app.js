@@ -1696,7 +1696,16 @@ function getCustomPropDefs(entity) {
       opts.forEach(o => { if (o.color) optionColors[o.name] = o.color; });
       return { key: `tax_${tp.key}`, label: tp.label, type: 'multi_select', options: opts.map(o => o.name), optionColors, _taxonomy: tp.key };
     });
-  return [...entityDefs, ...taxDefs];
+  const allDefs = [...entityDefs, ...taxDefs];
+  // Inject _parent relation for has_subentities custom types (implicit — not stored in prop_defs)
+  if (entity.startsWith('custom_') && !entityDefs.find(d => d.key === '_parent')) {
+    const typeName = entity.replace('custom_', '');
+    const typeInfo = customEntityTypes.find(t => t.name === typeName);
+    if (typeInfo?.has_subentities) {
+      allDefs.unshift({ key: '_parent', label: 'Parent', type: 'relation', relatedEntity: typeName, bilateral: false });
+    }
+  }
+  return allDefs;
 }
 
 function setCustomPropDefs(entity, defs) {
@@ -4997,6 +5006,9 @@ async function openCustomEntitySlideover(typeName, id) {
         try {
           const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
           await api('POST', `/api/children/${entityKey}/${id}`, { child_entity_type: entityKey, child_entity_id: newE.id });
+          const parentRef = JSON.stringify([{ id: String(id), label: e.title || displayName }]);
+          await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
+          setCustomPropValue(entityKey, newE.id, '_parent', parentRef);
           _loadSubs();
         } catch(err) { console.error('Subentity creation failed:', err); }
       };
@@ -11197,8 +11209,15 @@ async function showTaskSlideover(taskId) {
       renderValue: () => (task.recur_interval||0) > 0 ? `<span>Every ${task.recur_interval} ${task.recur_unit||'days'}</span>` : '' },
     { key: 'description', label: 'Description',  icon: pIco('<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>'),
       renderValue: () => task.description ? `<span style="font-size:12px;white-space:pre-wrap">${escHtml(task.description)}</span>` : '' },
+    ...(task.parent_task_id ? [{
+      key: 'parent_task', label: 'Parent Task', icon: pIco('<polyline points="15 18 9 12 15 6"/>'),
+      renderValue: () => {
+        const pt = allTasksCache.find(t => String(t.id) === String(task.parent_task_id));
+        return pt ? `<span class="multi-chip" style="font-size:11px;cursor:pointer">${escHtml(pt.title)}</span>` : `<span style="font-size:12px">#${task.parent_task_id}</span>`;
+      }
+    }] : []),
   ];
-  const taskBodyDefs = allTaskBuiltinDefs.filter(d => taskSections.body.includes(d.key) || d.key === 'description');
+  const taskBodyDefs = allTaskBuiltinDefs.filter(d => taskSections.body.includes(d.key) || d.key === 'description' || (d.key === 'parent_task' && !!task.parent_task_id));
   await loadEntityCustomProps('task', taskId);
   const taskInlinePropPanel = buildInlinePropPanel('task', taskId, taskBodyDefs);
 
@@ -11410,6 +11429,12 @@ async function showTaskSlideover(taskId) {
       };
       const dismiss = e => { if (!popup.contains(e.target)) { popup.remove(); document.removeEventListener('mousedown', dismiss); } };
       setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
+    },
+    parent_task: (valEl) => {
+      const items = allTasksCache.filter(t => t.id !== taskId).map(t => ({ value: String(t.id), label: t.title }));
+      openCombo(valEl, [{ value: '', label: '— None (top-level) —' }, ...items], task.parent_task_id ? String(task.parent_task_id) : '', async ({ value }) => {
+        await patchTask({ parent_task_id: value ? parseInt(value) : null });
+      });
     },
     description: (valEl) => {
       const cur = task.description || '';
