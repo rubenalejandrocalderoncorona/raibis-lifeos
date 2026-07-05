@@ -3,7 +3,7 @@
 /* ─── Constants ─────────────────────────────────────────────────────── */
 // UI build stamp — bump when diagnosing "is my client running the new code?".
 // Shown in the sidebar footer next to the version and logged to the console.
-const RAIBIS_UI_BUILD = '2026-07-04.8';
+const RAIBIS_UI_BUILD = '2026-07-05.1';
 window.RAIBIS_UI_BUILD = RAIBIS_UI_BUILD;
 console.log('[raibis] UI build', RAIBIS_UI_BUILD);
 const API = 'http://localhost:3344';
@@ -4866,6 +4866,9 @@ function closeModal() {
       !document.getElementById('form-slideover').classList.contains('open')) {
     document.getElementById('modal-backdrop').classList.remove('open');
   }
+  // Purge the stale body once hidden — leftover markup carries duplicate ids
+  // (#modal-cancel-btn, …) that hijack getElementById wiring in other panels.
+  setTimeout(() => { if (!modal.classList.contains('open')) document.getElementById('modal-body').innerHTML = ''; }, 250);
 }
 
 /* ─── Slideover ──────────────────────────────────────────────────────── */
@@ -4975,6 +4978,7 @@ function openFormSlideover(title, bodyHTML) {
 function closeFormSlideover() {
   const panel = document.getElementById('form-slideover');
   panel.classList.remove('open');
+  setTimeout(() => { if (!panel.classList.contains('open')) document.getElementById('form-slideover-body').innerHTML = ''; }, 350);
   if (!document.getElementById('slideover').classList.contains('open') &&
       !document.getElementById('modal').classList.contains('open')) {
     document.getElementById('modal-backdrop').classList.remove('open');
@@ -7774,6 +7778,46 @@ function reopenEntitySlideover(entityType, entityId) {
   if (f) f(entityId);
 }
 
+/* ─── Slideover view columns ───────────────────────────────────────────
+   Each bottom view renders as a table (same style as the Subtasks table).
+   Which columns show is configured per parent-entity TYPE + child type, so
+   e.g. "Goals → Projects shows Status, Macro Area, Due" applies to every
+   goal. Column catalog = the child's built-in fields + its custom props.  */
+const EV_CHILD_FIELD_DEFS = {
+  task:     [{ key: 'status', label: 'Status', chip: 'taskStatuses' }, { key: 'priority', label: 'Priority', chip: 'taskPriorities' }, { key: 'due_date', label: 'Due', date: true }, { key: 'story_points', label: 'Points' }],
+  project:  [{ key: 'status', label: 'Status', chip: 'projectStatuses' }, { key: 'macro_area', label: 'Macro Area', chip: 'project_macro_area' }, { key: 'kanban_col', label: 'Kanban Col', chip: 'project_kanban_col' }, { key: 'due_date', label: 'Due', date: true }],
+  goal:     [{ key: 'status', label: 'Status', chip: 'goalStatuses' }, { key: 'type', label: 'Type', chip: 'goal_type' }, { key: 'year', label: 'Year', chip: 'goal_year' }, { key: 'due_date', label: 'Due', date: true }],
+  sprint:   [{ key: 'status', label: 'Status', chip: 'sprintStatuses' }, { key: 'start_date', label: 'Start', date: true }, { key: 'end_date', label: 'End', date: true }],
+  note:     [{ key: 'note_date', label: 'Date', date: true }],
+  resource: [{ key: 'resource_type', label: 'Type', chip: 'resource_type' }, { key: 'url', label: 'URL' }],
+};
+function evChildFieldDefs(childType) {
+  const childKey = customEntityTypes.some(t => t.name === childType) ? `custom_${childType}` : childType;
+  const custom = getCustomPropDefs(childKey)
+    .filter(d => !d._taxonomy && !d.key.startsWith('_') && ['select', 'status', 'text', 'number', 'date', 'checkbox'].includes(d.type))
+    .map(d => ({ key: d.key, label: d.label, chip: (d.type === 'select' || d.type === 'status') ? `${childKey}_${d.key}` : null, date: d.type === 'date', custom: true }));
+  const builtin = EV_CHILD_FIELD_DEFS[childType] || [];
+  const seen = new Set(builtin.map(f => f.key));
+  return [...builtin, ...custom.filter(f => !seen.has(f.key))];
+}
+function getEvViewCols(entityType, childType) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(`evCols_${entityType}_${childType}`) || 'null');
+    if (Array.isArray(stored)) return stored;
+  } catch {}
+  return childType === 'task' ? ['status', 'priority', 'due_date'] : (EV_CHILD_FIELD_DEFS[childType] || []).slice(0, 1).map(f => f.key);
+}
+function setEvViewCols(entityType, childType, cols) {
+  localStorage.setItem(`evCols_${entityType}_${childType}`, JSON.stringify(cols));
+}
+function evCellValue(f, rec, childKey, id) {
+  const v = f.custom ? getCustomPropValues(childKey, id)[f.key] : (rec ? rec[f.key] : undefined);
+  if (v === undefined || v === null || v === '') return '—';
+  if (f.date) return `<span style="font-size:11px;font-family:var(--font-mono);color:var(--text-muted)">${fmtDate(v) || escHtml(String(v))}</span>`;
+  if (f.chip) return builtinSelectChip(f.chip, v);
+  return `<span style="font-size:12px">${escHtml(String(v))}</span>`;
+}
+
 // Fetch the full record list for a child type — custom or built-in alike.
 async function fetchEntityList(childType) {
   try {
@@ -7884,33 +7928,39 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
   }
 
   function renderBlock(view) {
-    const label = EV_LABELS[view.childType] || view.childType;
-    const items = relsByType[view.childType] || [];
-    return `<div class="subtask-section ev-block" data-child-type="${view.childType}" style="margin-top:16px">
+    const ct = view.childType;
+    const label = EV_LABELS[ct] || ct;
+    const items = relsByType[ct] || [];
+    const childKey = customEntityTypes.some(t => t.name === ct) ? `custom_${ct}` : ct;
+    const fieldDefs = evChildFieldDefs(ct);
+    const cols = getEvViewCols(entityType, ct).map(k => fieldDefs.find(f => f.key === k)).filter(Boolean);
+    const rows = items.map(r => {
+      const rec = (childRecords[ct] || new Map()).get(String(r.related_entity_id));
+      return `<tr class="ev-item-row" style="cursor:pointer" data-child-type="${r.related_entity_type}" data-child-id="${r.related_entity_id}">
+        <td><span class="subtask-title">${r.related_title || '(untitled)'}</span></td>
+        ${cols.map(f => `<td>${evCellValue(f, rec, childKey, r.related_entity_id)}</td>`).join('')}
+        <td style="width:28px;text-align:right"><button class="btn btn-sm btn-ghost ev-unlink-btn"
+          data-rel-id="${r.id || ''}" data-child-type="${r.related_entity_type}"
+          data-child-id="${r.related_entity_id}" data-is-fk="${r.is_fk || ''}"
+          data-fk-field="${r.fk_field || ''}" data-prop-key="${r.prop_key || ''}"
+          data-reverse-key="${r.reverse_key || ''}" data-reverse-child-key="${r.reverse_child_key || ''}"
+          style="opacity:0.5">×</button></td>
+      </tr>`;
+    }).join('');
+    return `<div class="subtask-section ev-block" data-child-type="${ct}" style="margin-top:16px">
       <div class="subtask-section-title">
         <span>${label} (${items.length})</span>
         <div style="display:flex;gap:4px;align-items:center">
-          <button class="btn btn-sm btn-ghost ev-add-btn" data-child-type="${view.childType}">+ Add</button>
-          <button class="btn btn-sm btn-ghost ev-rm-btn" data-child-type="${view.childType}" title="Remove this view" style="opacity:0.5;padding:3px 5px;color:var(--color-text-secondary)">${EV_TRASH_ICON}</button>
+          <button class="btn btn-sm btn-ghost ev-cols-btn" data-child-type="${ct}" title="Choose columns" style="opacity:0.6;padding:3px 5px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg></button>
+          <button class="btn btn-sm btn-ghost ev-add-btn" data-child-type="${ct}">+ Add</button>
+          <button class="btn btn-sm btn-ghost ev-rm-btn" data-child-type="${ct}" title="Remove this view" style="opacity:0.5;padding:3px 5px;color:var(--color-text-secondary)">${EV_TRASH_ICON}</button>
         </div>
       </div>
       <div class="ev-items">
-        ${items.length ? items.map(r => `
-          <div class="subtask-row ev-item-row" style="cursor:pointer" data-child-type="${r.related_entity_type}" data-child-id="${r.related_entity_id}">
-            <span class="subtask-title">${r.related_title || '(untitled)'}</span>
-            ${(() => {
-              const rec = (childRecords[r.related_entity_type] || new Map()).get(String(r.related_entity_id));
-              if (!rec) return '';
-              const statusKey = r.related_entity_type === 'task' ? 'taskStatuses' : `${r.related_entity_type}Statuses`;
-              return `${rec.status ? builtinSelectChip(statusKey, rec.status) : ''}${rec.priority ? builtinSelectChip('taskPriorities', rec.priority) : ''}`;
-            })()}
-            <button class="btn btn-sm btn-ghost ev-unlink-btn"
-              data-rel-id="${r.id || ''}" data-child-type="${r.related_entity_type}"
-              data-child-id="${r.related_entity_id}" data-is-fk="${r.is_fk || ''}"
-              data-fk-field="${r.fk_field || ''}" data-prop-key="${r.prop_key || ''}"
-              data-reverse-key="${r.reverse_key || ''}" data-reverse-child-key="${r.reverse_child_key || ''}"
-              style="opacity:0.5;flex-shrink:0">×</button>
-          </div>`).join('')
+        ${items.length ? `<div class="notion-table-wrap" style="margin-top:8px"><table class="notion-table">
+          <thead><tr><th>${escHtml(label.replace(/s$/, ''))}</th>${cols.map(f => `<th>${escHtml(f.label)}</th>`).join('')}<th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>`
         : `<div style="color:var(--text-muted);font-size:12px;padding:4px 0">No linked ${label.toLowerCase()}</div>`}
       </div>
     </div>`;
@@ -7921,6 +7971,35 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
     <div style="margin-top:10px">
       <button class="btn btn-sm btn-ghost ev-addview-btn" style="width:100%">+ Add view</button>
     </div>`;
+
+  // Column chooser per view — persisted per parent TYPE, like prop settings
+  container.querySelectorAll('.ev-cols-btn').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      document.getElementById('ev-cols-panel')?.remove();
+      const ct = btn.dataset.childType;
+      const fieldDefs = evChildFieldDefs(ct);
+      const cur = new Set(getEvViewCols(entityType, ct));
+      const panel = document.createElement('div');
+      panel.id = 'ev-cols-panel';
+      panel.className = 'prop-vis-panel';
+      panel.innerHTML = `<div style="padding:6px 10px 4px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">Columns</div>` +
+        fieldDefs.map(f => `<label class="prop-vis-row" style="cursor:pointer"><input type="checkbox" data-col="${escHtml(f.key)}" ${cur.has(f.key) ? 'checked' : ''}> <span>${escHtml(f.label)}</span></label>`).join('');
+      const rect = btn.getBoundingClientRect();
+      panel.style.cssText = `position:fixed;z-index:9200;min-width:190px;max-height:60vh;overflow-y:auto;top:${rect.bottom + 4}px;left:${Math.max(8, rect.left - 120)}px`;
+      document.body.appendChild(panel);
+      panel.querySelectorAll('input[data-col]').forEach(cb => {
+        cb.onchange = () => {
+          const next = fieldDefs.map(f => f.key).filter(k => panel.querySelector(`input[data-col="${k}"]`)?.checked);
+          setEvViewCols(entityType, ct, next);
+          initEntityViewsSection(entityType, entityId, entityData);
+        };
+      });
+      setTimeout(() => document.addEventListener('click', function evColsOutside(ev) {
+        if (!panel.contains(ev.target)) { panel.remove(); document.removeEventListener('click', evColsOutside); }
+      }), 0);
+    };
+  });
 
   // Remove a view from config
   container.querySelectorAll('.ev-rm-btn').forEach(btn => {
@@ -18807,9 +18886,9 @@ function showQuickNoteModal() {
 
   openModal('Quick Note', body);
   bindModalDateChips();
-  document.getElementById('modal-cancel-btn').onclick = closeModal;
+  document.querySelector('#modal #modal-cancel-btn').onclick = closeModal;
   requestAnimationFrame(() => document.getElementById('qn-title')?.focus());
-  document.getElementById('modal-save-btn').onclick = async () => {
+  document.querySelector('#modal #modal-save-btn').onclick = async () => {
     const title = document.getElementById('qn-title').value.trim();
     const body = document.getElementById('qn-body').value;
     const note_date = document.getElementById('qn-date').value || null;

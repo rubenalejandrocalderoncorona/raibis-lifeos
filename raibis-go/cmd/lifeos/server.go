@@ -3441,8 +3441,14 @@ func propertiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc
 						fileBody = content
 					}
 					existingProps[body.Key] = body.Value
+					targets := relationPropTargets(store, entityType)
 					fm := make(map[string]any, len(existingProps))
 					for k, v := range existingProps {
+						// relation values render as wiki-links, never raw JSON
+						if links, ok := relationValueToLinks(k, v, targets); ok {
+							fm[k] = links
+							continue
+						}
 						fm[k] = v
 					}
 					_ = vlt.WriteEntityMD(entityType, entityID, fm, fileBody)
@@ -4553,9 +4559,14 @@ func customEntityFM(e *domain.CustomEntity) map[string]any {
 		"created_at": createdAt.Format(time.RFC3339),
 	}
 	for k, v := range e.Props {
-		if !strings.HasPrefix(k, "_") {
-			fm[k] = v
+		if strings.HasPrefix(k, "_") {
+			continue
 		}
+		if links, ok := relationValueToLinks(k, v, nil); ok {
+			fm[k] = links
+			continue
+		}
+		fm[k] = v
 	}
 	if parentStr, ok := e.Props["_parent"]; ok && parentStr != "" && parentStr != "[]" {
 		var parents []struct {
@@ -5104,12 +5115,84 @@ func mergeFMWithProps(fm map[string]any, store storage.Storage, entityType strin
 	if err != nil {
 		return fm
 	}
+	targets := relationPropTargets(store, entityType)
 	for k, v := range props {
-		if !strings.HasPrefix(k, "_") {
-			fm[k] = v
+		if strings.HasPrefix(k, "_") {
+			continue
 		}
+		if links, ok := relationValueToLinks(k, v, targets); ok {
+			fm[k] = links
+			continue
+		}
+		fm[k] = v
 	}
 	return fm
+}
+
+// relationPropTargets maps relation-typed prop keys to their target type name,
+// read from the entity type's schema row (identical for default and custom
+// types). Used to render relation values as Obsidian wiki-links.
+func relationPropTargets(store storage.Storage, entityType string) map[string]string {
+	out := map[string]string{}
+	tc, err := store.GetCustomEntityType(strings.TrimPrefix(entityType, "custom_"))
+	if err != nil || tc == nil || tc.PropDefs == "" {
+		return out
+	}
+	var defs []struct {
+		Key           string `json:"key"`
+		Type          string `json:"type"`
+		RelatedEntity string `json:"relatedEntity"`
+	}
+	if json.Unmarshal([]byte(tc.PropDefs), &defs) != nil {
+		return out
+	}
+	for _, d := range defs {
+		if d.Type == "relation" && d.Key != "" {
+			t := d.RelatedEntity
+			if t == "" {
+				t = strings.TrimSuffix(d.Key, "s")
+			}
+			out[d.Key] = strings.TrimPrefix(t, "custom_")
+		}
+	}
+	return out
+}
+
+// relationValueToLinks converts a stored relation value — a JSON array of
+// {id,label} items — into a list of wiki-links ("[[type-id|label]]"), so
+// every relation property reads as real links in Obsidian. Non-relation
+// values are passed through untouched (ok=false).
+func relationValueToLinks(key, raw string, targets map[string]string) ([]string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, "[{") {
+		return nil, false
+	}
+	var items []struct {
+		ID    string `json:"id"`
+		Label string `json:"label"`
+	}
+	if json.Unmarshal([]byte(trimmed), &items) != nil || len(items) == 0 {
+		return nil, false
+	}
+	target := targets[key]
+	if target == "" {
+		target = strings.TrimSuffix(key, "s") // resources → resource
+	}
+	links := make([]string, 0, len(items))
+	for _, it := range items {
+		if it.ID == "" {
+			continue
+		}
+		label := it.Label
+		if label == "" {
+			label = target + "-" + it.ID
+		}
+		links = append(links, "[["+target+"-"+it.ID+"|"+label+"]]")
+	}
+	if len(links) == 0 {
+		return nil, false
+	}
+	return links, true
 }
 
 func configHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
