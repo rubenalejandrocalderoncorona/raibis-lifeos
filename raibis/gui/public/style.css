@@ -1370,16 +1370,17 @@ body.kanban-dragging-active * {
 }
 
 .slideover-header {
-  position: absolute;
-  top: 0; right: 0;
-  z-index: 2;
+  position: relative;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding: var(--space-4) var(--space-5);
-  pointer-events: none; /* let clicks pass through except the close button */
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 8px 14px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--border-soft, var(--color-border));
 }
-.slideover-header .modal-close { pointer-events: all; }
 .slideover-header-actions {
   display: flex;
   align-items: center;
@@ -5811,7 +5812,7 @@ body.editor-wide .entity-fullscreen-inner { max-width: none; padding: 0 64px; }
 /* ── Panels: airier, softer edge ── */
 .slideover { border-left-color: var(--border-soft); }
 .slideover-body {
-  padding: calc(var(--space-5) + 20px) var(--space-7, 32px) var(--space-7, 32px);
+  padding: var(--space-5) var(--space-7, 32px) var(--space-7, 32px);
 }
 .entity-fs-content { padding-top: 40px; }
 

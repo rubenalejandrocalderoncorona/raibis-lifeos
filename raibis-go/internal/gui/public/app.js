@@ -3,7 +3,7 @@
 /* ─── Constants ─────────────────────────────────────────────────────── */
 // UI build stamp — bump when diagnosing "is my client running the new code?".
 // Shown in the sidebar footer next to the version and logged to the console.
-const RAIBIS_UI_BUILD = '2026-07-05.1';
+const RAIBIS_UI_BUILD = '2026-07-05.2';
 window.RAIBIS_UI_BUILD = RAIBIS_UI_BUILD;
 console.log('[raibis] UI build', RAIBIS_UI_BUILD);
 const API = 'http://localhost:3344';
@@ -3110,16 +3110,23 @@ function showAddRelationPanel(anchorBtn, key, name, entity, onAdd) {
       defs.push({ key, label: name, type: 'relation', relatedEntity, bilateral, reverseKey: revKey });
       setCustomPropDefs(entity, defs);
       if (bilateral) {
-        // Add reverse relation on the target entity — label = display name of the source entity
+        // Add reverse relation on the target entity — label = display name of
+        // the source entity. Custom targets store their defs under the
+        // custom_-prefixed key (what their UI reads); built-ins under the bare name.
+        const revEntityKey = customEntityTypes.some(t => t.name === relatedEntity) ? `custom_${relatedEntity}` : relatedEntity;
+        const bareSource = entity.replace(/^custom_/, '');
         const BUILTIN_LABELS = {task:'Tasks',goal:'Goals',project:'Projects',sprint:'Sprints',note:'Notes',resource:'Resources',habit:'Habits'};
-        const revLabel = BUILTIN_LABELS[entity] || entityLabel(entity);
-        const revDefs = getCustomPropDefs(relatedEntity);
+        const revLabel = BUILTIN_LABELS[bareSource] || entityLabel(bareSource);
+        const revDefs = getCustomPropDefs(revEntityKey);
         if (!revDefs.some(d => d.key === revKey)) {
-          revDefs.push({ key: revKey, label: revLabel, type: 'relation', relatedEntity: entity, bilateral: true, reverseKey: key });
-          setCustomPropDefs(relatedEntity, revDefs);
-          const rv = getEntityVisProps(relatedEntity); if (!rv.includes(revKey)) setEntityVisProps(relatedEntity, [...rv, revKey]);
+          revDefs.push({ key: revKey, label: revLabel, type: 'relation', relatedEntity: bareSource, bilateral: true, reverseKey: key });
+          setCustomPropDefs(revEntityKey, revDefs);
+          const rv = getEntityVisProps(revEntityKey); if (!rv.includes(revKey)) setEntityVisProps(revEntityKey, [...rv, revKey]);
+          syncPropDefsToServer(revEntityKey);
+          document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity: revEntityKey } }));
         }
       }
+      syncPropDefsToServer(entity);
       if (entity === 'task') {
         ['board','table','list','kanban','cards'].forEach(vm => { const v=getTaskVisProps(vm); if(!v.includes(key)) setTaskVisProps(vm,[...v,key]); });
       } else {
@@ -4906,13 +4913,9 @@ function openSlideover(title, bodyHTML) {
 }
 
 function setSlideoverExport(entity, id) {
-  const btn = document.getElementById('slideover-export');
-  if (!btn) return;
-  if (!entity || !id) { btn.style.display = 'none'; return; }
-  btn.style.display = '';
-  btn.onclick = () => downloadEntityJson(entity, id);
-  // Every entity slideover calls this right after opening — single hook point
-  // for injecting registered custom widgets below the prop chips.
+  // Header export button was removed (JSON export lives in each slideover's
+  // footer) — this remains the single per-open hook for widget injection.
+  if (!entity || !id) return;
   mountEntityWidgets(entity, id, document.querySelector('#slideover-body #prop-chips'), 'slideover');
 }
 
@@ -5103,6 +5106,22 @@ const BUILTIN_TYPE_ROW_NAMES = new Set(['task', 'project', 'goal', 'note', 'reso
 async function loadCustomEntityTypes() {
   const allTypeRows = await api('GET', '/api/custom-types').catch(() => []) || [];
   customEntityTypes = allTypeRows.filter(t => !BUILTIN_TYPE_ROW_NAMES.has(t.name));
+  // Migration: bilateral reverse defs were briefly written under the bare
+  // custom name (customPropDefs_repositories) instead of the prefixed store
+  // the UI reads (customPropDefs_custom_repositories) — merge them over.
+  customEntityTypes.forEach(t => {
+    const wrong = localStorage.getItem(`customPropDefs_${t.name}`);
+    if (!wrong) return;
+    try {
+      const stray = JSON.parse(wrong);
+      const key = `customPropDefs_custom_${t.name}`;
+      const cur = JSON.parse(localStorage.getItem(key) || '[]');
+      const seen = new Set(cur.map(d => d.key));
+      const merged = [...cur, ...stray.filter(d => d && d.key && !seen.has(d.key))];
+      localStorage.setItem(key, JSON.stringify(merged));
+      localStorage.removeItem(`customPropDefs_${t.name}`);
+    } catch {}
+  });
   // Built-in rows: merge their prop_defs into the builtin's localStorage defs
   allTypeRows.filter(t => BUILTIN_TYPE_ROW_NAMES.has(t.name)).forEach(t => {
     if (!t.prop_defs) return;
@@ -7939,12 +7958,6 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
       return `<tr class="ev-item-row" style="cursor:pointer" data-child-type="${r.related_entity_type}" data-child-id="${r.related_entity_id}">
         <td><span class="subtask-title">${r.related_title || '(untitled)'}</span></td>
         ${cols.map(f => `<td>${evCellValue(f, rec, childKey, r.related_entity_id)}</td>`).join('')}
-        <td style="width:28px;text-align:right"><button class="btn btn-sm btn-ghost ev-unlink-btn"
-          data-rel-id="${r.id || ''}" data-child-type="${r.related_entity_type}"
-          data-child-id="${r.related_entity_id}" data-is-fk="${r.is_fk || ''}"
-          data-fk-field="${r.fk_field || ''}" data-prop-key="${r.prop_key || ''}"
-          data-reverse-key="${r.reverse_key || ''}" data-reverse-child-key="${r.reverse_child_key || ''}"
-          style="opacity:0.5">×</button></td>
       </tr>`;
     }).join('');
     return `<div class="subtask-section ev-block" data-child-type="${ct}" style="margin-top:16px">
@@ -7958,7 +7971,7 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
       </div>
       <div class="ev-items">
         ${items.length ? `<div class="notion-table-wrap" style="margin-top:8px"><table class="notion-table">
-          <thead><tr><th>${escHtml(label.replace(/s$/, ''))}</th>${cols.map(f => `<th>${escHtml(f.label)}</th>`).join('')}<th></th></tr></thead>
+          <thead><tr><th>${escHtml(label.replace(/s$/, ''))}</th>${cols.map(f => `<th>${escHtml(f.label)}</th>`).join('')}</tr></thead>
           <tbody>${rows}</tbody>
         </table></div>`
         : `<div style="color:var(--text-muted);font-size:12px;padding:4px 0">No linked ${label.toLowerCase()}</div>`}
