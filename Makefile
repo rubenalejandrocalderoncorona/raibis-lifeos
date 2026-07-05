@@ -4,7 +4,7 @@ TAURI_DIR := $(ROOT)/raibis-tauri/src-tauri
 PORT      ?= 3344
 VAULT     ?= /Users/racc/Documents/Obsidian Vault
 
-export PATH         := $(HOME)/.cargo/bin:$(PATH)
+export PATH         := $(HOME)/.cargo/bin:/usr/local/go/bin:/opt/homebrew/bin:$(PATH)
 export LIFEOS_VAULT := $(VAULT)
 
 .PHONY: web app tui stop restart-web restart-app hard

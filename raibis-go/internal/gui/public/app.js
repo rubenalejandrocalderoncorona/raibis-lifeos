@@ -1,19 +1,26 @@
 'use strict';
 
 /* ─── Constants ─────────────────────────────────────────────────────── */
+// UI build stamp — bump when diagnosing "is my client running the new code?".
+// Shown in the sidebar footer next to the version and logged to the console.
+const RAIBIS_UI_BUILD = '2026-07-04.8';
+window.RAIBIS_UI_BUILD = RAIBIS_UI_BUILD;
+console.log('[raibis] UI build', RAIBIS_UI_BUILD);
 const API = 'http://localhost:3344';
 const DEFAULT_TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done'];
 const DEFAULT_TASK_PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 let TASK_STATUSES = JSON.parse(localStorage.getItem('taskStatuses') || 'null') || [...DEFAULT_TASK_STATUSES];
+let SPRINT_STATUS_VALUES = JSON.parse(localStorage.getItem('sprintStatuses') || 'null') || ['planned','active','completed'];
+let RESOURCE_TYPES = JSON.parse(localStorage.getItem('resource_type') || 'null') || ['link','book','article','video','tool'];
 let TASK_PRIORITIES = JSON.parse(localStorage.getItem('taskPriorities') || 'null') || [...DEFAULT_TASK_PRIORITIES];
 const TASK_CATEGORIES = ['Work-Process','Work-Tickets','Birthdays','Finance','Organization','Hobbies','Study','Travel','Personal','Health','Work-Task'];
 const RECUR_UNITS = ['Day(s)','Week(s)','Month(s)','Year(s)'];
-const GOAL_TYPES = ['12 Weeks','12 Months','3 Years','5 Years'];
-const GOAL_YEARS = ['2025','2026','2027','Multiyear'];
-const MACRO_AREAS = ['Soul (Connection & Restoration)','Output (Deep Work & Career)','Growth (Input & Optimization)','Body (Physicality)'];
-const KANBAN_COLS = ['Backlog','Maintenance','Sprint'];
-const PROJECT_STATUSES = ['active','on_hold','completed','archived'];
-const GOAL_STATUSES = ['active','on_hold','completed','archived'];
+let GOAL_TYPES = JSON.parse(localStorage.getItem('goal_type') || 'null') || ['12 Weeks','12 Months','3 Years','5 Years'];
+let GOAL_YEARS = JSON.parse(localStorage.getItem('goal_year') || 'null') || ['2025','2026','2027','Multiyear'];
+let MACRO_AREAS = JSON.parse(localStorage.getItem('project_macro_area') || 'null') || ['Soul (Connection & Restoration)','Output (Deep Work & Career)','Growth (Input & Optimization)','Body (Physicality)'];
+let KANBAN_COLS = JSON.parse(localStorage.getItem('project_kanban_col') || 'null') || ['Backlog','Maintenance','Sprint'];
+let PROJECT_STATUSES = JSON.parse(localStorage.getItem('projectStatuses') || 'null') || ['active','on_hold','completed','archived'];
+let GOAL_STATUSES = JSON.parse(localStorage.getItem('goalStatuses') || 'null') || ['active','on_hold','completed','archived'];
 const COLOR_OPTIONS = ['blue','green','red','yellow','purple','cyan','orange','pink'];
 const COLOR_HEX = {blue:'#378ADD',green:'#6dcc8a',red:'#e07070',yellow:'#d4a84b',purple:'#a78bfa',cyan:'#22d3ee',orange:'#fb923c',pink:'#f472b6'};
 
@@ -1823,9 +1830,10 @@ function getCustomPropValues(entity, recordId) {
   return stored ? JSON.parse(stored) : {};
 }
 
-function setCustomPropValue(entity, recordId, key, value) {
-  const vals = getCustomPropValues(entity, recordId);
-  vals[key] = value;
+function setCustomPropValue(entity, recordId, key, value, _rollupVisited) {
+  const prevVals = getCustomPropValues(entity, recordId);
+  const prevParents = key === '_parent' ? parseRelationValue(prevVals._parent || '') : null;
+  const vals = { ...prevVals, [key]: value };
   localStorage.setItem(`customPropVals_${entity}_${recordId}`, JSON.stringify(vals));
   // Sync to backend (persists to DB + Obsidian vault frontmatter)
   api('POST', `/api/properties?entity_type=${entity}&entity_id=${recordId}`, { key, value: String(value) })
@@ -1834,6 +1842,202 @@ function setCustomPropValue(entity, recordId, key, value) {
   document.querySelectorAll(`.task-chips-outer[data-entity="${entity}"][data-rid="${recordId}"]`).forEach(el => {
     el.innerHTML = renderCustomPropChips(entity, recordId, el.dataset.vm || 'list');
   });
+  // Refresh any visible rollup cell showing this exact value
+  document.querySelectorAll(`.inline-prop-panel[data-entity="${entity}"][data-record-id="${recordId}"] .inline-prop-value[data-prop-key="${key}"]`).forEach(el => {
+    const def = getCustomPropDefs(entity).find(d => d.key === key);
+    if (def && def.type === 'rollup') el.innerHTML = renderRollupValue(value, def);
+  });
+  // Reactively recompute rollups up the parent chain (client-side mirror of
+  // the server's DAG propagation, so values update without a reload).
+  // Internal props (_rich_content, _cover, …) never feed rollups — except
+  // _parent, which changes the hierarchy itself.
+  if (entity.startsWith('custom_') && (!key.startsWith('_') || key === '_parent')) {
+    const visited = _rollupVisited || new Set();
+    recalcEntityRollups(entity, recordId, visited);
+    // If the parent link itself changed, the old parents' rollups are stale too
+    if (prevParents) prevParents.forEach(p => { if (p.id) recalcEntityRollups(entity, p.id, visited); });
+  }
+}
+
+/* ─── Rollup calculation engine (client-side) ─────────────────────────
+   Mirrors the Go rollup propagation so values appear instantly in the UI.
+   A rollup def carries: { target_property, operation, child_entity_type?,
+   condition?: { match_value }, value_map?: { option: number } }             */
+
+// Standard (built-in) entity types available as rollup children, with the
+// intrinsic fields worth aggregating. Custom props on these types are merged
+// in by the config UI via getCustomPropDefs.
+const ROLLUP_BUILTIN_TYPES = [
+  { name: 'task',     display_name: 'Tasks' },
+  { name: 'project',  display_name: 'Projects' },
+  { name: 'goal',     display_name: 'Goals' },
+  { name: 'note',     display_name: 'Notes' },
+  { name: 'resource', display_name: 'Resources' },
+  { name: 'sprint',   display_name: 'Sprints' },
+];
+function rollupBuiltinFieldDefs(typeName) {
+  switch (typeName) {
+    case 'task': return [
+      { key: 'status',       label: 'Status',       options: TASK_STATUSES },
+      { key: 'priority',     label: 'Priority',     options: TASK_PRIORITIES },
+      { key: 'story_points', label: 'Story Points' },
+    ];
+    case 'project': return [{ key: 'status', label: 'Status', options: PROJECT_STATUSES }];
+    case 'goal':    return [{ key: 'status', label: 'Status', options: GOAL_STATUSES }];
+    case 'sprint':  return [{ key: 'status', label: 'Status', options: ['planned', 'active', 'completed'] }];
+    default:        return [];
+  }
+}
+
+// All cached entities whose _parent relation includes parentId — custom types
+// AND standard ones. Tasks additionally contribute their native subtasks
+// (parent_task_id) with intrinsic fields merged in.
+// childTypeFilter is a type name (without the custom_ prefix); empty = any type.
+// parentEntityKey (optional) lets FK-linked children resolve: tasks pointing at
+// this parent via goal_id / project_id / sprint_id count as children too.
+function collectRollupChildren(parentId, childTypeFilter, parentEntityKey) {
+  const out = [];
+  const seen = new Set();
+  const push = (entityKey, id, vals) => {
+    const dk = `${entityKey}:${id}`;
+    if (seen.has(dk)) return;
+    seen.add(dk);
+    if (entityKey === 'task') {
+      const t = (allTasksCache || []).find(x => String(x.id) === String(id));
+      if (t) vals = { status: t.status, priority: t.priority, story_points: t.story_points, ...vals };
+    }
+    out.push(vals);
+  };
+  const scan = (entityKey) => {
+    const prefix = `customPropVals_${entityKey}_`;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(prefix)) continue;
+      let vals;
+      try { vals = JSON.parse(localStorage.getItem(k) || '{}'); } catch { continue; }
+      if (parseRelationValue(vals._parent || '').some(p => String(p.id) === String(parentId))) {
+        push(entityKey, k.slice(prefix.length), vals);
+      }
+    }
+  };
+  (childTypeFilter ? customEntityTypes.filter(t => t.name === childTypeFilter) : customEntityTypes)
+    .forEach(t => scan(`custom_${t.name}`));
+  ROLLUP_BUILTIN_TYPES.forEach(bt => {
+    if (!childTypeFilter || childTypeFilter === bt.name) scan(bt.name);
+  });
+  if (!childTypeFilter || childTypeFilter === 'task') {
+    (allTasksCache || [])
+      .filter(t => t.parent_task_id != null && String(t.parent_task_id) === String(parentId))
+      .forEach(t => push('task', t.id, getCustomPropValues('task', t.id)));
+    // Classic relational links: tasks pointing at this goal/project/sprint via FK
+    const bareParent = (parentEntityKey || '').replace(/^custom_/, '');
+    if (['goal', 'project', 'sprint'].includes(bareParent)) {
+      const fk = bareParent + '_id';
+      (allTasksCache || [])
+        .filter(t => t[fk] != null && String(t[fk]) === String(parentId))
+        .forEach(t => push('task', t.id, getCustomPropValues('task', t.id)));
+    }
+  }
+  return out;
+}
+
+// Pure calculation: returns the aggregated number, or null when not computable.
+function evaluateRollup(entityKey, entityId, def) {
+  const cfg = def && def.rollup;
+  if (!cfg || !cfg.target_property || !cfg.operation) return null;
+  const children = collectRollupChildren(entityId, cfg.child_entity_type || '', entityKey);
+  if (!children.length) return null;
+  const raw = children.map(c => c[cfg.target_property]).filter(v => v !== undefined && v !== null && v !== '');
+  switch (cfg.operation) {
+    case 'count':
+      return children.length;
+    case 'sum':
+      return raw.reduce((a, v) => a + (parseFloat(v) || 0), 0);
+    case 'average': {
+      const hasMap = cfg.value_map && Object.keys(cfg.value_map).length > 0;
+      const nums = hasMap
+        ? raw.map(v => cfg.value_map[v]).filter(n => typeof n === 'number')
+        : raw.map(v => parseFloat(v)).filter(n => !isNaN(n));
+      return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : null;
+    }
+    case 'percentage_match': {
+      const match = cfg.condition && cfg.condition.match_value;
+      if (match === undefined || match === '') return null;
+      const hits = raw.filter(v => String(v) === String(match)).length;
+      return Math.round((hits / children.length) * 100);
+    }
+    default:
+      return null;
+  }
+}
+
+// Recompute every rollup prop on an entity, then walk up its _parent chain.
+// The visited set guards against cycles in a malformed hierarchy.
+function recalcEntityRollups(entityKey, entityId, visited) {
+  visited = visited || new Set();
+  const vkey = `${entityKey}:${entityId}`;
+  if (visited.has(vkey)) return;
+  visited.add(vkey);
+  getCustomPropDefs(entityKey).filter(d => d.type === 'rollup').forEach(def => {
+    const computed = evaluateRollup(entityKey, entityId, def);
+    if (computed === null) return;
+    const rounded = Math.round(computed * 100) / 100;
+    const cur = parseFloat(getCustomPropValues(entityKey, entityId)[def.key]);
+    if (cur === rounded) return; // unchanged — stop the write (and the cascade)
+    setCustomPropValue(entityKey, entityId, def.key, rounded, visited);
+  });
+  parseRelationValue(getCustomPropValues(entityKey, entityId)._parent || '').forEach(p => {
+    if (p.id) recalcEntityRollups(entityKey, p.id, visited);
+  });
+}
+
+// Card / chip widget for a rollup value, honoring the rule's "display" hint:
+// text (∑ n), progress_bar (minimal track+fill), ring (SVG percentage ring).
+function renderRollupCardWidget(def, value) {
+  const cfg = (def && def.rollup) || {};
+  const num = parseFloat(value);
+  const has = !isNaN(num);
+  const isPct = cfg.operation === 'percentage_match';
+  const pct = has ? Math.max(0, Math.min(100, num)) : 0;
+  const disp = has ? (Number.isInteger(num) ? String(num) : num.toFixed(1)) + (isPct ? '%' : '') : '—';
+  const label = escHtml(def.label || def.key || '');
+  if (cfg.display === 'progress_bar') {
+    return `<div class="rollup-bar-row" title="${label}: ${disp}">
+      <span class="rollup-bar-label">${label}</span>
+      <span class="rollup-bar"><span class="rollup-bar-fill" style="width:${pct}%"></span></span>
+      <span class="rollup-bar-num">${disp}</span>
+    </div>`;
+  }
+  if (cfg.display === 'ring') {
+    const C = 2 * Math.PI * 8;
+    return `<div class="rollup-bar-row" title="${label}: ${disp}">
+      <svg width="18" height="18" viewBox="0 0 20 20" class="rollup-ring" aria-hidden="true">
+        <circle cx="10" cy="10" r="8" fill="none" stroke="var(--color-border)" stroke-width="3"/>
+        <circle cx="10" cy="10" r="8" fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"
+          stroke-dasharray="${C.toFixed(2)}" stroke-dashoffset="${(C * (1 - pct / 100)).toFixed(2)}" transform="rotate(-90 10 10)"/>
+      </svg>
+      <span class="rollup-bar-label">${label}</span>
+      <span class="rollup-bar-num">${disp}</span>
+    </div>`;
+  }
+  return `<div class="rollup-bar-row" title="${label}: ${disp}"><span class="rollup-bar-label">${label}</span><span class="rollup-bar-num">∑ ${disp}</span></div>`;
+}
+
+// Shared display formatting for a rollup value.
+function renderRollupValue(val, def) {
+  const editHint = `<svg class="rollup-edit-hint" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+  const num = parseFloat(val);
+  if (val === '' || val === undefined || val === null || isNaN(num)) {
+    return `<span class="empty" title="Not yet calculated — click to edit rule" style="display:inline-flex;align-items:center;gap:6px">∑ —${editHint}</span>`;
+  }
+  const cfg = (def && def.rollup) || {};
+  const suffix = cfg.operation === 'percentage_match' ? '%' : '';
+  const disp = Number.isInteger(num) ? String(num) : num.toFixed(2);
+  const pct = Math.max(0, Math.min(100, num));
+  const bar = cfg.display === 'progress_bar' || cfg.display === 'ring'
+    ? `<span class="rollup-bar" style="width:72px"><span class="rollup-bar-fill" style="width:${pct}%"></span></span>`
+    : '';
+  return `<span style="font-size:12px;font-variant-numeric:tabular-nums;color:var(--text-secondary);display:inline-flex;align-items:center;gap:6px" title="Calculated rollup — click to edit">∑ ${disp}${suffix}${bar}${editHint}</span>`;
 }
 
 /* ─── Rich Content / EditorJS helpers ───────────────────────────────── */
@@ -1842,9 +2046,63 @@ const _activeEditors = {};
 function buildRichContentSection(entity, entityId) {
   const hostId = `editorjs-${entity}-${entityId}`;
   return `<div class="rich-content-section">
-    <div class="rich-section-label">Content</div>
+    <div class="rich-section-label" style="display:flex;align-items:center;justify-content:space-between">
+      <span>Content</span>
+      <button class="content-fullview-btn" data-entity="${entity}" data-id="${entityId}" title="Open content in full view">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+        Full view
+      </button>
+    </div>
     <div id="${hostId}" class="rich-editor-host"></div>
   </div>`;
+}
+
+// Content full-view buttons are rendered into HTML strings across many
+// slideovers/views, so a single delegated handler wires them all.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.content-fullview-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  const title = document.getElementById('detail-title')?.value
+    || document.getElementById('fs-title')?.textContent
+    || document.getElementById('slideover-title')?.textContent
+    || 'Content';
+  openContentFullscreen(btn.dataset.entity, btn.dataset.id, (title || '').trim());
+});
+
+/* ─── Collapsible sections (sub-entities, subtasks, …) ─────────────────
+   Adds a chevron to a `.subtask-section-title` row that hides/shows the
+   rest of the section. Collapse state persists per storageKey so the
+   preference follows the entity type, not the individual record.        */
+function makeSectionCollapsible(section, storageKey) {
+  if (!section) return;
+  const title = section.querySelector('.subtask-section-title');
+  if (!title || title.querySelector('.section-collapse-btn')) return;
+  const btn = document.createElement('button');
+  btn.className = 'section-collapse-btn';
+  btn.title = 'Hide / show section';
+  btn.innerHTML = `<svg width="11" height="11" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,3 5,7 8,3"/></svg>`;
+  title.insertBefore(btn, title.firstChild);
+  const apply = (collapsed) => {
+    [...section.children].forEach(el => { if (el !== title) el.style.display = collapsed ? 'none' : ''; });
+    btn.classList.toggle('collapsed', collapsed);
+    section.classList.toggle('section-collapsed', collapsed);
+  };
+  let collapsed = localStorage.getItem(`sectionCollapsed_${storageKey}`) === '1';
+  apply(collapsed);
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    collapsed = !collapsed;
+    localStorage.setItem(`sectionCollapsed_${storageKey}`, collapsed ? '1' : '0');
+    apply(collapsed);
+  };
+}
+
+// Heading blocks may be saved as header / header2 / header3 (separate toolbox
+// entries) — resolve the effective level for markdown export and TOCs.
+const HEADER_BLOCK_TYPES = ['header', 'header2', 'header3'];
+function _headerBlockLevel(b) {
+  return b.data && b.data.level ? b.data.level : (b.type === 'header3' ? 3 : b.type === 'header2' ? 2 : 1);
 }
 
 function editorJsToMarkdown(data) {
@@ -1852,11 +2110,16 @@ function editorJsToMarkdown(data) {
   return data.blocks.map(b => {
     const txt = s => (s || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
     switch (b.type) {
-      case 'header':    return '#'.repeat(b.data.level||2) + ' ' + txt(b.data.text);
+      case 'header':
+      case 'header2':
+      case 'header3':   return '#'.repeat(_headerBlockLevel(b)) + ' ' + txt(b.data.text);
       case 'paragraph': return txt(b.data.text);
-      case 'list': {
+      case 'toggle':    return '▸ ' + txt(b.data.text);
+      case 'list':
+      case 'numberedList': {
         const items = b.data.items || [];
-        return items.map((it,i) => (b.data.style==='ordered' ? `${i+1}.` : '-') + ' ' + txt(typeof it === 'string' ? it : it.content||it.text||'')).join('\n');
+        const ordered = b.data.style === 'ordered' || (b.type === 'numberedList' && !b.data.style);
+        return items.map((it,i) => (ordered ? `${i+1}.` : '-') + ' ' + txt(typeof it === 'string' ? it : it.content||it.text||'')).join('\n');
       }
       case 'checklist': return (b.data.items||[]).map(it => `- [${it.checked?'x':' '}] ${txt(it.text)}`).join('\n');
       case 'quote':     return `> ${txt(b.data.text)}\n> — ${txt(b.data.caption)}`;
@@ -1874,9 +2137,16 @@ function editorJsToMarkdown(data) {
   }).filter(Boolean).join('\n\n');
 }
 
+const _editorInitSeq = {};
 async function initRichEditor(hostId, entity, entityId, isFullscreen) {
   if (!window.EditorJS) return;
-  const container = document.getElementById(hostId);
+  // Guard against overlapping inits for the same host (e.g. a double-click
+  // reopening the slideover while the first open is still loading): only the
+  // latest invocation may construct, otherwise two editors stack up in the
+  // host and the content renders duplicated.
+  const _seq = (_editorInitSeq[hostId] = (_editorInitSeq[hostId] || 0) + 1);
+  const _stale = () => _editorInitSeq[hostId] !== _seq;
+  let container = document.getElementById(hostId);
   if (!container) return;
 
   // Destroy prior instance
@@ -1884,6 +2154,7 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
     try { await _activeEditors[hostId].destroy(); } catch {}
     delete _activeEditors[hostId];
   }
+  if (_stale()) return;
 
   // Load saved content from entity's content_json field
   let savedData = null;
@@ -1903,18 +2174,54 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
   }
 
   const TOOLS = {};
-  if (window.Header)      TOOLS.header      = { class: window.Header, config: { placeholder: 'Heading', levels: [1,2,3] } };
+  if (window.Header) {
+    // Notion-style: one toolbox entry per heading level.
+    // "header" keeps all levels registered so existing documents still render.
+    TOOLS.header  = { class: window.Header, config: { placeholder: 'Heading 1', levels: [1, 2, 3], defaultLevel: 1 }, toolbox: { title: 'Heading 1' } };
+    TOOLS.header2 = { class: window.Header, config: { placeholder: 'Heading 2', levels: [2, 3], defaultLevel: 2 }, toolbox: { title: 'Heading 2' } };
+    TOOLS.header3 = { class: window.Header, config: { placeholder: 'Heading 3', levels: [3], defaultLevel: 3 }, toolbox: { title: 'Heading 3' } };
+  }
+  const ListTool = window.List || window.EditorjsList; // v1 global | v2 fallback
+  if (ListTool) {
+    TOOLS.list         = { class: ListTool, inlineToolbar: true, config: { defaultStyle: 'unordered' }, toolbox: { title: 'Bulleted list' } };
+    TOOLS.numberedList = { class: ListTool, inlineToolbar: true, config: { defaultStyle: 'ordered' }, toolbox: { title: 'Numbered list' } };
+  }
+  if (window.Checklist)   TOOLS.checklist   = { class: window.Checklist, inlineToolbar: true, toolbox: { title: 'To-do list' } };
+  if (window.ToggleBlock) TOOLS.toggle      = { class: window.ToggleBlock, inlineToolbar: true, toolbox: { title: 'Toggle list' } };
+  if (window.Warning)     TOOLS.warning     = { class: window.Warning, inlineToolbar: true, config: { titlePlaceholder: 'Callout', messagePlaceholder: 'Write something…' }, toolbox: { title: 'Callout' } };
+  // Proper "Image" menu entry — files are embedded as data URLs so no upload
+  // backend is required. SimpleImage stays registered for old paste-created blocks.
+  if (window.ImageTool) TOOLS.imageUpload = {
+    class: window.ImageTool,
+    toolbox: { title: 'Image' },
+    config: {
+      uploader: {
+        uploadByFile: (file) => new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (ev) => resolve({ success: 1, file: { url: ev.target.result } });
+          reader.readAsDataURL(file);
+        }),
+        uploadByUrl: (url) => Promise.resolve({ success: 1, file: { url } }),
+      },
+    },
+  };
   if (window.SimpleImage) TOOLS.image       = { class: window.SimpleImage };
-  if (window.List)        TOOLS.list        = { class: window.List, inlineToolbar: true };
-  if (window.Checklist)   TOOLS.checklist   = { class: window.Checklist, inlineToolbar: true };
   if (window.Quote)       TOOLS.quote       = { class: window.Quote, inlineToolbar: true };
-  if (window.CodeTool)    TOOLS.code        = window.CodeTool;
+  if (window.CodeTool)    TOOLS.code        = { class: window.CodeTool, toolbox: { title: 'Code' } };
   if (window.Delimiter)   TOOLS.delimiter   = window.Delimiter;
   if (window.RawTool)     TOOLS.raw         = window.RawTool;
-  if (window.Warning)     TOOLS.warning     = { class: window.Warning, inlineToolbar: true };
   if (window.Marker)      TOOLS.marker      = { class: window.Marker };
   if (window.InlineCode)  TOOLS.inlineCode  = { class: window.InlineCode };
   if (window.Table)       TOOLS.table       = { class: window.Table, inlineToolbar: true };
+
+  if (_stale()) return;
+  // Re-resolve the holder: a slideover re-render may have replaced the node
+  // while we awaited content, and the onReady wiring must target the live one.
+  container = document.getElementById(hostId);
+  if (!container) return;
+  // Defense in depth: an aborted overlapping init may have left editor DOM
+  // behind — the holder must be empty before a fresh construct.
+  container.querySelectorAll('.codex-editor').forEach(el => el.remove());
 
   let saveTimer;
   const editor = new EditorJS({
@@ -1930,14 +2237,61 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
         const section = container.closest('.rich-content-section');
         if (section) section.style.marginLeft = '44px';
       }
-      // When a popover (slash-menu/toolbox) opens inside overflow:auto, it gets clipped.
-      // Must set both axes to visible — CSS spec silently converts overflow-y:visible
-      // back to auto whenever overflow-x is non-visible, so overflowY alone is a no-op.
-      const _popoverCtx = container.closest('.slideover-body') || container.closest('.entity-fullscreen');
+      // Popovers (block toolbox / tune menu) open inside scrollable panels.
+      // Re-anchor them as position:fixed so they're fully visible on screen.
+      // (The previous overflow:visible hack collapsed the panel's scrollbox,
+      // resetting its scroll to the top and hiding the menu options.)
+      const _scrollHost = container.closest('.slideover-body')
+        || container.closest('.entity-fullscreen')
+        || container.closest('#cf-scroll');
       new MutationObserver(() => {
-        const hasOpen = !!container.querySelector('.ce-popover--opened');
-        if (_popoverCtx) _popoverCtx.style.overflow = hasOpen ? 'visible' : '';
-      }).observe(container, { subtree: true, attributes: true, attributeFilter: ['class'] });
+        container.querySelectorAll('.ce-popover').forEach(pop => {
+          if (pop.classList.contains('ce-popover--opened')) _anchorEditorPopover(pop);
+          else _resetEditorPopover(pop);
+        });
+      }).observe(container, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+      // A fixed popover would drift from its block while scrolling — follow it.
+      if (_scrollHost) _scrollHost.addEventListener('scroll', () => {
+        container.querySelectorAll('.ce-popover--opened').forEach(pop => {
+          delete pop.dataset.fixedAnchor;
+          _anchorEditorPopover(pop);
+        });
+      }, { passive: true });
+
+      // Strict "/" trigger: the block menu may only open when "/" is the sole
+      // content of the block. Typing "/" mid-word must not summon it.
+      const _currentBlockText = () => {
+        const focused = container.querySelector('.ce-block--focused .ce-block__content');
+        if (focused) return focused.textContent || '';
+        const sel = window.getSelection();
+        const node = sel && sel.anchorNode;
+        const el = node ? (node.nodeType === 1 ? node : node.parentElement) : null;
+        const blk = el && el.closest ? el.closest('.ce-block__content') : null;
+        return blk ? (blk.textContent || '') : '';
+      };
+      container.addEventListener('keydown', (ev) => {
+        if (ev.key !== '/' || ev.metaKey || ev.ctrlKey) return;
+        if (_currentBlockText().trim() === '') {
+          // Empty block: "/" summons the block menu. 2.26.5 has no native slash
+          // and no toolbox API — move the toolbar here, then click its + button.
+          ev.preventDefault();
+          ev.stopPropagation();
+          try { editor.toolbar.open(); } catch {}
+          setTimeout(() => {
+            if (container.querySelector('.ce-popover--opened')) return;
+            container.querySelector('.ce-toolbar__plus')?.click();
+          }, 30);
+        } else {
+          // Mid-text "/" is just a character — never summons the menu
+          ev.stopPropagation();
+        }
+      }, true);
+      container.addEventListener('input', () => {
+        if (!container.querySelector('.ce-popover--opened')) return;
+        const t = _currentBlockText().trim();
+        // Menu stays only while the block is empty (slash is swallowed above)
+        if (t !== '/' && t !== '') { try { editor.toolbar.close(); } catch {} }
+      });
     },
     onChange: async () => {
       clearTimeout(saveTimer);
@@ -1955,6 +2309,48 @@ async function initRichEditor(hostId, entity, entityId, isFullscreen) {
     },
   });
   _activeEditors[hostId] = editor;
+}
+
+/* ─── EditorJS popover re-anchoring ────────────────────────────────────
+   EditorJS positions its popovers absolutely inside the block, so inside a
+   scrollable slideover they get clipped. When one opens we pin it to the
+   viewport (position:fixed) next to the +/⚙ toolbar, clamped on-screen with
+   its own scrollbar; when it closes we restore the inline styles.          */
+function _anchorEditorPopover(pop) {
+  if (pop.dataset.fixedAnchor === '1') return;
+  const anchor = pop.closest('.ce-toolbar__actions') || pop.parentElement;
+  if (!anchor) return;
+  const r = anchor.getBoundingClientRect();
+  const popW = Math.max(pop.offsetWidth || 0, 246);
+  const wantH = Math.min(Math.max(pop.scrollHeight, 120) + 8, 380, window.innerHeight - 16);
+  const left = Math.max(8, Math.min(r.left, window.innerWidth - popW - 8));
+  let top = r.bottom + 6;
+  if (top + wantH > window.innerHeight - 8) top = Math.max(8, window.innerHeight - 8 - wantH);
+  pop.style.position = 'fixed';
+  pop.style.left = left + 'px';
+  pop.style.right = 'auto';
+  pop.style.top = top + 'px';
+  pop.style.bottom = 'auto';
+  pop.style.maxHeight = wantH + 'px';
+  pop.style.overflowY = 'auto';
+  pop.style.zIndex = '99999';
+  // A transformed ancestor (the sliding panel: transform:translateX) re-origins
+  // position:fixed, so viewport coordinates land shifted. Measure where the
+  // popover actually ended up and compensate the delta.
+  const landed = pop.getBoundingClientRect();
+  const dx = landed.left - left;
+  const dy = landed.top - top;
+  if (dx || dy) {
+    pop.style.left = (left - dx) + 'px';
+    pop.style.top = (top - dy) + 'px';
+  }
+  pop.dataset.fixedAnchor = '1';
+}
+function _resetEditorPopover(pop) {
+  if (pop.dataset.fixedAnchor !== '1') return;
+  delete pop.dataset.fixedAnchor;
+  ['position', 'left', 'right', 'top', 'bottom', 'maxHeight', 'overflowY', 'zIndex']
+    .forEach(p => { pop.style[p] = ''; });
 }
 
 /* ─── Cover reposition drag ──────────────────────────────────────────── */
@@ -2024,6 +2420,8 @@ async function initSlideoverCoverArea(entity, id) {
       wrap.classList.add('has-cover');
       wrap.style.backgroundImage = `url(${dataUrl})`;
       wrap.style.backgroundPosition = `center ${posY}`;
+      // Once a cover exists the inline "Add cover" shortcut is redundant
+      document.querySelector('#slideover-body .entity-quick-actions .sc-add-btn')?.remove();
       const chgBtn = document.createElement('button');
       chgBtn.className = 'sc-cover-btn'; chgBtn.textContent = 'Change cover';
       chgBtn.onclick = () => pickScCover();
@@ -2045,7 +2443,24 @@ async function initSlideoverCoverArea(entity, id) {
       const addBtn = document.createElement('button');
       addBtn.className = 'sc-add-btn'; addBtn.innerHTML = ACT_ICONS.addCover + 'Add cover';
       addBtn.onclick = () => pickScCover();
-      wrap.appendChild(addBtn);
+      // Sit "Add cover" beside the entity's "Add icon" button (one quiet row)
+      // instead of on its own line. Falls back to the cover wrap when the
+      // slideover has no icon button.
+      const iconBtn = document.querySelector('#slideover-body .entity-icon-add-btn');
+      if (iconBtn) {
+        let row = iconBtn.closest('.entity-quick-actions');
+        if (!row) {
+          row = document.createElement('div');
+          row.className = 'entity-quick-actions';
+          iconBtn.parentNode.insertBefore(row, iconBtn);
+          row.appendChild(iconBtn);
+        }
+        row.querySelector('.sc-add-btn')?.remove();
+        addBtn.classList.add('sc-add-inline');
+        row.appendChild(addBtn);
+      } else {
+        wrap.appendChild(addBtn);
+      }
     }
   };
   const pickScCover = () => {
@@ -2145,11 +2560,77 @@ function setFsPropsBuilder(fn) { _currentFsPropsBuilder = fn; }
 let _currentFsChipsBuilder = null;
 function setFsChipsBuilder(fn) { _currentFsChipsBuilder = fn; }
 
-function openEntityFullscreen(entity, entityId, title, patchTitleFn) {
+/* ─── Custom widget injection API ─────────────────────────────────────
+   Lets users/plugins register per-entity-type widgets that render inside
+   detail views (slideover + fullscreen), directly below the prop chips.
+
+     registerEntityWidget('custom_book', 'reading-progress', ({ entityKey, entityId, values }) => {
+       const el = document.createElement('div');
+       el.textContent = `${values.pages_read || 0} pages read`;
+       return el;
+     });                                                                  */
+window.RaibisWidgets = window.RaibisWidgets || {};
+
+function registerEntityWidget(entityKey, widgetId, renderFunction) {
+  if (!entityKey || !widgetId || typeof renderFunction !== 'function') return;
+  (window.RaibisWidgets[entityKey] = window.RaibisWidgets[entityKey] || {})[widgetId] = renderFunction;
+}
+window.registerEntityWidget = registerEntityWidget;
+
+// Renders all registered widgets for entityKey right after anchorEl.
+// context is 'slideover' | 'fullscreen' so widgets can adapt their layout.
+function mountEntityWidgets(entityKey, entityId, anchorEl, context) {
+  const registry = window.RaibisWidgets[entityKey];
+  if (!registry || !anchorEl || !anchorEl.parentElement) return;
+  anchorEl.parentElement.querySelectorAll(`.entity-widgets[data-entity="${entityKey}"]`).forEach(el => el.remove());
+  const wrap = document.createElement('div');
+  wrap.className = 'entity-widgets';
+  wrap.dataset.entity = entityKey;
+  Object.entries(registry).forEach(([widgetId, renderFn]) => {
+    try {
+      const node = renderFn({ entityKey, entityId, values: getCustomPropValues(entityKey, entityId), context });
+      if (node instanceof Node) {
+        const cell = document.createElement('div');
+        cell.className = 'entity-widget';
+        cell.dataset.widgetId = widgetId;
+        cell.appendChild(node);
+        wrap.appendChild(cell);
+      }
+    } catch (err) {
+      console.warn(`[widgets] "${widgetId}" for ${entityKey} failed:`, err);
+    }
+  });
+  if (wrap.children.length) anchorEl.insertAdjacentElement('afterend', wrap);
+}
+
+// Ancestor-crumb openers for built-in hierarchical entities. Custom entity
+// types route through custom-detail; anything registered here handles its own.
+const _fsBuiltinAncOpeners = {
+  task: (id) => showTaskSlideover(parseInt(id, 10)),
+};
+
+// Walks a task's parent_task_id chain in allTasksCache.
+// Returns [{id, label}] ordered root → immediate parent (cycle-safe).
+function computeTaskAncestors(task) {
+  const chain = [];
+  let cursor = task && task.parent_task_id ? String(task.parent_task_id) : null;
+  const visited = new Set();
+  while (cursor && !visited.has(cursor)) {
+    visited.add(cursor);
+    const anc = allTasksCache.find(t => String(t.id) === cursor);
+    if (!anc) break;
+    chain.unshift({ id: anc.id, label: anc.title });
+    cursor = anc.parent_task_id ? String(anc.parent_task_id) : null;
+  }
+  return chain;
+}
+
+function openEntityFullscreen(entity, entityId, title, patchTitleFn, ancestors = []) {
   const overlay = document.getElementById('entity-fullscreen');
   if (!overlay) return;
   overlay.style.display = 'flex';
   document.body.classList.add('fullscreen-open');
+  syncFabPanelClasses();
 
   const fsCoverRow = document.getElementById('fs-cover-row');
   const fsIconRow = document.getElementById('fs-icon-row');
@@ -2266,13 +2747,30 @@ function openEntityFullscreen(entity, entityId, title, patchTitleFn) {
   // Set fullscreen breadcrumb
   const fsBc = document.getElementById('fs-breadcrumb');
   if (fsBc) {
-    const _fsDispName = entity.startsWith('custom_')
-      ? (() => { const tn = entity.slice(7); const t = customEntityTypes.find(x => x.name === tn); return t ? (t.display_name || tn) : tn; })()
+    const _fsTn = entity.startsWith('custom_') ? entity.slice(7) : null;
+    const _fsDispName = _fsTn
+      ? (() => { const t = customEntityTypes.find(x => x.name === _fsTn); return t ? (t.display_name || _fsTn) : _fsTn; })()
       : (VIEW_LABELS[entity + 's'] || (entity[0].toUpperCase() + entity.slice(1)));
-    fsBc.innerHTML = `<span class="bc-item bc-link" id="fs-bc-entity" style="cursor:pointer">${escHtml(_fsDispName)}</span><span class="bc-sep">›</span><span class="bc-item"><span>${escHtml(title || '')}</span></span>`;
-    document.getElementById('fs-bc-entity')?.addEventListener('click', () => {
+    let _fsBcHtml = `<span class="bc-item bc-link" id="fs-bc-entity" style="cursor:pointer">${escHtml(_fsDispName)}</span>`;
+    // Ancestor chain (root → parent) — rendered for ANY hierarchical entity,
+    // custom (_parent relation) or built-in (e.g. task parent_task_id).
+    if (ancestors.length) {
+      ancestors.forEach(anc => {
+        _fsBcHtml += `<span class="bc-sep">›</span><span class="bc-item"><span class="bc-link fs-anc-link" style="cursor:pointer" data-anc-id="${anc.id}">${escHtml(anc.label)}</span></span>`;
+      });
+    }
+    _fsBcHtml += `<span class="bc-sep">›</span><span class="bc-item"><span>${escHtml(title || '')}</span></span>`;
+    fsBc.innerHTML = _fsBcHtml;
+    fsBc.querySelector('#fs-bc-entity')?.addEventListener('click', () => {
       closeEntityFullscreen();
-      renderView(entity.startsWith('custom_') ? `custom:${entity.slice(7)}` : entity + 's');
+      renderView(_fsTn ? `custom:${_fsTn}` : entity + 's');
+    });
+    fsBc.querySelectorAll('.fs-anc-link').forEach(el => {
+      el.addEventListener('click', () => {
+        closeEntityFullscreen();
+        if (_fsTn) renderView('custom-detail', `${_fsTn}/${el.dataset.ancId}`);
+        else if (_fsBuiltinAncOpeners[entity]) _fsBuiltinAncOpeners[entity](el.dataset.ancId);
+      });
     });
   }
 
@@ -2295,6 +2793,7 @@ function openEntityFullscreen(entity, entityId, title, patchTitleFn) {
     fsChipsRow.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
     // Wire up interactive handlers via the entity's registered chips builder
     if (_currentFsChipsBuilder) _currentFsChipsBuilder(fsChipsRow);
+    mountEntityWidgets(entity, entityId, fsChipsRow, 'fullscreen');
   }
 
   // Mount prop panel — use entity-registered builder for fully interactive props
@@ -2312,8 +2811,15 @@ function openEntityFullscreen(entity, entityId, title, patchTitleFn) {
     }
   }
 
-  // Init the fullscreen editor
-  initRichEditor('editorjs-fullscreen', entity, entityId, true);
+  // Content full-view button → open this entity's content-only fullscreen
+  const fsCfBtn = document.getElementById('fs-content-fullview-btn');
+  if (fsCfBtn) { fsCfBtn.dataset.entity = entity; fsCfBtn.dataset.id = entityId; }
+
+  // Init the fullscreen editor, then build the TOC rail from its headings
+  initRichEditor('editorjs-fullscreen', entity, entityId, true).then(() => {
+    const ed = _activeEditors['editorjs-fullscreen'];
+    if (ed) ed.isReady.then(() => setTimeout(_buildFsToc, 120)).catch(() => {});
+  });
 
   // Comments
   const fsCom = document.getElementById('fs-comments');
@@ -2330,6 +2836,7 @@ function closeEntityFullscreen() {
   const overlay = document.getElementById('entity-fullscreen');
   if (overlay) { overlay.style.display = 'none'; overlay.classList.remove('has-cover'); }
   document.body.classList.remove('fullscreen-open');
+  syncFabPanelClasses();
   const coverRow = document.getElementById('fs-cover-row');
   if (coverRow) { coverRow.innerHTML = ''; coverRow.classList.remove('has-cover'); coverRow.style.backgroundImage = ''; }
   const iconRow = document.getElementById('fs-icon-row');
@@ -2343,6 +2850,77 @@ function closeEntityFullscreen() {
     try { _activeEditors[key].destroy(); } catch {}
     delete _activeEditors[key];
   }
+  document.getElementById('fs-rail-zone')?.remove();
+  if (overlay) overlay.onscroll = null;
+  _fsHeadings = [];
+  clearTimeout(_fsTocTimer);
+}
+
+/* ─── Entity fullscreen TOC rail (minimap ticks + hover panel) ─────────
+   Same interaction as the content-fullscreen rail: proportional tick marks
+   on the right edge; hovering expands them into a clickable text TOC.     */
+let _fsHeadings = [];
+let _fsTocTimer = null;
+
+function _buildFsToc() {
+  const overlay = document.getElementById('entity-fullscreen');
+  const ed = _activeEditors['editorjs-fullscreen'];
+  if (!overlay || !ed || overlay.style.display === 'none') return;
+  document.getElementById('fs-rail-zone')?.remove();
+  _fsHeadings = [];
+
+  ed.save().then(data => {
+    const headingBlocks = (data.blocks || []).filter(b => HEADER_BLOCK_TYPES.includes(b.type));
+    if (headingBlocks.length < 2) return;
+
+    const zone = document.createElement('div');
+    zone.id = 'fs-rail-zone';
+    zone.innerHTML = '<div id="fs-rail"></div><div id="fs-toc"></div>';
+    overlay.appendChild(zone);
+    const rail = zone.querySelector('#fs-rail');
+    const tocEl = zone.querySelector('#fs-toc');
+
+    const overlayTop = overlay.getBoundingClientRect().top;
+    const totalH = overlay.scrollHeight;
+
+    headingBlocks.forEach((b, i) => {
+      const level = _headerBlockLevel(b);
+      const text = (b.data.text || '').replace(/<[^>]*>/g, '');
+      const blockEl = overlay.querySelector(`.ce-block[data-id="${b.id}"]`);
+      if (!blockEl) return;
+      const y = blockEl.getBoundingClientRect().top - overlayTop + overlay.scrollTop;
+
+      const item = document.createElement('div');
+      item.className = `cf-toc-item cf-toc-h${level}`;
+      item.dataset.idx = i;
+      item.textContent = text;
+      item.onclick = () => blockEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      tocEl.appendChild(item);
+
+      const tick = document.createElement('div');
+      tick.className = 'cf-tick';
+      tick.dataset.idx = i;
+      tick.style.top = (totalH > 0 ? (y / totalH * 100) : 0) + '%';
+      tick.style.width = (level === 1 ? 14 : level === 2 ? 10 : 7) + 'px';
+      tick.onclick = () => blockEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      rail.appendChild(tick);
+      _fsHeadings.push({ el: blockEl, idx: i, y });
+    });
+
+    const showToc = () => { clearTimeout(_fsTocTimer); tocEl.classList.add('visible'); };
+    const hideToc = () => { _fsTocTimer = setTimeout(() => tocEl.classList.remove('visible'), 350); };
+    zone.onmouseenter = showToc;
+    zone.onmouseleave = hideToc;
+
+    overlay.onscroll = () => {
+      if (!_fsHeadings.length) return;
+      const threshold = overlay.scrollTop + 80;
+      let activeIdx = _fsHeadings[0].idx;
+      for (const h of _fsHeadings) { if (h.y <= threshold) activeIdx = h.idx; }
+      zone.querySelectorAll('.cf-tick').forEach(t => t.classList.toggle('active', +t.dataset.idx === activeIdx));
+      zone.querySelectorAll('.cf-toc-item').forEach(t => t.classList.toggle('active', +t.dataset.idx === activeIdx));
+    };
+  }).catch(() => {});
 }
 
 async function loadEntityCustomProps(entity, recordId) {
@@ -2571,6 +3149,35 @@ function showAddRelationPanel(anchorBtn, key, name, entity, onAdd) {
   }, 0);
 }
 
+// ── syncPropDefsToServer ───────────────────────────────────────────────────
+// Persists an entity type's prop defs (incl. rollup rules) into its
+// type-config row so the backend rollup engine can read them. Works
+// identically for custom types and built-ins: built-ins get a row named
+// after them (filtered out of the sidebar by BUILTIN_TYPE_ROW_NAMES).
+function syncPropDefsToServer(entity) {
+  const isBuiltin = !entity.startsWith('custom_');
+  const tName = isBuiltin ? entity : entity.slice(7);
+  let rowDefs;
+  try { rowDefs = JSON.parse(localStorage.getItem(`customPropDefs_${entity}`) || '[]'); } catch { rowDefs = []; }
+  const info = customEntityTypes.find(t => t.name === tName) || {};
+  const payload = {
+    name: tName,
+    display_name: info.display_name || tName,
+    icon: info.icon || '',
+    has_detail_view: !!info.has_detail_view,
+    has_subentities: !!info.has_subentities,
+    prop_defs: JSON.stringify(rowDefs),
+  };
+  if (info.name) info.prop_defs = payload.prop_defs; // keep in-memory schema fresh
+  const put = () => api('PUT', `/api/custom-types/${tName}`, payload).catch(() => {});
+  if (isBuiltin) {
+    // Row may not exist yet — create, then update (both idempotent)
+    api('POST', '/api/custom-types', payload).then(put, put);
+  } else {
+    put();
+  }
+}
+
 // ── showAddRollupPanel ─────────────────────────────────────────────────────
 // Cascading config panel for a Rollup-typed property.
 // Builds: child_entity_type → target_property → operation → conditional UI.
@@ -2583,19 +3190,34 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup)
   // Mutable config state
   const cfg = Object.assign({
     child_entity_type: '', target_property: '', operation: 'percentage_match',
-    condition: { match_value: '' }, value_map: {}
+    condition: { match_value: '' }, value_map: {}, display: 'text'
   }, existingRollup || {});
 
+  // Aggregatable property defs for one child type — or across all types when
+  // no filter is chosen. Standard entities contribute their intrinsic fields
+  // (status, priority, …) plus any user-added custom props.
   function getChildDefs(typeName) {
+    const AGG_SKIP = new Set(['rollup', 'relation']);
+    const customDefsOf = (ct) => {
+      try { return JSON.parse(ct.prop_defs || '[]'); } catch { return []; }
+    };
+    const builtinDefsOf = (name) => [
+      ...rollupBuiltinFieldDefs(name),
+      ...getCustomPropDefs(name).filter(d => !d._taxonomy && !d.key.startsWith('_') && !AGG_SKIP.has(d.type)),
+    ];
+    let defs;
     if (!typeName) {
-      const seen = new Set();
-      return customEntityTypes.flatMap(ct => {
-        try { return JSON.parse(ct.prop_defs || '[]'); } catch { return []; }
-      }).filter(d => { if (seen.has(d.key)) return false; seen.add(d.key); return true; });
+      defs = [
+        ...ROLLUP_BUILTIN_TYPES.flatMap(bt => builtinDefsOf(bt.name)),
+        ...customEntityTypes.flatMap(customDefsOf),
+      ];
+    } else if (customEntityTypes.some(ct => ct.name === typeName)) {
+      defs = customDefsOf(customEntityTypes.find(ct => ct.name === typeName));
+    } else {
+      defs = builtinDefsOf(typeName);
     }
-    const t = customEntityTypes.find(ct => ct.name === typeName);
-    if (!t || !t.prop_defs) return [];
-    try { return JSON.parse(t.prop_defs); } catch { return []; }
+    const seen = new Set();
+    return defs.filter(d => { if (!d || seen.has(d.key)) return false; seen.add(d.key); return true; });
   }
   function getPropOptions(typeName, propKey) {
     const pd = getChildDefs(typeName).find(d => d.key === propKey);
@@ -2614,7 +3236,12 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup)
         <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Child entity type <span style="font-weight:400">(optional filter)</span></div>
         <select id="rl-child-type" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
           <option value="">All children</option>
-          ${customEntityTypes.map(ct => `<option value="${escHtml(ct.name)}" ${cfg.child_entity_type===ct.name?'selected':''}>${escHtml(ct.display_name||ct.name)}</option>`).join('')}
+          <optgroup label="Standard">
+            ${ROLLUP_BUILTIN_TYPES.map(bt => `<option value="${escHtml(bt.name)}" ${cfg.child_entity_type===bt.name?'selected':''}>${escHtml(bt.display_name)}</option>`).join('')}
+          </optgroup>
+          ${customEntityTypes.length ? `<optgroup label="Custom">
+            ${customEntityTypes.map(ct => `<option value="${escHtml(ct.name)}" ${cfg.child_entity_type===ct.name?'selected':''}>${escHtml(ct.display_name||ct.name)}</option>`).join('')}
+          </optgroup>` : ''}
         </select>
       </div>
 
@@ -2632,6 +3259,15 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup)
           <option value="percentage_match" ${cfg.operation==='percentage_match'?'selected':''}>% Exact Match</option>
           <option value="sum" ${cfg.operation==='sum'?'selected':''}>Sum</option>
           <option value="average" ${cfg.operation==='average'?'selected':''}>Average (assign values)</option>
+        </select>
+      </div>
+
+      <div style="padding:4px 10px 2px">
+        <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Display as</div>
+        <select id="rl-display" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
+          <option value="text" ${(cfg.display||'text')==='text'?'selected':''}>Text</option>
+          <option value="progress_bar" ${cfg.display==='progress_bar'?'selected':''}>Progress bar</option>
+          <option value="ring" ${cfg.display==='ring'?'selected':''}>Percentage ring</option>
         </select>
       </div>
 
@@ -2682,6 +3318,7 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup)
       cfg.value_map = {};
       render();
     };
+    panel.querySelector('#rl-display').onchange = (e) => { cfg.display = e.target.value; };
     panel.querySelector('#rl-operation').onchange = (e) => {
       cfg.operation = e.target.value;
       cfg.condition = { match_value: '' };
@@ -2712,14 +3349,21 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup)
       if (cfg.child_entity_type) rollupConfig.child_entity_type = cfg.child_entity_type;
       if (cfg.operation === 'percentage_match') rollupConfig.condition = { match_value: cfg.condition.match_value };
       if (cfg.operation === 'average' && Object.keys(cfg.value_map || {}).length > 0) rollupConfig.value_map = cfg.value_map;
+      if (cfg.display && cfg.display !== 'text') rollupConfig.display = cfg.display;
 
+      // Upsert: editing an existing rollup replaces its rule in place
       const defs = getCustomPropDefs(entity);
-      if (!defs.some(d => d.key === key)) {
+      const existingDef = defs.find(d => d.key === key);
+      if (existingDef) {
+        existingDef.rollup = rollupConfig;
+        if (name) existingDef.label = name;
+      } else {
         defs.push({ key, label: name, type: 'rollup', rollup: rollupConfig });
-        setCustomPropDefs(entity, defs);
         const v = getEntityVisProps(entity);
         if (!v.includes(key)) setEntityVisProps(entity, [...v, key]);
       }
+      setCustomPropDefs(entity, defs);
+      syncPropDefsToServer(entity);
       panel.remove();
       onAdd();
       document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } }));
@@ -2891,7 +3535,12 @@ function renderCustomPropChips(entity, recordId, viewMode) {
   const vals = getCustomPropValues(entity, recordId);
   const chips = defs.filter(d => isVisible(d.key)).map(def => {
     const val = vals[def.key] ?? '';
-    if (!val && val !== false && val !== 0) return '';
+    if (def.type !== 'rollup' && !val && val !== false && val !== 0) return '';
+    if (def.type === 'rollup') {
+      const fresh = evaluateRollup(entity, recordId, def);
+      const rv = fresh !== null ? Math.round(fresh * 100) / 100 : val;
+      return (rv === '' || rv === undefined || rv === null) ? '' : renderRollupCardWidget(def, rv);
+    }
     if (def.type === 'checkbox') {
       return val ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px" title="${def.label}: checked"><span style="color:var(--text-muted)">${def.label}:</span> ✓</span>` : '';
     }
@@ -3195,6 +3844,11 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
             }).join('');
             return `<div class="ms-chips-wrap" style="display:flex;flex-wrap:wrap;gap:3px;align-items:center;min-height:20px">${chips}<button class="btn btn-sm btn-ghost ms-add-btn" data-prop-key="${key}" style="font-size:11px;padding:1px 5px;height:20px;line-height:1" title="Add option">+</button></div>`;
           }
+          if (custom.type === 'rollup') {
+            // Always compute fresh so the panel never shows a stale aggregate
+            const fresh = evaluateRollup(entity, recordId, custom);
+            return renderRollupValue(fresh !== null ? fresh : val, custom);
+          }
           if (!val) return `<span class="empty">—</span>`;
           if (custom.type === 'date') return `<span style="font-size:12px">${fmtDate(val)||val}</span>`;
           if (custom.type === 'select' || custom.type === 'status') {
@@ -3202,12 +3856,6 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
             return color
               ? `<span class="multi-chip color-${color}" style="font-size:11px">${escHtml(val)}</span>`
               : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${escHtml(val)}</span>`;
-          }
-          if (custom.type === 'rollup') {
-            const num = parseFloat(val);
-            if (!val || isNaN(num)) return `<span class="empty" title="Not yet calculated">∑ —</span>`;
-            const disp = Number.isInteger(num) ? String(num) : num.toFixed(2);
-            return `<span style="font-size:12px;font-variant-numeric:tabular-nums;color:var(--text-secondary)" title="Calculated rollup">∑ ${disp}</span>`;
           }
           if (custom.type === 'url') {
             return `<a href="${val}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);text-decoration:underline;font-size:12px" onclick="event.stopPropagation()">${val}</a>`;
@@ -3273,7 +3921,16 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
     const def = defs.find(d => d.key === key);
     if (!def) return;
     if (def.type === 'checkbox') return; // handled by input directly
-    if (def.type === 'rollup') return;   // calculated value — not user-editable
+    if (def.type === 'rollup') {
+      // Calculated value — clicking edits the rule, pre-filled with the saved config
+      valEl.style.cursor = 'pointer';
+      valEl.title = 'Click to edit rollup rule';
+      valEl.onclick = (e) => {
+        e.stopPropagation();
+        showAddRollupPanel(valEl, key, def.label, entity, onRerender, def.rollup ? JSON.parse(JSON.stringify(def.rollup)) : {});
+      };
+      return;
+    }
     valEl.onclick = (e) => {
       e.stopPropagation();
       if (valEl.querySelector('input,textarea')) return;
@@ -3632,6 +4289,31 @@ function dueDateColor(dateStr) {
   return '#22c55e';
 }
 
+// Uniform select-prop rendering for ALL entities — same pill design as Task
+// Status/Priority. Priority: user-assigned color (getValueColor store) →
+// semantic color for well-known status values → stable hashed palette color.
+// Every select value is a colored pill; never bare text, never a gray blob.
+const CHIP_COLOR_NAMES = ['blue', 'cyan', 'green', 'orange', 'pink', 'purple', 'red', 'yellow'];
+const CHIP_SEMANTIC_COLORS = {
+  done: 'green', completed: 'green', in_progress: 'blue', active: 'blue',
+  todo: 'cyan', planned: 'cyan', blocked: 'red', on_hold: 'orange',
+  archived: 'purple', low: 'cyan', medium: 'yellow', high: 'orange', urgent: 'red',
+};
+function builtinSelectChip(storageKey, value, _opts = {}) {
+  if (!value) return '';
+  const label = escHtml(String(value).replace(/_/g, ' '));
+  const hex = getValueColor(storageKey, value);
+  if (hex) return `<span class="multi-chip" style="font-size:11px;background:${hex}22;color:${hex};font-weight:600">${label}</span>`;
+  const v = String(value).toLowerCase().replace(/\s+/g, '_');
+  let name = CHIP_SEMANTIC_COLORS[v];
+  if (!name) {
+    let h = 0;
+    for (const ch of v) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    name = CHIP_COLOR_NAMES[h % CHIP_COLOR_NAMES.length];
+  }
+  return `<span class="multi-chip color-${name}" style="font-size:11px">${label}</span>`;
+}
+
 function statusBadge(status) {
   const map = { todo: 'badge-todo', in_progress: 'badge-progress', blocked: 'badge-blocked', done: 'badge-done' };
   const label = (status || 'todo').replace('_', ' ');
@@ -3653,6 +4335,14 @@ function getValueColor(storageKey, value) {
     const map = JSON.parse(localStorage.getItem(storageKey + 'Colors') || '{}');
     return map[value] || null;
   } catch(e) { return null; }
+}
+
+function hexToRgba(hex, alpha) {
+  if (!hex || !hex.startsWith('#') || hex.length < 7) return null;
+  const r = parseInt(hex.slice(1,3), 16);
+  const g = parseInt(hex.slice(3,5), 16);
+  const b = parseInt(hex.slice(5,7), 16);
+  return isNaN(r+g+b) ? null : `rgba(${r},${g},${b},${alpha})`;
 }
 
 function setValueColor(storageKey, value, color) {
@@ -4086,10 +4776,12 @@ function taskRowHtml(task, showProject, indent, viewMode) {
   const vis = (key) => propVisible(vm, key);
   const done = task.status === 'done';
   const titleCls = done ? 'task-title-text done' : 'task-title-text';
-  const projBadge = showProject && task.project_title && vis('project')
-    ? `<span class="task-project">${task.project_title}</span>` : '';
-  const goalBadge = vis('goal') && task.goal_title
-    ? `<span class="task-project" style="background:var(--color-surface-secondary,var(--bg-card));border:1px solid var(--border)">${task.goal_title}</span>` : '';
+  // Read the stored multi-relation prop first, FK title as fallback — a
+  // relation assigned moments ago shows even before the FK round-trips.
+  const projBadge = showProject && vis('project')
+    ? renderMultiRelationValue('task', task.id, 'project', task.project_title) : '';
+  const goalBadge = vis('goal')
+    ? renderMultiRelationValue('task', task.id, 'goal', task.goal_title) : '';
   const dueBadge = vis('due_date') ? dueBadgeHtml(task.due_date) : '';
   const hasChildren = (task.sub_task_count || task.subtask_count || 0) > 0;
   const isExpanded = expandedTasks.has(String(task.id));
@@ -4200,7 +4892,7 @@ function openSlideover(title, bodyHTML) {
   const panel = document.getElementById('slideover');
   panel.classList.add('open');
   document.getElementById('modal-backdrop').classList.add('open');
-  document.getElementById('fab-group')?.classList.add('panel-open-main');
+  syncFabPanelClasses();
   // Clicking the main slideover body closes the secondary (props) panel
   panel.onclick = (e) => {
     const formPanel = document.getElementById('form-slideover');
@@ -4216,6 +4908,9 @@ function setSlideoverExport(entity, id) {
   if (!entity || !id) { btn.style.display = 'none'; return; }
   btn.style.display = '';
   btn.onclick = () => downloadEntityJson(entity, id);
+  // Every entity slideover calls this right after opening — single hook point
+  // for injecting registered custom widgets below the prop chips.
+  mountEntityWidgets(entity, id, document.querySelector('#slideover-body #prop-chips'), 'slideover');
 }
 
 function downloadEntityJson(entity, id, filename) {
@@ -4247,9 +4942,24 @@ function closeSlideover() {
   panel.classList.remove('open');
   if (!document.getElementById('form-slideover').classList.contains('open')) {
     document.getElementById('modal-backdrop').classList.remove('open');
-    document.getElementById('fab-group')?.classList.remove('panel-open-main');
-    document.getElementById('fab-group')?.classList.remove('panel-open-form');
   }
+  syncFabPanelClasses();
+}
+
+/* ─── FAB offset sync ──────────────────────────────────────────────────
+   The floating buttons shift left while a side panel is open. The offset
+   classes are recomputed from actual panel state in one place — scattered
+   add/remove calls used to leave stale offsets (FABs floating mid-screen). */
+function syncFabPanelClasses() {
+  const fab = document.getElementById('fab-group');
+  if (!fab) return;
+  const fsOpen = document.body.classList.contains('fullscreen-open');
+  const formOpen = !fsOpen && document.getElementById('form-slideover')?.classList.contains('open');
+  const mainOpen = !fsOpen && !formOpen && document.getElementById('slideover')?.classList.contains('open');
+  const aiOpen = !fsOpen && !formOpen && !mainOpen && document.getElementById('ai-panel')?.classList.contains('open');
+  fab.classList.toggle('panel-open-form', !!formOpen);
+  fab.classList.toggle('panel-open-main', !!mainOpen);
+  fab.classList.toggle('panel-open-ai', !!aiOpen);
 }
 
 /* ─── Form Slideover (for create/edit forms) ─────────────────────────── */
@@ -4259,7 +4969,7 @@ function openFormSlideover(title, bodyHTML) {
   const panel = document.getElementById('form-slideover');
   panel.classList.add('open');
   document.getElementById('modal-backdrop').classList.add('open');
-  document.getElementById('fab-group')?.classList.add('panel-open-form');
+  syncFabPanelClasses();
 }
 
 function closeFormSlideover() {
@@ -4269,10 +4979,7 @@ function closeFormSlideover() {
       !document.getElementById('modal').classList.contains('open')) {
     document.getElementById('modal-backdrop').classList.remove('open');
   }
-  if (!document.getElementById('slideover').classList.contains('open')) {
-    document.getElementById('fab-group')?.classList.remove('panel-open-main');
-    document.getElementById('fab-group')?.classList.remove('panel-open-form');
-  }
+  syncFabPanelClasses();
 }
 
 /* ─── View Dispatcher ────────────────────────────────────────────────── */
@@ -4282,7 +4989,7 @@ const VIEW_LABELS = {
   pomodoro: 'Pomodoro', categories: 'Categories', tags: 'Tags', habits: 'Habits',
 };
 
-function updateBreadcrumb(view, params, detailLabel) {
+function updateBreadcrumb(view, params, detailLabel, ancestorCrumbs = []) {
   const bc = document.getElementById('breadcrumb');
   if (!bc) return;
 
@@ -4297,6 +5004,7 @@ function updateBreadcrumb(view, params, detailLabel) {
     const [_bcTn] = params.split('/');
     const _bcTi = customEntityTypes.find(t => t.name === _bcTn);
     crumbs.push({ label: _bcTi ? (_bcTi.display_name || _bcTn) : _bcTn, view: `custom:${_bcTn}` });
+    ancestorCrumbs.forEach(anc => crumbs.push({ label: anc.label, view: 'custom-detail', params: `${_bcTn}/${anc.id}` }));
   } else if (view !== 'dashboard') {
     // Add Dashboard as root only if not already dashboard
   }
@@ -4384,8 +5092,25 @@ function renderView(view, params) {
 
 /* ─── Custom Entity Types ─────────────────────────────────────────────── */
 
+// Type-config rows named after built-in entities exist ONLY so the backend
+// rollup engine can read their prop defs — never shown as custom types.
+const BUILTIN_TYPE_ROW_NAMES = new Set(['task', 'project', 'goal', 'note', 'resource', 'sprint']);
+
 async function loadCustomEntityTypes() {
-  customEntityTypes = await api('GET', '/api/custom-types').catch(() => []) || [];
+  const allTypeRows = await api('GET', '/api/custom-types').catch(() => []) || [];
+  customEntityTypes = allTypeRows.filter(t => !BUILTIN_TYPE_ROW_NAMES.has(t.name));
+  // Built-in rows: merge their prop_defs into the builtin's localStorage defs
+  allTypeRows.filter(t => BUILTIN_TYPE_ROW_NAMES.has(t.name)).forEach(t => {
+    if (!t.prop_defs) return;
+    let dbDefs;
+    try { dbDefs = JSON.parse(t.prop_defs); } catch { return; }
+    if (!Array.isArray(dbDefs) || !dbDefs.length) return;
+    let localDefs;
+    try { localDefs = JSON.parse(localStorage.getItem(`customPropDefs_${t.name}`) || '[]'); } catch { localDefs = []; }
+    const localKeys = new Set(localDefs.map(d => d.key));
+    const merged = [...localDefs, ...dbDefs.filter(d => !localKeys.has(d.key))];
+    localStorage.setItem(`customPropDefs_${t.name}`, JSON.stringify(merged));
+  });
   // Sync prop_defs from database → localStorage so getCustomPropDefs finds them
   customEntityTypes.forEach(t => {
     if (!t.prop_defs) return;
@@ -4399,6 +5124,22 @@ async function loadCustomEntityTypes() {
     const merged = [...localDefs, ...dbDefs.filter(d => !localKeys.has(d.key))];
     localStorage.setItem(`customPropDefs_${entityKey}`, JSON.stringify(merged));
   });
+  // One-time per session: push locally-defined rollup rules to the server.
+  // Rules created before server sync existed live only in localStorage — the
+  // Go engine can't see them until their type row carries the defs.
+  if (!sessionStorage.getItem('rollupDefsSynced')) {
+    sessionStorage.setItem('rollupDefsSynced', '1');
+    const serverHasRollup = new Set(
+      allTypeRows.filter(r => (r.prop_defs || '').includes('"rollup"')).map(r => r.name));
+    const entityKeys = [...BUILTIN_TYPE_ROW_NAMES].concat(customEntityTypes.map(t => `custom_${t.name}`));
+    entityKeys.forEach(entKey => {
+      const tName = entKey.startsWith('custom_') ? entKey.slice(7) : entKey;
+      if (serverHasRollup.has(tName)) return;
+      let defs;
+      try { defs = JSON.parse(localStorage.getItem(`customPropDefs_${entKey}`) || '[]'); } catch { return; }
+      if (Array.isArray(defs) && defs.some(d => d.type === 'rollup')) syncPropDefsToServer(entKey);
+    });
+  }
   renderCustomEntityNav();
 }
 
@@ -4529,6 +5270,8 @@ async function renderCustomEntityList(typeName) {
       ${buildViewTabBar(entityKey, views, activeView.id)}
       <div id="custom-entity-content"></div>
     </div>`;
+    // Capture container reference once — render() checks isConnected to bail if DOM is replaced
+    const container = main.querySelector('#custom-entity-content');
 
     // Double-click on view title → inline edit display_name + icon
     const viewTitleEl = main.querySelector('.view-title');
@@ -4643,8 +5386,78 @@ async function renderCustomEntityList(typeName) {
       });
     }
 
-    // Use full prop defs (including taxonomy) for all view builders
-    const allCustomDefs = getCustomPropDefs(entityKey);
+    // Use full prop defs (including taxonomy) for all view builders.
+    // Declared as let so render() can refresh it on each call.
+    let allCustomDefs = getCustomPropDefs(entityKey);
+    let customKanbanGroupBy = localStorage.getItem('kanbanGroupBy_' + entityKey) || null;
+
+    // Inject kanban group-by + column picker into toolbar (only when entity has select/status props)
+    {
+      const _sp = allCustomDefs.filter(d => d.type === 'select' || d.type === 'status');
+      if (_sp.length > 0 && customToolbarRight && newBtn) {
+        const _act = _sp.find(d => d.key === customKanbanGroupBy) || _sp[0];
+        const _radios = _sp.map(p =>
+          `<label class="col-picker-item"><input type="radio" name="${entityKey}-kanban-gb" value="${escHtml(p.key)}" ${_act.key===p.key?'checked':''}> ${escHtml(p.label||p.key)}</label>`
+        ).join('');
+        const _gbHtml = `<div class="col-picker-wrap" id="${entityKey}-kanban-gb-wrap" style="${viewMode==='kanban'?'':'display:none'}">
+          <button class="btn btn-sm btn-ghost" id="${entityKey}-kanban-gb-btn">⊟ Group: ${escHtml(_act.label||_act.key)}</button>
+          <div class="col-picker-dropdown hidden" id="${entityKey}-kanban-gb-drop">${_radios}</div>
+        </div>`;
+
+        // Build column-picker checkbox rows for a given group prop
+        const _cpChecksHtml = (prop) => {
+          const _hidden = kanbanHiddenCols[`${entityKey}::${prop.key}`] || [];
+          return (prop.options || []).map(c =>
+            `<label class="col-picker-item"><input type="checkbox" class="${entityKey}-col-check" data-col="${escHtml(c)}" ${_hidden.includes(c)?'':'checked'}> ${escHtml(c)}</label>`
+          ).join('');
+        };
+        const _cpHtml = `<div class="col-picker-wrap" id="${entityKey}-kanban-cp-wrap" style="${viewMode==='kanban'?'':'display:none'}">
+          <button class="btn btn-sm btn-ghost" id="${entityKey}-kanban-cp-btn" title="Show/hide columns">⊟ Columns</button>
+          <div class="col-picker-dropdown hidden" id="${entityKey}-kanban-cp-drop">${_cpChecksHtml(_act)}</div>
+        </div>`;
+
+        customToolbarRight.insertBefore(document.createRange().createContextualFragment(_gbHtml), newBtn);
+        customToolbarRight.insertBefore(document.createRange().createContextualFragment(_cpHtml), newBtn);
+
+        const _gbBtn = document.getElementById(`${entityKey}-kanban-gb-btn`);
+        const _gbDrop = document.getElementById(`${entityKey}-kanban-gb-drop`);
+        const _cpBtn = document.getElementById(`${entityKey}-kanban-cp-btn`);
+        const _cpDrop = document.getElementById(`${entityKey}-kanban-cp-drop`);
+
+        function _bindCpChecks() {
+          _cpDrop.querySelectorAll(`.${entityKey}-col-check`).forEach(chk => {
+            chk.onchange = () => {
+              const _gp = allCustomDefs.find(d => d.key === customKanbanGroupBy) || allCustomDefs.find(d => d.type==='select'||d.type==='status');
+              if (!_gp) return;
+              kanbanHiddenCols[`${entityKey}::${_gp.key}`] = [..._cpDrop.querySelectorAll(`.${entityKey}-col-check`)].filter(c => !c.checked).map(c => c.dataset.col);
+              localStorage.setItem('kanbanHiddenCols', JSON.stringify(kanbanHiddenCols));
+              render();
+            };
+          });
+        }
+
+        if (_gbBtn && _gbDrop) {
+          _gbBtn.onclick = e => { e.stopPropagation(); _gbDrop.classList.toggle('hidden'); };
+          document.addEventListener('click', e => { if (_gbBtn && !_gbBtn.contains(e.target)) _gbDrop.classList.add('hidden'); });
+          _gbDrop.querySelectorAll(`input[name="${entityKey}-kanban-gb"]`).forEach(radio => {
+            radio.onchange = () => {
+              customKanbanGroupBy = radio.value;
+              localStorage.setItem('kanbanGroupBy_' + entityKey, customKanbanGroupBy);
+              const _def = allCustomDefs.find(d => d.key === customKanbanGroupBy);
+              if (_gbBtn) _gbBtn.textContent = `⊟ Group: ${_def?.label || customKanbanGroupBy}`;
+              _gbDrop.classList.add('hidden');
+              if (_cpDrop && _def) { _cpDrop.innerHTML = _cpChecksHtml(_def); _bindCpChecks(); }
+              render();
+            };
+          });
+        }
+        if (_cpBtn && _cpDrop) {
+          _cpBtn.onclick = e => { e.stopPropagation(); _cpDrop.classList.toggle('hidden'); };
+          document.addEventListener('click', e => { if (_cpBtn && !_cpBtn.contains(e.target)) _cpDrop.classList.add('hidden'); });
+          _bindCpChecks();
+        }
+      }
+    }
 
     function renderPropVal(pd, rawVal) {
       if (!rawVal) return '';
@@ -4658,9 +5471,282 @@ async function renderCustomEntityList(typeName) {
       return String(rawVal);
     }
 
+    // ── Subentity expand/collapse tree — shared by all views ─────────────
+    const expandedCustomEnts = new Set();
+    const _entChildCache = new Map();
+    const _lChev = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,3 5,7 8,3"/></svg>`;
+
+    const _fetchSubs = async (parentId) => {
+      if (_entChildCache.has(parentId)) return _entChildCache.get(parentId);
+      let ch = [];
+      try { ch = await api('GET', `/api/children/${entityKey}/${parentId}`); } catch {}
+      const same = (ch || []).filter(c => c.child_entity_type === entityKey);
+      _entChildCache.set(parentId, same);
+      return same;
+    };
+
+    // ── Cards view: flat (non-interactive) list of direct children ──────────
+    const _fillEntSubsFlat = async (cont, parentId) => {
+      const buildTree = async (pid, depth) => {
+        const subs = await _fetchSubs(pid);
+        let html = '';
+        for (const c of subs) {
+          html += `<div class="custom-entity-row" data-id="${c.child_entity_id}"
+            style="cursor:pointer;font-size:12px;padding:2px 0;display:flex;align-items:center;gap:6px;padding-left:${depth * 14}px">
+            <span style="color:var(--text-muted)">›</span><span>${escHtml(c.child_title || '—')}</span>
+          </div>`;
+          html += await buildTree(c.child_entity_id, depth + 1);
+        }
+        return html;
+      };
+      const tree = await buildTree(parentId, 0);
+      if (!tree) { cont.innerHTML = ''; return; }
+      cont.innerHTML = `<div style="border-top:1px solid var(--border);margin-top:4px;padding-top:4px">${tree}</div>`;
+      cont.querySelectorAll('.custom-entity-row[data-id]').forEach(row => {
+        row.onclick = (e) => { e.stopPropagation(); openCustomEntitySlideover(typeName, parseInt(row.dataset.id)); };
+      });
+    };
+
+    // ── Table view: nested table with same visible columns ───────────────────
+    // ── Flat sub-row insertion for table view ────────────────────────────────
+    // Inserts child rows directly into the parent <tbody> (after afterRow) so
+    // columns share the same table grid — identical strategy to the task table.
+    const _insertSubRows = async (parentId, depth, afterRow) => {
+      const subs = await _fetchSubs(parentId);
+      const visDefs = allCustomDefs.filter(pd => entityPropVisible(entityKey, pd.key));
+      const showTags = entityPropVisible(entityKey, 'tags');
+      const indent = depth * 20;
+      let lastRow = afterRow;
+
+      for (const c of subs) {
+        const fullE = list.find(e => String(e.id) === String(c.child_entity_id));
+        const tags = fullE?.tags || [];
+        const isExp = expandedCustomEnts.has(String(c.child_entity_id));
+
+        const tr = document.createElement('tr');
+        tr.className = 'custom-entity-row ent-table-row ent-table-sub-row';
+        tr.dataset.id = c.child_entity_id;
+        tr.dataset.childOf = String(parentId);
+        tr.dataset.depth = String(depth);
+        tr.style.cursor = 'pointer';
+
+        const ctxTd = document.createElement('td');
+        ctxTd.className = 'ctx-handle-cell';
+        ctxTd.innerHTML = `<span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${c.child_entity_id}" title="Actions" onclick="event.stopPropagation()">⠿</span>`;
+        tr.appendChild(ctxTd);
+
+        // Indent lives inside the div — NOT on the <td> — so other cells stay aligned
+        const titleTd = document.createElement('td');
+        titleTd.setAttribute('data-title-cell', '');
+        titleTd.style.fontWeight = '500';
+        titleTd.innerHTML = `<div style="display:flex;align-items:center;gap:4px;padding-left:${indent}px">
+          <span class="entity-toggle-arrow${isExp ? ' expanded' : ''}" data-eid="${c.child_entity_id}" data-depth="${depth}" style="flex-shrink:0;margin-right:2px">${_lChev}</span>
+          ${escHtml(c.child_title || '—')}
+        </div>`;
+        tr.appendChild(titleTd);
+
+        visDefs.forEach(pd => tr.insertAdjacentHTML('beforeend', customPropCell(entityKey, c.child_entity_id, pd)));
+        if (showTags) {
+          const tagTd = document.createElement('td');
+          if (tags.length) tagTd.innerHTML = tags.map(t => `<span class="multi-chip color-${t.color||'blue'}" style="font-size:11px">${escHtml(t.name)}</span>`).join('');
+          tr.appendChild(tagTd);
+        }
+        tr.insertAdjacentHTML('beforeend', '<td></td>'); // empty addProp column
+
+        lastRow.insertAdjacentElement('afterend', tr);
+        lastRow = tr;
+
+        tr.onclick = (e) => {
+          if (e.target.closest('.entity-toggle-arrow') || e.target.closest('.ctx-handle')) return;
+          e.stopPropagation();
+          openCustomEntitySlideover(typeName, c.child_entity_id);
+        };
+
+        if (isExp) lastRow = await _insertSubRows(c.child_entity_id, depth + 1, lastRow);
+      }
+
+      // "+ Add X" row pinned below all children
+      const totalCols = 2 + visDefs.length + (showTags ? 1 : 0) + 1;
+      const addTr = document.createElement('tr');
+      addTr.dataset.childOf = String(parentId);
+      addTr.dataset.addRowFor = String(parentId);
+      const addTd = document.createElement('td');
+      addTd.colSpan = totalCols;
+      addTd.style.cssText = `padding:4px 8px 4px ${indent + 28}px`;
+      addTd.innerHTML = `<button class="btn btn-sm btn-ghost" style="font-size:11px;opacity:0.65">+ Add ${escHtml(displayName)}</button>`;
+      addTr.appendChild(addTd);
+      lastRow.insertAdjacentElement('afterend', addTr);
+      lastRow = addTr;
+
+      addTd.querySelector('button').onclick = (e) => {
+        e.stopPropagation();
+        addTd.innerHTML = `<input type="text" class="_si" placeholder="${escHtml(displayName)} title…"
+          style="font-size:13px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)"/>
+          <button class="btn btn-sm btn-primary _ss" style="margin-left:4px">Add</button>
+          <button class="btn btn-sm btn-ghost _sc">×</button>`;
+        const inp = addTd.querySelector('._si');
+        const doSave = async () => {
+          const title = inp.value.trim();
+          if (!title) { render(); return; }
+          try {
+            const inList = list.find(x => String(x.id) === String(parentId));
+            const parentTitle = inList ? inList.title : displayName;
+            const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
+            await api('POST', `/api/children/${entityKey}/${parentId}`, { child_entity_type: entityKey, child_entity_id: newE.id });
+            const parentRef = JSON.stringify([{ id: String(parentId), label: parentTitle }]);
+            await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
+            setCustomPropValue(entityKey, newE.id, '_parent', parentRef);
+          } catch(err) { console.error('Sub-entity save failed:', err); }
+          render();
+        };
+        addTd.querySelector('._ss').onclick = doSave;
+        addTd.querySelector('._sc').onclick = () => render();
+        inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); doSave(); } if (ev.key === 'Escape') render(); });
+        setTimeout(() => inp.focus(), 0);
+      };
+
+      _bindEntToggles(lastRow.closest('tbody') || lastRow.parentElement);
+      bindCustomPropCells();
+      return lastRow;
+    };
+
+    // Remove all rows belonging to parentId (direct children + their descendants)
+    const _removeSubRows = (tbody, parentId) => {
+      [...tbody.querySelectorAll(`tr[data-child-of="${parentId}"]`)].forEach(row => {
+        if (row.dataset.id) _removeSubRows(tbody, row.dataset.id);
+        row.remove();
+      });
+    };
+
+    // Fallback dispatcher for list-view inline-add refresh
+    const _fillEntSubsCont = async (cont, parentId, depth) => {
+      await _fillEntSubs(cont, parentId, depth);
+    };
+
+    // ── List view (and fallback): toggle-expandable rows + "+ Add" button ────
+    const _fillEntSubs = async (cont, parentId, depth) => {
+      const subs = await _fetchSubs(parentId);
+      cont.innerHTML = '';
+      const indent = 28 + depth * 20;
+      for (const c of subs) {
+        const isExp = expandedCustomEnts.has(String(c.child_entity_id));
+        const rowDiv = document.createElement('div');
+        rowDiv.className = 'entity-list-row custom-entity-row';
+        rowDiv.dataset.id = c.child_entity_id;
+        rowDiv.style.cssText = `cursor:pointer;padding-left:${indent}px`;
+        rowDiv.innerHTML = `
+          <span class="entity-toggle-arrow${isExp ? ' expanded' : ''}" data-eid="${c.child_entity_id}" data-depth="${depth}" style="flex-shrink:0;margin-right:2px">${_lChev}</span>
+          <span class="entity-list-title">${escHtml(c.child_title || '—')}</span>`;
+        const subCont = document.createElement('div');
+        subCont.id = `ent-subs-${c.child_entity_id}`;
+        cont.appendChild(rowDiv);
+        cont.appendChild(subCont);
+        rowDiv.onclick = (e) => {
+          e.stopPropagation();
+          if (e.target.closest('.entity-toggle-arrow')) return;
+          openCustomEntitySlideover(typeName, c.child_entity_id);
+        };
+        if (isExp) await _fillEntSubs(subCont, c.child_entity_id, depth + 1);
+      }
+      _bindEntToggles(cont);
+      const addDiv = document.createElement('div');
+      addDiv.style.paddingLeft = `${Math.max(0, indent - 4)}px`;
+      addDiv.innerHTML = `<button class="btn btn-sm btn-ghost" style="font-size:11px;opacity:0.65;margin-top:2px">+ Add ${escHtml(displayName)}</button>`;
+      cont.appendChild(addDiv);
+      addDiv.querySelector('button').onclick = (e) => {
+        e.stopPropagation();
+        addDiv.replaceWith(_makeSubInlineInput(cont, parentId, depth));
+      };
+    };
+
+    const _makeSubInlineInput = (cont, parentId, depth) => {
+      const indent = 28 + depth * 20;
+      const wrap = document.createElement('div');
+      wrap.className = 'subtask-row';
+      wrap.style.paddingLeft = `${indent}px`;
+      wrap.innerHTML = `<input type="text" class="_si" placeholder="${escHtml(displayName)} title…"
+        style="flex:1;font-size:13px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)"/>
+        <button class="btn btn-sm btn-primary _ss">Add</button>
+        <button class="btn btn-sm btn-ghost _sc">×</button>`;
+      const inp = wrap.querySelector('._si');
+      const refresh = async () => { _entChildCache.delete(parentId); cont.innerHTML = ''; await _fillEntSubsCont(cont, parentId, depth); };
+      const doSave = async () => {
+        const title = inp.value.trim();
+        if (!title) { await refresh(); return; }
+        try {
+          let parentTitle = displayName;
+          const inList = list.find(x => String(x.id) === String(parentId));
+          if (inList) parentTitle = inList.title;
+          else { try { const pe = await api('GET', `/api/custom/${typeName}/${parentId}`); parentTitle = pe.title || displayName; } catch {} }
+          const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
+          await api('POST', `/api/children/${entityKey}/${parentId}`, { child_entity_type: entityKey, child_entity_id: newE.id });
+          const parentRef = JSON.stringify([{ id: String(parentId), label: parentTitle }]);
+          await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
+          setCustomPropValue(entityKey, newE.id, '_parent', parentRef);
+        } catch(err) { console.error('Sub-entity save failed:', err); }
+        await refresh();
+      };
+      wrap.querySelector('._ss').onclick = doSave;
+      wrap.querySelector('._sc').onclick = refresh;
+      inp.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') { ev.preventDefault(); doSave(); }
+        if (ev.key === 'Escape') refresh();
+      });
+      setTimeout(() => inp.focus(), 0);
+      return wrap;
+    };
+
+    const _bindEntToggles = (root) => {
+      root.querySelectorAll('.entity-toggle-arrow[data-eid]').forEach(arrow => {
+        if (arrow._entBound) return;
+        arrow._entBound = true;
+        arrow.onclick = async (e) => {
+          e.stopPropagation();
+          const eid = arrow.dataset.eid;
+          const myDepth = parseInt(arrow.dataset.depth || '0');
+
+          if (viewMode === 'table') {
+            // Flat-row approach: insert/remove sibling <tr> elements in same <tbody>
+            const entContent = document.getElementById('custom-entity-content');
+            const parentRow = entContent ? entContent.querySelector(`tr[data-id="${eid}"]`) : null;
+            const tbody = parentRow?.closest('tbody');
+            if (!parentRow || !tbody) return;
+            if (expandedCustomEnts.has(eid)) {
+              expandedCustomEnts.delete(eid);
+              arrow.classList.remove('expanded');
+              _removeSubRows(tbody, eid);
+            } else {
+              expandedCustomEnts.add(eid);
+              arrow.classList.add('expanded');
+              _entChildCache.delete(parseInt(eid));
+              await _insertSubRows(parseInt(eid), myDepth + 1, parentRow);
+            }
+          } else {
+            // List view: container-based approach
+            const cont = document.getElementById(`ent-subs-${eid}`);
+            if (!cont) return;
+            if (expandedCustomEnts.has(eid)) {
+              expandedCustomEnts.delete(eid);
+              arrow.classList.remove('expanded');
+              cont.innerHTML = '';
+            } else {
+              expandedCustomEnts.add(eid);
+              arrow.classList.add('expanded');
+              _entChildCache.delete(parseInt(eid));
+              await _fillEntSubs(cont, parseInt(eid), myDepth + 1);
+            }
+          }
+        };
+      });
+    };
+
     function buildListView(items) {
       if (!items.length) return emptyState();
       return `<div class="entity-list-view">${items.map(e => {
+        const isExp = expandedCustomEnts.has(String(e.id));
+        const toggleBtn = typeInfo?.has_subentities
+          ? `<span class="entity-toggle-arrow${isExp ? ' expanded' : ''}" data-eid="${e.id}" data-depth="0" style="flex-shrink:0;margin-right:2px">${_lChev}</span>`
+          : '';
         const visProps = allCustomDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 4).map(pd => {
           const v = renderPropVal(pd, e.props?.[pd.key] || '');
           return v ? `<span class="entity-list-meta">${escHtml(v)}</span>` : '';
@@ -4669,18 +5755,26 @@ async function renderCustomEntityList(typeName) {
           ? e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}" style="font-size:11px">${escHtml(t.name)}</span>`).join('')
           : '';
         return `<div class="entity-list-row custom-entity-row" data-id="${e.id}" style="cursor:pointer">
+          ${toggleBtn}
           <span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
           <span class="list-icon-slot" data-icon-entity="${escHtml(entityKey)}" data-icon-id="${e.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
           <span class="entity-list-title">${escHtml(e.title)}</span>
           ${visProps}${tagSpan}
-        </div>`;
+        </div><div id="ent-subs-${e.id}"></div>`;
       }).join('')}</div>`;
     }
 
     function buildCardsView(items) {
       if (!items.length) return emptyState();
+      const hasSubs = typeInfo?.has_subentities;
       return `<div class="entity-cards">${items.map(e => {
         const visProps = allCustomDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 5).map(pd => {
+          if (pd.type === 'rollup') {
+            const fresh = evaluateRollup(entityKey, e.id, pd);
+            const rv = fresh !== null ? Math.round(fresh * 100) / 100
+              : (e.props?.[pd.key] ?? getCustomPropValues(entityKey, e.id)[pd.key] ?? '');
+            return renderRollupCardWidget(pd, rv);
+          }
           const v = renderPropVal(pd, e.props?.[pd.key] || '');
           return v ? `<div style="display:flex;gap:6px;font-size:12px;padding:2px 0"><span style="color:var(--text-muted);min-width:80px;flex-shrink:0">${escHtml(pd.label)}</span><span>${escHtml(v)}</span></div>` : '';
         }).filter(Boolean).join('');
@@ -4693,6 +5787,7 @@ async function renderCustomEntityList(typeName) {
             <div class="entity-card-title" style="font-weight:600;font-size:14px;flex:1">${escHtml(e.title)}</div>
           </div>
           ${visProps}${tagRow}
+          ${hasSubs ? `<div id="ent-subs-${e.id}" style="margin-top:2px"></div>` : ''}
         </div>`;
       }).join('')}</div>`;
     }
@@ -4701,21 +5796,28 @@ async function renderCustomEntityList(typeName) {
       if (!items.length) return emptyState();
       const visDefs = allCustomDefs.filter(pd => entityPropVisible(entityKey, pd.key));
       const showTags = entityPropVisible(entityKey, 'tags');
-      return `<div class="entity-table-wrap"><table class="entity-table">
+      const hasSubs = typeInfo?.has_subentities;
+      const colSpan = 2 + visDefs.length + (showTags ? 1 : 0) + 1;
+      return `<div class="notion-table-wrap"><table class="notion-table">
         <thead><tr>
           <th class="ctx-handle-th"></th>
           <th>Title</th>
           ${visDefs.map(pd => `<th>${escHtml(pd.label)}</th>`).join('')}
           ${showTags ? '<th>Tags</th>' : ''}
-          <th>Created</th>
+          ${addPropColumnHeader(entityKey)}
         </tr></thead>
-        <tbody>${items.map(e => `<tr class="custom-entity-row" data-id="${e.id}" style="cursor:pointer">
-          <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span></td>
-          <td data-title-cell style="font-weight:500">${escHtml(e.title)}</td>
-          ${visDefs.map(pd => `<td>${escHtml(renderPropVal(pd, e.props?.[pd.key] || ''))}</td>`).join('')}
-          ${showTags ? `<td>${e.tags?.length ? e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${escHtml(t.name)}</span>`).join('') : ''}</td>` : ''}
-          <td style="color:var(--text-muted);font-size:11px">${fmtDate(e.created_at)}</td>
-        </tr>`).join('')}
+        <tbody>${items.map(e => {
+          const isExp = expandedCustomEnts.has(String(e.id));
+          const toggleBtn = hasSubs
+            ? `<span class="entity-toggle-arrow${isExp ? ' expanded' : ''}" data-eid="${e.id}" data-depth="0" style="flex-shrink:0;margin-right:4px">${_lChev}</span>`
+            : '';
+          return `<tr class="custom-entity-row ent-table-row" data-id="${e.id}" style="cursor:pointer">
+            <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span></td>
+            <td data-title-cell style="font-weight:500"><div style="display:flex;align-items:center;gap:4px">${toggleBtn}${escHtml(e.title)}</div></td>
+            ${visDefs.map(pd => customPropCell(entityKey, e.id, pd)).join('')}
+            ${showTags ? `<td>${e.tags?.length ? e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${escHtml(t.name)}</span>`).join('') : ''}</td>` : ''}
+          </tr>`;
+        }).join('')}
         </tbody>
       </table></div>`;
     }
@@ -4725,7 +5827,8 @@ async function renderCustomEntityList(typeName) {
     }
 
     function buildKanbanView(items) {
-      const groupProp = allCustomDefs.find(d => d.type === 'select' || d.type === 'status');
+      const selectProps = allCustomDefs.filter(d => d.type === 'select' || d.type === 'status');
+      const groupProp = selectProps.find(d => d.key === customKanbanGroupBy) || selectProps[0];
       if (!groupProp) {
         return `<div class="empty-state"><div class="empty-state-text">Add a <strong>Select</strong> or <strong>Status</strong> property to use Kanban view.</div></div>`;
       }
@@ -4741,8 +5844,13 @@ async function renderCustomEntityList(typeName) {
       const extraKeys = Object.keys(grouped).filter(k => k && !colKeys.includes(k) && grouped[k].length > 0);
       const allColKeys = [...colKeys, ...extraKeys];
       if (grouped[''] && grouped[''].length > 0) allColKeys.push('');
+      if (!allColKeys.length) {
+        return `<div class="empty-state"><div class="empty-state-text">No columns to show. Add options to the <strong>${escHtml(groupProp.label || groupProp.key)}</strong> property, or create items and set their value.</div></div>`;
+      }
+      const _hiddenCols = kanbanHiddenCols[`${entityKey}::${groupProp.key}`] || [];
+      const visColKeys = allColKeys.filter(k => !_hiddenCols.includes(k));
 
-      const colsHtml = allColKeys.map(colKey => {
+      const colsHtml = visColKeys.map(colKey => {
         const colItems = grouped[colKey] || [];
         const cardsHtml = colItems.map(item => {
           const visProps = allCustomDefs.filter(d => d.key !== groupProp.key && entityPropVisible(entityKey, d.key)).slice(0, 3).map(pd => {
@@ -4757,37 +5865,83 @@ async function renderCustomEntityList(typeName) {
               <div class="kanban-card-title">${escHtml(item.title)}</div>
               <span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${item.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
             </div>
-            ${cardsHtml}${tagRow}
+            ${visProps}${tagRow}
           </div>`;
         }).join('');
         const label = colKey || '(None)';
-        return `<div class="kanban-col" data-col="${escHtml(colKey)}">
-          <div class="kanban-col-header">
+        const _entColColor = getValueColor(`${entityKey}_${groupProp.key}`, colKey);
+        const _entColBg = hexToRgba(_entColColor, 0.07);
+        return `<div class="kanban-col" data-col="${escHtml(colKey)}"${_entColBg ? ` style="background:${_entColBg}"` : ''}>
+          <div class="kanban-col-header"${_entColColor ? ` style="color:${_entColColor}"` : ''}>
             <span>${escHtml(label)}</span>
             <span class="kanban-count">${colItems.length}</span>
           </div>
           <div class="kanban-col-body">${cardsHtml || `<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No items</div>`}</div>
+          <button class="btn btn-sm btn-ghost kanban-ent-add-btn" data-col-val="${escHtml(colKey)}" data-gkey="${escHtml(groupProp.key)}" style="width:100%;margin-top:8px;font-size:12px">+ Add ${escHtml(displayName)}</button>
         </div>`;
       }).join('');
 
-      const colCount = Math.max(allColKeys.length, 1);
+      const colCount = Math.max(visColKeys.length, 1);
       const boardStyle = `display:grid;grid-template-columns:repeat(${colCount},minmax(220px,1fr));gap:var(--space-4);align-items:start;padding-bottom:16px`;
       return `<div style="overflow-x:auto;width:100%"><div class="kanban-board" data-groupby="${escHtml(groupProp.key)}" data-entity-key="${escHtml(entityKey)}" style="${boardStyle}">${colsHtml}</div></div>`;
     }
 
+    // Returns true if entity has _parent set — meaning it's a child of another same-type entity
+    // and should be excluded from the top-level list (shown only as a nested expand-row).
+    const _isChild = (e) => {
+      if (!typeInfo?.has_subentities) return false;
+      try { const arr = JSON.parse(e.props?._parent || '[]'); return Array.isArray(arr) && arr.length > 0; } catch { return false; }
+    };
+
     async function render() {
-      const container = document.getElementById('custom-entity-content');
-      if (!container) return;
+      // isConnected: bail if a newer renderCustomEntityList() replaced main.innerHTML
+      if (!container.isConnected) return;
+      const vm = viewMode;
       try {
         const fresh = await api('GET', `/api/custom/${typeName}`);
         if (Array.isArray(fresh)) list = fresh;
       } catch (_) {}
-      if (viewMode === 'kanban') container.innerHTML = buildKanbanView(list);
-      else if (viewMode === 'cards') container.innerHTML = buildCardsView(list);
-      else if (viewMode === 'table') container.innerHTML = buildTableView(list);
-      else container.innerHTML = buildListView(list);
+      // Abort if a newer render has already superseded this one
+      if (vm !== viewMode) return;
+      // Refresh prop defs so view builders always see the latest schema
+      allCustomDefs = getCustomPropDefs(entityKey);
+      // Pre-populate localStorage so customPropCell can read values from list data
+      list.forEach(e => { if (e.props) localStorage.setItem(`customPropVals_${entityKey}_${e.id}`, JSON.stringify(e.props)); });
+      // Kanban shows all entities; other views filter children to top-level only
+      const viewList = (typeInfo?.has_subentities && vm !== 'kanban') ? list.filter(e => !_isChild(e)) : list;
+      if (vm === 'kanban') container.innerHTML = buildKanbanView(list);
+      else if (vm === 'cards') container.innerHTML = buildCardsView(viewList);
+      else if (vm === 'table') container.innerHTML = buildTableView(viewList);
+      else container.innerHTML = buildListView(viewList);
+      const _gbWrap = document.getElementById(`${entityKey}-kanban-gb-wrap`);
+      if (_gbWrap) _gbWrap.style.display = vm === 'kanban' ? '' : 'none';
+      const _cpWrap = document.getElementById(`${entityKey}-kanban-cp-wrap`);
+      if (_cpWrap) _cpWrap.style.display = vm === 'kanban' ? '' : 'none';
       bindRows();
-      if (viewMode === 'kanban') {
+      if (vm === 'table') { bindCustomPropCells(); bindAddPropBtn(entityKey, render); }
+      if (typeInfo?.has_subentities) {
+        if (vm === 'cards') {
+          for (const e of viewList) {
+            const subCont = document.getElementById(`ent-subs-${e.id}`);
+            if (subCont) await _fillEntSubsFlat(subCont, e.id);
+          }
+        } else if (vm === 'table') {
+          _bindEntToggles(container);
+          for (const eid of expandedCustomEnts) {
+            const parentRow = container.querySelector(`tr.ent-table-row[data-id="${eid}"]`);
+            if (parentRow) await _insertSubRows(parseInt(eid), 1, parentRow);
+          }
+        } else if (vm !== 'kanban') {
+          _bindEntToggles(container);
+          for (const eid of expandedCustomEnts) {
+            if (viewList.find(e => String(e.id) === eid)) {
+              const cont = document.getElementById(`ent-subs-${eid}`);
+              if (cont) await _fillEntSubs(cont, parseInt(eid), 1);
+            }
+          }
+        }
+      }
+      if (vm === 'kanban') {
         const board = container.querySelector('.kanban-board[data-entity-key]');
         if (board) {
           const gPropKey = board.dataset.groupby;
@@ -4799,6 +5953,12 @@ async function renderCustomEntityList(typeName) {
             render();
           });
         }
+        container.querySelectorAll('.kanban-ent-add-btn').forEach(btn => {
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            openCustomEntityForm(typeName, null, { [btn.dataset.gkey]: btn.dataset.colVal });
+          };
+        });
       }
     }
 
@@ -4817,9 +5977,15 @@ async function renderCustomEntityDetail(typeName, entityId) {
   const main = document.getElementById('main-content');
   try {
     const e = await api('GET', `/api/custom/${typeName}/${entityId}`);
-    updateBreadcrumb('custom-detail', `${typeName}/${entityId}`, e.title);
+    const _cdAnc = typeInfo?.has_subentities ? await buildAncestorChain(typeName, entityId, e.props || {}) : [];
+    updateBreadcrumb('custom-detail', `${typeName}/${entityId}`, e.title, _cdAnc);
     await loadEntityCustomProps(entityKey, parseInt(entityId));
     const propPanel = buildInlinePropPanel(entityKey, parseInt(entityId), []);
+    let _cdCrumbHtml = `<span class="bc-link" id="ced-bc-root" style="cursor:pointer">${escHtml(displayName)}</span>`;
+    _cdAnc.forEach(anc => {
+      _cdCrumbHtml += `<span class="bc-sep" style="margin:0 3px">›</span><span class="bc-link" style="cursor:pointer" data-anc-id="${anc.id}">${escHtml(anc.label)}</span>`;
+    });
+    _cdCrumbHtml += `<span class="bc-sep" style="margin:0 3px">›</span><span>${escHtml(e.title)}</span>`;
     main.innerHTML = `<div class="view">
       <div class="entity-view-cover" id="ced-cover-row"></div>
       <div class="entity-view-action" id="ced-action-row">
@@ -4830,7 +5996,7 @@ async function renderCustomEntityDetail(typeName, entityId) {
       </div>
       <div class="view-header">
         <div>
-          <div style="color:var(--text-muted);font-size:12px;cursor:pointer;margin-bottom:4px" id="ced-back-crumb">← ${escHtml(displayName)}</div>
+          <div style="color:var(--text-muted);font-size:12px;margin-bottom:4px;display:flex;align-items:center;gap:2px;flex-wrap:wrap" id="ced-back-crumb">${_cdCrumbHtml}</div>
           <h1 class="view-title">${escHtml(e.title)}</h1>
         </div>
         <div class="flex gap-8">
@@ -4842,11 +6008,32 @@ async function renderCustomEntityDetail(typeName, entityId) {
       <div id="ced-widget-grid" class="widget-grid">
         ${buildWidgetGrid(entityKey, parseInt(entityId), { propPanelHtml: propPanel })}
       </div>
+      ${typeInfo?.has_subentities ? `
+      <div class="subtask-section" id="ced-subents-section">
+        <div class="subtask-section-title">
+          <span>Sub-${escHtml(displayName)}s</span>
+          <button class="btn btn-sm btn-ghost" id="ced-subents-add-btn">+ Add</button>
+        </div>
+        <div id="ced-subents-list" style="margin-top:6px">
+          <div style="color:var(--text-muted);font-size:12px">Loading…</div>
+        </div>
+      </div>
+      ` : ''}
     </div>`;
 
     document.getElementById('ced-back-btn').onclick = () => renderView(`custom:${typeName}`);
-    document.getElementById('ced-back-crumb').onclick = () => renderView(`custom:${typeName}`);
+    document.getElementById('ced-bc-root')?.addEventListener('click', () => renderView(`custom:${typeName}`));
+    document.querySelectorAll('#ced-back-crumb [data-anc-id]').forEach(el => {
+      el.addEventListener('click', () => renderView('custom-detail', `${typeName}/${el.dataset.ancId}`));
+    });
     document.getElementById('ced-edit-btn').onclick = () => openCustomEntityForm(typeName, e);
+    if (typeInfo?.has_subentities) {
+      initSubBranch(
+        document.getElementById('ced-subents-list'),
+        document.getElementById('ced-subents-add-btn'),
+        typeName, parseInt(entityId), displayName, entityKey, e.title, _cdAnc
+      );
+    }
     document.getElementById('ced-manage-btn').onclick = (ev) => openWidgetManager(entityKey, ev.currentTarget, () => renderCustomEntityDetail(typeName, entityId));
 
     const container = document.getElementById('ced-widget-grid');
@@ -4878,6 +6065,205 @@ async function renderCustomEntityDetail(typeName, entityId) {
   }
 }
 
+// Walks up _parent chain from entityId to root.
+// Returns [{id, label}] from root (index 0) to immediate parent.
+async function buildAncestorChain(typeName, entityId, entityProps) {
+  const chain = [];
+  let props = entityProps || {};
+  let curId = parseInt(entityId);
+  let depth = 0;
+  while (depth++ < 10) {
+    const raw = props._parent;
+    if (!raw) break;
+    let arr;
+    try { arr = JSON.parse(raw); } catch { break; }
+    if (!Array.isArray(arr) || !arr.length || !arr[0]?.id) break;
+    const pid = parseInt(arr[0].id);
+    if (!pid || pid === curId) break;
+    chain.unshift({ id: pid, label: arr[0].label || String(pid) });
+    try {
+      const pEnt = await api('GET', `/api/custom/${typeName}/${pid}`);
+      props = pEnt?.props || {};
+      curId = pid;
+    } catch { break; }
+  }
+  return chain;
+}
+
+// ancestors: [{id, label}] from root (index 0) to immediate parent, pre-computed by caller.
+function initSubBranch(listEl, addBtnEl, typeName, entityId, displayName, entityKey, entityTitle, ancestors) {
+  if (!listEl) return;
+  listEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px">Loading…</div>';
+
+  const _cache = new Map();
+  const _expanded = new Set();
+  const _chev = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,3 5,7 8,3"/></svg>`;
+  const _rootId = ancestors.length ? ancestors[0].id : parseInt(entityId);
+  const _rootTitle = ancestors.length ? ancestors[0].label : (entityTitle || displayName);
+
+  // Auto-expand intermediate ancestors (not root) + current entity
+  if (ancestors.length > 0) {
+    ancestors.slice(1).forEach(anc => _expanded.add(String(anc.id)));
+    _expanded.add(String(entityId));
+  }
+
+  const _fetchChildren = async (pid) => {
+    if (_cache.has(pid)) return _cache.get(pid);
+    let ch = [];
+    try { ch = await api('GET', `/api/children/${entityKey}/${pid}`); } catch {}
+    const same = (ch || []).filter(c => c.child_entity_type === entityKey);
+    _cache.set(pid, same);
+    return same;
+  };
+
+  const _appendSubAddBtn = (cont, parentId, depth) => {
+    const div = document.createElement('div');
+    div.style.paddingLeft = (depth * 16 + 4) + 'px';
+    div.innerHTML = `<button class="btn btn-sm btn-ghost" style="font-size:11px;opacity:0.65;margin-top:2px">+ Add ${escHtml(displayName)}</button>`;
+    cont.appendChild(div);
+    div.querySelector('button').onclick = async () => {
+      div.remove();
+      const row = document.createElement('div');
+      row.className = 'subtask-row';
+      row.style.paddingLeft = (depth * 16) + 'px';
+      row.innerHTML = `<input type="text" class="_si" placeholder="${escHtml(displayName)} title…" style="flex:1;font-size:13px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)"/>
+        <button class="btn btn-sm btn-primary _ss">Add</button>
+        <button class="btn btn-sm btn-ghost _sc">\xd7</button>`;
+      cont.appendChild(row);
+      const inp = row.querySelector('._si');
+      const cancel = () => { row.remove(); _appendSubAddBtn(cont, parentId, depth); };
+      const doSave = async () => {
+        const title = inp.value.trim();
+        if (!title) { cancel(); return; }
+        try {
+          const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
+          await api('POST', `/api/children/${entityKey}/${parentId}`, { child_entity_type: entityKey, child_entity_id: newE.id });
+          const parentRef = JSON.stringify([{ id: String(parentId), label: displayName }]);
+          await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
+          setCustomPropValue(entityKey, newE.id, '_parent', parentRef);
+        } catch(err) { console.error('Sub-entity save failed:', err); }
+        _cache.delete(parentId);
+        _load();
+      };
+      row.querySelector('._ss').onclick = doSave;
+      row.querySelector('._sc').onclick = cancel;
+      inp.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') { ev.preventDefault(); doSave(); }
+        if (ev.key === 'Escape') cancel();
+      });
+      setTimeout(() => inp.focus(), 0);
+    };
+  };
+
+  const _renderTree = async (parentId, depth, cont) => {
+    const children = await _fetchChildren(parentId);
+    for (const c of children) {
+      const cid = String(c.child_entity_id);
+      const isExp = _expanded.has(cid);
+      const isCurrent = parseInt(cid) === parseInt(entityId);
+      const row = document.createElement('div');
+      row.className = `subtask-row${isCurrent ? ' subtask-row-current' : ''}`;
+      row.dataset.subId = c.child_entity_id;
+      row.style.paddingLeft = (depth * 16) + 'px';
+      row.innerHTML = `
+        <span class="task-toggle-arrow sub-toggle${isExp ? ' expanded' : ''}" data-tid="${c.child_entity_id}" style="cursor:pointer;margin-right:4px">${_chev}</span>
+        <span class="subtask-title" style="flex:1;cursor:pointer;min-width:0;overflow:hidden;text-overflow:ellipsis">${escHtml(c.child_title || '—')}</span>
+        <button class="btn btn-sm btn-ghost sub-unlink-btn" style="opacity:0.5;flex-shrink:0" title="Unlink">\xd7</button>
+      `;
+      cont.appendChild(row);
+      const subCont = document.createElement('div');
+      cont.appendChild(subCont);
+      if (isExp) {
+        await _renderTree(c.child_entity_id, depth + 1, subCont);
+        _appendSubAddBtn(subCont, c.child_entity_id, depth + 1);
+      }
+      row.querySelector('.sub-unlink-btn').onclick = async (ev) => {
+        ev.stopPropagation();
+        await api('DELETE', `/api/children/${entityKey}/${parentId}/${entityKey}/${c.child_entity_id}`).catch(() => {});
+        _cache.delete(parentId);
+        _load();
+      };
+      row.querySelector('.subtask-title').onclick = () => openCustomEntitySlideover(typeName, c.child_entity_id);
+      row.querySelector('.sub-toggle').onclick = async (ev) => {
+        ev.stopPropagation();
+        const arrow = ev.currentTarget;
+        if (_expanded.has(cid)) {
+          _expanded.delete(cid);
+          arrow.classList.remove('expanded');
+          subCont.innerHTML = '';
+        } else {
+          _expanded.add(cid);
+          arrow.classList.add('expanded');
+          _cache.delete(c.child_entity_id);
+          await _renderTree(c.child_entity_id, depth + 1, subCont);
+          _appendSubAddBtn(subCont, c.child_entity_id, depth + 1);
+        }
+      };
+    }
+  };
+
+  const _load = async () => {
+    _cache.delete(_rootId);
+    listEl.innerHTML = '';
+    if (_rootId === parseInt(entityId)) {
+      const children = await _fetchChildren(_rootId);
+      if (!children.length) {
+        listEl.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:4px 0">No sub-${escHtml(displayName.toLowerCase())}s yet</div>`;
+        return;
+      }
+      await _renderTree(_rootId, 0, listEl);
+    } else {
+      const rootRow = document.createElement('div');
+      rootRow.className = 'subtask-row';
+      rootRow.innerHTML = `
+        <span class="task-toggle-arrow sub-toggle expanded" style="cursor:pointer;margin-right:4px;opacity:0.4">${_chev}</span>
+        <span class="subtask-title" style="flex:1;cursor:pointer;font-weight:600">${escHtml(_rootTitle)}</span>
+      `;
+      listEl.appendChild(rootRow);
+      rootRow.querySelector('.subtask-title').onclick = () => openCustomEntitySlideover(typeName, _rootId);
+      const rootSubCont = document.createElement('div');
+      listEl.appendChild(rootSubCont);
+      await _renderTree(_rootId, 1, rootSubCont);
+    }
+  };
+
+  _load();
+
+  if (addBtnEl) {
+    addBtnEl.onclick = () => {
+      if (listEl.querySelector('#_sb-new-row')) return;
+      const row = document.createElement('div');
+      row.id = '_sb-new-row';
+      row.className = 'subtask-row';
+      row.innerHTML = `<input type="text" id="_sb-new-inp" placeholder="${escHtml(displayName)} title…" style="flex:1;font-size:13px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)"/>
+        <button class="btn btn-sm btn-primary" id="_sb-new-save">Add</button>
+        <button class="btn btn-sm btn-ghost" id="_sb-new-cancel">\xd7</button>`;
+      listEl.prepend(row);
+      const inp = document.getElementById('_sb-new-inp');
+      inp.focus();
+      const doSave = async () => {
+        const title = inp.value.trim();
+        if (!title) { row.remove(); return; }
+        try {
+          const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
+          await api('POST', `/api/children/${entityKey}/${entityId}`, { child_entity_type: entityKey, child_entity_id: newE.id });
+          const parentRef = JSON.stringify([{ id: String(entityId), label: entityTitle || displayName }]);
+          await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
+          setCustomPropValue(entityKey, newE.id, '_parent', parentRef);
+          _cache.clear();
+          _load();
+        } catch(err) { console.error('Sub-entity creation failed:', err); }
+      };
+      document.getElementById('_sb-new-save').onclick = doSave;
+      document.getElementById('_sb-new-cancel').onclick = () => row.remove();
+      inp.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') { ev.preventDefault(); doSave(); }
+        if (ev.key === 'Escape') row.remove();
+      });
+    };
+  }
+}
+
 async function openCustomEntitySlideover(typeName, id) {
   const typeInfo = customEntityTypes.find(t => t.name === typeName);
   const displayName = typeInfo ? (typeInfo.display_name || typeName) : typeName;
@@ -4896,6 +6282,7 @@ async function openCustomEntitySlideover(typeName, id) {
 
   await loadEntityCustomProps(entityKey, id);
   if (!allCategories.length) { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} }
+  const _slAnc = typeInfo?.has_subentities ? await buildAncestorChain(typeName, id, e.props || {}) : [];
 
   const cesSections = getPropSections(entityKey);
   const cesHeadKeys = cesSections.heading;
@@ -4929,26 +6316,31 @@ async function openCustomEntitySlideover(typeName, id) {
 
     <div class="prop-chips" id="prop-chips">
       <button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${cesTags.length ? cesTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>
-      <button class="prop-chip${cesCatName ? '' : ' chip-empty'}" id="chip-category" data-key="category"><span class="chip-label">Category</span><span class="chip-value" id="chip-category-val">${cesCatName || '—'}</span></button>
+      <button class="prop-chip${cesCatName ? '' : ' chip-empty'}" id="chip-category" data-key="category"><span class="chip-label">Category</span><span class="chip-value" id="chip-category-val">${cesCatName ? builtinSelectChip('categories', cesCatName) : '—'}</span></button>
       ${cesHeadingChips}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
 
     ${propPanel}
 
-    ${buildRichContentSection(entityKey, id)}
-
-    ${typeInfo?.has_subentities ? `
+    ${typeInfo?.has_subentities && !getHiddenBuiltinSections(entityKey).includes('subents_builtin') ? `
     <div class="subtask-section" id="subents-section">
       <div class="subtask-section-title">
         <span>Sub-${escHtml(displayName)}</span>
-        <button class="btn btn-sm btn-ghost" id="subents-add-btn">+ Add</button>
+        <div style="display:flex;gap:4px;align-items:center">
+          <button class="btn btn-sm btn-ghost" id="subents-add-btn">+ Add</button>
+          ${builtinSectionRemoveBtn(entityKey, 'subents_builtin')}
+        </div>
       </div>
       <div id="subents-list" style="margin-top:6px">
         <div style="color:var(--text-muted);font-size:12px">Loading…</div>
       </div>
     </div>
     ` : ''}
+
+    ${buildEntityViewsSection(entityKey, id)}
+
+    ${buildRichContentSection(entityKey, id)}
 
     ${buildCommentSection(entityKey, id)}
   `;
@@ -4958,68 +6350,14 @@ async function openCustomEntitySlideover(typeName, id) {
   initSlideoverCoverArea(entityKey, id);
 
   if (typeInfo?.has_subentities) {
-    const _subList = document.getElementById('subents-list');
-    const _loadSubs = async () => {
-      let children = [];
-      try { children = await api('GET', `/api/children/${entityKey}/${id}`); } catch {}
-      const same = (children || []).filter(c => c.child_entity_type === entityKey);
-      if (!same.length) {
-        _subList.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:4px 0">No sub-${escHtml(displayName.toLowerCase())}s yet</div>`;
-        return;
-      }
-      _subList.innerHTML = same.map(c =>
-        `<div class="subtask-row" style="cursor:pointer" data-sub-id="${c.child_entity_id}">
-          <span class="subtask-title">${escHtml(c.child_title || '—')}</span>
-          <button class="btn btn-sm btn-ghost" data-unlink="${c.child_entity_id}" title="Unlink" style="opacity:0.5;flex-shrink:0">×</button>
-        </div>`
-      ).join('');
-      _subList.querySelectorAll('[data-unlink]').forEach(btn => {
-        btn.onclick = async (ev) => {
-          ev.stopPropagation();
-          await api('DELETE', `/api/children/${entityKey}/${id}/${entityKey}/${btn.dataset.unlink}`).catch(() => {});
-          _loadSubs();
-        };
-      });
-      _subList.querySelectorAll('[data-sub-id]').forEach(row => {
-        row.onclick = (ev) => {
-          if (ev.target.dataset.unlink) return;
-          openCustomEntitySlideover(typeName, parseInt(row.dataset.subId));
-        };
-      });
-    };
-    _loadSubs();
-    document.getElementById('subents-add-btn').onclick = () => {
-      if (document.getElementById('subents-new-row')) return;
-      const row = document.createElement('div');
-      row.id = 'subents-new-row';
-      row.className = 'subtask-row';
-      row.innerHTML = `<input type="text" id="subents-new-inp" placeholder="${escHtml(displayName)} title…"
-        style="flex:1;font-size:13px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)"/>
-        <button class="btn btn-sm btn-primary" id="subents-new-save">Add</button>
-        <button class="btn btn-sm btn-ghost" id="subents-new-cancel">×</button>`;
-      _subList.prepend(row);
-      const inp = document.getElementById('subents-new-inp');
-      inp.focus();
-      const doSave = async () => {
-        const title = inp.value.trim();
-        if (!title) { row.remove(); return; }
-        try {
-          const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
-          await api('POST', `/api/children/${entityKey}/${id}`, { child_entity_type: entityKey, child_entity_id: newE.id });
-          const parentRef = JSON.stringify([{ id: String(id), label: e.title || displayName }]);
-          await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
-          setCustomPropValue(entityKey, newE.id, '_parent', parentRef);
-          _loadSubs();
-        } catch(err) { console.error('Subentity creation failed:', err); }
-      };
-      document.getElementById('subents-new-save').onclick = doSave;
-      document.getElementById('subents-new-cancel').onclick = () => row.remove();
-      inp.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter') { ev.preventDefault(); doSave(); }
-        if (ev.key === 'Escape') row.remove();
-      });
-    };
+    initSubBranch(
+      document.getElementById('subents-list'),
+      document.getElementById('subents-add-btn'),
+      typeName, id, displayName, entityKey, e.title, _slAnc
+    );
+    makeSectionCollapsible(document.getElementById('subents-section'), `${entityKey}_subents`);
   }
+  initEntityViewsSection(entityKey, id, e);
 
   // Icon
   const cesIconAddBtn = document.getElementById('ces-icon-add-btn');
@@ -5079,9 +6417,7 @@ async function openCustomEntitySlideover(typeName, id) {
   // Category chip
   document.getElementById('chip-category')?.addEventListener('click', (ev) => {
     ev.stopPropagation();
-    const _catItems = [{ value: '', label: '— None —' }, ...allCategories.map(c => ({ value: c.id, label: c.name }))];
-    openCombo(ev.currentTarget, _catItems, cesCatId || '', async ({ value }) => {
-      const newId = String(value || '');
+    openCategoryCombo(ev.currentTarget, cesCatId, async (newId) => {
       await api('POST', `/api/properties?entity_type=${typeName}&entity_id=${id}`, { key: '_category_id', value: newId });
       if (e.props) e.props._category_id = newId;
       openCustomEntitySlideover(typeName, id);
@@ -5151,18 +6487,17 @@ async function openCustomEntitySlideover(typeName, id) {
   } else {
     setSlideoverExpand(() => openEntityFullscreen(entityKey, id, e.title || displayName, (t) => {
       api('PUT', `/api/custom/${typeName}/${id}`, { title: t, props: e.props || {} }).catch(() => {});
-    }));
+    }, _slAnc));
   }
 }
 
-async function openCustomEntityForm(typeName, entityOrNull) {
+async function openCustomEntityForm(typeName, entityOrNull, presets = {}) {
   const typeInfo = customEntityTypes.find(t => t.name === typeName);
   const displayName = typeInfo ? (typeInfo.display_name || typeName) : typeName;
   const entityKey = `custom_${typeName}`;
-  let propDefs = [];
-  if (typeInfo && typeInfo.prop_defs) {
-    try { propDefs = JSON.parse(typeInfo.prop_defs); } catch(e) { propDefs = []; }
-  }
+  // Use full localStorage defs (includes inline-added props); exclude taxonomy, relation, rollup
+  const FORM_RENDERABLE = new Set(['text','number','date','url','select','status','checkbox','multi_select','phone','email']);
+  let propDefs = getCustomPropDefs(entityKey).filter(d => !d._taxonomy && d.key !== '_parent' && FORM_RENDERABLE.has(d.type));
 
   // If given a partial entity with only id, fetch full entity
   let entity = entityOrNull;
@@ -5184,6 +6519,17 @@ async function openCustomEntityForm(typeName, entityOrNull) {
 
   const propFields = propDefs.map(pd => {
     const val = props[pd.key] || '';
+    if ((pd.type === 'select' || pd.type === 'status') && pd.options?.length) {
+      const opts = pd.options.map(o => `<option value="${escHtml(o)}"${val === o ? ' selected' : ''}>${escHtml(o)}</option>`).join('');
+      return `
+        <div class="form-group">
+          <label class="form-label">${escHtml(pd.label || pd.key)}</label>
+          <select id="cf-${escHtml(pd.key)}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-surface);color:var(--text-primary);font-size:14px">
+            <option value="">— None —</option>
+            ${opts}
+          </select>
+        </div>`;
+    }
     const inputType = pd.type === 'number' ? 'number' : pd.type === 'date' ? 'date' : pd.type === 'url' ? 'url' : 'text';
     return `
       <div class="form-group">
@@ -5227,7 +6573,10 @@ async function openCustomEntityForm(typeName, entityOrNull) {
     </div>`;
 
   openFormSlideover(isEdit ? `Edit ${displayName}` : `New ${displayName}`, formHtml);
-  requestAnimationFrame(() => document.getElementById('cf-title')?.focus());
+  requestAnimationFrame(() => {
+    document.getElementById('cf-title')?.focus();
+    Object.entries(presets).forEach(([k, v]) => { const el = document.getElementById(`cf-${k}`); if (el) el.value = v; });
+  });
   document.getElementById('cf-cancel').onclick = closeFormSlideover;
   document.getElementById('cf-save').onclick = async () => {
     const title = document.getElementById('cf-title').value.trim();
@@ -5306,7 +6655,7 @@ function renderCurrentView() {
 // vs the body (vertical inline prop panel). Opened by the ··· button.
 
 const ENTITY_ALL_PROPS = {
-  task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goals'},{key:'project',label:'Projects'},{key:'category',label:'Category'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'}],
+  task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goals'},{key:'project',label:'Projects'},{key:'category',label:'Category'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'},{key:'parent_task',label:'Parent Task'}],
   goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'due',label:'Due Date'},{key:'metrics',label:'Metrics'}],
   project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goals'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
   sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'},{key:'category',label:'Category'}],
@@ -5315,7 +6664,7 @@ const ENTITY_ALL_PROPS = {
 };
 
 const ENTITY_SECTION_DEFAULTS = {
-  task:     { heading:['status','priority','due','focus','tags'],   body:['goal','project','category','points','recur'] },
+  task:     { heading:['status','priority','due','focus','tags'],   body:['goal','project','category','points','recur','parent_task'] },
   goal:     { heading:['status','type','year','tags'],              body:['category','due','metrics'] },
   project:  { heading:['status','due','goal','tags'],              body:['category','macro','kanban','archived'] },
   sprint:   { heading:['status','dates','project','tags'],         body:['points','category'] },
@@ -6163,6 +7512,89 @@ document.addEventListener('keydown', (e) => {
     const inp = document.querySelector('.comment-section .comment-input');
     if (inp) inp.focus();
   }
+  // Cmd+\ — toggle the sidebar (zen layout).
+  // Match the physical key (e.code) too: on non-US layouts (e.g. Spanish ISO)
+  // "\" is typed with Option, so altKey must be allowed.
+  if (e.metaKey && (e.code === 'Backslash' || e.key === '\\')) {
+    e.preventDefault();
+    toggleSidebarCollapsed();
+  }
+});
+
+/* ─── Hideable sidebar (Cmd+\) ───────────────────────────────────────── */
+function toggleSidebarCollapsed(force) {
+  const on = force !== undefined ? !!force : !document.body.classList.contains('sidebar-collapsed');
+  document.body.classList.toggle('sidebar-collapsed', on);
+  localStorage.setItem('sidebarCollapsed', on ? '1' : '0');
+}
+if (localStorage.getItem('sidebarCollapsed') === '1') document.body.classList.add('sidebar-collapsed');
+document.getElementById('sidebar-collapse-btn')?.addEventListener('click', () => toggleSidebarCollapsed(true));
+document.getElementById('sidebar-open-btn')?.addEventListener('click', () => toggleSidebarCollapsed(false));
+
+/* ─── Editor width preference (narrow ⇄ wide) ────────────────────────────
+   Toggles a body class read by the content fullscreen and entity fullscreen:
+   narrow = centered column, wide = full width with comfortable padding.    */
+function applyEditorWideMode(on) {
+  document.body.classList.toggle('editor-wide', on);
+  localStorage.setItem('editorWideMode', on ? '1' : '0');
+  const narrowIcon = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="8 6 2 12 8 18"/><polyline points="16 6 22 12 16 18"/></svg>';
+  const wideIcon   = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 6 12 12 6 18"/><polyline points="18 6 12 12 18 18"/></svg>';
+  document.querySelectorAll('.editor-width-btn').forEach(b => {
+    b.innerHTML = (on ? wideIcon + ' Narrow' : narrowIcon + ' Wide');
+    b.title = on ? 'Switch to narrow editor' : 'Switch to full-width editor';
+  });
+  // Column width changes every heading's Y position — re-measure open TOCs
+  const cfScroll = document.getElementById('cf-scroll');
+  if (cfScroll && document.getElementById('content-fullscreen')?.style.display !== 'none') {
+    setTimeout(() => _buildCFToc(cfScroll), 250);
+  }
+  if (document.getElementById('entity-fullscreen')?.style.display !== 'none') {
+    setTimeout(_buildFsToc, 250);
+  }
+}
+applyEditorWideMode(localStorage.getItem('editorWideMode') === '1');
+document.querySelectorAll('.editor-width-btn').forEach(b => {
+  b.onclick = () => applyEditorWideMode(!document.body.classList.contains('editor-wide'));
+});
+
+// Visible proof of which UI build the client is running (sidebar footer)
+(() => {
+  const vbtn = document.getElementById('version-btn');
+  if (vbtn) vbtn.append(` · ui ${RAIBIS_UI_BUILD}`);
+})();
+
+/* ─── Distraction-free typing (zen mode) ─────────────────────────────────
+   Typing inside any EditorJS host fades out the chrome (sidebar, breadcrumb,
+   FABs). Moving the mouse or leaving the editor brings it back.            */
+let _zenMouse = { x: 0, y: 0 };
+
+document.addEventListener('keydown', (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key.length !== 1 && !['Backspace', 'Enter', 'Delete'].includes(e.key)) return;
+  if (e.target && e.target.closest && e.target.closest('.rich-editor-host, .codex-editor')) {
+    document.body.classList.add('zen-mode-active');
+  }
+}, true);
+
+document.addEventListener('mousemove', (e) => {
+  if (!document.body.classList.contains('zen-mode-active')) {
+    _zenMouse = { x: e.clientX, y: e.clientY };
+    return;
+  }
+  // Ignore sub-pixel jitter; a real movement restores the UI
+  if (Math.abs(e.clientX - _zenMouse.x) + Math.abs(e.clientY - _zenMouse.y) > 14) {
+    _zenMouse = { x: e.clientX, y: e.clientY };
+    document.body.classList.remove('zen-mode-active');
+  }
+});
+
+document.addEventListener('focusout', (e) => {
+  if (e.target && e.target.closest && e.target.closest('.rich-editor-host, .codex-editor')) {
+    const next = e.relatedTarget;
+    if (!next || !next.closest || !next.closest('.rich-editor-host, .codex-editor')) {
+      document.body.classList.remove('zen-mode-active');
+    }
+  }
 });
 
 /* ─── Sub-items Section (generic parent→child hierarchy) ────────────── */
@@ -6234,6 +7666,7 @@ async function refreshSubItemsList(entityType, entityId) {
 }
 
 async function initSubItemsSection(entityType, entityId) {
+  makeSectionCollapsible(document.getElementById(`sub-items-sec-${entityType}-${entityId}`), `${entityType}_subitems`);
   await refreshSubItemsList(entityType, entityId);
   const addBtn = document.getElementById(`add-sub-item-btn-${entityType}-${entityId}`);
   if (!addBtn) return;
@@ -6292,6 +7725,66 @@ function setBottomViews(entityType, views) {
   localStorage.setItem(`entityViews_${entityType}`, JSON.stringify(views));
 }
 
+/* ─── Hideable built-in slideover sections ─────────────────────────────
+   The classic sections (Project→Tasks, Goal→Projects, Sprint→Tasks) are
+   views like any other: removable per entity type, restorable from the
+   "+ Add view" picker. Hidden state lives in localStorage per TYPE.       */
+const BUILTIN_SECTION_LABELS = {
+  tasks_builtin: 'Tasks', projects_builtin: 'Projects', subtasks_builtin: 'Subtasks',
+  pomodoro_builtin: 'Pomodoro', subents_builtin: 'Sub-items', attachment_builtin: 'File Attachment',
+};
+
+function getHiddenBuiltinSections(entityType) {
+  try { return JSON.parse(localStorage.getItem(`hiddenSections_${entityType}`) || '[]'); } catch { return []; }
+}
+function setBuiltinSectionHidden(entityType, key, hidden) {
+  const cur = new Set(getHiddenBuiltinSections(entityType));
+  if (hidden) cur.add(key); else cur.delete(key);
+  localStorage.setItem(`hiddenSections_${entityType}`, JSON.stringify([...cur]));
+}
+// Small trash button reused by every built-in section title row
+function builtinSectionRemoveBtn(entityType, key) {
+  return `<button class="btn btn-sm btn-ghost section-rm-btn" data-sec-entity="${entityType}" data-sec-key="${key}" title="Remove this view" style="opacity:0.5;padding:3px 5px;color:var(--color-text-secondary)">${EV_TRASH_ICON}</button>`;
+}
+// Single trash glyph shared by every removable view/section button
+const EV_TRASH_ICON = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>`;
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.section-rm-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  setBuiltinSectionHidden(btn.dataset.secEntity, btn.dataset.secKey, true);
+  btn.closest('.subtask-section')?.remove();
+});
+// Reopen the active slideover after restoring a section from "+ Add view"
+const _slideoverReopeners = {
+  task:     (id) => showTaskSlideover(parseInt(id, 10)),
+  project:  (id) => showProjectSlideover({ id: parseInt(id, 10) }, null, null),
+  goal:     (id) => showGoalSlideover({ id: parseInt(id, 10) }, null),
+  note:     (id) => showNoteSlideover(parseInt(id, 10), null),
+  sprint:   (id) => showSprintSlideover(parseInt(id, 10), null),
+  resource: (id) => showResourceSlideover({ id: parseInt(id, 10) }, null),
+};
+// Entity-agnostic: custom types resolve through the same mechanism
+function reopenEntitySlideover(entityType, entityId) {
+  if (String(entityType).startsWith('custom_')) {
+    openCustomEntitySlideover(entityType.slice(7), parseInt(entityId, 10));
+    return;
+  }
+  const f = _slideoverReopeners[entityType];
+  if (f) f(entityId);
+}
+
+// Fetch the full record list for a child type — custom or built-in alike.
+async function fetchEntityList(childType) {
+  try {
+    if (customEntityTypes.some(t => t.name === childType)) {
+      return (await api('GET', `/api/custom/${childType}`)) || [];
+    }
+    const paths = { task: 'tasks?all=1', project: 'projects', goal: 'goals', note: 'notes', resource: 'resources', sprint: 'sprints' };
+    return (await api('GET', `/api/${paths[childType] || childType + 's'}`)) || [];
+  } catch { return []; }
+}
+
 function buildEntityViewsSection(entityType, entityId) {
   return `<div id="ev-container-${entityType}-${entityId}" class="ev-container">
     <div style="color:var(--text-muted);font-size:12px;padding:8px 0">Loading…</div>
@@ -6342,7 +7835,53 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
     });
   }
 
+  // Relation-typed props count as links too: a "Resources" prop holding
+  // [{id,label}] surfaces those items in the matching bottom view.
+  getCustomPropDefs(entityType).filter(d => d.type === 'relation' && d.key !== '_parent').forEach(d => {
+    const propVals = getCustomPropValues(entityType, entityId);
+    const items = parseRelationValue(propVals[d.key] || '');
+    if (!items.length) return;
+    const ct = String(d.relatedEntity || d.key).replace(/^custom_/, '').replace(/s$/, '');
+    const existing = new Set((relsByType[ct] || []).map(r => String(r.related_entity_id)));
+    items.forEach(it => {
+      if (!it.id || existing.has(String(it.id))) return;
+      existing.add(String(it.id));
+      if (!relsByType[ct]) relsByType[ct] = [];
+      relsByType[ct].push({ id: null, related_entity_type: ct, related_entity_id: it.id,
+        related_title: it.label || `#${it.id}`, is_prop: true, prop_key: d.key });
+    });
+  });
+
   const views = getBottomViews(entityType);
+
+  // Per-view child records: powers reverse relation lookups and the richer
+  // rows (status/priority chips) every view shares with the Tasks view.
+  const childRecords = {};
+  const bareParent = entityType.replace(/^custom_/, '');
+  for (const view of views) {
+    const ct = view.childType;
+    const list = await fetchEntityList(ct);
+    childRecords[ct] = new Map(list.map(it => [String(it.id), it]));
+    // Reverse direction: ANOTHER entity's relation prop pointing at this one
+    // (e.g. resource1.task = [task1] must appear in task1's Resources view).
+    const childKey = customEntityTypes.some(t => t.name === ct) ? `custom_${ct}` : ct;
+    const relDefs = getCustomPropDefs(childKey).filter(d => d.type === 'relation' && d.key !== '_parent' &&
+      [bareParent, bareParent + 's', entityType].includes(String(d.relatedEntity || d.key)));
+    if (relDefs.length) {
+      const existing = new Set((relsByType[ct] || []).map(r => String(r.related_entity_id)));
+      list.forEach(rec => {
+        if (existing.has(String(rec.id))) return;
+        const vals = getCustomPropValues(childKey, rec.id);
+        const matched = relDefs.find(d => parseRelationValue(vals[d.key] || '').some(it => String(it.id) === String(entityId)));
+        if (matched) {
+          existing.add(String(rec.id));
+          if (!relsByType[ct]) relsByType[ct] = [];
+          relsByType[ct].push({ id: null, related_entity_type: ct, related_entity_id: rec.id,
+            related_title: rec.title || rec.name || `#${rec.id}`, is_reverse: true, reverse_key: matched.key, reverse_child_key: childKey });
+        }
+      });
+    }
+  }
 
   function renderBlock(view) {
     const label = EV_LABELS[view.childType] || view.childType;
@@ -6352,17 +7891,24 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
         <span>${label} (${items.length})</span>
         <div style="display:flex;gap:4px;align-items:center">
           <button class="btn btn-sm btn-ghost ev-add-btn" data-child-type="${view.childType}">+ Add</button>
-          <button class="btn btn-sm btn-ghost ev-rm-btn" data-child-type="${view.childType}" title="Remove this view" style="opacity:0.5;padding:3px 5px;color:var(--color-text-secondary)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg></button>
+          <button class="btn btn-sm btn-ghost ev-rm-btn" data-child-type="${view.childType}" title="Remove this view" style="opacity:0.5;padding:3px 5px;color:var(--color-text-secondary)">${EV_TRASH_ICON}</button>
         </div>
       </div>
       <div class="ev-items">
         ${items.length ? items.map(r => `
           <div class="subtask-row ev-item-row" style="cursor:pointer" data-child-type="${r.related_entity_type}" data-child-id="${r.related_entity_id}">
             <span class="subtask-title">${r.related_title || '(untitled)'}</span>
+            ${(() => {
+              const rec = (childRecords[r.related_entity_type] || new Map()).get(String(r.related_entity_id));
+              if (!rec) return '';
+              const statusKey = r.related_entity_type === 'task' ? 'taskStatuses' : `${r.related_entity_type}Statuses`;
+              return `${rec.status ? builtinSelectChip(statusKey, rec.status) : ''}${rec.priority ? builtinSelectChip('taskPriorities', rec.priority) : ''}`;
+            })()}
             <button class="btn btn-sm btn-ghost ev-unlink-btn"
               data-rel-id="${r.id || ''}" data-child-type="${r.related_entity_type}"
               data-child-id="${r.related_entity_id}" data-is-fk="${r.is_fk || ''}"
-              data-fk-field="${r.fk_field || ''}"
+              data-fk-field="${r.fk_field || ''}" data-prop-key="${r.prop_key || ''}"
+              data-reverse-key="${r.reverse_key || ''}" data-reverse-child-key="${r.reverse_child_key || ''}"
               style="opacity:0.5;flex-shrink:0">×</button>
           </div>`).join('')
         : `<div style="color:var(--text-muted);font-size:12px;padding:4px 0">No linked ${label.toLowerCase()}</div>`}
@@ -6388,7 +7934,21 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
   container.querySelectorAll('.ev-unlink-btn').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
-      const { childType: ct, childId: cid, isFk, fkField } = btn.dataset;
+      const { childType: ct, childId: cid, isFk, fkField, propKey, reverseKey, reverseChildKey } = btn.dataset;
+      if (reverseKey) {
+        // Reverse-prop link: remove THIS entity from the child's relation prop
+        const cur = parseRelationValue(getCustomPropValues(reverseChildKey, cid)[reverseKey] || '');
+        setCustomPropValue(reverseChildKey, parseInt(cid, 10), reverseKey, JSON.stringify(cur.filter(it => String(it.id) !== String(entityId))));
+        initEntityViewsSection(entityType, entityId, entityData);
+        return;
+      }
+      if (propKey) {
+        // Prop-sourced link: remove the item from the relation prop's value
+        const cur = parseRelationValue(getCustomPropValues(entityType, entityId)[propKey] || '');
+        setCustomPropValue(entityType, entityId, propKey, JSON.stringify(cur.filter(it => String(it.id) !== String(cid))));
+        initEntityViewsSection(entityType, entityId, entityData);
+        return;
+      }
       if (isFk === 'true') {
         if (ct === 'note') {
           const fkKey = `${entityType}_id`;
@@ -6462,8 +8022,20 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
   container.querySelector('.ev-addview-btn').onclick = (e) => {
     const used = new Set(getBottomViews(entityType).map(v => v.childType));
     const available = EV_ALL_TYPES.filter(t => t !== entityType && !used.has(t));
-    if (!available.length) return;
-    openValuePicker(e.currentTarget, available.map(t => ({ value: t, label: EV_LABELS[t] || t })), (val) => {
+    // Hidden built-in sections are restorable from the same picker
+    const hiddenBuiltins = getHiddenBuiltinSections(entityType)
+      .map(k => ({ value: `_builtin:${k}`, label: `${BUILTIN_SECTION_LABELS[k] || k} (built-in)` }));
+    const options = [
+      ...hiddenBuiltins,
+      ...available.map(t => ({ value: t, label: EV_LABELS[t] || t })),
+    ];
+    if (!options.length) return;
+    openValuePicker(e.currentTarget, options, (val) => {
+      if (String(val).startsWith('_builtin:')) {
+        setBuiltinSectionHidden(entityType, String(val).slice(9), false);
+        reopenEntitySlideover(entityType, entityId);
+        return;
+      }
       const v = getBottomViews(entityType);
       v.push({ childType: val, mode: 'list' });
       setBottomViews(entityType, v);
@@ -6542,7 +8114,7 @@ function renderMultiRelationValue(entity, recordId, propKey, fkTitle) {
     const unique = items.filter(it => { if (seen.has(it.id)) return false; seen.add(it.id); return true; });
     if (unique.length) return unique.map(it => `<span class="multi-chip" style="font-size:11px">${escHtml(it.label)}</span>`).join('');
   }
-  return fkTitle ? `<span>${escHtml(fkTitle)}</span>` : '';
+  return fkTitle ? `<span class="multi-chip" style="font-size:11px">${escHtml(fkTitle)}</span>` : '';
 }
 
 // Multi-value picker for builtin FK relation props (goal, project, sprint).
@@ -6960,6 +8532,52 @@ async function renderDashboard() {
       </div>
     </div>` : '';
 
+  // Custom entities section — driven entirely by the customEntityTypes schema,
+  // so every user-defined type shows up here without any hardcoding.
+  let customEntitiesSection = '';
+  try {
+    const ceSummaries = await Promise.all((customEntityTypes || []).map(async (t) => {
+      let items = [];
+      try { items = (await api('GET', `/api/custom/${t.name}`)) || []; } catch {}
+      const entityKey = `custom_${t.name}`;
+      const statusDef = getCustomPropDefs(entityKey).find(d =>
+        (d.type === 'select' || d.type === 'status') && Array.isArray(d.options) && d.options.length);
+      let breakdown = '';
+      if (statusDef && items.length) {
+        const counts = {};
+        items.forEach(it => {
+          const v = getCustomPropValues(entityKey, it.id)[statusDef.key] || (it.props && it.props[statusDef.key]) || '';
+          if (v) counts[v] = (counts[v] || 0) + 1;
+        });
+        breakdown = Object.entries(counts).map(([v, c]) => {
+          const color = getValueColor(`${entityKey}_${statusDef.key}`, v);
+          const style = color ? `background:${hexToRgba(color, 0.15)};color:${color}` : 'background:var(--accent-glow)';
+          return `<span class="multi-chip" style="font-size:10px;${style}">${escHtml(v)} · ${c}</span>`;
+        }).join('');
+      }
+      return { type: t, count: items.length, breakdown };
+    }));
+    if (ceSummaries.length) {
+      customEntitiesSection = `
+        <div class="cc-grid wide">
+          <div class="widget">
+            <div class="widget-header"><span class="widget-title">Custom Entities</span></div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px">
+              ${ceSummaries.map(({ type, count, breakdown }) => `
+                <div class="stat-card" style="cursor:pointer;text-align:left;padding:12px 14px" onclick="renderView('custom:${escHtml(type.name)}')">
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                    <span style="font-size:16px">${type.icon ? renderEntityIcon(type.icon, 16) : '▪'}</span>
+                    <span style="font-size:13px;font-weight:600">${escHtml(type.display_name || type.name)}</span>
+                  </div>
+                  <div class="stat-value" style="font-size:22px">${count}</div>
+                  ${breakdown ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">${breakdown}</div>` : ''}
+                </div>`).join('')}
+            </div>
+          </div>
+        </div>`;
+    }
+  } catch (err) { console.warn('[dashboard] custom entity summary failed:', err); }
+
   // Stats mode bars
   const taskStatusCounts = {};
   TASK_STATUSES.forEach(s => taskStatusCounts[s] = 0);
@@ -6988,7 +8606,8 @@ async function renderDashboard() {
           </div>`;
         }).join('') || '<div class="empty-state" style="padding:16px"><div class="empty-state-text">No goals</div></div>'}
       </div>
-    </div>`;
+    </div>
+    ${customEntitiesSection}`;
 
   const tablesContent = `
     <div class="cc-grid">
@@ -7040,6 +8659,7 @@ async function renderDashboard() {
         </div>
       </div>
     </div>
+    ${customEntitiesSection}
     ${goalsSection}
     ${notesSection}`;
 
@@ -7182,16 +8802,29 @@ async function renderTasks() {
   let activeTaskView = taskViews.find(v => v.id === taskActiveId) || taskViews[0];
   tasksViewMode = activeTaskView.viewType;
 
+  function getGroupCols(g) {
+    if (g === 'status') return TASK_STATUSES;
+    if (g === 'priority') return TASK_PRIORITIES;
+    return getCustomPropDefs('task').find(d => d.key === g)?.options || [];
+  }
+  function getGroupByLabel(g) {
+    if (g === 'status') return 'Status';
+    if (g === 'priority') return 'Priority';
+    return getCustomPropDefs('task').find(d => d.key === g)?.label || g;
+  }
+
+  const _taskCustomGroupProps = getCustomPropDefs('task').filter(d => d.type === 'select' || d.type === 'status');
   const kanbanGroupByHtml = `<div class="col-picker-wrap" id="kanban-groupby-wrap" style="${tasksViewMode==='kanban'?'':'display:none'}">
-    <button class="btn btn-sm btn-ghost" id="kanban-groupby-btn" title="Group by">⊟ Group: ${tasksKanbanGroupBy}</button>
+    <button class="btn btn-sm btn-ghost" id="kanban-groupby-btn" title="Group by">⊟ Group: ${getGroupByLabel(tasksKanbanGroupBy)}</button>
     <div class="col-picker-dropdown hidden" id="kanban-groupby-dropdown">
       <label class="col-picker-item"><input type="radio" name="kanban-groupby" value="status" ${tasksKanbanGroupBy==='status'?'checked':''}> Status</label>
       <label class="col-picker-item"><input type="radio" name="kanban-groupby" value="priority" ${tasksKanbanGroupBy==='priority'?'checked':''}> Priority</label>
+      ${_taskCustomGroupProps.map(p => `<label class="col-picker-item"><input type="radio" name="kanban-groupby" value="${escHtml(p.key)}" ${tasksKanbanGroupBy===p.key?'checked':''}> ${escHtml(p.label||p.key)}</label>`).join('')}
     </div>
   </div>`;
 
   const isKanban = tasksViewMode === 'kanban';
-  const kanbanCols = isKanban ? (tasksKanbanGroupBy === 'status' ? TASK_STATUSES : TASK_PRIORITIES) : [];
+  const kanbanCols = isKanban ? getGroupCols(tasksKanbanGroupBy) : [];
   const hiddenForGroup = isKanban ? (kanbanHiddenCols[tasksKanbanGroupBy] || []) : [];
   const colPickerHtml = `<div class="col-picker-wrap" style="position:relative${isKanban?'':';display:none'}" id="col-picker-wrap">
     <button class="btn btn-sm btn-ghost" id="col-picker-btn" title="Show/hide columns">⊟ Columns</button>
@@ -7230,19 +8863,22 @@ async function renderTasks() {
   // Column picker
   const colPickerBtn = document.getElementById('col-picker-btn');
   const colPickerDrop = document.getElementById('col-picker-dropdown');
-  if (colPickerBtn) {
-    colPickerBtn.onclick = (e) => { e.stopPropagation(); colPickerDrop.classList.toggle('hidden'); };
-    document.addEventListener('click', (e) => {
-      if (!colPickerBtn.contains(e.target)) colPickerDrop.classList.add('hidden');
-    }, { once: false, capture: false });
-    document.querySelectorAll('.kanban-col-check').forEach(chk => {
+  function bindColPickerChecks() {
+    colPickerDrop.querySelectorAll('.kanban-col-check').forEach(chk => {
       chk.onchange = () => {
-        const checked = [...document.querySelectorAll('.kanban-col-check')].map(c => ({ col: c.dataset.col, on: c.checked }));
+        const checked = [...colPickerDrop.querySelectorAll('.kanban-col-check')].map(c => ({ col: c.dataset.col, on: c.checked }));
         kanbanHiddenCols[tasksKanbanGroupBy] = checked.filter(c => !c.on).map(c => c.col);
         localStorage.setItem('kanbanHiddenCols', JSON.stringify(kanbanHiddenCols));
         render();
       };
     });
+  }
+  if (colPickerBtn) {
+    colPickerBtn.onclick = (e) => { e.stopPropagation(); colPickerDrop.classList.toggle('hidden'); };
+    document.addEventListener('click', (e) => {
+      if (!colPickerBtn.contains(e.target)) colPickerDrop.classList.add('hidden');
+    }, { once: false, capture: false });
+    bindColPickerChecks();
   }
 
   // Property visibility panel
@@ -7273,8 +8909,17 @@ async function renderTasks() {
       radio.onchange = () => {
         tasksKanbanGroupBy = radio.value;
         localStorage.setItem('tasksKanbanGroupBy', tasksKanbanGroupBy);
-        if (kanbanGbBtn) kanbanGbBtn.textContent = `⊟ Group: ${tasksKanbanGroupBy}`;
+        if (kanbanGbBtn) kanbanGbBtn.textContent = `⊟ Group: ${getGroupByLabel(tasksKanbanGroupBy)}`;
         kanbanGbDrop.classList.add('hidden');
+        // Rebuild col picker for the new group-by dimension
+        if (colPickerDrop) {
+          const newCols = getGroupCols(tasksKanbanGroupBy);
+          const newHidden = kanbanHiddenCols[tasksKanbanGroupBy] || [];
+          colPickerDrop.innerHTML = newCols.map(col =>
+            `<label class="col-picker-item"><input type="checkbox" class="kanban-col-check" data-col="${escHtml(col)}" ${newHidden.includes(col)?'':'checked'}> ${col.replace(/_/g,' ')}</label>`
+          ).join('');
+          bindColPickerChecks();
+        }
         render();
       };
     });
@@ -7311,12 +8956,22 @@ async function renderTasks() {
 
   function buildCardsView(list) {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">✓</div><div class="empty-state-text">No tasks found</div></div>`;
+    function buildSubtree(parentId, depth) {
+      const subs = allTasksFull.filter(t => t.parent_task_id === parentId);
+      if (!subs.length) return '';
+      return subs.map(t =>
+        `<div style="display:flex;align-items:center;gap:5px;font-size:12px;padding:2px 0;padding-left:${depth * 14}px">
+          <span style="color:var(--text-muted)">›</span><span>${escHtml(t.title)}</span>
+        </div>${buildSubtree(t.id, depth + 1)}`
+      ).join('');
+    }
     const cards = list.map(t => {
       const dueLine = t.due_date ? `<span class="task-due" style="font-size:11px;color:${dueDateColor(t.due_date)}">${fmtDate(t.due_date)}</span>` : '';
       const projLine = t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${t.project_title}</div>` : '';
       const tags = (t.tags||[]).slice(0,3).map(tg => tagHtml(tg)).join('');
       const storyPts = t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
       const meta = [statusBadge(t.status), priorityBadge(t.priority), dueLine, tags, storyPts].filter(Boolean);
+      const subtree = buildSubtree(t.id, 0);
       return `<div class="task-card-item" data-task-id="${t.id}" style="cursor:pointer">
         <div class="kanban-card-header">
           <div class="kanban-card-title"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div>
@@ -7325,6 +8980,7 @@ async function renderTasks() {
         ${projLine}
         ${meta.length ? `<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:6px">${meta.join('')}</div>` : ''}
         ${renderCustomPropChips('task', t.id, 'cards')}
+        ${subtree ? `<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:4px">${subtree}</div>` : ''}
       </div>`;
     }).join('');
     return `<div class="task-cards-grid">${cards}</div>`;
@@ -7433,14 +9089,15 @@ async function renderTasks() {
 
   function buildKanbanView(list) {
     const groupBy = tasksKanbanGroupBy;
-    const allCols = groupBy === 'status' ? TASK_STATUSES : TASK_PRIORITIES;
+    const allCols = getGroupCols(groupBy);
     const hidden = kanbanHiddenCols[groupBy] || [];
     const cols = allCols.filter(c => !hidden.includes(c));
     const grouped = {};
     allCols.forEach(c => { grouped[c] = []; });
+    const isBuiltinGroup = groupBy === 'status' || groupBy === 'priority';
     // Also collect tasks with values not in current cols array (custom values)
     list.forEach(t => {
-      const key = t[groupBy] || '';
+      const key = isBuiltinGroup ? (t[groupBy] || '') : (getCustomPropValues('task', t.id)?.[groupBy] || '');
       if (!grouped[key]) grouped[key] = [];
       grouped[key].push(t);
     });
@@ -7454,12 +9111,13 @@ async function renderTasks() {
         const kVis = (key) => propVisible('kanban', key);
         const recurBadge = kVis('recurrence') && t.recur_interval > 0 ? ' <span class="task-recur-badge">↺</span>' : '';
         const projLine = kVis('project') && t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t.project_title}</div>` : '';
-        const statusLine = kVis('status') ? (groupBy === 'status' ? (kVis('priority') ? priorityBadge(t.priority) : '') : statusBadge(t.status)) : '';
+        const priorityLine = (groupBy !== 'priority' && kVis('priority')) ? priorityBadge(t.priority) : '';
+        const statusLine   = (groupBy !== 'status'   && kVis('status'))   ? statusBadge(t.status)     : '';
         const dueLine = kVis('due_date') && t.due_date ? `<span class="task-due" style="font-size:10px;color:${dueDateColor(t.due_date)}">${fmtDate(t.due_date)}</span>` : '';
         const tagLine = kVis('tags') ? (t.tags||[]).slice(0,2).map(tg => tagHtml(tg)).join('') : '';
         const storyPts = kVis('story_points') && t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
-        const metaLine = [statusLine, dueLine, tagLine, storyPts].some(Boolean)
-          ? `<div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">${statusLine}${dueLine}${tagLine}${storyPts}</div>` : '';
+        const metaLine = [priorityLine, statusLine, dueLine, tagLine, storyPts].some(Boolean)
+          ? `<div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">${priorityLine}${statusLine}${dueLine}${tagLine}${storyPts}</div>` : '';
         return `<div class="kanban-card" data-task-id="${t.id}" style="cursor:grab">
           <div class="kanban-card-header"><div class="kanban-card-title"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span>${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></div>
           ${projLine}${metaLine}
@@ -7467,8 +9125,10 @@ async function renderTasks() {
         </div>`;
       }).join('');
       const label = colKey.replace(/_/g,' ');
-      const colColor = getValueColor(groupBy === 'status' ? 'taskStatuses' : 'taskPriorities', colKey);
-      return `<div class="kanban-col" data-col="${colKey}">
+      const _gbStoreKey = groupBy === 'status' ? 'taskStatuses' : groupBy === 'priority' ? 'taskPriorities' : `task_${groupBy}`;
+      const colColor = getValueColor(_gbStoreKey, colKey);
+      const colBg = hexToRgba(colColor, 0.07);
+      return `<div class="kanban-col" data-col="${colKey}"${colBg ? ` style="background:${colBg}"` : ''}>
         <div class="kanban-col-header" style="${colColor ? `color:${colColor}` : ''}">
           <span>${label}</span>
           <span class="kanban-count">${tasks.length}</span>
@@ -7492,9 +9152,13 @@ async function renderTasks() {
     if (!board) return;
     const groupBy = board.dataset.groupby;
     bindKanbanDrag(board, '.kanban-card[data-task-id]', 'taskId', async (taskId, colKey) => {
-      await api('PATCH', `/api/tasks/${taskId}`, { [groupBy]: colKey });
-      const t = tasks.find(x => String(x.id) === String(taskId));
-      if (t) t[groupBy] = colKey;
+      if (groupBy === 'status' || groupBy === 'priority') {
+        await api('PATCH', `/api/tasks/${taskId}`, { [groupBy]: colKey });
+        const t = tasks.find(x => String(x.id) === String(taskId));
+        if (t) t[groupBy] = colKey;
+      } else {
+        setCustomPropValue('task', parseInt(taskId), groupBy, colKey);
+      }
       render();
     });
   }
@@ -7539,7 +9203,7 @@ async function renderTasks() {
       };
     });
 
-    // Inline subtask add button
+    // Inline subtask add button (below expanded children)
     document.querySelectorAll('.add-subtask-inline-btn').forEach(btn => {
       btn.onclick = async (e) => {
         e.stopPropagation();
@@ -7551,6 +9215,22 @@ async function renderTasks() {
           allTasksCache = allTasksFull;
           const parent = allTasksFull.find(t => t.id === parentId);
           if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
+          render();
+        });
+      };
+    });
+
+    // Leaf-task toggle arrow → opens new subtask modal and expands parent
+    document.querySelectorAll('.task-add-sub-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const parentId = parseInt(btn.dataset.addSubId);
+        const pt = allTasksFull.find(t => t.id === parentId);
+        showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium',
+          goal_id: pt?.goal_id || null, project_id: pt?.project_id || null, sprint_id: pt?.sprint_id || null }, async () => {
+          allTasksFull = await api('GET', '/api/tasks?all=1');
+          allTasksCache = allTasksFull;
+          expandedTasks.add(String(parentId));
           render();
         });
       };
@@ -7634,8 +9314,10 @@ async function renderTasks() {
     document.querySelectorAll('.kanban-add-btn').forEach(btn => {
       btn.onclick = () => {
         const presets = {};
-        if (tasksKanbanGroupBy === 'status') presets.status = btn.dataset.status;
-        else if (tasksKanbanGroupBy === 'priority') presets.priority = btn.dataset.status;
+        const gb = tasksKanbanGroupBy;
+        if (gb === 'status') presets.status = btn.dataset.status;
+        else if (gb === 'priority') presets.priority = btn.dataset.status;
+        else presets[gb] = btn.dataset.status; // custom prop preset via taskModalBody v[def.key]
         showNewTaskModal(presets, () => renderTasks());
       };
     });
@@ -8056,8 +9738,8 @@ async function renderGoals() {
         <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
         <span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
         <span class="entity-list-title goal-list-title">${g.title}<span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></span>
-        ${vis('type') && g.type ? `<span class="entity-list-meta">${g.type}</span>` : ''}
-        ${vis('year') && g.year ? `<span class="entity-list-meta">${g.year}</span>` : ''}
+        ${vis('type') && g.type ? builtinSelectChip('goal_type', g.type) : ''}
+        ${vis('year') && g.year ? builtinSelectChip('goal_year', g.year) : ''}
         ${vis('status') ? statusBadge(g.status) : ''}
         ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
         ${vis('tags') ? (g.tags || []).map(t => tagHtml(t)).join('') : ''}
@@ -8206,7 +9888,7 @@ async function renderGoals() {
           <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
             ${vis('status') && groupBy !== 'status' ? statusBadge(g.status) : ''}
             ${vis('type') && groupBy !== 'type' && g.type ? `<span>${g.type}</span>` : ''}
-            ${vis('year') && groupBy !== 'year' && g.year ? `<span>${g.year}</span>` : ''}
+            ${vis('year') && groupBy !== 'year' && g.year ? builtinSelectChip('goal_year', g.year) : ''}
           </div>
           ${vis('progress') ? `<div style="margin-top:8px">
             <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
@@ -8953,7 +10635,7 @@ function buildWidgetGrid(entity, entityId, wData) {
       <div class="widget-header">
         ${dgh}
         <span class="widget-title">${escHtml(w.label)}</span>
-        ${halfBtn}${colBtn}${expandBtn}
+        <div class="widget-header-actions">${halfBtn}${colBtn}${expandBtn}</div>
       </div>
       <div class="widget-body${is2col?' task-list-2col':''}">${body}</div>
     </div>`;
@@ -9217,7 +10899,7 @@ async function renderSprintDetail(sprintId) {
   const sdProjName = sdLocalProjects.find(p => String(p.id) === String(sprint.project_id))?.title || sprint.project_title || null;
   const allSprintDetailBuiltinDefs = [
     { key: 'status',  label: 'Status',    icon: pIco('<circle cx="12" cy="12" r="10"/>'),
-      renderValue: () => statusBadge(sprint.status||'planned') },
+      renderValue: () => builtinSelectChip('sprintStatuses', sprint.status||'planned', { badge: true }) },
     { key: 'dates',   label: 'Dates',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => { const dr = sprint.start_date && sprint.end_date ? `${fmtDate(sprint.start_date)} → ${fmtDate(sprint.end_date)}` : fmtDate(sprint.start_date||sprint.end_date)||''; return dr ? `<span>${dr}</span>` : ''; } },
     { key: 'project', label: 'Projects',  icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
@@ -9228,7 +10910,7 @@ async function renderSprintDetail(sprintId) {
   await loadEntityCustomProps('sprint', sprintId);
   const sprintDetailPropPanel = buildInlinePropPanel('sprint', sprintId, allSprintDetailBuiltinDefs);
   const sprintDetailEditFns = {
-    status:  (valEl) => { openValuePicker(valEl, ['planned','active','completed'].map(s => ({ value: s, label: s })), async (val) => { await patchSprint({ status: val }); }); },
+    status:  (valEl) => { openEditableValueCombo(valEl, SPRINT_STATUS_VALUES, 'sprintStatuses', null, async (val) => { await patchSprint({ status: val }); }); },
     dates:   (valEl) => { openDateRangePickerGlobal(valEl, stripDate(sprint.start_date), stripDate(sprint.end_date), async (start, end) => { await patchSprint({ start_date: start||null, end_date: end||null }); }); },
     project: (valEl) => openMultiRelationPicker(valEl, 'sprint', sprintId, 'project', 'project', sdLocalProjects, sprint, patchSprint, 'project_id', () => renderSprintDetail(sprintId)),
     points:  (valEl) => {
@@ -10377,7 +12059,7 @@ async function renderProjectDetail(projectId) {
   const goalName = pdLocalGoals.find(g => String(g.id) === String(p.goal_id))?.title || null;
   const allProjDetailBuiltinDefs = [
     { key: 'status',   label: 'Status',    icon: pIco('<circle cx="12" cy="12" r="10"/>'),
-      renderValue: () => statusBadge(p.status||'active') },
+      renderValue: () => builtinSelectChip('projectStatuses', p.status||'active', { badge: true }) },
     { key: 'due',      label: 'Due Date',  icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => p.due_date ? `<span>${fmtDate(p.due_date)}</span>` : '' },
     { key: 'goal',     label: 'Goals',     icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
@@ -10385,11 +12067,11 @@ async function renderProjectDetail(projectId) {
     { key: 'tags',     label: 'Tags',      icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
       renderValue: () => tags.length ? tags.map(t => tagHtml(t)).join('') : '' },
     { key: 'category', label: 'Category',  icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
-      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+      renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
     { key: 'macro',    label: 'Macro Area',icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
-      renderValue: () => p.macro_area ? `<span>${p.macro_area.split('(')[0].trim()}</span>` : '' },
+      renderValue: () => p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area.split('(')[0].trim()) : '' },
     { key: 'kanban',   label: 'Kanban Col',icon: pIco('<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>'),
-      renderValue: () => p.kanban_col ? `<span>${p.kanban_col}</span>` : '' },
+      renderValue: () => p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : '' },
     { key: 'archived', label: 'Archived',  icon: pIco('<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/>'),
       renderValue: () => p.archived ? `<span>Yes</span>` : '' },
     { key: 'description', label: 'Description', icon: pIco('<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>'),
@@ -10398,13 +12080,13 @@ async function renderProjectDetail(projectId) {
   await loadEntityCustomProps('project', projectId);
   const projDetailPropPanel = buildInlinePropPanel('project', projectId, allProjDetailBuiltinDefs);
   const projDetailEditFns = {
-    status:   (valEl) => { openValuePicker(valEl, PROJECT_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchProject({ status: val }); }); },
+    status:   (valEl) => { openEditableValueCombo(valEl, PROJECT_STATUSES, 'projectStatuses', null, async (val) => { await patchProject({ status: val }); }); },
     due:      (valEl) => { openDateRangePickerGlobal(valEl, stripDate(p.start_date), stripDate(p.due_date), async (start, end) => { await patchProject({ start_date: start||null, due_date: end||null }); }); },
     goal:     (valEl) => openMultiRelationPicker(valEl, 'project', projectId, 'goal', 'goal', pdLocalGoals, p, patchProject, 'goal_id', () => renderProjectDetail(projectId)),
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); renderProjectDetail(projectId); return; } await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); renderProjectDetail(projectId); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
-    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchProject({ category_id: val ? parseInt(val) : null }); }); },
-    macro:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => { await patchProject({ macro_area: val||null }); }); },
-    kanban:   (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...KANBAN_COLS.map(k => ({ value: k, label: k }))], async (val) => { await patchProject({ kanban_col: val||null }); }); },
+    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, p.category_id, async (newId) => { await patchProject({ category_id: newId ? parseInt(newId) : null }); }); },
+    macro:    (valEl) => { openEditableValueCombo(valEl, MACRO_AREAS, 'project_macro_area', null, async (val) => { await patchProject({ macro_area: val||null }); }, { allowClear: true }); },
+    kanban:   (valEl) => { openEditableValueCombo(valEl, KANBAN_COLS, 'project_kanban_col', null, async (val) => { await patchProject({ kanban_col: val||null }); }, { allowClear: true }); },
     archived: (valEl) => { patchProject({ archived: !p.archived }); },
     description: (valEl) => {
       const cur = p.description || '';
@@ -10531,15 +12213,15 @@ async function renderGoalDetail(goalId) {
   const catName = allCategories ? (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name : null;
   const allGoalDetailBuiltinDefs = [
     { key: 'status',   label: 'Status',   icon: pIco('<circle cx="12" cy="12" r="10"/>'),
-      renderValue: () => statusBadge(g.status||'active') },
+      renderValue: () => builtinSelectChip('goalStatuses', g.status||'active', { badge: true }) },
     { key: 'type',     label: 'Type',     icon: pIco('<path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z"/>'),
-      renderValue: () => g.type ? `<span>${g.type}</span>` : '' },
+      renderValue: () => g.type ? builtinSelectChip('goal_type', g.type) : '' },
     { key: 'year',     label: 'Year',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
-      renderValue: () => g.year ? `<span>${g.year}</span>` : '' },
+      renderValue: () => g.year ? builtinSelectChip('goal_year', g.year) : '' },
     { key: 'tags',     label: 'Tags',     icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
       renderValue: () => tags.length ? tags.map(t => tagHtml(t)).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
-      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+      renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
     { key: 'due',      label: 'Due Date', icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => g.due_date ? `<span>${fmtDate(g.due_date)}</span>` : '' },
     { key: 'metrics',  label: 'Metrics',  icon: pIco('<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
@@ -10550,11 +12232,11 @@ async function renderGoalDetail(goalId) {
   await loadEntityCustomProps('goal', goalId);
   const goalDetailPropPanel = buildInlinePropPanel('goal', goalId, allGoalDetailBuiltinDefs);
   const goalDetailEditFns = {
-    status:   (valEl) => { openValuePicker(valEl, GOAL_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchGoal({ status: val }); }); },
-    type:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_TYPES.map(t => ({ value: t, label: t }))], async (val) => { await patchGoal({ type: val||null }); }); },
-    year:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_YEARS.map(y => ({ value: y, label: y }))], async (val) => { await patchGoal({ year: val||null }); }); },
+    status:   (valEl) => { openEditableValueCombo(valEl, GOAL_STATUSES, 'goalStatuses', null, async (val) => { await patchGoal({ status: val }); }); },
+    type:     (valEl) => { openEditableValueCombo(valEl, GOAL_TYPES, 'goal_type', null, async (val) => { await patchGoal({ type: val||null }); }, { allowClear: true }); },
+    year:     (valEl) => { openEditableValueCombo(valEl, GOAL_YEARS, 'goal_year', null, async (val) => { await patchGoal({ year: val||null }); }, { allowClear: true }); },
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); renderGoalDetail(goalId); return; } await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); renderGoalDetail(goalId); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
-    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchGoal({ category_id: val ? parseInt(val) : null }); }); },
+    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, g.category_id, async (newId) => { await patchGoal({ category_id: newId ? parseInt(newId) : null }); }); },
     due:      (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(g.due_date), async (val) => { await patchGoal({ due_date: val||null }); }); },
     metrics:  (valEl) => {
       valEl.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -10960,6 +12642,217 @@ function openCombo(anchorEl, items, currentVal, onSelect, opts = {}) {
 }
 
 /* ─── Task Slideover ─────────────────────────────────────────────────── */
+/* ─── Editable select combo (shared) ───────────────────────────────────
+ The Task Status/Priority dropdown, generalized for every select prop on
+ every entity: search, add-new-value, rename, and per-value color — the
+ values list and colors persist under storageKey / storageKey+"Colors". */
+function openEditableValueCombo(anchorEl, valuesArray, storageKey, currentVal, onSelect, opts = {}) {
+  closeCombo();
+  let filter = '';
+  let editingVal = null; // value currently being renamed
+  let editInputVal = '';
+  let colorPickerVal = null; // value whose color picker is open
+
+  // Preset colors for the inline color picker
+  const COLOR_PRESETS = ['#e07070','#fb923c','#d4a84b','#6dcc8a','#378ADD','#a78bfa','#f472b6','#22d3ee','#94a3b8'];
+
+  _comboEl = document.createElement('div');
+  _comboEl.className = 'combo-popover';
+  _comboEl.style.minWidth = '220px';
+
+  function saveValues() {
+    localStorage.setItem(storageKey, JSON.stringify(valuesArray));
+    // valuesArray IS the live TASK_STATUSES / TASK_PRIORITIES array (same reference),
+    // so mutations to it (push, splice) are already reflected — no need to sync.
+  }
+
+  function renderEditable() {
+    const filtered = filter
+      ? valuesArray.filter(v => v.toLowerCase().includes(filter.toLowerCase()))
+      : valuesArray;
+    const showCreate = filter.trim() && !valuesArray.some(v => v.toLowerCase() === filter.trim().toLowerCase());
+
+    const items = filtered.map((v, i) => {
+      const isSel = v === currentVal;
+      const color = getValueColor(storageKey, v);
+      const dot = `<span class="combo-color-dot" data-colorpicker="${v}" title="Set color" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color||'var(--border)'};border:1px solid ${color||'var(--border)'};cursor:pointer;flex-shrink:0;margin-right:2px"></span>`;
+      if (editingVal === v) {
+        return `<div class="combo-item combo-item-editing" data-val="${v}">
+          ${dot}
+          <input class="combo-edit-input" value="${editInputVal || v}" data-editing="${v}" style="flex:1;font-size:12px;padding:2px 4px;border:1px solid var(--accent);border-radius:3px;background:var(--bg-surface);color:var(--text-primary)" />
+          <button class="combo-edit-save" data-editing="${v}" style="font-size:11px;padding:2px 6px;margin-left:4px;background:var(--accent);color:#fff;border:none;border-radius:3px;cursor:pointer">✓</button>
+          <button class="combo-edit-cancel" style="font-size:11px;padding:2px 6px;margin-left:2px;background:transparent;border:none;cursor:pointer;color:var(--text-muted)">✕</button>
+        </div>`;
+      }
+      const colorPickerHtml = colorPickerVal === v ? `<div class="combo-color-picker" data-for="${v}" style="display:flex;flex-wrap:wrap;gap:4px;padding:6px;border-top:1px solid var(--border)">
+        ${COLOR_PRESETS.map(c => `<span class="combo-color-swatch${color===c?' active':''}" data-color="${c}" data-for-val="${v}" style="display:inline-block;width:16px;height:16px;border-radius:3px;background:${c};cursor:pointer;border:2px solid ${color===c?'var(--text-primary)':'transparent'}"></span>`).join('')}
+        <span class="combo-color-swatch combo-color-clear" data-color="" data-for-val="${v}" title="Clear color" style="display:inline-block;width:16px;height:16px;border-radius:3px;background:var(--border);cursor:pointer;border:2px solid transparent;font-size:9px;line-height:16px;text-align:center;color:var(--text-muted)">✕</span>
+      </div>` : '';
+      return `<div class="combo-item editable-val-item${isSel?' selected':''}" data-val="${v}" style="display:flex;align-items:center;gap:4px;justify-content:space-between;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:6px;flex:1">
+          ${dot}
+          <span style="color:${color||'inherit'}">${v.replace(/_/g,' ')}</span>
+        </div>
+        <button class="combo-rename-btn" data-rename="${v}" title="Rename" style="opacity:0.4;background:none;border:none;cursor:pointer;font-size:11px;padding:0 4px;color:var(--text-muted)">✎</button>
+        ${colorPickerHtml}
+      </div>`;
+    }).join('');
+
+    _comboEl.innerHTML = `
+      <div class="combo-search-wrap">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input class="combo-search" placeholder="Search or add…" value="${filter.replace(/"/g,'&quot;')}" />
+      </div>
+      <div class="combo-list">
+        ${opts.allowClear ? '<div class="combo-item combo-clear-item" data-clear="1" style="color:var(--text-muted)">— none —</div>' : ''}
+        ${items || '<div class="combo-empty">No results</div>'}
+        ${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Add "${filter.trim()}"</div>` : ''}
+      </div>`;
+
+    const inp = _comboEl.querySelector('.combo-search');
+    inp.focus();
+    inp.setSelectionRange(inp.value.length, inp.value.length);
+
+    inp.oninput = (e) => { filter = e.target.value; editingVal = null; renderEditable(); };
+    inp.onkeydown = (e) => {
+      if (e.key === 'Enter' && filter.trim()) {
+        const exact = valuesArray.find(v => v.toLowerCase() === filter.trim().toLowerCase());
+        if (exact) {
+          onSelect(exact);
+          closeCombo();
+        } else {
+          const newVal = filter.trim().replace(/\s+/g,'_');
+          valuesArray.push(newVal);
+          saveValues();
+          onSelect(newVal);
+          closeCombo();
+        }
+      } else if (e.key === 'Escape') closeCombo();
+    };
+
+    // Select value
+    _comboEl.querySelectorAll('.editable-val-item[data-val]').forEach(el => {
+      el.onclick = (e) => {
+        if (e.target.closest('.combo-rename-btn')) return;
+        if (e.target.closest('.combo-color-dot') || e.target.closest('.combo-color-picker')) return;
+        onSelect(el.dataset.val);
+        closeCombo();
+      };
+    });
+
+    const clearEl = _comboEl.querySelector('[data-clear]');
+    if (clearEl) clearEl.onclick = () => { onSelect(''); closeCombo(); };
+
+    // Rename button
+    _comboEl.querySelectorAll('.combo-rename-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        editingVal = btn.dataset.rename;
+        editInputVal = editingVal;
+        renderEditable();
+      };
+    });
+
+    // Save rename
+    _comboEl.querySelectorAll('.combo-edit-save').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const oldVal = btn.dataset.editing;
+        const inputEl = _comboEl.querySelector(`.combo-edit-input[data-editing="${oldVal}"]`);
+        const newVal = (inputEl ? inputEl.value.trim() : oldVal).replace(/\s+/g,'_');
+        if (newVal && newVal !== oldVal) {
+          const idx = valuesArray.indexOf(oldVal);
+          if (idx >= 0) valuesArray[idx] = newVal;
+          saveValues();
+          // If current task had old value, update
+          if (currentVal === oldVal) { onSelect(newVal); closeCombo(); return; }
+        }
+        editingVal = null;
+        renderEditable();
+      };
+    });
+
+    // Cancel rename
+    _comboEl.querySelectorAll('.combo-edit-cancel').forEach(btn => {
+      btn.onclick = (e) => { e.stopPropagation(); editingVal = null; renderEditable(); };
+    });
+
+    // Edit input keydown
+    _comboEl.querySelectorAll('.combo-edit-input').forEach(inp2 => {
+      inp2.oninput = (e) => { editInputVal = e.target.value; };
+      inp2.onkeydown = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); _comboEl.querySelector('.combo-edit-save').click(); }
+        else if (e.key === 'Escape') { e.stopPropagation(); editingVal = null; renderEditable(); }
+      };
+    });
+
+    // Create new
+    const createEl = _comboEl.querySelector('.create-new[data-create]');
+    if (createEl) {
+      createEl.onclick = () => {
+        const newVal = createEl.dataset.create.replace(/\s+/g,'_');
+        if (!valuesArray.includes(newVal)) { valuesArray.push(newVal); saveValues(); }
+        onSelect(newVal);
+        closeCombo();
+      };
+    }
+
+    // Color dot toggle — open/close inline color picker
+    _comboEl.querySelectorAll('.combo-color-dot[data-colorpicker]').forEach(dot => {
+      dot.onclick = (e) => {
+        e.stopPropagation();
+        const val = dot.dataset.colorpicker;
+        colorPickerVal = colorPickerVal === val ? null : val;
+        renderEditable();
+      };
+    });
+
+    // Color swatch select
+    _comboEl.querySelectorAll('.combo-color-swatch[data-for-val]').forEach(swatch => {
+      swatch.onclick = (e) => {
+        e.stopPropagation();
+        const val = swatch.dataset.forVal;
+        const color = swatch.dataset.color;
+        setValueColor(storageKey, val, color || null);
+        colorPickerVal = null;
+        renderEditable();
+      };
+    });
+  }
+
+  renderEditable();
+
+  const rect = anchorEl.getBoundingClientRect();
+  _comboEl.style.top = (rect.bottom + 4) + 'px';
+  _comboEl.style.left = rect.left + 'px';
+  document.body.appendChild(_comboEl);
+
+  requestAnimationFrame(() => {
+    if (!_comboEl) return;
+    const cr = _comboEl.getBoundingClientRect();
+    if (cr.right > window.innerWidth - 8) _comboEl.style.left = (window.innerWidth - cr.width - 8) + 'px';
+  });
+
+  setTimeout(() => document.addEventListener('mousedown', _comboOutside), 0);
+}
+
+/* ─── Category combo (shared) ──────────────────────────────────────────
+   Same editor experience as select props: search, create (persists to the
+   categories API), and per-value color (stored under "categoriesColors",
+   which builtinSelectChip('categories', …) reads everywhere). */
+function openCategoryCombo(anchorEl, currentId, onPick) {
+  const names = allCategories.map(c => c.name);
+  const curName = (allCategories.find(c => String(c.id) === String(currentId)) || {}).name || null;
+  openEditableValueCombo(anchorEl, names, 'categories', curName, async (name) => {
+    if (!name) { onPick('', null); return; }
+    let cat = allCategories.find(c => c.name === name);
+    if (!cat) {
+      try { cat = await api('POST', '/api/categories', { name }); allCategories.push(cat); } catch { return; }
+    }
+    onPick(String(cat.id), cat);
+  }, { allowClear: true });
+}
+
 async function showTaskSlideover(taskId) {
   openSlideover('Task Detail', '<div class="loading">Loading…</div>');
 
@@ -10991,40 +12884,45 @@ async function showTaskSlideover(taskId) {
     `<div class="pom-dot ${i < pomDone ? 'done' : ''}"></div>`
   ).join('');
 
-  // Build interactive nested subtask table (chevron toggle + add subtask)
+  // Build interactive nested subtask table. Rows with children carry a
+  // chevron to expand/collapse their branch — same interaction as the
+  // sub-entity tree custom types use. Branches start collapsed.
   const chevSvgSub = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,3 5,7 8,3"/></svg>`;
+  const _expandedSubRows = new Set();
   function buildSubtaskTable(items, depth) {
     if (!items.length) return '';
     let rows = '';
     items.forEach(st => {
       const children = allTasksCache.filter(x => String(x.parent_task_id) === String(st.id));
-      const hasChildren = children.length > 0;
-      const isExpanded = expandedTasks.has(String(st.id));
-      // All rows (parent or leaf) use the same toggle arrow — clicking always expands inline
-      const toggleBtn = `<span class="task-toggle-arrow sub-toggle ${isExpanded ? 'expanded' : ''}" data-toggle-id="${st.id}" style="cursor:pointer;margin-right:4px" title="Toggle">${chevSvgSub}</span>`;
+      const hasKids = children.length > 0;
+      const isExp = _expandedSubRows.has(String(st.id));
       const indent = depth * 18;
-      // Title is always plain text — use the toggle arrow to expand, or the inline add button to open slideover
       const titleEl = `<span class="task-title-text${st.status==='done'?' done':''}">${st.title}</span>`;
-      rows += `<tr class="subtask-table-row" data-st-id="${st.id}">
+      const chev = hasKids
+        ? `<span class="task-toggle-arrow sub-table-toggle${isExp ? ' expanded' : ''}" data-toggle-id="${st.id}" title="${isExp ? 'Hide' : 'Show'} subtasks" style="cursor:pointer;flex-shrink:0">${chevSvgSub}</span>`
+        : `<span style="width:14px;flex-shrink:0"></span>`;
+      const countBadge = hasKids && !isExp
+        ? `<span style="font-size:10px;color:var(--text-muted);background:var(--accent-glow);border-radius:8px;padding:0 6px;flex-shrink:0">${children.length}</span>`
+        : '';
+      rows += `<tr class="subtask-table-row" data-st-id="${st.id}" style="cursor:pointer">
         <td style="padding-left:${8+indent}px">
           <div style="display:flex;align-items:center;gap:6px">
-            ${toggleBtn}
+            ${chev}
             <div class="task-check ${st.status==='done'?'done':''}" data-subtask-id="${st.id}" style="flex-shrink:0">${st.status==='done'?'✓':''}</div>
             ${titleEl}
+            ${countBadge}
           </div>
         </td>
         <td>${statusBadge(st.status)}</td>
         <td>${priorityBadge(st.priority)}</td>
         <td style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text-muted)">${fmtDate(st.due_date)||'—'}</td>
       </tr>`;
-      if (isExpanded) {
-        if (hasChildren) rows += buildSubtaskTable(children, depth + 1);
-        rows += `<tr class="subtask-quick-add-row" data-add-parent="${st.id}">
-          <td colspan="4" style="padding:4px 8px 4px ${8+indent+18}px">
-            <button class="btn btn-sm btn-ghost sub-add-inline-btn" data-parent-id="${st.id}" style="font-size:12px;color:var(--color-text-secondary)">+ Add Subtask</button>
-          </td>
-        </tr>`;
-      }
+      if (hasKids && isExp) rows += buildSubtaskTable(children, depth + 1);
+      if (!hasKids || isExp) rows += `<tr class="subtask-quick-add-row" data-add-parent="${st.id}">
+        <td colspan="4" style="padding:4px 8px 4px ${8+indent+18}px">
+          <button class="btn btn-sm btn-ghost sub-add-inline-btn" data-parent-id="${st.id}" style="font-size:12px;color:var(--color-text-secondary)">+ Add Subtask</button>
+        </td>
+      </tr>`;
     });
     return rows;
   }
@@ -11049,28 +12947,22 @@ async function showTaskSlideover(taskId) {
   function bindSubtaskTableEvents() {
     const wrap = document.getElementById('subtask-list');
     if (!wrap) return;
-    // Toggle arrows — clicking the arrow expands/collapses
-    wrap.querySelectorAll('.sub-toggle').forEach(arrow => {
+    // Branch chevrons — expand/collapse a row's subtasks
+    wrap.querySelectorAll('.sub-table-toggle').forEach(arrow => {
       arrow.onclick = (e) => {
         e.stopPropagation();
         const id = String(arrow.dataset.toggleId);
-        if (expandedTasks.has(id)) expandedTasks.delete(id);
-        else expandedTasks.add(id);
+        if (_expandedSubRows.has(id)) _expandedSubRows.delete(id);
+        else _expandedSubRows.add(id);
         renderSubtaskTable();
       };
     });
-    // Row click for parent rows — clicking anywhere in the row toggles (same as arrow)
+    // Row click opens the subtask's slideover
     wrap.querySelectorAll('tr.subtask-table-row[data-st-id]').forEach(row => {
       row.onclick = (e) => {
-        // Only handle clicks that hit the row or its cells, not interactive children
-        if (e.target.closest('.task-check') || e.target.closest('.sub-add-inline-btn')) return;
-        const arrow = row.querySelector('.sub-toggle[data-toggle-id]');
-        if (!arrow) return;
+        if (e.target.closest('.task-check') || e.target.closest('.sub-add-inline-btn') || e.target.closest('.sub-table-toggle')) return;
         e.stopPropagation();
-        const id = String(arrow.dataset.toggleId);
-        if (expandedTasks.has(id)) expandedTasks.delete(id);
-        else expandedTasks.add(id);
-        renderSubtaskTable();
+        showTaskSlideover(parseInt(row.dataset.stId));
       };
     });
     // Inline add subtask buttons (inside expanded rows)
@@ -11198,7 +13090,7 @@ async function showTaskSlideover(taskId) {
     { key: 'tags',     label: 'Tags',         icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
       renderValue: () => tags.length ? tags.map(t => tagHtml(t)).join('') : '' },
     { key: 'category', label: 'Category',     icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
-      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+      renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
     { key: 'goal',     label: 'Goals',        icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
       renderValue: () => renderMultiRelationValue('task', taskId, 'goal', goalName) },
     { key: 'project',  label: 'Projects',     icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
@@ -11258,16 +13150,21 @@ async function showTaskSlideover(taskId) {
 
     ${taskInlinePropPanel}
 
-    <div class="subtask-section">
+    ${getHiddenBuiltinSections('task').includes('subtasks_builtin') ? '' : `
+    <div class="subtask-section" id="subtask-section">
       <div class="subtask-section-title">
         <span>Subtasks (${subtasks.length})</span>
-        <button class="btn btn-sm btn-ghost" id="add-subtask-btn">+ Add</button>
+        <div style="display:flex;gap:4px;align-items:center">
+          <button class="btn btn-sm btn-ghost" id="add-subtask-btn">+ Add</button>
+          ${builtinSectionRemoveBtn('task', 'subtasks_builtin')}
+        </div>
       </div>
       <div id="subtask-list"></div>
-    </div>
+    </div>`}
+    ${getHiddenBuiltinSections('task').includes('pomodoro_builtin') ? '' : `
     <div class="subtask-section">
       <div class="subtask-section-title" style="align-items:center">
-        <span>Pomodoro</span>
+        <span>Pomodoro ${builtinSectionRemoveBtn('task', 'pomodoro_builtin')}</span>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;font-weight:400">
           <input type="checkbox" id="task-pomodoro-toggle" ${task.pomodoro ? 'checked' : ''} style="width:15px;height:15px;cursor:pointer;accent-color:var(--accent)">
           <span style="color:var(--text-muted)">${task.pomodoro ? 'Tracked in Pomodoro view' : 'Enable for Pomodoro view'}</span>
@@ -11278,10 +13175,10 @@ async function showTaskSlideover(taskId) {
         <button class="btn btn-sm btn-ghost" id="log-pom-btn">+ Log</button>
       </div>
       <div class="pomodoro-track">${pomDots}</div>` : ''}
-    </div>
+    </div>`}
     ${buildEntityViewsSection('task', taskId)}
-    ${buildCommentSection('task', taskId)}
     ${buildRichContentSection('task', taskId)}
+    ${buildCommentSection('task', taskId)}
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <button class="btn btn-ghost btn-sm" id="task-export-btn">Export JSON</button>
       <button class="btn btn-ghost btn-sm" style="color:var(--danger)" id="task-delete-btn">Delete</button>
@@ -11294,6 +13191,7 @@ async function showTaskSlideover(taskId) {
 
   // Render interactive subtask table now that DOM is present
   renderSubtaskTable();
+  makeSectionCollapsible(document.getElementById('subtask-section'), 'task_subtasks');
 
   // ── patchTask + handleStatusChange ───────────────────────────────────
   async function patchTask(data) {
@@ -11378,14 +13276,9 @@ async function showTaskSlideover(taskId) {
     },
     category: async (valEl) => {
       try { allCategories = await api('GET', '/api/categories'); } catch(e) {}
-      const cats = [{ value: '', label: '— none —' }, ...allCategories.map(c => ({ value: String(c.id), label: c.name }))];
-      openCombo(valEl, cats, task.category_id ? String(task.category_id) : '', async ({ value, label, create }) => {
-        if (create) {
-          try { const nc = await api('POST', '/api/categories', { name: create }); allCategories.push(nc); await patchTask({ category_id: nc.id }); } catch(err) {}
-        } else {
-          await patchTask({ category_id: value ? parseInt(value) : null });
-        }
-      }, { allowCreate: true });
+      openCategoryCombo(valEl, task.category_id, async (newId) => {
+        await patchTask({ category_id: newId ? parseInt(newId) : null });
+      });
     },
     goal:    (valEl) => openMultiRelationPicker(valEl, 'task', taskId, 'goal', 'goal', allGoals, task, patchTask, 'goal_id', () => showTaskSlideover(taskId)),
     project: (valEl) => openMultiRelationPicker(valEl, 'task', taskId, 'project', 'project', allProjects, task, patchTask, 'project_id', () => showTaskSlideover(taskId)),
@@ -11525,193 +13418,8 @@ async function showTaskSlideover(taskId) {
       openPropSectionManager(e.currentTarget, 'task', () => showTaskSlideover(taskId));
     });
   });
-  setSlideoverExpand(() => openEntityFullscreen('task', taskId, task.title, (t) => patchTask({ title: t })));
+  setSlideoverExpand(() => openEntityFullscreen('task', taskId, task.title, (t) => patchTask({ title: t }), computeTaskAncestors(task)));
   // Persists to localStorage under `storageKey`.
-  function openEditableValueCombo(anchorEl, valuesArray, storageKey, currentVal, onSelect) {
-    closeCombo();
-    let filter = '';
-    let editingVal = null; // value currently being renamed
-    let editInputVal = '';
-    let colorPickerVal = null; // value whose color picker is open
-
-    // Preset colors for the inline color picker
-    const COLOR_PRESETS = ['#e07070','#fb923c','#d4a84b','#6dcc8a','#378ADD','#a78bfa','#f472b6','#22d3ee','#94a3b8'];
-
-    _comboEl = document.createElement('div');
-    _comboEl.className = 'combo-popover';
-    _comboEl.style.minWidth = '220px';
-
-    function saveValues() {
-      localStorage.setItem(storageKey, JSON.stringify(valuesArray));
-      // valuesArray IS the live TASK_STATUSES / TASK_PRIORITIES array (same reference),
-      // so mutations to it (push, splice) are already reflected — no need to sync.
-    }
-
-    function renderEditable() {
-      const filtered = filter
-        ? valuesArray.filter(v => v.toLowerCase().includes(filter.toLowerCase()))
-        : valuesArray;
-      const showCreate = filter.trim() && !valuesArray.some(v => v.toLowerCase() === filter.trim().toLowerCase());
-
-      const items = filtered.map((v, i) => {
-        const isSel = v === currentVal;
-        const color = getValueColor(storageKey, v);
-        const dot = `<span class="combo-color-dot" data-colorpicker="${v}" title="Set color" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color||'var(--border)'};border:1px solid ${color||'var(--border)'};cursor:pointer;flex-shrink:0;margin-right:2px"></span>`;
-        if (editingVal === v) {
-          return `<div class="combo-item combo-item-editing" data-val="${v}">
-            ${dot}
-            <input class="combo-edit-input" value="${editInputVal || v}" data-editing="${v}" style="flex:1;font-size:12px;padding:2px 4px;border:1px solid var(--accent);border-radius:3px;background:var(--bg-surface);color:var(--text-primary)" />
-            <button class="combo-edit-save" data-editing="${v}" style="font-size:11px;padding:2px 6px;margin-left:4px;background:var(--accent);color:#fff;border:none;border-radius:3px;cursor:pointer">✓</button>
-            <button class="combo-edit-cancel" style="font-size:11px;padding:2px 6px;margin-left:2px;background:transparent;border:none;cursor:pointer;color:var(--text-muted)">✕</button>
-          </div>`;
-        }
-        const colorPickerHtml = colorPickerVal === v ? `<div class="combo-color-picker" data-for="${v}" style="display:flex;flex-wrap:wrap;gap:4px;padding:6px;border-top:1px solid var(--border)">
-          ${COLOR_PRESETS.map(c => `<span class="combo-color-swatch${color===c?' active':''}" data-color="${c}" data-for-val="${v}" style="display:inline-block;width:16px;height:16px;border-radius:3px;background:${c};cursor:pointer;border:2px solid ${color===c?'var(--text-primary)':'transparent'}"></span>`).join('')}
-          <span class="combo-color-swatch combo-color-clear" data-color="" data-for-val="${v}" title="Clear color" style="display:inline-block;width:16px;height:16px;border-radius:3px;background:var(--border);cursor:pointer;border:2px solid transparent;font-size:9px;line-height:16px;text-align:center;color:var(--text-muted)">✕</span>
-        </div>` : '';
-        return `<div class="combo-item editable-val-item${isSel?' selected':''}" data-val="${v}" style="display:flex;align-items:center;gap:4px;justify-content:space-between;flex-wrap:wrap">
-          <div style="display:flex;align-items:center;gap:6px;flex:1">
-            ${dot}
-            <span style="color:${color||'inherit'}">${v.replace(/_/g,' ')}</span>
-          </div>
-          <button class="combo-rename-btn" data-rename="${v}" title="Rename" style="opacity:0.4;background:none;border:none;cursor:pointer;font-size:11px;padding:0 4px;color:var(--text-muted)">✎</button>
-          ${colorPickerHtml}
-        </div>`;
-      }).join('');
-
-      _comboEl.innerHTML = `
-        <div class="combo-search-wrap">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input class="combo-search" placeholder="Search or add…" value="${filter.replace(/"/g,'&quot;')}" />
-        </div>
-        <div class="combo-list">
-          ${items || '<div class="combo-empty">No results</div>'}
-          ${showCreate ? `<div class="combo-item create-new" data-create="${filter.trim().replace(/"/g,'&quot;')}">+ Add "${filter.trim()}"</div>` : ''}
-        </div>`;
-
-      const inp = _comboEl.querySelector('.combo-search');
-      inp.focus();
-      inp.setSelectionRange(inp.value.length, inp.value.length);
-
-      inp.oninput = (e) => { filter = e.target.value; editingVal = null; renderEditable(); };
-      inp.onkeydown = (e) => {
-        if (e.key === 'Enter' && filter.trim()) {
-          const exact = valuesArray.find(v => v.toLowerCase() === filter.trim().toLowerCase());
-          if (exact) {
-            onSelect(exact);
-            closeCombo();
-          } else {
-            const newVal = filter.trim().replace(/\s+/g,'_');
-            valuesArray.push(newVal);
-            saveValues();
-            onSelect(newVal);
-            closeCombo();
-          }
-        } else if (e.key === 'Escape') closeCombo();
-      };
-
-      // Select value
-      _comboEl.querySelectorAll('.editable-val-item[data-val]').forEach(el => {
-        el.onclick = (e) => {
-          if (e.target.closest('.combo-rename-btn')) return;
-          if (e.target.closest('.combo-color-dot') || e.target.closest('.combo-color-picker')) return;
-          onSelect(el.dataset.val);
-          closeCombo();
-        };
-      });
-
-      // Rename button
-      _comboEl.querySelectorAll('.combo-rename-btn').forEach(btn => {
-        btn.onclick = (e) => {
-          e.stopPropagation();
-          editingVal = btn.dataset.rename;
-          editInputVal = editingVal;
-          renderEditable();
-        };
-      });
-
-      // Save rename
-      _comboEl.querySelectorAll('.combo-edit-save').forEach(btn => {
-        btn.onclick = (e) => {
-          e.stopPropagation();
-          const oldVal = btn.dataset.editing;
-          const inputEl = _comboEl.querySelector(`.combo-edit-input[data-editing="${oldVal}"]`);
-          const newVal = (inputEl ? inputEl.value.trim() : oldVal).replace(/\s+/g,'_');
-          if (newVal && newVal !== oldVal) {
-            const idx = valuesArray.indexOf(oldVal);
-            if (idx >= 0) valuesArray[idx] = newVal;
-            saveValues();
-            // If current task had old value, update
-            if (currentVal === oldVal) { onSelect(newVal); closeCombo(); return; }
-          }
-          editingVal = null;
-          renderEditable();
-        };
-      });
-
-      // Cancel rename
-      _comboEl.querySelectorAll('.combo-edit-cancel').forEach(btn => {
-        btn.onclick = (e) => { e.stopPropagation(); editingVal = null; renderEditable(); };
-      });
-
-      // Edit input keydown
-      _comboEl.querySelectorAll('.combo-edit-input').forEach(inp2 => {
-        inp2.oninput = (e) => { editInputVal = e.target.value; };
-        inp2.onkeydown = (e) => {
-          if (e.key === 'Enter') { e.preventDefault(); _comboEl.querySelector('.combo-edit-save').click(); }
-          else if (e.key === 'Escape') { e.stopPropagation(); editingVal = null; renderEditable(); }
-        };
-      });
-
-      // Create new
-      const createEl = _comboEl.querySelector('.create-new[data-create]');
-      if (createEl) {
-        createEl.onclick = () => {
-          const newVal = createEl.dataset.create.replace(/\s+/g,'_');
-          if (!valuesArray.includes(newVal)) { valuesArray.push(newVal); saveValues(); }
-          onSelect(newVal);
-          closeCombo();
-        };
-      }
-
-      // Color dot toggle — open/close inline color picker
-      _comboEl.querySelectorAll('.combo-color-dot[data-colorpicker]').forEach(dot => {
-        dot.onclick = (e) => {
-          e.stopPropagation();
-          const val = dot.dataset.colorpicker;
-          colorPickerVal = colorPickerVal === val ? null : val;
-          renderEditable();
-        };
-      });
-
-      // Color swatch select
-      _comboEl.querySelectorAll('.combo-color-swatch[data-for-val]').forEach(swatch => {
-        swatch.onclick = (e) => {
-          e.stopPropagation();
-          const val = swatch.dataset.forVal;
-          const color = swatch.dataset.color;
-          setValueColor(storageKey, val, color || null);
-          colorPickerVal = null;
-          renderEditable();
-        };
-      });
-    }
-
-    renderEditable();
-
-    const rect = anchorEl.getBoundingClientRect();
-    _comboEl.style.top = (rect.bottom + 4) + 'px';
-    _comboEl.style.left = rect.left + 'px';
-    document.body.appendChild(_comboEl);
-
-    requestAnimationFrame(() => {
-      if (!_comboEl) return;
-      const cr = _comboEl.getBoundingClientRect();
-      if (cr.right > window.innerWidth - 8) _comboEl.style.left = (window.innerWidth - cr.width - 8) + 'px';
-    });
-
-    setTimeout(() => document.addEventListener('mousedown', _comboOutside), 0);
-  }
 
   // ── Chip click handlers ───────────────────────────────────────────────
   function applyChipValueColor(chipEl, storageKey, value) {
@@ -13153,7 +14861,7 @@ function taskModalBody(task, resources) {
       const customDefs = getCustomPropDefs('task');
       if (!customDefs.length) return '';
       const fields = customDefs.map(def => {
-        const existing = (v.id != null) ? (getCustomPropValues('task', v.id)[def.key] ?? '') : '';
+        const existing = (v.id != null) ? (getCustomPropValues('task', v.id)[def.key] ?? '') : (v[def.key] ?? '');
         let input;
         if (def.type === 'checkbox') {
           input = `<input type="checkbox" id="t-cp-${def.key}" ${existing?'checked':''} style="width:auto;margin-top:4px">`;
@@ -13399,7 +15107,7 @@ async function showProjectSlideover(project, goals, afterSave) {
 
   const allProjBuiltinDefs = [
     { key: 'status',   label: 'Status',    icon: pIco('<circle cx="12" cy="12" r="10"/>'),
-      renderValue: () => statusBadge(p.status||'active') },
+      renderValue: () => builtinSelectChip('projectStatuses', p.status||'active', { badge: true }) },
     { key: 'due',      label: 'Due Date',  icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => fmtDate(p.due_date) ? `<span>${fmtDate(p.due_date)}</span>` : '' },
     { key: 'goal',     label: 'Goals',     icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
@@ -13407,11 +15115,11 @@ async function showProjectSlideover(project, goals, afterSave) {
     { key: 'tags',     label: 'Tags',      icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
       renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category',  icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
-      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+      renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
     { key: 'macro',    label: 'Macro Area',icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
-      renderValue: () => p.macro_area ? `<span>${p.macro_area.split('(')[0].trim()}</span>` : '' },
+      renderValue: () => p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area.split('(')[0].trim()) : '' },
     { key: 'kanban',   label: 'Kanban Col',icon: pIco('<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>'),
-      renderValue: () => p.kanban_col ? `<span>${p.kanban_col}</span>` : '' },
+      renderValue: () => p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : '' },
     { key: 'archived', label: 'Archived',  icon: pIco('<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>'),
       renderValue: () => p.archived ? `<span>Yes</span>` : '' },
     { key: 'description', label: 'Description', icon: pIco('<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>'),
@@ -13444,9 +15152,9 @@ async function showProjectSlideover(project, goals, afterSave) {
     </div>
 
     <div class="prop-chips" id="prop-chips">
-      ${projIsInHead('status') ? `<button class="prop-chip" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value">${(p.status||'active').replace('_',' ')}</span></button>` : ''}
+      ${projIsInHead('status') ? `<button class="prop-chip" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value">${builtinSelectChip('projectStatuses', p.status||'active', { badge: true })}</span></button>` : ''}
       ${projIsInHead('due') ? `<button class="prop-chip" id="chip-due" data-key="due"><span class="chip-label">Due</span><span class="chip-value" id="chip-due-val">${fmtDate(p.due_date) || '—'}</span></button>` : ''}
-      ${projIsInHead('goal') ? `<button class="prop-chip" id="chip-goal" data-key="goal"><span class="chip-label">Goal</span><span class="chip-value" id="chip-goal-val">${goalName || '—'}</span></button>` : ''}
+      ${projIsInHead('goal') ? `<button class="prop-chip" id="chip-goal" data-key="goal"><span class="chip-label">Goal</span><span class="chip-value" id="chip-goal-val">${goalName ? `<span class=\"multi-chip\" style=\"font-size:11px\">${escHtml(goalName)}</span>` : '—'}</span></button>` : ''}
       ${projIsInHead('tags') ? `<button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>` : ''}
       ${projExtraHeadKeys.map(k => { const def = allProjBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
@@ -13454,13 +15162,17 @@ async function showProjectSlideover(project, goals, afterSave) {
 
     ${projInlinePropPanel}
 
+    ${getHiddenBuiltinSections('project').includes('tasks_builtin') ? '' : `
     <div class="subtask-section">
       <div class="subtask-section-title">
         <span>Tasks (${tasks.length})</span>
-        <button class="btn btn-sm btn-ghost" id="proj-open-detail-btn">Open Full View ⤢</button>
+        <div style="display:flex;gap:4px;align-items:center">
+          <button class="btn btn-sm btn-ghost" id="proj-open-detail-btn">Open Full View ⤢</button>
+          ${builtinSectionRemoveBtn('project', 'tasks_builtin')}
+        </div>
       </div>
       <ul class="task-list" id="proj-task-list">${taskRows}</ul>
-    </div>
+    </div>`}
 
     ${buildEntityViewsSection('project', projectId)}
 
@@ -13509,7 +15221,7 @@ async function showProjectSlideover(project, goals, afterSave) {
   // Prop chips
   document.getElementById('chip-status')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openValuePicker(e.currentTarget, PROJECT_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => {
+    openEditableValueCombo(e.currentTarget, PROJECT_STATUSES, 'projectStatuses', null, async (val) => {
       const el = document.getElementById('chip-status'); if (el) el.querySelector('.chip-value').textContent = val.replace('_',' ');
       await patchProject({ status: val });
     });
@@ -13554,13 +15266,13 @@ async function showProjectSlideover(project, goals, afterSave) {
 
   // Extra heading chips
   const projInlinePropEditFns = {
-    status:   (valEl) => { openValuePicker(valEl, PROJECT_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchProject({ status: val }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    status:   (valEl) => { openEditableValueCombo(valEl, PROJECT_STATUSES, 'projectStatuses', null, async (val) => { await patchProject({ status: val }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     due:      (valEl) => { openDateRangePickerGlobal(valEl, stripDate(p.start_date), stripDate(p.due_date), async (start, end) => { await patchProject({ start_date: start||null, due_date: end||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
     goal:     (valEl) => openMultiRelationPicker(valEl, 'project', projectId, 'goal', 'goal', goals||[], p, patchProject, 'goal_id', () => showProjectSlideover({ id: projectId }, goals, afterSave)),
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showProjectSlideover({ id: projectId }, goals, afterSave); return; } await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showProjectSlideover({ id: projectId }, goals, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
-    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchProject({ category_id: val ? parseInt(val) : null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
-    macro:    (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...MACRO_AREAS.map(m => ({ value: m, label: m.split('(')[0].trim() }))], async (val) => { await patchProject({ macro_area: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
-    kanban:   (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...KANBAN_COLS.map(k => ({ value: k, label: k }))], async (val) => { await patchProject({ kanban_col: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, p.category_id, async (newId) => { await patchProject({ category_id: newId ? parseInt(newId) : null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    macro:    (valEl) => { openEditableValueCombo(valEl, MACRO_AREAS, 'project_macro_area', null, async (val) => { await patchProject({ macro_area: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }, { allowClear: true }); },
+    kanban:   (valEl) => { openEditableValueCombo(valEl, KANBAN_COLS, 'project_kanban_col', null, async (val) => { await patchProject({ kanban_col: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }, { allowClear: true }); },
     archived: (valEl) => { patchProject({ archived: !p.archived }).then(() => showProjectSlideover({ id: projectId }, goals, afterSave)); },
     description: (valEl) => {
       const cur = p.description || '';
@@ -13629,15 +15341,15 @@ async function showGoalSlideover(goal, afterSave) {
 
   const allGoalBuiltinDefs = [
     { key: 'status',   label: 'Status',   icon: pIco('<circle cx="12" cy="12" r="10"/>'),
-      renderValue: () => statusBadge(g.status||'active') },
+      renderValue: () => builtinSelectChip('goalStatuses', g.status||'active', { badge: true }) },
     { key: 'type',     label: 'Type',     icon: pIco('<path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z"/><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/>'),
-      renderValue: () => g.type ? `<span>${g.type}</span>` : '' },
+      renderValue: () => g.type ? builtinSelectChip('goal_type', g.type) : '' },
     { key: 'year',     label: 'Year',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
-      renderValue: () => g.year ? `<span>${g.year}</span>` : '' },
+      renderValue: () => g.year ? builtinSelectChip('goal_year', g.year) : '' },
     { key: 'tags',     label: 'Tags',     icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
       renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
-      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+      renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
     { key: 'due',      label: 'Due Date', icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => g.due_date ? `<span>${fmtDate(g.due_date)}</span>` : '' },
     { key: 'metrics',  label: 'Metrics',  icon: pIco('<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
@@ -13666,9 +15378,9 @@ async function showGoalSlideover(goal, afterSave) {
     </div>
 
     <div class="prop-chips" id="prop-chips">
-      ${goalIsInHead('status') ? `<button class="prop-chip" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value">${(g.status||'active').replace('_',' ')}</span></button>` : ''}
-      ${goalIsInHead('type') ? `<button class="prop-chip" id="chip-type" data-key="type"><span class="chip-label">Type</span><span class="chip-value" id="chip-type-val">${g.type || '—'}</span></button>` : ''}
-      ${goalIsInHead('year') ? `<button class="prop-chip" id="chip-year" data-key="year"><span class="chip-label">Year</span><span class="chip-value" id="chip-year-val">${g.year || '—'}</span></button>` : ''}
+      ${goalIsInHead('status') ? `<button class="prop-chip" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value">${builtinSelectChip('goalStatuses', g.status||'active', { badge: true })}</span></button>` : ''}
+      ${goalIsInHead('type') ? `<button class="prop-chip" id="chip-type" data-key="type"><span class="chip-label">Type</span><span class="chip-value" id="chip-type-val">${g.type ? builtinSelectChip('goal_type', g.type) : '—'}</span></button>` : ''}
+      ${goalIsInHead('year') ? `<button class="prop-chip" id="chip-year" data-key="year"><span class="chip-label">Year</span><span class="chip-value" id="chip-year-val">${g.year ? builtinSelectChip('goal_year', g.year) : '—'}</span></button>` : ''}
       ${goalIsInHead('tags') ? `<button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>` : ''}
       ${goalExtraHeadKeys.map(k => { const def = allGoalBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
@@ -13676,13 +15388,17 @@ async function showGoalSlideover(goal, afterSave) {
 
     ${goalInlinePropPanel}
 
+    ${getHiddenBuiltinSections('goal').includes('projects_builtin') ? '' : `
     <div class="subtask-section">
       <div class="subtask-section-title">
         <span>Projects (${projects.length})</span>
-        <button class="btn btn-sm btn-ghost" id="goal-open-detail-btn">Open Full View ⤢</button>
+        <div style="display:flex;gap:4px;align-items:center">
+          <button class="btn btn-sm btn-ghost" id="goal-open-detail-btn">Open Full View ⤢</button>
+          ${builtinSectionRemoveBtn('goal', 'projects_builtin')}
+        </div>
       </div>
       <div id="goal-proj-list">${projRows}</div>
-    </div>
+    </div>`}
 
     ${buildEntityViewsSection('goal', goalId)}
 
@@ -13728,24 +15444,24 @@ async function showGoalSlideover(goal, afterSave) {
   // Prop chips
   document.getElementById('chip-status')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openValuePicker(e.currentTarget, GOAL_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => {
+    openEditableValueCombo(e.currentTarget, GOAL_STATUSES, 'goalStatuses', null, async (val) => {
       const el = document.getElementById('chip-status'); if (el) el.querySelector('.chip-value').textContent = val.replace('_',' ');
       await patchGoal({ status: val });
     });
   });
   document.getElementById('chip-type')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...GOAL_TYPES.map(t => ({ value: t, label: t }))], async (val) => {
-      const v = document.getElementById('chip-type-val'); if (v) v.textContent = val || '—';
+    openEditableValueCombo(e.currentTarget, GOAL_TYPES, 'goal_type', g.type || null, async (val) => {
+      const v = document.getElementById('chip-type-val'); if (v) v.innerHTML = val ? builtinSelectChip('goal_type', val) : '—';
       await patchGoal({ type: val || null });
-    });
+    }, { allowClear: true });
   });
   document.getElementById('chip-year')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    openValuePicker(e.currentTarget, [{ value: '', label: '— none —' }, ...GOAL_YEARS.map(y => ({ value: y, label: y }))], async (val) => {
-      const v = document.getElementById('chip-year-val'); if (v) v.textContent = val || '—';
+    openEditableValueCombo(e.currentTarget, GOAL_YEARS, 'goal_year', g.year || null, async (val) => {
+      const v = document.getElementById('chip-year-val'); if (v) v.innerHTML = val ? builtinSelectChip('goal_year', val) : '—';
       await patchGoal({ year: val || null });
-    });
+    }, { allowClear: true });
   });
   document.getElementById('chip-tags')?.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -13772,10 +15488,10 @@ async function showGoalSlideover(goal, afterSave) {
 
   const goalInlinePropEditFns = {
     status:   (valEl) => { openValuePicker(valEl, GOAL_STATUSES.map(s => ({ value: s, label: s.replace('_',' ') })), async (val) => { await patchGoal({ status: val }); showGoalSlideover({ id: goalId }, afterSave); }); },
-    type:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_TYPES.map(t => ({ value: t, label: t }))], async (val) => { await patchGoal({ type: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
-    year:     (valEl) => { openValuePicker(valEl, [{ value:'', label:'— none —' }, ...GOAL_YEARS.map(y => ({ value: y, label: y }))], async (val) => { await patchGoal({ year: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
+    type:     (valEl) => { openEditableValueCombo(valEl, GOAL_TYPES, 'goal_type', null, async (val) => { await patchGoal({ type: val||null }); showGoalSlideover({ id: goalId }, afterSave); }, { allowClear: true }); },
+    year:     (valEl) => { openEditableValueCombo(valEl, GOAL_YEARS, 'goal_year', null, async (val) => { await patchGoal({ year: val||null }); showGoalSlideover({ id: goalId }, afterSave); }, { allowClear: true }); },
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showGoalSlideover({ id: goalId }, afterSave); return; } await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showGoalSlideover({ id: goalId }, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
-    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchGoal({ category_id: val ? parseInt(val) : null }); showGoalSlideover({ id: goalId }, afterSave); }); },
+    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, g.category_id, async (newId) => { await patchGoal({ category_id: newId ? parseInt(newId) : null }); showGoalSlideover({ id: goalId }, afterSave); }); },
     due:      (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(g.due_date), async (val) => { await patchGoal({ due_date: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
     metrics:  (valEl) => {
       valEl.innerHTML = `<div style="display:flex;flex-direction:column;gap:4px">
@@ -14034,7 +15750,7 @@ async function showNoteSlideover(noteId, afterSave) {
     { key: 'tags',     label: 'Tags',     icon: pIco('<path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
       renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
-      renderValue: () => catName ? `<span>${catName}</span>` : '' },
+      renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
   ];
   const noteBodyDefs = allNoteBuiltinDefs.filter(d => noteSections.body.includes(d.key));
   await loadEntityCustomProps('note', noteId);
@@ -14062,8 +15778,8 @@ async function showNoteSlideover(noteId, afterSave) {
 
     ${buildEntityViewsSection('note', noteId)}
 
-    ${buildCommentSection('note', noteId)}
     ${buildRichContentSection('note', noteId)}
+    ${buildCommentSection('note', noteId)}
 
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <button class="btn btn-ghost btn-sm" id="note-export-btn">Export JSON</button>
@@ -14144,7 +15860,7 @@ async function showNoteSlideover(noteId, afterSave) {
     project:  (valEl) => openMultiRelationPicker(valEl, 'note', noteId, 'project', 'project', projects, n, patchNote, 'project_id', () => showNoteSlideover(noteId, afterSave)),
     goal:     (valEl) => openMultiRelationPicker(valEl, 'note', noteId, 'goal', 'goal', goals, n, patchNote, 'goal_id', () => showNoteSlideover(noteId, afterSave)),
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showNoteSlideover(noteId, afterSave); return; } await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showNoteSlideover(noteId, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
-    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openValuePicker(valEl, [{ value:'', label:'— none —' }, ...(allCategories||[]).map(c => ({ value: c.id, label: c.name }))], async (val) => { await patchNote({ category_id: val ? parseInt(val) : null }); showNoteSlideover(noteId, afterSave); }); },
+    category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, n.category_id, async (newId) => { await patchNote({ category_id: newId ? parseInt(newId) : null }); showNoteSlideover(noteId, afterSave); }); },
   };
 
   noteExtraHeadKeys.forEach(k => {
@@ -14242,7 +15958,7 @@ async function showSprintSlideover(sprintId, afterSave) {
     ? `${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}`
     : fmtDate(s.start_date || s.end_date) || '—';
 
-  const SPRINT_STATUSES = ['planned','active','completed'];
+  const SPRINT_STATUSES = SPRINT_STATUS_VALUES;
   const SPRINT_STATUS_COLORS = { planned: '#94a3b8', active: '#22c55e', completed: '#a78bfa' };
   function sprintStatusStyle(st) {
     const c = getValueColor('sprintStatuses', st) || SPRINT_STATUS_COLORS[st] || '';
@@ -14260,27 +15976,33 @@ async function showSprintSlideover(sprintId, afterSave) {
     </div>
 
     <div class="prop-chips" id="prop-chips">
-      ${sprintIsInHead('status') ? `<button class="prop-chip chip-sprint-status-${s.status||'planned'}" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value" id="chip-status-val" style="${sprintStatusStyle(s.status)}">${(s.status||'planned').replace('_',' ')}</span></button>` : ''}
+      ${sprintIsInHead('status') ? `<button class="prop-chip chip-sprint-status-${s.status||'planned'}" id="chip-status" data-key="status"><span class="chip-label">Status</span><span class="chip-value" id="chip-status-val">${builtinSelectChip('sprintStatuses', s.status||'planned', { badge: true })}</span></button>` : ''}
       ${sprintIsInHead('dates') ? `<button class="prop-chip" id="chip-dates" data-key="dates"><span class="chip-label">Dates</span><span class="chip-value" id="chip-dates-val">${dateRange}</span></button>` : ''}
       ${sprintIsInHead('project') ? `<button class="prop-chip" id="chip-project" data-key="project"><span class="chip-label">Project</span><span class="chip-value" id="chip-project-val">${projName || '—'}</span></button>` : ''}
       ${sprintIsInHead('tags') ? `<button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${sprintTags.length ? sprintTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>` : ''}
-      ${sprintIsInHead('category') ? `<button class="prop-chip${sprintCatName ? '' : ' chip-empty'}" id="chip-category" data-key="category"><span class="chip-label">Category</span><span class="chip-value" id="chip-category-val">${sprintCatName || '—'}</span></button>` : ''}
+      ${sprintIsInHead('category') ? `<button class="prop-chip${sprintCatName ? '' : ' chip-empty'}" id="chip-category" data-key="category"><span class="chip-label">Category</span><span class="chip-value" id="chip-category-val">${sprintCatName ? builtinSelectChip('categories', sprintCatName) : '—'}</span></button>` : ''}
       ${sprintExtraHeadKeys.map(k => { const def = allSprintBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
 
     ${sprintInlinePropPanel}
 
+    ${getHiddenBuiltinSections('sprint').includes('tasks_builtin') ? '' : `
     <div class="subtask-section" style="margin-top:12px">
       <div class="subtask-section-title">
         <span>Tasks (${tasks.length})</span>
-        <button class="btn btn-sm btn-ghost" id="sprint-open-detail-btn">Open Full View ⤢</button>
+        <div style="display:flex;gap:4px;align-items:center">
+          <button class="btn btn-sm btn-ghost" id="sprint-open-detail-btn">Open Full View ⤢</button>
+          ${builtinSectionRemoveBtn('sprint', 'tasks_builtin')}
+        </div>
       </div>
       <ul class="task-list" id="sprint-task-list">${taskRows}</ul>
-    </div>
+    </div>`}
 
-    ${buildCommentSection('sprint', sprintId)}
+    ${buildEntityViewsSection('sprint', sprintId)}
+
     ${buildRichContentSection('sprint', sprintId)}
+    ${buildCommentSection('sprint', sprintId)}
 
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <button class="btn btn-ghost btn-sm" id="sprint-export-btn">Export JSON</button>
@@ -14291,6 +16013,7 @@ async function showSprintSlideover(sprintId, afterSave) {
   openSlideover(s.title, body);
   setSlideoverExport('sprint', s.id);
   initSlideoverCoverArea('sprint', s.id);
+  initEntityViewsSection('sprint', s.id, s);
 
   // Icon
   const sprintIconAddBtn = document.getElementById('sprint-icon-add-btn');
@@ -14376,7 +16099,7 @@ async function showSprintSlideover(sprintId, afterSave) {
   });
 
   const sprintInlinePropEditFns = {
-    status:  (valEl) => { openCombo(valEl, SPRINT_STATUSES.map(v => ({ value: v, label: v.replace('_',' ') })), s.status||'planned', async ({ value }) => { s.status = value; await patchSprint({ status: value }); showSprintSlideover(sprintId, afterSave); }); },
+    status:  (valEl) => { openEditableValueCombo(valEl, SPRINT_STATUS_VALUES, 'sprintStatuses', s.status||'planned', async (value) => { s.status = value; await patchSprint({ status: value }); showSprintSlideover(sprintId, afterSave); }); },
     dates:   (valEl) => { openDateRangePickerGlobal(valEl, stripDate(s.start_date), stripDate(s.end_date), async (start, end) => { await patchSprint({ start_date: start||null, end_date: end||null }); showSprintSlideover(sprintId, afterSave); }); },
     project: (valEl) => openMultiRelationPicker(valEl, 'sprint', sprintId, 'project', 'project', allProjects, s, patchSprint, 'project_id', () => showSprintSlideover(sprintId, afterSave)),
     tags:    (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = sprintTags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showSprintSlideover(sprintId, afterSave); return; } await api('PUT', `/api/sprints/${sprintId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showSprintSlideover(sprintId, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
@@ -14390,9 +16113,8 @@ async function showSprintSlideover(sprintId, afterSave) {
     },
     category: async (valEl) => {
       if (!allCategories.length) { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} }
-      const items = [{ value: '', label: '— None —' }, ...allCategories.map(c => ({ value: c.id, label: c.name }))];
-      openCombo(valEl, items, _sprintCatId || '', async ({ value }) => {
-        await api('POST', `/api/properties?entity_type=sprint&entity_id=${sprintId}`, { key: '_category_id', value: String(value||'') });
+      openCategoryCombo(valEl, _sprintCatId, async (newId) => {
+        await api('POST', `/api/properties?entity_type=sprint&entity_id=${sprintId}`, { key: '_category_id', value: newId });
         showSprintSlideover(sprintId, afterSave);
       });
     },
@@ -14553,7 +16275,7 @@ async function showResourceSlideover(resource, afterSave) {
 
   const allResBuiltinDefs = [
     { key: 'type',    label: 'Type',    icon: pIco('<path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z"/>'),
-      renderValue: () => r.resource_type ? `<span>${r.resource_type}</span>` : '' },
+      renderValue: () => r.resource_type ? builtinSelectChip('resource_type', r.resource_type) : '' },
     { key: 'url',     label: 'URL',     icon: pIco('<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>'),
       renderValue: () => rawUrl ? `<span>${rawUrl.replace(/^https?:\/\//,'')}</span>` : '' },
     { key: 'project', label: 'Projects', icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
@@ -14584,15 +16306,16 @@ async function showResourceSlideover(resource, afterSave) {
       ${resIsInHead('project') ? `<button class="prop-chip" id="chip-project" data-key="project"><span class="chip-label">Project</span><span class="chip-value" id="chip-project-val">${projName || '—'}</span></button>` : ''}
       ${resIsInHead('goal') ? `<button class="prop-chip" id="chip-goal" data-key="goal"><span class="chip-label">Goal</span><span class="chip-value" id="chip-goal-val">${goalName || '—'}</span></button>` : ''}
       ${resIsInHead('tags') ? `<button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${resTags.length ? resTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>` : ''}
-      ${resIsInHead('category') ? `<button class="prop-chip${resCatName ? '' : ' chip-empty'}" id="chip-category" data-key="category"><span class="chip-label">Category</span><span class="chip-value" id="chip-category-val">${resCatName || '—'}</span></button>` : ''}
+      ${resIsInHead('category') ? `<button class="prop-chip${resCatName ? '' : ' chip-empty'}" id="chip-category" data-key="category"><span class="chip-label">Category</span><span class="chip-value" id="chip-category-val">${resCatName ? builtinSelectChip('categories', resCatName) : '—'}</span></button>` : ''}
       ${resExtraHeadKeys.map(k => { const def = allResBuiltinDefs.find(d => d.key === k); if (!def) return ''; return `<button class="prop-chip" id="chip-extra-${k}" data-key="${k}"><span class="chip-label">${def.label}</span><span class="chip-value">${def.renderValue() || '—'}</span></button>`; }).join('')}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
 
     ${resInlinePropPanel}
 
+    ${getHiddenBuiltinSections('resource').includes('attachment_builtin') ? '' : `
     <div class="subtask-section">
-      <div class="subtask-section-title"><span>File Attachment</span></div>
+      <div class="subtask-section-title"><span>File Attachment</span>${builtinSectionRemoveBtn('resource', 'attachment_builtin')}</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0">
         ${fileName
           ? `<a href="/api/resource-file/${resId}" download="${fileName}" style="font-size:12px;color:var(--accent)">📎 ${fileName}</a>`
@@ -14602,12 +16325,12 @@ async function showResourceSlideover(resource, afterSave) {
         </label>
         <span id="rs-file-status" style="font-size:11px;color:var(--text-muted)"></span>
       </div>
-    </div>
+    </div>`}
 
     ${buildEntityViewsSection('resource', resId)}
 
-    ${buildCommentSection('resource', resId)}
     ${buildRichContentSection('resource', resId)}
+    ${buildCommentSection('resource', resId)}
 
     <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <button class="btn btn-ghost btn-sm" id="res-export-btn">Export JSON</button>
@@ -14651,13 +16374,11 @@ async function showResourceSlideover(resource, afterSave) {
   // Prop chips
   document.getElementById('chip-type')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    const typeInp = document.createElement('input');
-    typeInp.type = 'text'; typeInp.value = r.resource_type || ''; typeInp.placeholder = 'e.g. link, book, tool…';
-    typeInp.style.cssText = 'font-size:12px;padding:3px 6px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-card);color:var(--text-primary);width:120px';
-    const chip = document.getElementById('chip-type'); const valSpan = chip.querySelector('.chip-value');
-    valSpan.innerHTML = ''; valSpan.appendChild(typeInp); typeInp.focus();
-    typeInp.onblur = async () => { const v2 = typeInp.value.trim(); valSpan.textContent = v2 || '—'; if (v2 !== (r.resource_type || '')) await patchResource({ resource_type: v2 || null }); };
-    typeInp.onkeydown = (ke) => { if (ke.key === 'Enter') typeInp.blur(); if (ke.key === 'Escape') valSpan.textContent = r.resource_type || '—'; };
+    openEditableValueCombo(e.currentTarget, RESOURCE_TYPES, 'resource_type', r.resource_type || null, async (val) => {
+      const valSpan = document.getElementById('chip-type')?.querySelector('.chip-value');
+      if (valSpan) valSpan.innerHTML = val ? builtinSelectChip('resource_type', val) : '—';
+      await patchResource({ resource_type: val || null });
+    }, { allowClear: true });
   });
   document.getElementById('chip-url')?.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -14701,9 +16422,8 @@ async function showResourceSlideover(resource, afterSave) {
   });
   document.getElementById('chip-category')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    const _items = [{ value: '', label: '— None —' }, ...allCategories.map(c => ({ value: c.id, label: c.name }))];
-    openCombo(e.currentTarget, _items, _resCatId || '', async ({ value }) => {
-      await api('POST', `/api/properties?entity_type=resource&entity_id=${resId}`, { key: '_category_id', value: String(value || '') });
+    openCategoryCombo(e.currentTarget, _resCatId, async (newId) => {
+      await api('POST', `/api/properties?entity_type=resource&entity_id=${resId}`, { key: '_category_id', value: newId });
       showResourceSlideover({ id: resId }, afterSave);
     });
   });
@@ -14726,7 +16446,7 @@ async function showResourceSlideover(resource, afterSave) {
     project: (valEl) => openMultiRelationPicker(valEl, 'resource', resId, 'project', 'project', projects, r, patchResource, 'project_id', () => showResourceSlideover({ id: resId }, afterSave)),
     goal:    (valEl) => openMultiRelationPicker(valEl, 'resource', resId, 'goal', 'goal', goals, r, patchResource, 'goal_id', () => showResourceSlideover({ id: resId }, afterSave)),
     tags:    (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = resTags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showResourceSlideover({ id: resId }, afterSave); return; } await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showResourceSlideover({ id: resId }, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
-    category: (valEl) => { const _i = [{ value: '', label: '— None —' }, ...allCategories.map(c => ({ value: c.id, label: c.name }))]; openCombo(valEl, _i, _resCatId || '', async ({ value }) => { await api('POST', `/api/properties?entity_type=resource&entity_id=${resId}`, { key: '_category_id', value: String(value || '') }); showResourceSlideover({ id: resId }, afterSave); }); },
+    category: (valEl) => { openCategoryCombo(valEl, _resCatId, async (newId) => { await api('POST', `/api/properties?entity_type=resource&entity_id=${resId}`, { key: '_category_id', value: newId }); showResourceSlideover({ id: resId }, afterSave); }); },
   };
 
   resExtraHeadKeys.forEach(k => {
@@ -17130,13 +18850,13 @@ function initAiPanel() {
   function openAiPanel() {
     panel.classList.add('open');
     fab.style.display = 'none';
-    document.getElementById('fab-group')?.classList.add('panel-open-ai');
+    syncFabPanelClasses();
   }
 
   function closeAiPanel() {
     panel.classList.remove('open');
     fab.style.display = '';
-    document.getElementById('fab-group')?.classList.remove('panel-open-ai');
+    syncFabPanelClasses();
   }
 
   fab.onclick = openAiPanel;
@@ -17324,6 +19044,7 @@ async function openContentFullscreen(entity, entityId, title) {
   if (!overlay) return;
   overlay.style.display = 'flex';
   document.body.classList.add('fullscreen-open');
+  syncFabPanelClasses();
   document.getElementById('cf-title').textContent = title || '';
   document.getElementById('cf-close-btn').onclick = closeContentFullscreen;
 
@@ -17351,6 +19072,7 @@ function closeContentFullscreen() {
   const overlay = document.getElementById('content-fullscreen');
   if (overlay) overlay.style.display = 'none';
   document.body.classList.remove('fullscreen-open');
+  syncFabPanelClasses();
   const key = 'editorjs-contentfull';
   if (_activeEditors[key]) { try { _activeEditors[key].destroy(); } catch {} delete _activeEditors[key]; }
   const rail = document.getElementById('cf-rail');
@@ -17370,7 +19092,7 @@ function _buildCFToc(scroll) {
   if (!rail || !tocEl || !inner) return;
 
   ed.save().then(data => {
-    const headingBlocks = (data.blocks || []).filter(b => b.type === 'header');
+    const headingBlocks = (data.blocks || []).filter(b => HEADER_BLOCK_TYPES.includes(b.type));
     if (!headingBlocks.length) return;
 
     rail.innerHTML = '';
@@ -17380,7 +19102,7 @@ function _buildCFToc(scroll) {
     const totalH = inner.scrollHeight;
 
     headingBlocks.forEach((b, i) => {
-      const level = b.data.level || 1;
+      const level = _headerBlockLevel(b);
       const text = (b.data.text || '').replace(/<[^>]*>/g, '');
       const blockEl = inner.querySelector(`.ce-block[data-id="${b.id}"]`);
 

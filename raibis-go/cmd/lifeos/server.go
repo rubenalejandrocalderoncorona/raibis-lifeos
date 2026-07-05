@@ -82,6 +82,10 @@ func serve(cfg serverConfig) {
 		log.Printf("vault sync on start: %d inserted, %d updated", ins, upd)
 	}
 
+	// One-time per boot: feed the entity-agnostic rollup graph from rows that
+	// predate intrinsic mirroring / FK-edge sync, then recompute aggregates.
+	go backfillRollupSources(store)
+
 	svc := service.New(store)
 	habitSvc := service.NewHabitService(store)
 	mux := buildMux(svc, habitSvc, store, v, cfg.dbPath)
@@ -343,6 +347,120 @@ func nullInt(n sql.NullInt64) any {
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────
 
+// ── Rollup source sync ────────────────────────────────────────────────────────
+// The rollup engine is entity agnostic: it reads child values ONLY from the
+// universal properties store and relations ONLY from entity_children. These
+// helpers feed that graph from the built-in entities' native columns so
+// default and custom entities become indistinguishable to the engine.
+
+// mirrorIntrinsicsAndPropagate copies an entity's built-in aggregatable fields
+// into the universal properties store, then cascades rollups up the edge graph.
+func mirrorIntrinsicsAndPropagate(store storage.Storage, entityType string, id int64, fields map[string]string) {
+	for k, v := range fields {
+		if v == "" {
+			continue
+		}
+		_ = store.SetProperty(entityType, id, k, v)
+	}
+	rollup.TriggerPropagation(store, entityType, id)
+}
+
+// syncTaskParentEdge mirrors a task's native FK columns into the generic
+// entity_children edge table, so subtasks (parent_task_id) AND the classic
+// relational links (goal_id, project_id, sprint_id) all flow through the
+// same graph the entity-agnostic rollup engine reads.
+func syncTaskParentEdge(store storage.Storage, t *domain.Task) {
+	if t == nil {
+		return
+	}
+	// desired FK-derived parents, keyed by parent type
+	want := map[string]*int64{
+		"task":    t.ParentTaskID,
+		"goal":    t.GoalID,
+		"project": t.ProjectID,
+		"sprint":  t.SprintID,
+	}
+	if parents, err := store.GetEntityParents("task", t.ID); err == nil {
+		for _, p := range parents {
+			desired, managed := want[p.ParentEntityType]
+			if !managed {
+				continue // user-created edge of another type — never touch
+			}
+			if desired == nil || p.ParentEntityID != *desired {
+				_ = store.RemoveEntityChild(p.ParentEntityType, p.ParentEntityID, "task", t.ID)
+			}
+		}
+	}
+	for pType, id := range want {
+		if id != nil {
+			_ = store.AddEntityChild(pType, *id, "task", t.ID)
+		}
+	}
+}
+
+// backfillRollupSources runs once at startup: mirrors intrinsic fields and FK
+// edges for rows created before mirroring existed, then recomputes rollups so
+// stored aggregates match reality.
+func backfillRollupSources(store storage.Storage) {
+	if tasks, err := store.ListTasks(domain.TaskFilter{}); err == nil {
+		for _, t := range tasks {
+			syncTaskParentEdge(store, t)
+			for k, v := range taskIntrinsics(t) {
+				if v != "" {
+					_ = store.SetProperty("task", t.ID, k, v)
+				}
+			}
+		}
+		for _, t := range tasks {
+			rollup.TriggerPropagation(store, "task", t.ID)
+		}
+	}
+	if goals, err := store.ListGoals(""); err == nil {
+		for _, g := range goals {
+			_ = store.SetProperty("goal", g.ID, "status", string(g.Status))
+		}
+	}
+	if projects, err := store.ListProjects(""); err == nil {
+		for _, p := range projects {
+			_ = store.SetProperty("project", p.ID, "status", string(p.Status))
+			rollup.TriggerPropagation(store, "project", p.ID)
+		}
+	}
+	if sprints, err := store.ListSprints(0); err == nil {
+		for _, sp := range sprints {
+			_ = store.SetProperty("sprint", sp.ID, "status", string(sp.Status))
+		}
+	}
+	log.Printf("rollup: backfill of intrinsic props + FK edges complete")
+}
+
+// resyncTaskParentsVault refreshes the vault files of every entity this task
+// links to (goal, project, sprint, parent task) so their link sections list
+// the task — files only got written at parent creation time before, which is
+// why only the first-ever linked item appeared in Obsidian.
+func resyncTaskParentsVault(store storage.Storage, vlt *vault.Vault, t *domain.Task) {
+	if vlt == nil || t == nil {
+		return
+	}
+	parents := map[string]*int64{"goal": t.GoalID, "project": t.ProjectID, "sprint": t.SprintID, "task": t.ParentTaskID}
+	for pType, id := range parents {
+		if id != nil {
+			resyncEntityVault(pType, *id, store, vlt)
+		}
+	}
+}
+
+func taskIntrinsics(t *domain.Task) map[string]string {
+	m := map[string]string{
+		"status":   string(t.Status),
+		"priority": string(t.Priority),
+	}
+	if t.StoryPoints != nil {
+		m["story_points"] = strconv.Itoa(*t.StoryPoints)
+	}
+	return m
+}
+
 func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -469,6 +587,11 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				errJSON(w, 500, err.Error())
 				return
 			}
+			go func() {
+				syncTaskParentEdge(store, created)
+				mirrorIntrinsicsAndPropagate(store, "task", created.ID, taskIntrinsics(created))
+				resyncTaskParentsVault(store, vlt, created)
+			}()
 			go func() {
 				if err := vlt.WriteEntityMD("task", created.ID, mergeFMWithProps(taskFM(created), store, "task", created.ID), taskLinksBody(created, store)+relationsLinksBody("task", created.ID, store)); err != nil {
 					log.Printf("vault: write task %d: %v", created.ID, err)
@@ -713,6 +836,11 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 			updated, _ := svc.Get(id)
 			updated.Tags, _ = store.GetEntityTags("task", id)
 			go runAutomations(store, svc, updated, prevStatus)
+			go func() {
+				syncTaskParentEdge(store, updated)
+				mirrorIntrinsicsAndPropagate(store, "task", updated.ID, taskIntrinsics(updated))
+				resyncTaskParentsVault(store, vlt, updated)
+			}()
 			go func(oldPID *int64) {
 				if err := vlt.WriteEntityMD("task", updated.ID, mergeFMWithProps(taskFM(updated), store, "task", updated.ID), taskLinksBody(updated, store)+relationsLinksBody("task", updated.ID, store)); err != nil {
 					log.Printf("vault: update task %d: %v", updated.ID, err)
@@ -817,6 +945,7 @@ func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				return
 			}
 			created, _ := store.GetGoal(id)
+			go mirrorIntrinsicsAndPropagate(store, "goal", id, map[string]string{"status": string(created.Status)})
 			go func() {
 				if err := vlt.WriteEntityMD("goal", created.ID, mergeFMWithProps(goalFM(created), store, "goal", created.ID), childrenLinksBody("goal", created.ID, store)+commentsSection("goal", created.ID, store)); err != nil {
 					log.Printf("vault: write goal %d: %v", created.ID, err)
@@ -966,6 +1095,7 @@ func goalHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.Ha
 			}
 			updated, _ := store.GetGoal(id)
 			updated.Tags, _ = store.GetEntityTags("goal", id)
+			go mirrorIntrinsicsAndPropagate(store, "goal", id, map[string]string{"status": string(updated.Status)})
 			go func() {
 				if err := vlt.WriteEntityMD("goal", updated.ID, mergeFMWithProps(goalFM(updated), store, "goal", updated.ID), childrenLinksBody("goal", updated.ID, store)+commentsSection("goal", updated.ID, store)); err != nil {
 					log.Printf("vault: update goal %d: %v", updated.ID, err)
@@ -1037,6 +1167,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 				return
 			}
 			created, _ := store.GetProject(id)
+			go mirrorIntrinsicsAndPropagate(store, "project", id, map[string]string{"status": string(created.Status)})
 			go func() {
 				if err := vlt.WriteEntityMD("project", created.ID, mergeFMWithProps(projectFM(created), store, "project", created.ID), projectLinksBody(created, store)+childrenLinksBody("project", created.ID, store)+commentsSection("project", created.ID, store)); err != nil {
 					log.Printf("vault: write project %d: %v", created.ID, err)
@@ -1166,6 +1297,7 @@ func projectHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http
 			}
 			updated, _ := store.GetProject(id)
 			updated.Tags, _ = store.GetEntityTags("project", id)
+			go mirrorIntrinsicsAndPropagate(store, "project", id, map[string]string{"status": string(updated.Status)})
 			go func() {
 				if err := vlt.WriteEntityMD("project", updated.ID, mergeFMWithProps(projectFM(updated), store, "project", updated.ID), projectLinksBody(updated, store)+childrenLinksBody("project", updated.ID, store)+commentsSection("project", updated.ID, store)); err != nil {
 					log.Printf("vault: update project %d: %v", updated.ID, err)
@@ -1239,6 +1371,7 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 				return
 			}
 			sp.ID = id
+			go mirrorIntrinsicsAndPropagate(store, "sprint", id, map[string]string{"status": string(sp.Status)})
 			go func() {
 				if err := vlt.WriteEntityMD("sprint", sp.ID, mergeFMWithProps(sprintFM(sp), store, "sprint", sp.ID), sprintLinksBody(sp, store)); err != nil {
 					log.Printf("vault: write sprint %d: %v", sp.ID, err)
@@ -1343,6 +1476,7 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 				}
 			}
 			if sp, err := store.GetSprint(id); err == nil {
+				go mirrorIntrinsicsAndPropagate(store, "sprint", id, map[string]string{"status": string(sp.Status)})
 				go func() {
 					if err := vlt.WriteEntityMD("sprint", sp.ID, mergeFMWithProps(sprintFM(sp), store, "sprint", sp.ID), sprintLinksBody(sp, store)); err != nil {
 						log.Printf("vault: update sprint %d: %v", sp.ID, err)
@@ -3027,25 +3161,30 @@ func commentsHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 func entityChildrenHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 	// resolveTitle fetches a display title for a child entity.
 	resolveTitle := func(entityType string, entityID int64) string {
-		switch entityType {
-		case "task":
+		switch {
+		case entityType == "task":
 			if t, err := store.GetTask(entityID); err == nil {
 				return t.Title
 			}
-		case "goal":
+		case entityType == "goal":
 			if g, err := store.GetGoal(entityID); err == nil {
 				return g.Title
 			}
-		case "project":
+		case entityType == "project":
 			if p, err := store.GetProject(entityID); err == nil {
 				return p.Title
 			}
-		case "note":
+		case entityType == "note":
 			if n, err := store.GetNote(entityID); err == nil {
 				if n.Title != "" {
 					return n.Title
 				}
 				return fmt.Sprintf("note-%d", entityID)
+			}
+		case strings.HasPrefix(entityType, "custom_"):
+			typeName := strings.TrimPrefix(entityType, "custom_")
+			if e, err := store.GetCustomEntity(typeName, entityID); err == nil {
+				return e.Title
 			}
 		}
 		return fmt.Sprintf("%s-%d", entityType, entityID)
@@ -3093,6 +3232,8 @@ func entityChildrenHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 				errJSON(w, 500, err.Error())
 				return
 			}
+			// A new edge changes the parent's aggregates — recompute and cascade
+			go rollup.RecomputeEntity(store, parentType, parentID)
 			go resyncEntityVault(parentType, parentID, store, vlt)
 			writeJSON(w, 201, map[string]string{"ok": "linked"})
 
@@ -3112,6 +3253,9 @@ func entityChildrenHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 				errJSON(w, 500, err.Error())
 				return
 			}
+			// The removed child can no longer reach the parent through the edge
+			// graph, so recompute the parent directly, then cascade upward.
+			go rollup.RecomputeEntity(store, parentType, parentID)
 			go resyncEntityVault(parentType, parentID, store, vlt)
 			writeJSON(w, 200, map[string]string{"ok": "unlinked"})
 
@@ -3192,6 +3336,9 @@ func entityRelationsHandler(store storage.Storage, vlt *vault.Vault) http.Handle
 				errJSON(w, 500, err.Error())
 				return
 			}
+			// Peer links feed rollups on BOTH ends — recompute each side
+			go rollup.RecomputeEntity(store, entityType, entityID)
+			go rollup.RecomputeEntity(store, body.RelatedType, body.RelatedID)
 			// Re-sync vault for both sides
 			go func() {
 				resyncEntityVault(entityType, entityID, store, vlt)
@@ -3214,6 +3361,8 @@ func entityRelationsHandler(store storage.Storage, vlt *vault.Vault) http.Handle
 				errJSON(w, 500, err.Error())
 				return
 			}
+			go rollup.RecomputeEntity(store, entityType, entityID)
+			go rollup.RecomputeEntity(store, relType, relID)
 			go func() {
 				resyncEntityVault(entityType, entityID, store, vlt)
 				resyncEntityVault(relType, relID, store, vlt)
@@ -4392,17 +4541,72 @@ func customTypeHandler(store storage.Storage) http.HandlerFunc {
 
 // customEntitiesHandler handles all /api/custom/{type} and /api/custom/{type}/{id} requests.
 func customEntityFM(e *domain.CustomEntity) map[string]any {
+	createdAt := e.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
 	fm := map[string]any{
 		"id":         e.ID,
 		"title":      e.Title,
 		"aliases":    []string{e.Title},
 		"type_name":  e.TypeName,
-		"created_at": e.CreatedAt.Format(time.RFC3339),
+		"created_at": createdAt.Format(time.RFC3339),
 	}
 	for k, v := range e.Props {
-		fm[k] = v
+		if !strings.HasPrefix(k, "_") {
+			fm[k] = v
+		}
+	}
+	if parentStr, ok := e.Props["_parent"]; ok && parentStr != "" && parentStr != "[]" {
+		var parents []struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal([]byte(parentStr), &parents) == nil && len(parents) > 0 {
+			if pid, err := strconv.ParseInt(parents[0].ID, 10, 64); err == nil && pid > 0 {
+				fm["parent_"+e.TypeName+"_id"] = pid
+			}
+		}
 	}
 	return fm
+}
+
+// customEntityLinksBody builds the parent link and ## Sub-items section for a custom entity's vault file.
+func customEntityLinksBody(typeName string, entityID int64, store storage.Storage) string {
+	var lines []string
+
+	// Parent link (set after _parent prop is written via properties API)
+	if e, err := store.GetCustomEntity(typeName, entityID); err == nil {
+		if parentStr, ok := e.Props["_parent"]; ok && parentStr != "" && parentStr != "[]" {
+			var parents []struct {
+				ID    string `json:"id"`
+				Label string `json:"label"`
+			}
+			if json.Unmarshal([]byte(parentStr), &parents) == nil && len(parents) > 0 {
+				lines = append(lines, fmt.Sprintf("\nParent %s: [[%s-%s|%s]]", typeName, typeName, parents[0].ID, parents[0].Label))
+			}
+		}
+	}
+
+	children, err := store.GetEntityChildren("custom_"+typeName, entityID)
+	if err == nil && len(children) > 0 {
+		lines = append(lines, "\n## Sub-items")
+		for _, c := range children {
+			var title string
+			if strings.HasPrefix(c.ChildEntityType, "custom_") {
+				childTypeName := strings.TrimPrefix(c.ChildEntityType, "custom_")
+				if ce, err2 := store.GetCustomEntity(childTypeName, c.ChildEntityID); err2 == nil {
+					title = ce.Title
+				}
+			}
+			if title == "" {
+				title = fmt.Sprintf("%s-%d", c.ChildEntityType, c.ChildEntityID)
+			}
+			childType := strings.TrimPrefix(c.ChildEntityType, "custom_")
+			lines = append(lines, fmt.Sprintf("- [[%s-%d|%s]]", childType, c.ChildEntityID, title))
+		}
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
@@ -4449,7 +4653,7 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 				}
 				e.ID = id
 				if vlt != nil {
-					_ = vlt.WriteEntityMD("custom_"+typeName, id, customEntityFM(&e), "")
+					_ = vlt.WriteEntityMD(typeName, id, customEntityFM(&e), customEntityLinksBody(typeName, id, store))
 				}
 				writeJSON(w, 201, e)
 
@@ -4502,7 +4706,7 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 				return
 			}
 			if vlt != nil {
-				_ = vlt.WriteEntityMD("custom_"+typeName, entityID, customEntityFM(&e), "")
+				_ = vlt.WriteEntityMD(typeName, entityID, customEntityFM(&e), customEntityLinksBody(typeName, entityID, store))
 			}
 			go rollup.TriggerPropagation(store, typeName, entityID)
 			writeJSON(w, 200, e)
@@ -4513,7 +4717,7 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 				return
 			}
 			if vlt != nil {
-				_ = vlt.DeleteEntityMD("custom_"+typeName, entityID)
+				_ = vlt.DeleteEntityMD(typeName, entityID)
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
@@ -4881,6 +5085,13 @@ func resyncEntityVault(entityType string, entityID int64, store storage.Storage,
 	case "sprint":
 		if sp, err := store.GetSprint(entityID); err == nil {
 			_ = vlt.WriteEntityMD("sprint", sp.ID, mergeFMWithProps(sprintFM(sp), store, "sprint", sp.ID), sprintLinksBody(sp, store))
+		}
+	default:
+		if strings.HasPrefix(entityType, "custom_") {
+			tn := strings.TrimPrefix(entityType, "custom_")
+			if e, err := store.GetCustomEntity(tn, entityID); err == nil {
+				_ = vlt.WriteEntityMD(tn, e.ID, customEntityFM(e), customEntityLinksBody(tn, e.ID, store))
+			}
 		}
 	}
 }

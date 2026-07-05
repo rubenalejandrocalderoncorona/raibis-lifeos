@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "lifeos-test",
+      "runtimeExecutable": "go",
+      "runtimeArgs": ["-C", "raibis-go", "run", "./cmd/lifeos", "server", "--port", "3457", "--db", "/tmp/raibis-lifeos-preview/test.db", "--vault", "/tmp/raibis-lifeos-preview/vault", "--socket", ""],
+      "port": 3457
+    }
+  ]
+}

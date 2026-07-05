@@ -318,8 +318,6 @@ input:focus, select:focus, textarea:focus {
   font-size: var(--text-sm);
   font-family: var(--font-sans);
   color: var(--color-text-tertiary);
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface);
   flex-shrink: 0;
   min-height: 36px;
   flex-wrap: wrap;
@@ -525,16 +523,16 @@ input:focus, select:focus, textarea:focus {
   font-size: var(--text-xs);
   font-weight: var(--weight-medium);
   padding: 2px var(--space-2);
-  border-radius: var(--radius-xs);
+  border-radius: var(--radius-pill);
   display: inline-flex;
   align-items: center;
   white-space: nowrap;
 }
-.badge-todo     { background: var(--tag-gray-bg);   color: var(--color-text-secondary); }
+.badge-todo     { background: rgba(156,163,175,0.18); color: var(--color-text-secondary); border: 1px solid rgba(156,163,175,0.40); }
 .badge-progress { background: var(--tag-blue-bg);   color: var(--tag-blue-text); }
 .badge-blocked  { background: var(--tag-red-bg);    color: var(--tag-red-text); }
 .badge-done     { background: var(--tag-green-bg);  color: var(--tag-green-text); }
-.badge-low      { background: var(--tag-gray-bg);   color: var(--color-text-tertiary); }
+.badge-low      { background: rgba(156,163,175,0.18); color: var(--color-text-tertiary);  border: 1px solid rgba(156,163,175,0.40); }
 .badge-medium   { background: var(--tag-yellow-bg); color: var(--tag-yellow-text); }
 .badge-high     { background: var(--tag-orange-bg); color: var(--tag-orange-text); }
 .badge-urgent   { background: var(--tag-red-bg);    color: var(--tag-red-text); font-weight: var(--weight-semibold); }
@@ -1145,7 +1143,8 @@ body.kanban-dragging-active * {
   width: 520px;
   max-width: calc(100vw - 32px);
   max-height: 85vh;
-  overflow-y: auto;
+  /* scrolling lives on .modal-body so .form-actions can stick to the bottom */
+  overflow: hidden;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-xl);
@@ -1197,7 +1196,12 @@ body.kanban-dragging-active * {
   color: var(--color-danger);
 }
 
-.modal-body { padding: var(--space-5) var(--space-6) var(--space-6); }
+.modal-body {
+  padding: var(--space-5) var(--space-6) var(--space-6);
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
 .modal-footer {
   display: flex;
   align-items: center;
@@ -2094,6 +2098,7 @@ body.kanban-dragging-active * {
   font-size: var(--text-sm);
 }
 .subtask-row:last-child { border-bottom: none; }
+.subtask-row-current > .subtask-title { font-weight: 600; color: var(--text-primary); }
 .subtask-title { flex: 1; }
 .subtask-status {
   font-family: var(--font-mono);
@@ -2305,7 +2310,8 @@ body.kanban-dragging-active * {
 }
 
 /* ─── Task toggle arrow ───────────────────────────────────────────── */
-.task-toggle-arrow {
+.task-toggle-arrow,
+.entity-toggle-arrow {
   flex-shrink: 0;
   width: 18px;
   height: 18px;
@@ -2321,8 +2327,10 @@ body.kanban-dragging-active * {
   opacity: 0.5;
   transform: rotate(-90deg);
 }
-.task-toggle-arrow:hover { color: var(--accent); background: var(--accent-dim); opacity: 1; }
-.task-toggle-arrow.expanded { transform: rotate(0deg); color: var(--accent); opacity: 1; }
+.task-toggle-arrow:hover,
+.entity-toggle-arrow:hover { color: var(--accent); background: var(--accent-dim); opacity: 1; }
+.task-toggle-arrow.expanded,
+.entity-toggle-arrow.expanded { transform: rotate(0deg); color: var(--accent); opacity: 1; }
 
 /* Ghost arrow for tasks without subtasks — invisible until row hover */
 .task-add-sub-btn {
@@ -3994,8 +4002,11 @@ tr:hover .ctx-handle,
   align-items: center;
   gap: 2px;
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
   padding: 4px 0;
+  min-width: 0;
+  flex: 1;
 }
 .view-tabs::-webkit-scrollbar { display: none; }
 .view-tab {
@@ -5256,6 +5267,8 @@ tr:hover .ctx-handle,
    the + button ends up inside the text rather than in the left gutter.
    Fix: force toolbar content to full-width too, then use padding-left:60px on
    the redactor so blocks start at 60px while the + sits at left:0. */
+/* EditorJS popovers are re-anchored to the viewport by _anchorEditorPopover()
+   in app.js — no overflow tricks here (they reset the panel's scroll position). */
 .codex-editor {
   overflow: visible !important;
 }
@@ -5554,3 +5567,392 @@ h3.ce-header { font-size: 1.15em; font-weight: 600; line-height: 1.4; margin: 0.
 .widget-expand-btn { font-variant-emoji: text; }
 .widget-item:hover .widget-expand-btn { opacity: 1; }
 .ev-cover-add-link:hover { color: var(--accent); }
+
+/* ─── Sticky action footers (Save/Close always visible) ────────────────
+   Long forms in modals and the form slide-over used to push their action
+   buttons below the fold. The scroll container is .modal-body /
+   .form-slideover .slideover-body; the footer bleeds to its edges and
+   sticks to the visible bottom. */
+.modal-body .form-actions,
+.form-slideover .slideover-body .form-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  background: var(--color-surface);
+  margin: var(--space-5) calc(var(--space-6) * -1) calc(var(--space-6) * -1);
+  padding: var(--space-3) var(--space-6);
+  border-top: 1px solid var(--color-border);
+}
+
+/* ─── Hideable sidebar (Cmd+\) ─────────────────────────────────────── */
+@media (min-width: 701px) {
+  .sidebar {
+    transition: transform var(--duration-panel) var(--ease-out),
+                width var(--duration-panel) var(--ease-out),
+                opacity var(--duration-panel) var(--ease-out);
+  }
+  body.sidebar-collapsed .sidebar {
+    width: 0;
+    min-width: 0;
+    opacity: 0;
+    transform: translateX(-100%);
+    border-right-width: 0;
+    pointer-events: none;
+  }
+}
+
+/* ─── Zen mode (distraction-free typing) ───────────────────────────────
+   Active while typing in an EditorJS host; chrome fades out and ignores
+   the pointer until the mouse moves or focus leaves the editor. */
+.breadcrumb,
+.mobile-header,
+.slideover-header,
+.entity-fs-topbar {
+  transition: opacity 0.3s var(--ease-out, ease);
+}
+.fab-group {
+  /* keep the existing right-offset transition, add the zen fade */
+  transition: right var(--duration-panel) var(--ease-out),
+              opacity 0.3s var(--ease-out);
+}
+body.zen-mode-active .sidebar,
+body.zen-mode-active .breadcrumb,
+body.zen-mode-active .fab-group,
+body.zen-mode-active .mobile-header,
+body.zen-mode-active .slideover-header,
+body.zen-mode-active .entity-fs-topbar {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* ─── Entity fullscreen TOC rail (reuses cf-tick / cf-toc-item looks) ── */
+#fs-rail-zone {
+  position: fixed;
+  right: 0;
+  top: 80px;
+  bottom: 40px;
+  width: 28px;
+  z-index: 8100;
+  cursor: pointer;
+}
+#fs-rail { position: absolute; inset: 0; }
+#fs-toc {
+  position: absolute;
+  right: 32px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 224px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow);
+  padding: 8px 0;
+  display: none;
+  z-index: 10;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+#fs-toc.visible { display: block; }
+
+/* ─── Injected entity widgets (registerEntityWidget) ───────────────── */
+.entity-widgets {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+.entity-widget {
+  background: var(--color-surface, var(--bg-card));
+  border: 1px solid var(--color-border, var(--border));
+  border-radius: var(--radius-md, 8px);
+  padding: 12px 14px;
+}
+
+/* ─── Collapsible section chevron (sub-entities / subtasks) ──────────── */
+.section-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 2px;
+  border: none;
+  background: none;
+  color: var(--color-text-tertiary, var(--text-muted));
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  transition: transform 0.18s var(--ease-out, ease), background 0.15s, color 0.15s;
+}
+.section-collapse-btn:hover { background: var(--hover, var(--accent-glow)); color: var(--color-text); }
+.section-collapse-btn.collapsed { transform: rotate(-90deg); }
+.subtask-section.section-collapsed { margin-bottom: 0; }
+
+/* ─── Content "Full view" button ─────────────────────────────────────── */
+.content-fullview-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--color-text-secondary, var(--text-muted));
+  background: none;
+  border: 1px solid var(--color-border, var(--border));
+  border-radius: var(--radius-sm, 5px);
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.content-fullview-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+/* ─── Icon + cover quick actions, one quiet row ──────────────────────── */
+.entity-quick-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.entity-quick-actions .entity-icon-add-btn { margin: 0; }
+.sc-add-btn.sc-add-inline {
+  /* mirror .entity-icon-add-btn so the pair reads as one quiet action row */
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 3px 6px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+.sc-add-btn.sc-add-inline:hover { background: var(--bg-card-hover); color: var(--text-muted); }
+
+/* ─── Breathing room: slideover & fullscreen rhythm ──────────────────
+   Slightly more air between sections — calmer, more minimal reading. */
+.slideover-body .prop-chips { margin-top: var(--space-3); margin-bottom: var(--space-5); }
+.slideover-body .subtask-section { margin-top: var(--space-7, 28px); }
+.slideover-body .rich-content-section { margin-top: var(--space-7, 28px); padding-top: var(--space-4); border-top: 1px solid var(--color-border); }
+.slideover-body .comment-section { margin-top: var(--space-7, 28px); }
+.slideover-body .inline-prop-panel { margin-bottom: var(--space-4); }
+.subtask-section-title { margin-bottom: var(--space-3); }
+.entity-fs-content .entity-fs-editor-wrap { margin-top: var(--space-7, 28px); padding-top: var(--space-4); border-top: 1px solid var(--color-border); }
+
+/* ─── Sidebar open/close buttons (Notion-style) ──────────────────────── */
+#sidebar-open-btn {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 900;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-surface);
+  color: var(--color-text-secondary, var(--text-muted));
+  cursor: pointer;
+  box-shadow: var(--shadow, 0 1px 3px rgba(0,0,0,.08));
+  transition: background 0.15s, color 0.15s, opacity 0.3s var(--ease-out, ease);
+}
+#sidebar-open-btn:hover { background: var(--hover, var(--accent-glow)); color: var(--color-text); }
+body.sidebar-collapsed #sidebar-open-btn { display: inline-flex; }
+body.zen-mode-active #sidebar-open-btn { opacity: 0 !important; pointer-events: none !important; }
+body.fullscreen-open #sidebar-open-btn { display: none; }
+
+/* ─── Editor width toggle (narrow column ⇄ full width) ──────────────── */
+.editor-width-btn { display: inline-flex; align-items: center; gap: 5px; }
+body.editor-wide #cf-inner { max-width: none; padding: 48px 64px 200px; }
+body.editor-wide .entity-fullscreen-inner { max-width: none; padding: 0 64px; }
+
+/* ─── Widget header actions grouped at the right ─────────────────────── */
+.widget-item .widget-header { justify-content: flex-start; gap: 6px; }
+.widget-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* Clear the floating sidebar-open button so it never overlaps the
+   breadcrumb / entity title while the sidebar is collapsed */
+@media (min-width: 701px) {
+  body.sidebar-collapsed .breadcrumb { padding-left: 50px; }
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   REFINEMENT LAYER — premium polish for slideover + full views
+   Principles: quieter borders, clearer type hierarchy, soft depth,
+   smooth hover states. Overrides earlier rules by cascade order.
+   ════════════════════════════════════════════════════════════════════ */
+:root {
+  /* --hover was referenced but never defined — theme-adaptive soft tint */
+  --hover: color-mix(in srgb, var(--color-text) 6%, transparent);
+  /* hairlines at lower opacity than --color-border for section chrome */
+  --border-soft: color-mix(in srgb, var(--color-border) 55%, transparent);
+  /* layered shadow for floating panels/popovers */
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.10), 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+[data-theme="dark"] {
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+/* ── Panels: airier, softer edge ── */
+.slideover { border-left-color: var(--border-soft); }
+.slideover-body {
+  padding: calc(var(--space-5) + 20px) var(--space-7, 32px) var(--space-7, 32px);
+}
+.entity-fs-content { padding-top: 40px; }
+
+/* ── Typography hierarchy: quiet labels, crisp values ── */
+.subtask-section-title,
+.rich-section-label,
+.entity-fs-section-header {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  color: var(--color-text-tertiary, var(--text-muted));
+}
+.detail-title-input,
+.entity-fs-title { letter-spacing: -0.02em; }
+.inline-prop-label { color: var(--color-text-tertiary, var(--text-muted)); }
+.inline-prop-label-text { font-weight: 450; }
+.inline-prop-value { color: var(--color-text, var(--text-primary)); }
+.inline-prop-value.empty { color: var(--color-text-tertiary); }
+
+/* ── Softer separators everywhere ── */
+.slideover-body .rich-content-section,
+.entity-fs-content .entity-fs-editor-wrap { border-top-color: var(--border-soft); }
+.notion-table-wrap { border: 1px solid var(--border-soft); border-radius: var(--radius-md); overflow: hidden; }
+.notion-table th {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary);
+  border-bottom: 1px solid var(--border-soft);
+}
+.notion-table td { border-bottom-color: var(--border-soft); }
+
+/* ── Rows: gentle hover, rounded, calm motion ── */
+.inline-prop-row {
+  border-radius: 7px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  transition: background 0.12s var(--ease-out, ease);
+}
+.inline-prop-row:hover { background: var(--hover); }
+.subtask-row {
+  border-radius: 7px;
+  transition: background 0.12s var(--ease-out, ease);
+}
+.subtask-row:hover { background: var(--hover); }
+.subtask-table-row { transition: background 0.12s var(--ease-out, ease); }
+.subtask-table-row:hover td { background: var(--hover); }
+
+/* ── Chips ── */
+.prop-chip {
+  border-radius: 7px;
+  border-color: var(--border-soft);
+  transition: background 0.12s var(--ease-out, ease),
+              border-color 0.12s var(--ease-out, ease);
+}
+.prop-chip:hover { background: var(--hover); border-color: var(--color-border); }
+.prop-chip .chip-label { color: var(--color-text-tertiary); font-weight: 450; }
+
+/* ── Floating panels & popovers: depth + modern radii ── */
+.prop-vis-panel,
+#add-prop-picker,
+.combo-popover,
+.ctx-menu {
+  border-radius: 10px;
+  border-color: var(--border-soft);
+  box-shadow: var(--shadow-pop);
+}
+.prop-vis-panel { padding: 6px; }
+.ce-popover {
+  border-radius: 10px !important;
+  border-color: var(--border-soft) !important;
+  box-shadow: var(--shadow-pop) !important;
+}
+.ce-popover__item { border-radius: 6px; }
+
+/* ── Inputs & selects: focus ring instead of harsh outline ── */
+.slideover-body input[type="text"]:focus,
+.slideover-body input[type="number"]:focus,
+.slideover-body textarea:focus,
+.slideover-body select:focus,
+.prop-vis-panel input:focus,
+.prop-vis-panel select:focus,
+.form-slideover input:focus,
+.form-slideover textarea:focus,
+.form-slideover select:focus {
+  outline: none;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.detail-title-input:focus { box-shadow: none; border-color: transparent !important; }
+
+/* ── Rollup: edit affordance appears on row hover ── */
+.rollup-edit-hint {
+  opacity: 0;
+  color: var(--color-text-tertiary);
+  transition: opacity 0.12s var(--ease-out, ease);
+}
+.inline-prop-row:hover .rollup-edit-hint { opacity: 0.75; }
+
+/* ── Buttons: consistent quiet hover ── */
+.btn-ghost { transition: background 0.12s var(--ease-out, ease), color 0.12s var(--ease-out, ease); }
+.btn-ghost:hover { background: var(--hover); }
+
+/* ─── Rollup card widgets (progress bar / percentage ring) ───────────── */
+.rollup-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 11.5px;
+  min-width: 0;
+}
+.rollup-bar-label {
+  color: var(--color-text-tertiary, var(--text-muted));
+  flex-shrink: 0;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rollup-bar {
+  display: inline-block;
+  flex: 1 1 56px;
+  min-width: 42px;
+  max-width: 160px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-border, var(--border));
+  overflow: hidden;
+}
+.rollup-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.35s var(--ease-out, ease);
+}
+.rollup-bar-num {
+  color: var(--color-text, var(--text-primary));
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.rollup-ring { flex-shrink: 0; }
