@@ -3,7 +3,7 @@
 /* ─── Constants ─────────────────────────────────────────────────────── */
 // UI build stamp — bump when diagnosing "is my client running the new code?".
 // Shown in the sidebar footer next to the version and logged to the console.
-const RAIBIS_UI_BUILD = '2026-07-05.3';
+const RAIBIS_UI_BUILD = '2026-07-05.4';
 window.RAIBIS_UI_BUILD = RAIBIS_UI_BUILD;
 console.log('[raibis] UI build', RAIBIS_UI_BUILD);
 const API = 'http://localhost:3344';
@@ -4308,7 +4308,7 @@ function multiSelectChips(entity, def, rawVal) {
 
 function builtinSelectChip(storageKey, value, _opts = {}) {
   if (!value) return '';
-  const label = escHtml(String(value).replace(/_/g, ' '));
+  const label = escHtml(String(_opts.labelOverride ?? String(value).replace(/_/g, ' ')));
   const hex = getValueColor(storageKey, value);
   if (hex) return `<span class="multi-chip" style="font-size:11px;background:${hex}22;color:${hex};font-weight:600">${label}</span>`;
   const v = String(value).toLowerCase().replace(/\s+/g, '_');
@@ -9470,7 +9470,8 @@ async function renderProjects() {
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
         ${vis('status') ? statusBadge(p.status) : ''}
-        ${vis('area') && p.macro_area ? `<span class="badge badge-todo">${p.macro_area.split('(')[0].trim()}</span>` : ''}
+        ${vis('macro') && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
+        ${vis('kanban') && p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : ''}
         ${tagChips}
       </div>
       ${vis('goal') && p.goal_title ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">Goal: ${p.goal_title}</div>` : ''}
@@ -9500,7 +9501,8 @@ async function renderProjects() {
         <td><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-proj-id="${p.id}">${p.title}</span><span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></td>
         ${vis('status')   ? `<td>${statusBadge(p.status)}</td>` : ''}
         ${vis('goal')     ? `<td>${p.goal_title || '—'}</td>` : ''}
-        ${vis('area')     ? `<td>${p.macro_area ? p.macro_area.split('(')[0].trim() : '—'}</td>` : ''}
+        ${vis('macro')    ? `<td>${p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : '—'}</td>` : ''}
+        ${vis('kanban')   ? `<td>${p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : '—'}</td>` : ''}
         ${vis('progress') ? `<td>${pct}% (${prog.done||0}/${prog.total||0})</td>` : ''}
         ${vis('tags')     ? `<td>${(p.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
         ${customCols}
@@ -9515,7 +9517,8 @@ async function renderProjects() {
       '<th>Title</th>',
       vis('status')   ? '<th>Status</th>'   : '',
       vis('goal')     ? '<th>Goal</th>'     : '',
-      vis('area')     ? '<th>Area</th>'     : '',
+      vis('macro')    ? '<th>Area</th>'     : '',
+      vis('kanban')   ? '<th>Kanban Col</th>' : '',
       vis('progress') ? '<th>Progress</th>' : '',
       vis('tags')     ? '<th>Tags</th>'     : '',
       customHeaders,
@@ -9554,7 +9557,8 @@ async function renderProjects() {
           ${vis('goal') && p.goal_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${p.goal_title}</div>` : ''}
           <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
             ${vis('status') && groupBy !== 'status' ? statusBadge(p.status) : ''}
-            ${vis('area') && groupBy !== 'macro_area' && p.macro_area ? `<span style="font-size:10px;color:var(--text-muted)">${p.macro_area.split('(')[0].trim()}</span>` : ''}
+            ${vis('macro') && groupBy !== 'macro_area' && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
+            ${vis('kanban') && groupBy !== 'kanban_col' && p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : ''}
           </div>
           ${vis('progress') ? `<div style="margin-top:8px">
             <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
@@ -9673,7 +9677,8 @@ async function renderProjects() {
         <span class="entity-list-title proj-list-title">${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></span>
         ${vis('status') ? statusBadge(p.status) : ''}
         ${vis('goal') ? (() => { const v = renderMultiRelationValue('project', p.id, 'goal', p.goal_title); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
-        ${vis('macro') && p.macro_area ? `<span class="entity-list-meta">${p.macro_area.split('(')[0].trim()}</span>` : ''}
+        ${vis('macro') && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
+        ${vis('kanban') && p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : ''}
         ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
         ${vis('tags') ? (p.tags || []).map(t => tagHtml(t)).join('') : ''}
         ${renderCustomPropChips('project', p.id, 'list')}
@@ -12174,7 +12179,7 @@ async function renderProjectDetail(projectId) {
     { key: 'category', label: 'Category',  icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
     { key: 'macro',    label: 'Macro Area',icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
-      renderValue: () => p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area.split('(')[0].trim()) : '' },
+      renderValue: () => p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : '' },
     { key: 'kanban',   label: 'Kanban Col',icon: pIco('<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>'),
       renderValue: () => p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : '' },
     { key: 'archived', label: 'Archived',  icon: pIco('<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/>'),
@@ -15222,7 +15227,7 @@ async function showProjectSlideover(project, goals, afterSave) {
     { key: 'category', label: 'Category',  icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
     { key: 'macro',    label: 'Macro Area',icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
-      renderValue: () => p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area.split('(')[0].trim()) : '' },
+      renderValue: () => p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : '' },
     { key: 'kanban',   label: 'Kanban Col',icon: pIco('<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>'),
       renderValue: () => p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : '' },
     { key: 'archived', label: 'Archived',  icon: pIco('<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>'),
