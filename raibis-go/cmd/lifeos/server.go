@@ -3424,10 +3424,18 @@ func propertiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc
 				errJSON(w, 400, "key is required")
 				return
 			}
+			var prevVal string
+			if prevProps, perr := store.ListProperties(entityType, entityID); perr == nil {
+				prevVal = prevProps[body.Key]
+			}
 			if err := store.SetProperty(entityType, entityID, body.Key, body.Value); err != nil {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			// Relation-prop values mirror into entity_relations edges so the
+			// graph, rollups and BOTH sides' vault links stay consistent no
+			// matter which UI path created the link.
+			go syncRelationPropEdges(store, vlt, entityType, entityID, body.Key, prevVal, body.Value)
 			// Propagate rollup recalculation up the hierarchy (non-blocking)
 			go rollup.TriggerPropagation(store, entityType, entityID)
 			// Sync non-internal keys to the Obsidian vault frontmatter
@@ -5156,6 +5164,76 @@ func relationPropTargets(store storage.Storage, entityType string) map[string]st
 		}
 	}
 	return out
+}
+
+// parseRelationIDs extracts the numeric ids from a stored relation value
+// ([{"id","label"},…]); returns nil when the value isn't relation-shaped.
+func parseRelationIDs(raw string) map[int64]bool {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, "[{") {
+		return nil
+	}
+	var items []struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal([]byte(trimmed), &items) != nil {
+		return nil
+	}
+	out := map[int64]bool{}
+	for _, it := range items {
+		if n, err := strconv.ParseInt(it.ID, 10, 64); err == nil {
+			out[n] = true
+		}
+	}
+	return out
+}
+
+// syncRelationPropEdges diffs a relation property's old/new values and
+// mirrors the change into entity_relations edges, then recomputes rollups
+// and refreshes vault files on BOTH ends. Entity agnostic: the target type
+// comes from the type schema, falling back to the key name.
+func syncRelationPropEdges(store storage.Storage, vlt *vault.Vault, entityType string, entityID int64, key, oldVal, newVal string) {
+	if strings.HasPrefix(key, "_") {
+		return // _parent & friends flow through entity_children instead
+	}
+	newIDs := parseRelationIDs(newVal)
+	oldIDs := parseRelationIDs(oldVal)
+	if newIDs == nil && oldIDs == nil {
+		return // not a relation prop
+	}
+	target := relationPropTargets(store, entityType)[key]
+	if target == "" {
+		target = strings.TrimSuffix(key, "s")
+	}
+	changed := []int64{}
+	for id := range newIDs {
+		if !oldIDs[id] {
+			_ = store.AddEntityRelation(entityType, entityID, target, id)
+			changed = append(changed, id)
+		}
+	}
+	for id := range oldIDs {
+		if !newIDs[id] {
+			_ = store.RemoveEntityRelation(entityType, entityID, target, id)
+			changed = append(changed, id)
+		}
+	}
+	if len(changed) == 0 {
+		return
+	}
+	rollup.RecomputeEntity(store, entityType, entityID)
+	resyncType := target
+	switch target {
+	case "task", "goal", "project", "sprint":
+	default:
+		resyncType = "custom_" + target
+	}
+	for _, id := range changed {
+		rollup.RecomputeEntity(store, target, id)
+		if vlt != nil {
+			resyncEntityVault(resyncType, id, store, vlt)
+		}
+	}
 }
 
 // relationValueToLinks converts a stored relation value — a JSON array of

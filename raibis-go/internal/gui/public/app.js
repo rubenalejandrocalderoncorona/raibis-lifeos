@@ -3,7 +3,7 @@
 /* ─── Constants ─────────────────────────────────────────────────────── */
 // UI build stamp — bump when diagnosing "is my client running the new code?".
 // Shown in the sidebar footer next to the version and logged to the console.
-const RAIBIS_UI_BUILD = '2026-07-05.2';
+const RAIBIS_UI_BUILD = '2026-07-05.3';
 window.RAIBIS_UI_BUILD = RAIBIS_UI_BUILD;
 console.log('[raibis] UI build', RAIBIS_UI_BUILD);
 const API = 'http://localhost:3344';
@@ -2966,15 +2966,11 @@ function customPropCell(entity, recordId, def) {
     return `<td><input type="number" class="custom-prop-input" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" value="${val}" style="font-size:12px;width:70px;border:1px solid var(--border);border-radius:3px;padding:1px 4px;background:transparent;color:var(--text-primary)"></td>`;
   }
   if (def.type === 'select' || def.type === 'status') {
-    const oc = def.optionColors || {};
-    const color = val ? (oc[val] || '') : '';
-    const html = val ? (color ? `<span class="multi-chip color-${color}" style="font-size:11px">${escHtml(val)}</span>` : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${escHtml(val)}</span>`) : '—';
+    const html = val ? selectValueChip(entity, def, val) : '—';
     return `<td class="custom-prop-select-cell" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" style="cursor:pointer">${html}</td>`;
   }
   if (def.type === 'multi_select') {
-    const arr = (() => { try { const a = JSON.parse(val); return Array.isArray(a) ? a : (val ? [val] : []); } catch { return val ? [val] : []; } })();
-    const oc = def.optionColors || {};
-    const html = arr.length ? arr.map(v => oc[v] ? `<span class="multi-chip color-${oc[v]}" style="font-size:11px">${escHtml(v)}</span>` : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${escHtml(v)}</span>`).join('') : '—';
+    const html = multiSelectChips(entity, def, val) || '—';
     return `<td class="custom-prop-select-cell" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" style="cursor:pointer">${html}</td>`;
   }
   if (def.type === 'relation') {
@@ -3552,20 +3548,11 @@ function renderCustomPropChips(entity, recordId, viewMode) {
       return val ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px" title="${def.label}: checked"><span style="color:var(--text-muted)">${def.label}:</span> ✓</span>` : '';
     }
     if (def.type === 'multi_select') {
-      const arr = (() => { try { const a = JSON.parse(val); return Array.isArray(a) ? a : (val ? [val] : []); } catch { return val ? [val] : []; } })();
-      if (!arr.length) return '';
-      const oc = def.optionColors || {};
-      return arr.map(v => oc[v]
-        ? `<span class="multi-chip color-${oc[v]}" style="font-size:10px">${escHtml(v)}</span>`
-        : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:10px">${escHtml(v)}</span>`
-      ).join('');
+      return multiSelectChips(entity, def, val);
     }
     if (def.type === 'select' || def.type === 'status') {
       if (!val) return '';
-      const color = (def.optionColors || {})[val] || '';
-      return color
-        ? `<span class="multi-chip color-${color}" style="font-size:10px" title="${def.label}: ${escHtml(val)}">${escHtml(val)}</span>`
-        : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:10px" title="${def.label}: ${escHtml(val)}">${escHtml(val)}</span>`;
+      return selectValueChip(entity, def, val);
     }
     if (def.type === 'relation') {
       const allRelItems = parseRelationValue(val);
@@ -4306,6 +4293,19 @@ const CHIP_SEMANTIC_COLORS = {
   todo: 'cyan', planned: 'cyan', blocked: 'red', on_hold: 'orange',
   archived: 'purple', low: 'cyan', medium: 'yellow', high: 'orange', urgent: 'red',
 };
+// One pipeline for select values in EVERY view (list, cards, table, kanban,
+// panel): schema optionColors → assigned hex color → semantic → stable hash.
+function selectValueChip(entity, def, value) {
+  if (value === '' || value === undefined || value === null) return '';
+  const named = (def.optionColors || {})[value];
+  if (named) return `<span class="multi-chip color-${named}" style="font-size:11px">${escHtml(String(value))}</span>`;
+  return builtinSelectChip(`${entity}_${def.key}`, value);
+}
+function multiSelectChips(entity, def, rawVal) {
+  const arr = (() => { try { const a = JSON.parse(rawVal); return Array.isArray(a) ? a : (rawVal ? [rawVal] : []); } catch { return rawVal ? [rawVal] : []; } })();
+  return arr.map(v => selectValueChip(entity, def, v)).join('');
+}
+
 function builtinSelectChip(storageKey, value, _opts = {}) {
   if (!value) return '';
   const label = escHtml(String(value).replace(/_/g, ' '));
@@ -5771,7 +5771,10 @@ async function renderCustomEntityList(typeName) {
           ? `<span class="entity-toggle-arrow${isExp ? ' expanded' : ''}" data-eid="${e.id}" data-depth="0" style="flex-shrink:0;margin-right:2px">${_lChev}</span>`
           : '';
         const visProps = allCustomDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 4).map(pd => {
-          const v = renderPropVal(pd, e.props?.[pd.key] || '');
+          const raw = e.props?.[pd.key] || '';
+          if (pd.type === 'select' || pd.type === 'status') return raw ? selectValueChip(entityKey, pd, raw) : '';
+          if (pd.type === 'multi_select') return multiSelectChips(entityKey, pd, raw);
+          const v = renderPropVal(pd, raw);
           return v ? `<span class="entity-list-meta">${escHtml(v)}</span>` : '';
         }).filter(Boolean).join('');
         const tagSpan = entityPropVisible(entityKey, 'tags') && e.tags?.length
@@ -5798,7 +5801,12 @@ async function renderCustomEntityList(typeName) {
               : (e.props?.[pd.key] ?? getCustomPropValues(entityKey, e.id)[pd.key] ?? '');
             return renderRollupCardWidget(pd, rv);
           }
-          const v = renderPropVal(pd, e.props?.[pd.key] || '');
+          const raw = e.props?.[pd.key] || '';
+          if (pd.type === 'select' || pd.type === 'status' || pd.type === 'multi_select') {
+            const chips = pd.type === 'multi_select' ? multiSelectChips(entityKey, pd, raw) : (raw ? selectValueChip(entityKey, pd, raw) : '');
+            return chips ? `<div style="display:flex;gap:6px;font-size:12px;padding:2px 0;align-items:center"><span style="color:var(--text-muted);min-width:80px;flex-shrink:0">${escHtml(pd.label)}</span><span style="display:flex;gap:3px;flex-wrap:wrap">${chips}</span></div>` : '';
+          }
+          const v = renderPropVal(pd, raw);
           return v ? `<div style="display:flex;gap:6px;font-size:12px;padding:2px 0"><span style="color:var(--text-muted);min-width:80px;flex-shrink:0">${escHtml(pd.label)}</span><span>${escHtml(v)}</span></div>` : '';
         }).filter(Boolean).join('');
         const tagRow = entityPropVisible(entityKey, 'tags') && e.tags?.length
@@ -5877,7 +5885,12 @@ async function renderCustomEntityList(typeName) {
         const colItems = grouped[colKey] || [];
         const cardsHtml = colItems.map(item => {
           const visProps = allCustomDefs.filter(d => d.key !== groupProp.key && entityPropVisible(entityKey, d.key)).slice(0, 3).map(pd => {
-            const v = renderPropVal(pd, item.props?.[pd.key] || '');
+            const raw = item.props?.[pd.key] || '';
+            if (pd.type === 'select' || pd.type === 'status' || pd.type === 'multi_select') {
+              const chips = pd.type === 'multi_select' ? multiSelectChips(entityKey, pd, raw) : (raw ? selectValueChip(entityKey, pd, raw) : '');
+              return chips ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px;display:flex;gap:4px;align-items:center;flex-wrap:wrap">${escHtml(pd.label)}: ${chips}</div>` : '';
+            }
+            const v = renderPropVal(pd, raw);
             return v ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${escHtml(pd.label)}: ${escHtml(v)}</div>` : '';
           }).filter(Boolean).join('');
           const tagRow = entityPropVisible(entityKey, 'tags') && item.tags?.length
