@@ -3,7 +3,7 @@
 /* ─── Constants ─────────────────────────────────────────────────────── */
 // UI build stamp — bump when diagnosing "is my client running the new code?".
 // Shown in the sidebar footer next to the version and logged to the console.
-const RAIBIS_UI_BUILD = '2026-07-05.4';
+const RAIBIS_UI_BUILD = '2026-07-05.5';
 window.RAIBIS_UI_BUILD = RAIBIS_UI_BUILD;
 console.log('[raibis] UI build', RAIBIS_UI_BUILD);
 const API = 'http://localhost:3344';
@@ -515,9 +515,13 @@ function getTaskVisProps(viewMode) {
   const stored = localStorage.getItem(`taskVisProps_${viewMode}`);
   if (!stored) return [...TASK_PROP_DEFAULTS];
   const keys = JSON.parse(stored);
-  // Ensure any new default keys are present (migration for existing localStorage)
+  // Migration: only offer default keys the user has NEVER been shown (i.e.
+  // new features). Re-adding every default on every read made them
+  // impossible to hide — unchecking due_date was undone on the next render.
+  const seen = new Set(JSON.parse(localStorage.getItem(`taskVisKnown_${viewMode}`) || '[]'));
   let changed = false;
-  TASK_PROP_DEFAULTS.forEach(k => { if (!keys.includes(k)) { keys.push(k); changed = true; } });
+  TASK_PROP_DEFAULTS.forEach(k => { if (!seen.has(k) && !keys.includes(k)) { keys.push(k); changed = true; } });
+  localStorage.setItem(`taskVisKnown_${viewMode}`, JSON.stringify(TASK_PROP_DEFAULTS));
   if (changed) localStorage.setItem(`taskVisProps_${viewMode}`, JSON.stringify(keys));
   return keys;
 }
@@ -4330,6 +4334,12 @@ function statusBadge(status) {
 }
 
 function priorityBadge(priority) {
+  // Assigned colors win — same pipeline as every other select value
+  const hex = getValueColor('taskPriorities', priority);
+  if (hex) return `<span class="multi-chip" style="font-size:11px;background:${hex}22;color:${hex};font-weight:600">${escHtml(String(priority || ''))}</span>`;
+  return _priorityBadgeClassic(priority);
+}
+function _priorityBadgeClassic(priority) {
   const map = { low: 'badge-low', medium: 'badge-medium', high: 'badge-high', urgent: 'badge-urgent' };
   const customColor = getValueColor('taskPriorities', priority);
   const styleAttr = customColor ? ` style="background:${customColor}22;color:${customColor};border-color:${customColor}55"` : '';
@@ -4805,7 +4815,7 @@ function taskRowHtml(task, showProject, indent, viewMode) {
     catLabel = cat ? cat.name : (task.category || '');
   }
   const catChip = catLabel ? `<span class="task-category-chip">${catLabel}</span>` : '';
-  const statusChip = vis('status') ? statusBadge(task.status) : '';
+  const statusChip = vis('status') ? builtinSelectChip('taskStatuses', task.status) : '';
   const priorityChip = vis('priority') ? priorityBadge(task.priority) : '';
   const storyPts = vis('story_points') && task.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${task.story_points}pt</span>` : '';
 
@@ -7748,14 +7758,9 @@ const EV_ALL_TYPES = ['note','resource','task','goal','project','sprint','habit'
 function getBottomViews(entityType) {
   const s = localStorage.getItem(`entityViews_${entityType}`);
   if (s) try { return JSON.parse(s); } catch {}
-  if (entityType === 'task') return [
-    { childType: 'note',     mode: 'list' },
-    { childType: 'resource', mode: 'list' },
-    { childType: 'project',  mode: 'list' },
-    { childType: 'goal',     mode: 'list' },
-    { childType: 'sprint',   mode: 'list' },
-  ];
-  return [{ childType: 'note', mode: 'list' }, { childType: 'resource', mode: 'list' }];
+  // No defaults: every slideover starts with zero views — the user adds
+  // exactly the ones they want via "+ Add view".
+  return [];
 }
 function setBottomViews(entityType, views) {
   localStorage.setItem(`entityViews_${entityType}`, JSON.stringify(views));
@@ -8612,7 +8617,7 @@ async function renderDashboard() {
         <div class="notion-table-wrap"><table class="notion-table">
           <thead><tr><th>Title</th><th>Type</th><th>Status</th><th>Due</th></tr></thead>
           <tbody>${goals.slice(0,5).map(g => `<tr style="cursor:pointer" onclick="renderView('goal-detail','${g.id}')">
-            <td>${g.title}</td><td>${g.type||'—'}</td><td>${statusBadge(g.status)}</td>
+            <td>${g.title}</td><td>${g.type||'—'}</td><td>${builtinSelectChip('goalStatuses', g.status)}</td>
             <td style="font-size:11px;color:var(--text-muted)">${fmtDate(g.due_date)||'—'}</td>
           </tr>`).join('')}</tbody>
         </table></div>
@@ -9075,7 +9080,7 @@ async function renderTasks() {
       const projLine = t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${t.project_title}</div>` : '';
       const tags = (t.tags||[]).slice(0,3).map(tg => tagHtml(tg)).join('');
       const storyPts = t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
-      const meta = [statusBadge(t.status), priorityBadge(t.priority), dueLine, tags, storyPts].filter(Boolean);
+      const meta = [builtinSelectChip('taskStatuses', t.status), priorityBadge(t.priority), dueLine, tags, storyPts].filter(Boolean);
       const subtree = buildSubtree(t.id, 0);
       return `<div class="task-card-item" data-task-id="${t.id}" style="cursor:pointer">
         <div class="kanban-card-header">
@@ -9217,7 +9222,7 @@ async function renderTasks() {
         const recurBadge = kVis('recurrence') && t.recur_interval > 0 ? ' <span class="task-recur-badge">↺</span>' : '';
         const projLine = kVis('project') && t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t.project_title}</div>` : '';
         const priorityLine = (groupBy !== 'priority' && kVis('priority')) ? priorityBadge(t.priority) : '';
-        const statusLine   = (groupBy !== 'status'   && kVis('status'))   ? statusBadge(t.status)     : '';
+        const statusLine   = (groupBy !== 'status'   && kVis('status'))   ? builtinSelectChip('taskStatuses', t.status)     : '';
         const dueLine = kVis('due_date') && t.due_date ? `<span class="task-due" style="font-size:10px;color:${dueDateColor(t.due_date)}">${fmtDate(t.due_date)}</span>` : '';
         const tagLine = kVis('tags') ? (t.tags||[]).slice(0,2).map(tg => tagHtml(tg)).join('') : '';
         const storyPts = kVis('story_points') && t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
@@ -9469,7 +9474,7 @@ async function renderProjects() {
         </div>
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
-        ${vis('status') ? statusBadge(p.status) : ''}
+        ${vis('status') ? builtinSelectChip('projectStatuses', p.status) : ''}
         ${vis('macro') && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
         ${vis('kanban') && p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : ''}
         ${tagChips}
@@ -9499,7 +9504,7 @@ async function renderProjects() {
       return `<tr>
         <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span></td>
         <td><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-proj-id="${p.id}">${p.title}</span><span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></td>
-        ${vis('status')   ? `<td>${statusBadge(p.status)}</td>` : ''}
+        ${vis('status')   ? `<td>${builtinSelectChip('projectStatuses', p.status)}</td>` : ''}
         ${vis('goal')     ? `<td>${p.goal_title || '—'}</td>` : ''}
         ${vis('macro')    ? `<td>${p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : '—'}</td>` : ''}
         ${vis('kanban')   ? `<td>${p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : '—'}</td>` : ''}
@@ -9556,7 +9561,7 @@ async function renderProjects() {
           <div class="kanban-card-title">${p.title}</div>
           ${vis('goal') && p.goal_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${p.goal_title}</div>` : ''}
           <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
-            ${vis('status') && groupBy !== 'status' ? statusBadge(p.status) : ''}
+            ${vis('status') && groupBy !== 'status' ? builtinSelectChip('projectStatuses', p.status) : ''}
             ${vis('macro') && groupBy !== 'macro_area' && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
             ${vis('kanban') && groupBy !== 'kanban_col' && p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : ''}
           </div>
@@ -9675,7 +9680,7 @@ async function renderProjects() {
         <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
         <span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
         <span class="entity-list-title proj-list-title">${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></span>
-        ${vis('status') ? statusBadge(p.status) : ''}
+        ${vis('status') ? builtinSelectChip('projectStatuses', p.status) : ''}
         ${vis('goal') ? (() => { const v = renderMultiRelationValue('project', p.id, 'goal', p.goal_title); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
         ${vis('macro') && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
         ${vis('kanban') && p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : ''}
@@ -9850,7 +9855,7 @@ async function renderGoals() {
         <span class="entity-list-title goal-list-title">${g.title}<span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></span>
         ${vis('type') && g.type ? builtinSelectChip('goal_type', g.type) : ''}
         ${vis('year') && g.year ? builtinSelectChip('goal_year', g.year) : ''}
-        ${vis('status') ? statusBadge(g.status) : ''}
+        ${vis('status') ? builtinSelectChip('goalStatuses', g.status) : ''}
         ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
         ${vis('tags') ? (g.tags || []).map(t => tagHtml(t)).join('') : ''}
         <span onclick="event.stopPropagation()"><button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button></span>
@@ -9916,7 +9921,7 @@ async function renderGoals() {
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
         ${vis('type') && g.type ? `<span class="badge badge-progress">${g.type}</span>` : ''}
         ${vis('year') && g.year ? `<span class="badge badge-todo">${g.year}</span>` : ''}
-        ${vis('status') ? statusBadge(g.status) : ''}
+        ${vis('status') ? builtinSelectChip('goalStatuses', g.status) : ''}
         ${tagChips}
       </div>
       ${vis('progress') ? `<div class="progress-wrap">
@@ -9942,7 +9947,7 @@ async function renderGoals() {
       return `<tr>
         <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span></td>
         <td><span style="cursor:pointer;color:var(--accent)" class="goal-nav-link" data-goal-id="${g.id}">${g.title}</span><span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></td>
-        ${vis('status')   ? `<td>${statusBadge(g.status)}</td>` : ''}
+        ${vis('status')   ? `<td>${builtinSelectChip('goalStatuses', g.status)}</td>` : ''}
         ${vis('type')     ? `<td>${g.type || '—'}</td>` : ''}
         ${vis('year')     ? `<td>${g.year || '—'}</td>` : ''}
         ${vis('progress') ? `<td>${pct}%</td>` : ''}
@@ -9996,7 +10001,7 @@ async function renderGoals() {
         return `<div class="kanban-card goal-kanban-card" data-goal-id="${g.id}" style="cursor:grab">
           <div class="kanban-card-title">${g.title}</div>
           <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
-            ${vis('status') && groupBy !== 'status' ? statusBadge(g.status) : ''}
+            ${vis('status') && groupBy !== 'status' ? builtinSelectChip('goalStatuses', g.status) : ''}
             ${vis('type') && groupBy !== 'type' && g.type ? `<span>${g.type}</span>` : ''}
             ${vis('year') && groupBy !== 'year' && g.year ? builtinSelectChip('goal_year', g.year) : ''}
           </div>
@@ -10327,7 +10332,7 @@ async function renderSprints() {
         </div>
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
-        ${vis('status') ? statusBadge(s.status) : ''}
+        ${vis('status') ? builtinSelectChip('sprintStatuses', s.status) : ''}
         ${vis('project') && s.project_title ? `<span class="badge badge-todo">${s.project_title}</span>` : ''}
       </div>
       ${vis('dates') ? `<div class="card-meta">${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</div>` : ''}
@@ -10377,7 +10382,7 @@ async function renderSprints() {
       return `<tr class="sprint-row" data-sprint-id="${s.id}" style="cursor:pointer">
         <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span></td>
         <td><span class="sprint-detail-link" data-sprint-id="${s.id}" style="color:var(--accent);cursor:pointer">${s.title}</span><span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></td>
-        ${vis('status')   ? `<td>${statusBadge(s.status)}</td>` : ''}
+        ${vis('status')   ? `<td>${builtinSelectChip('sprintStatuses', s.status)}</td>` : ''}
         ${vis('project')  ? `<td>${s.project_title || '—'}</td>` : ''}
         ${vis('dates')    ? `<td>${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</td>` : ''}
         ${vis('progress') ? `<td>${pct}%</td>` : ''}
@@ -10476,7 +10481,7 @@ async function renderSprints() {
         <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
         <span class="list-icon-slot" data-icon-entity="sprint" data-icon-id="${s.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
         <span class="entity-list-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)">${s.title}<span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></span>
-        ${vis('status') ? statusBadge(s.status) : ''}
+        ${vis('status') ? builtinSelectChip('sprintStatuses', s.status) : ''}
         ${vis('project') && s.project_title ? `<span class="entity-list-meta">${s.project_title}</span>` : ''}
         ${vis('dates') ? `<span class="entity-list-meta">${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</span>` : ''}
         ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
@@ -10677,7 +10682,7 @@ function _wProjectsHtml(projects) {
   return projects.map(p => {
     const prog = p.progress || {}, pct = prog.pct || 0;
     return `<div class="card detail-nav" data-proj-id="${p.id}" style="cursor:pointer;margin-bottom:8px">
-      <div class="flex-between gap-8"><span class="card-title">${escHtml(p.title)}</span>${statusBadge(p.status)}</div>
+      <div class="flex-between gap-8"><span class="card-title">${escHtml(p.title)}</span>${builtinSelectChip('projectStatuses', p.status)}</div>
       <div class="progress-wrap" style="margin-top:8px">
         <div class="progress-label"><span>${pct}%</span><span>${prog.done||0}/${prog.total||0}</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
@@ -11092,7 +11097,7 @@ async function renderSprintDetail(sprintId) {
         ${sprint.project_title ? `<div class="breadcrumb" style="margin-bottom:6px"><span class="bc-crumb bc-proj" style="cursor:pointer" data-proj-id="${sprint.project_id}">◆ ${sprint.project_title}</span></div>` : ''}
         <h1 class="view-title">${sprint.title}</h1>
         <div class="flex gap-8" style="margin-top:6px">
-          ${statusBadge(sprint.status)}
+          ${builtinSelectChip('sprintStatuses', sprint.status)}
           ${sprint.start_date ? `<span class="badge badge-todo">${fmtDate(sprint.start_date)} → ${fmtDate(sprint.end_date)}</span>` : ''}
         </div>
       </div>
@@ -11253,7 +11258,7 @@ async function renderSprintDetail(sprintId) {
 
       const textColor = sdSpColorMode === 'row' && color ? 'color:#fff;' : '';
       return `<div style="display:flex;align-items:center;gap:6px;padding:5px 4px;border-bottom:1px solid var(--border);${rowStyle}${textColor}">
-        ${statusBadge(t.status)}
+        ${builtinSelectChip('taskStatuses', t.status)}
         <span class="sd-task-open-link" data-task-id="${t.id}" style="flex:1;font-size:13px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;${sdSpColorMode==='row'&&color?'color:#fff;':'color:var(--accent);'}" title="${t.title}">${t.title}</span>
         ${spBadge}${assignBtn}
       </div>`;
@@ -12242,7 +12247,7 @@ async function renderProjectDetail(projectId) {
         ${goalLink ? `<div class="breadcrumb" style="margin-bottom:6px">${goalLink}</div>` : ''}
         <h1 class="view-title">${p.title}</h1>
         <div class="flex gap-8" style="margin-top:6px">
-          ${statusBadge(p.status)}
+          ${builtinSelectChip('projectStatuses', p.status)}
           ${p.macro_area ? `<span class="badge badge-todo">${p.macro_area.split('(')[0].trim()}</span>` : ''}
           ${p.kanban_col ? `<span class="badge badge-progress">${p.kanban_col}</span>` : ''}
         </div>
@@ -12409,7 +12414,7 @@ async function renderGoalDetail(goalId) {
       <div>
         <h1 class="view-title">${g.title}</h1>
         <div class="flex gap-8" style="margin-top:6px">
-          ${statusBadge(g.status)}
+          ${builtinSelectChip('goalStatuses', g.status)}
           ${g.type ? `<span class="badge badge-progress">${g.type}</span>` : ''}
           ${g.year ? `<span class="badge badge-todo">${g.year}</span>` : ''}
         </div>
@@ -13023,7 +13028,7 @@ async function showTaskSlideover(taskId) {
             ${countBadge}
           </div>
         </td>
-        <td>${statusBadge(st.status)}</td>
+        <td>${builtinSelectChip('taskStatuses', st.status)}</td>
         <td>${priorityBadge(st.priority)}</td>
         <td style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text-muted)">${fmtDate(st.due_date)||'—'}</td>
       </tr>`;
@@ -13190,7 +13195,7 @@ async function showTaskSlideover(taskId) {
 
   const allTaskBuiltinDefs = [
     { key: 'status',   label: 'Status',       icon: pIco('<circle cx="12" cy="12" r="10"/>'),
-      renderValue: () => task.status ? statusBadge(task.status) : '' },
+      renderValue: () => task.status ? builtinSelectChip('taskStatuses', task.status) : '' },
     { key: 'priority', label: 'Priority',     icon: pIco('<polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/>'),
       renderValue: () => task.priority ? priorityBadge(task.priority) : '' },
     { key: 'due',      label: 'Due Date',     icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
@@ -14358,7 +14363,7 @@ function renderPomStatsTable(tasks) {
     return `<tr>
       <td class="pom-st-task">
         <span class="pom-st-task-title">${t.title || 'Untitled'}</span>
-        ${statusBadge(t.status)}
+        ${builtinSelectChip('taskStatuses', t.status)}
       </td>
       <td class="pom-td-num">${planned || '—'}</td>
       <td class="pom-td-num">${finished || '—'}</td>
@@ -14601,7 +14606,7 @@ async function renderPomodoro() {
               <td>${t.title || 'Untitled'}</td>
               <td class="pom-td-num">${planned || '—'}</td>
               <td class="pom-td-num">${done || '—'}</td>
-              <td>${statusBadge(t.status)}</td>
+              <td>${builtinSelectChip('taskStatuses', t.status)}</td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -15247,7 +15252,7 @@ async function showProjectSlideover(project, goals, afterSave) {
     `<li class="task-row" data-task-id="${t.id}" style="cursor:pointer">
       <div class="task-check ${t.status==='done'?'done':''}" data-check-id="${t.id}">${t.status==='done'?'✓':''}</div>
       <div class="task-content"><div class="task-title">${t.title}</div></div>
-      ${statusBadge(t.status)}
+      ${builtinSelectChip('taskStatuses', t.status)}
     </li>`
   ).join('') || '<li style="padding:8px;color:var(--text-muted);font-size:13px">No tasks</li>';
 
@@ -15474,7 +15479,7 @@ async function showGoalSlideover(goal, afterSave) {
   const projRows = projects.map(p =>
     `<div class="note-card" data-proj-id="${p.id}" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin-bottom:6px;padding:8px 10px">
       <span>${p.title}</span>
-      <span>${statusBadge(p.status)}</span>
+      <span>${builtinSelectChip('projectStatuses', p.status)}</span>
     </div>`
   ).join('') || '<div style="color:var(--text-muted);font-size:13px">No linked projects</div>';
 
@@ -16060,7 +16065,7 @@ async function showSprintSlideover(sprintId, afterSave) {
     `<li class="task-row" data-task-id="${t.id}" style="cursor:pointer">
       <div class="task-check ${t.status==='done'?'done':''}" data-check-id="${t.id}">${t.status==='done'?'✓':''}</div>
       <div class="task-content"><div class="task-title">${t.title}</div></div>
-      ${statusBadge(t.status)}
+      ${builtinSelectChip('taskStatuses', t.status)}
     </li>`
   ).join('') || '<li style="padding:8px;color:var(--text-muted);font-size:13px">No tasks</li>';
 
