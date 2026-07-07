@@ -494,9 +494,15 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 			for _, p := range projects {
 				projMap[p.ID] = p.Title
 			}
+			goals, _ := svc.Goals()
+			goalMap := make(map[int64]string)
+			for _, g := range goals {
+				goalMap[g.ID] = g.Title
+			}
 			type taskOut struct {
 				*domain.Task
 				ProjectTitle string `json:"project_title,omitempty"`
+				GoalTitle    string `json:"goal_title,omitempty"`
 				SubTaskCount int    `json:"sub_task_count"`
 			}
 			out := make([]taskOut, len(tasks))
@@ -504,6 +510,9 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				to := taskOut{Task: t}
 				if t.ProjectID != nil {
 					to.ProjectTitle = projMap[*t.ProjectID]
+				}
+				if t.GoalID != nil {
+					to.GoalTitle = goalMap[*t.GoalID]
 				}
 				sub, _ := store.ListTasks(domain.TaskFilter{})
 				for _, s := range sub {

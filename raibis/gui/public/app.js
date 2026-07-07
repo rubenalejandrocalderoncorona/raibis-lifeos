@@ -3,7 +3,7 @@
 /* ─── Constants ─────────────────────────────────────────────────────── */
 // UI build stamp — bump when diagnosing "is my client running the new code?".
 // Shown in the sidebar footer next to the version and logged to the console.
-const RAIBIS_UI_BUILD = '2026-07-05.8';
+const RAIBIS_UI_BUILD = '2026-07-07.1';
 window.RAIBIS_UI_BUILD = RAIBIS_UI_BUILD;
 console.log('[raibis] UI build', RAIBIS_UI_BUILD);
 const API = 'http://localhost:3344';
@@ -509,6 +509,7 @@ const TASK_PROPS = [
   { key: 'category',    label: 'Category' },
   { key: 'recurrence',  label: 'Recurrence' },
   { key: 'description', label: 'Description' },
+  { key: 'parent_task', label: 'Parent Task' },
 ];
 const TASK_PROP_DEFAULTS = TASK_PROPS.map(p => p.key); // all visible by default
 
@@ -657,13 +658,14 @@ const FILTER_FIELDS = {
     { key:'due_date',     label:'Due Date',     type:'date' },
     { key:'story_points', label:'Story Points', type:'number' },
     { key:'description',  label:'Description',  type:'text' },
-    { key:'project',      label:'Project',      type:'text' },
+    { key:'project_title', label:'Project',     type:'text' },
+    { key:'goal_title',    label:'Goal',        type:'text' },
     { key:'tags',         label:'Tags',         type:'text' },
     { key:'category',     label:'Category',     type:'select',  options: () => allCategories.map(c=>({value:c.name,label:c.name})) },
   ],
   project: [
     { key:'title',         label:'Title',       type:'text' },
-    { key:'status',        label:'Status',      type:'select',  options: () => ['todo','in_progress','blocked','done'].map(s=>({value:s,label:s.replace(/_/g,' ')})) },
+    { key:'status',        label:'Status',      type:'select',  options: () => PROJECT_STATUSES.map(s=>({value:s,label:s.replace(/_/g,' ')})) },
     { key:'macro_area',    label:'Area',        type:'text' },
     { key:'due_date',      label:'Due Date',    type:'date' },
     { key:'goal_title',    label:'Goal',        type:'text' },
@@ -685,13 +687,18 @@ const FILTER_FIELDS = {
     { key:'note_date',     label:'Date',        type:'date' },
     { key:'category_name', label:'Category',    type:'select',  options: () => allCategories.map(c=>({value:c.name,label:c.name})) },
     { key:'tags',          label:'Tags',        type:'text' },
+    { key:'project_title', label:'Project',     type:'text' },
+    { key:'goal_title',    label:'Goal',        type:'text' },
   ],
   sprint: [
     { key:'title',       label:'Title',         type:'text' },
-    { key:'status',      label:'Status',        type:'select',  options: () => ['planned','active','completed'].map(s=>({value:s,label:s})) },
+    { key:'status',      label:'Status',        type:'select',  options: () => SPRINT_STATUS_VALUES.map(s=>({value:s,label:s})) },
+    { key:'project_title', label:'Project',     type:'text' },
     { key:'start_date',  label:'Start Date',    type:'date' },
     { key:'end_date',    label:'End Date',      type:'date' },
     { key:'story_points',label:'Capacity (pts)',type:'number' },
+    { key:'category_name', label:'Category',    type:'select',  options: () => allCategories.map(c=>({value:c.name,label:c.name})) },
+    { key:'tags',        label:'Tags',          type:'text' },
   ],
   resource: [
     { key:'title',         label:'Title',       type:'text' },
@@ -699,6 +706,8 @@ const FILTER_FIELDS = {
     { key:'url',           label:'URL',         type:'text' },
     { key:'tags',          label:'Tags',        type:'text' },
     { key:'category_name', label:'Category',    type:'select',  options: () => allCategories.map(c=>({value:c.name,label:c.name})) },
+    { key:'project_title', label:'Project',     type:'text' },
+    { key:'goal_title',    label:'Goal',        type:'text' },
   ],
 };
 
@@ -810,9 +819,8 @@ function applyViewFiltersAndSorts(items, view, accessors) {
   if (sorts.length) {
     const sortsCopy = [...sorts].reverse(); // reverse so index 0 is applied last
     sortsCopy.forEach(s => {
-      const acc = accessors[s.field] || (() => '');
       filtered = [...filtered].sort((a, b) => {
-        const av = acc(a), bv = acc(b);
+        const av = resolveFieldValue(a, s.field, accessors), bv = resolveFieldValue(b, s.field, accessors);
         if (av == null && bv == null) return 0;
         if (av == null) return 1;
         if (bv == null) return -1;
@@ -828,21 +836,21 @@ function applyViewFiltersAndSorts(items, view, accessors) {
   return filtered;
 }
 
+// Resolves a field's value for one item — explicit accessor first, then the
+// same generic fallbacks (custom prop via "props.x", tags, raw item field)
+// for every entity. Used by BOTH filtering and sorting so any field offered
+// in the +Filter/+Sort picker (built-in or custom, any entity) works for
+// both without requiring a per-entity accessor to be hand-maintained.
+function resolveFieldValue(item, field, accessors) {
+  const acc = accessors[field];
+  if (acc) return acc(item);
+  if (field && field.startsWith('props.')) return item.props?.[field.slice(6)] ?? '';
+  if (field === 'tags') return (item.tags || []).map(t => (typeof t === 'object' ? t.name : t) || '').join(',');
+  return item[field] ?? undefined;
+}
+
 function matchFilterRule(item, rule, accessors) {
-  const acc = accessors[rule.field];
-  let raw;
-  if (acc) {
-    raw = acc(item);
-  } else if (rule.field && rule.field.startsWith('props.')) {
-    // Custom prop field key — read from item.props directly
-    const propKey = rule.field.slice(6);
-    raw = item.props?.[propKey] ?? '';
-  } else if (rule.field === 'tags') {
-    // Tags: join tag names for text matching
-    raw = (item.tags || []).map(t => (typeof t === 'object' ? t.name : t) || '').join(',');
-  } else {
-    raw = item[rule.field] ?? undefined;
-  }
+  const raw = resolveFieldValue(item, rule.field, accessors);
   const op = rule.operator;
   const val = rule.value;
 
@@ -5609,8 +5617,12 @@ async function renderCustomEntityList(typeName) {
           <div class="col-picker-dropdown hidden" id="${entityKey}-kanban-cp-drop">${_cpChecksHtml(_act)}</div>
         </div>`;
 
-        customToolbarRight.insertBefore(document.createRange().createContextualFragment(_gbHtml), newBtn);
-        customToolbarRight.insertBefore(document.createRange().createContextualFragment(_cpHtml), newBtn);
+        // Insert before the eye icon (not newBtn) so the order matches Task's
+        // toolbar exactly: Group by, Columns, Eye, +New — group-by/columns sit
+        // "to the side of the gear" rather than ending up after it.
+        const _eyeWrap = document.getElementById(`${entityKey}-prop-vis-wrap`) || newBtn;
+        customToolbarRight.insertBefore(document.createRange().createContextualFragment(_gbHtml), _eyeWrap);
+        customToolbarRight.insertBefore(document.createRange().createContextualFragment(_cpHtml), _eyeWrap);
 
         const _gbBtn = document.getElementById(`${entityKey}-kanban-gb-btn`);
         const _gbDrop = document.getElementById(`${entityKey}-kanban-gb-drop`);
@@ -6197,6 +6209,28 @@ async function renderCustomEntityDetail(typeName, entityId) {
     updateBreadcrumb('custom-detail', `${typeName}/${entityId}`, e.title, _cdAnc);
     await loadEntityCustomProps(entityKey, parseInt(entityId));
     const propPanel = buildInlinePropPanel(entityKey, parseInt(entityId), []);
+    const relDefs = getCustomPropDefs(entityKey).filter(d => d.type === 'relation');
+    const wData = { propPanelHtml: propPanel, tasks: [], notes: [], resources: [], projects: [] };
+    for (const def of relDefs) {
+      let ids = e.props[def.key];
+      if (!ids) continue;
+      if (!Array.isArray(ids)) ids = [ids];
+      const validIds = ids.map(id => parseInt(id)).filter(id => !isNaN(id));
+      if (!validIds.length) continue;
+      
+      let endpoint = '';
+      let targetArray = null;
+      if (def.target_entity === 'task') { endpoint = 'tasks'; targetArray = wData.tasks; }
+      else if (def.target_entity === 'note') { endpoint = 'notes'; targetArray = wData.notes; }
+      else if (def.target_entity === 'resource') { endpoint = 'resources'; targetArray = wData.resources; }
+      else if (def.target_entity === 'project') { endpoint = 'projects'; targetArray = wData.projects; }
+      // other targets like custom entities can also be handled if widgets support them
+      
+      if (endpoint && targetArray) {
+        const fetched = await Promise.all(validIds.map(id => api('GET', `/api/${endpoint}/${id}`).catch(() => null)));
+        targetArray.push(...fetched.filter(Boolean));
+      }
+    }
     let _cdCrumbHtml = `<span class="bc-link" id="ced-bc-root" style="cursor:pointer">${escHtml(displayName)}</span>`;
     _cdAnc.forEach(anc => {
       _cdCrumbHtml += `<span class="bc-sep" style="margin:0 3px">›</span><span class="bc-link" style="cursor:pointer" data-anc-id="${anc.id}">${escHtml(anc.label)}</span>`;
@@ -6222,7 +6256,7 @@ async function renderCustomEntityDetail(typeName, entityId) {
         </div>
       </div>
       <div id="ced-widget-grid" class="widget-grid">
-        ${buildWidgetGrid(entityKey, parseInt(entityId), { propPanelHtml: propPanel })}
+        ${buildWidgetGrid(entityKey, parseInt(entityId), wData)}
       </div>
       ${typeInfo?.has_subentities ? `
       <div class="subtask-section" id="ced-subents-section">
@@ -6242,7 +6276,7 @@ async function renderCustomEntityDetail(typeName, entityId) {
     document.querySelectorAll('#ced-back-crumb [data-anc-id]').forEach(el => {
       el.addEventListener('click', () => renderView('custom-detail', `${typeName}/${el.dataset.ancId}`));
     });
-    document.getElementById('ced-edit-btn').onclick = () => openCustomEntityForm(typeName, e);
+    document.getElementById('ced-edit-btn').onclick = () => openCustomEntitySlideover(typeName, parseInt(entityId));
     if (typeInfo?.has_subentities) {
       initSubBranch(
         document.getElementById('ced-subents-list'),
@@ -6717,6 +6751,19 @@ async function openCustomEntityForm(typeName, entityOrNull, presets = {}) {
 
   // If given a partial entity with only id, fetch full entity
   let entity = entityOrNull;
+  if (!entity || !entity.id) {
+    let newId;
+    try {
+      const p = { title: presets.title || 'Untitled', props: presets };
+      const created = await api('POST', `/api/custom/${typeName}`, p);
+      newId = created.id;
+    } catch (e) {
+      console.error(e);
+      return;
+    }
+    openCustomEntitySlideover(typeName, newId);
+    return;
+  }
   if (entity && entity.id && !entity.title) {
     try { entity = await api('GET', `/api/custom/${typeName}/${entity.id}`); } catch(e) { entity = null; }
   }
@@ -6863,6 +6910,11 @@ function renderCurrentView() {
     case 'resources':      renderResources(); break;
     case 'dashboard':      renderDashboard(); break;
     case 'custom-detail':  if (currentParams) { const [tn, eid] = currentParams.split('/'); renderCustomEntityDetail(tn, eid); } break;
+    default:
+      // Custom entity list views ("custom:typeName") aren't enumerable above —
+      // route back through the generic dispatcher so duplicate/delete/move
+      // actions refresh the list instead of silently doing nothing.
+      if (currentView && currentView.startsWith('custom:')) renderView(currentView, currentParams);
   }
 }
 
@@ -7483,7 +7535,9 @@ function showContextMenu(entityType, entityId, anchorEl) {
     { action: 'edit-icon', icon: icons.editIcon, label: 'Edit icon', shortcut: '' },
     { action: 'comment',   icon: icons.comment,  label: 'Comment',   shortcut: '⌘⇧M' },
     { action: 'duplicate', icon: icons.duplicate,label: 'Duplicate', shortcut: '⌘D' },
-    { action: 'move-to',   icon: icons.moveTo,   label: 'Move to',   shortcut: '⌘⇧P' },
+    // Custom entities have their own schema (custom props) — moving one into a
+    // built-in type's schema would silently drop all of that, so omit it.
+    ...(isCustom ? [] : [{ action: 'move-to', icon: icons.moveTo, label: 'Move to', shortcut: '⌘⇧P' }]),
   ];
 
   const renderItems = (filter) => {
@@ -7617,7 +7671,8 @@ async function deleteEntity(entityType, entityId) {
 }
 
 async function duplicateEntity(entityType, entityId) {
-  const apiPath = ENTITY_API_MAP[entityType];
+  const isCustom = entityType.startsWith('custom_');
+  const apiPath = isCustom ? `custom/${entityType.slice(7)}` : ENTITY_API_MAP[entityType];
   if (!apiPath) return;
   let orig;
   try { orig = await api('GET', `/api/${apiPath}/${entityId}`); } catch (e) { return; }
@@ -7707,6 +7762,12 @@ function openCommentPanel(entityType, entityId) {
         if (sec) { const inp = sec.querySelector('.comment-input'); if (inp) { sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); inp.focus(); } }
       }, 400);
     }).catch(() => {});
+  } else if (String(entityType).startsWith('custom_')) {
+    openCustomEntitySlideover(entityType.slice(7), parseInt(id, 10));
+    setTimeout(() => {
+      const sec = document.querySelector('.comment-section');
+      if (sec) { const inp = sec.querySelector('.comment-input'); if (inp) { sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); inp.focus(); } }
+    }, 400);
   }
 }
 
@@ -9286,6 +9347,7 @@ async function renderTasks() {
       { key: 'category',     header: 'Category',      cell: (t) => { const cn = t.category_name || t.category || ''; return `<td>${cn ? builtinSelectChip('categories', cn) : '—'}</td>`; } },
       { key: 'recurrence',   header: 'Recurrence',    cell: (t) => `<td>${t.recur_interval > 0 ? `<span class="task-recur-badge">↺ every ${t.recur_interval} ${(t.recur_unit||'').toLowerCase()}</span>` : '—'}</td>` },
       { key: 'description',  header: 'Description',   cell: (t) => `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--text-muted)">${t.description||'—'}</td>` },
+      { key: 'parent_task',  header: 'Parent Task',   cell: (t) => { const pt = t.parent_task_id ? allTasksFull.find(x => String(x.id) === String(t.parent_task_id)) : null; return `<td>${pt ? `<span class="multi-chip" style="font-size:11px">${escHtml(pt.title)}</span>` : '—'}</td>`; } },
     ];
     const visibleCols = allColDef.filter(c => vis(c.key));
 
@@ -9639,9 +9701,6 @@ async function renderProjects() {
           <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span>
           <span class="card-title"><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></span>
         </div>
-        <div class="flex gap-8" onclick="event.stopPropagation()">
-          <button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button>
-        </div>
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
         ${vis('status') ? builtinSelectChip('projectStatuses', p.status) : ''}
@@ -9685,9 +9744,6 @@ async function renderProjects() {
         ${vis('progress') ? `<td>${pct}% (${prog.done||0}/${prog.total||0})</td>` : ''}
         ${vis('tags')     ? `<td>${(p.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
         ${customCols}
-        <td onclick="event.stopPropagation()">
-          <button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button>
-        </td>
       </tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('project').filter(d => entityPropVisible('project', d.key)).map(d => `<th>${d.label}</th>`).join('');
@@ -9703,7 +9759,6 @@ async function renderProjects() {
       vis('progress') ? '<th>Progress</th>' : '',
       vis('tags')     ? '<th>Tags</th>'     : '',
       customHeaders,
-      '<th></th>',
       addPropColumnHeader('project'),
     ].join('');
     return `<div class="notion-table-wrap"><table class="notion-table">
@@ -9726,7 +9781,8 @@ async function renderProjects() {
       if (!grouped[key]) grouped[key] = [];
       grouped[key].push(p);
     });
-    const cols = allVals.filter(v => grouped[v]?.length > 0 || groupBy === 'status');
+    const hiddenCols = kanbanHiddenCols[`project::${groupBy}`] || [];
+    const cols = allVals.filter(v => (grouped[v]?.length > 0 || groupBy === 'status') && !hiddenCols.includes(v));
     const colsHtml = cols.map(colKey => {
       const items = grouped[colKey] || [];
       const cards = items.map(p => {
@@ -9734,7 +9790,10 @@ async function renderProjects() {
         const pct = prog.pct || 0;
         const vis = (key) => entityPropVisible('project', key);
         return `<div class="kanban-card proj-kanban-card" data-proj-id="${p.id}" style="cursor:grab">
-          <div class="kanban-card-title">${p.title}</div>
+          <div class="kanban-card-header">
+            <div class="kanban-card-title">${p.title}</div>
+            <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+          </div>
           ${vis('goal') && p.goal_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${p.goal_title}</div>` : ''}
           <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
             ${vis('status') && groupBy !== 'status' ? builtinSelectChip('projectStatuses', p.status) : ''}
@@ -9793,6 +9852,17 @@ async function renderProjects() {
       <label class="col-picker-item"><input type="radio" name="proj-kanban-groupby" value="kanban_col" ${projsKanbanGroupBy==='kanban_col'?'checked':''}> Kanban col</label>
     </div>
   </div>`;
+  function projKanbanColVals(g) {
+    return g === 'status' ? PROJECT_STATUSES : g === 'kanban_col' ? KANBAN_COLS : [...new Set(projects.map(p => p.macro_area || 'none').filter(Boolean))].sort();
+  }
+  const projKanbanHiddenKey = `project::${projsKanbanGroupBy}`;
+  const projKanbanHidden = kanbanHiddenCols[projKanbanHiddenKey] || [];
+  const projKanbanColHtml = `<div class="col-picker-wrap" id="proj-kanban-cols-wrap" style="${isKanban?'':'display:none'}">
+    <button class="btn btn-sm btn-ghost" id="proj-kanban-cols-btn" title="Show/hide columns">⊟ Columns</button>
+    <div class="col-picker-dropdown hidden" id="proj-kanban-cols-dropdown">
+      ${projKanbanColVals(projsKanbanGroupBy).map(v => `<label class="col-picker-item"><input type="checkbox" class="proj-kanban-col-check" data-col="${escHtml(v)}" ${projKanbanHidden.includes(v)?'':'checked'}> ${escHtml(v.replace(/_/g,' '))}</label>`).join('')}
+    </div>
+  </div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header"><h1 class="view-title">${viewIconHtml('projects')}${viewDisplayName('projects','Projects')}</h1></div>
@@ -9804,7 +9874,7 @@ async function renderProjects() {
   const projToolbarRight = document.querySelector('#project-tab-bar .view-toolbar-right');
   if (projToolbarRight) {
     const newBtn = projToolbarRight.querySelector('#new-project-btn');
-    if (newBtn) { newBtn.style.display = ''; newBtn.textContent = '+ New Project'; projToolbarRight.insertBefore(document.createRange().createContextualFragment(projKanbanGbHtml + projPropVisHtml), newBtn); }
+    if (newBtn) { newBtn.style.display = ''; newBtn.textContent = '+ New Project'; projToolbarRight.insertBefore(document.createRange().createContextualFragment(projKanbanGbHtml + projKanbanColHtml + projPropVisHtml), newBtn); }
   }
 
   const projPropVisBtn = document.getElementById('proj-prop-vis-btn');
@@ -9815,7 +9885,6 @@ async function renderProjects() {
       bindPropVisPanel(projPropVisWrap, [...(ENTITY_ALL_PROPS.project||[]), ...getCustomPropDefs('project').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('project'), (keys) => setEntityVisProps('project', keys), render);
     };
   }
-
   // Wire new project button
   document.getElementById('new-project-btn').onclick = () => showProjectModal(null, goals);
   addBuiltinViewTitleRename(document.querySelector('#main-content .view-title'), 'projects', 'Projects');
@@ -9867,7 +9936,6 @@ async function renderProjects() {
         ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
         ${vis('tags') ? (p.tags || []).map(t => tagHtml(t)).join('') : ''}
         ${renderCustomPropChips('project', p.id, 'list')}
-        <span onclick="event.stopPropagation()"><button class="btn btn-sm btn-ghost proj-export-btn" data-proj-id="${p.id}">Export</button></span>
       </div>`;
     }).join('')}</div>`;
   }
@@ -9901,6 +9969,26 @@ async function renderProjects() {
         };
       });
     }
+    // Show/hide + refresh toolbar Columns picker (matches Task's kanban toolbar)
+    const colsWrap = document.getElementById('proj-kanban-cols-wrap');
+    if (colsWrap) colsWrap.style.display = projectsViewMode === 'kanban' ? '' : 'none';
+    const colsBtn = document.getElementById('proj-kanban-cols-btn');
+    const colsDrop = document.getElementById('proj-kanban-cols-dropdown');
+    if (colsBtn && colsDrop) {
+      const hiddenNow = kanbanHiddenCols[`project::${projsKanbanGroupBy}`] || [];
+      colsDrop.innerHTML = projKanbanColVals(projsKanbanGroupBy).map(v =>
+        `<label class="col-picker-item"><input type="checkbox" class="proj-kanban-col-check" data-col="${escHtml(v)}" ${hiddenNow.includes(v)?'':'checked'}> ${escHtml(String(v).replace(/_/g,' '))}</label>`
+      ).join('');
+      colsBtn.onclick = (e) => { e.stopPropagation(); colsDrop.classList.toggle('hidden'); };
+      document.addEventListener('click', () => colsDrop?.classList.add('hidden'), { once: true });
+      colsDrop.querySelectorAll('.proj-kanban-col-check').forEach(chk => {
+        chk.onchange = () => {
+          kanbanHiddenCols[`project::${projsKanbanGroupBy}`] = [...colsDrop.querySelectorAll('.proj-kanban-col-check')].filter(c => !c.checked).map(c => c.dataset.col);
+          localStorage.setItem('kanbanHiddenCols', JSON.stringify(kanbanHiddenCols));
+          render();
+        };
+      });
+    }
     if (projectsViewMode === 'kanban') {
       document.querySelectorAll('.proj-kanban-card').forEach(card => {
         card.addEventListener('click', (e) => {
@@ -9924,7 +10012,7 @@ async function renderProjects() {
     bindCtxHandles();
     document.querySelectorAll('.proj-slideover-card').forEach(el => {
       el.onclick = (e) => {
-        if (e.target.closest('.proj-del-btn, .proj-export-btn, .ctx-handle')) return;
+        if (e.target.closest('.proj-del-btn, .ctx-handle')) return;
         if (e.target.closest('.card-title')) {
           renderView('project-detail', el.dataset.projId);
           return;
@@ -9941,20 +10029,13 @@ async function renderProjects() {
     });
     document.querySelectorAll('.proj-list-row').forEach(el => {
       el.onclick = (e) => {
-        if (e.target.closest('.proj-export-btn, .ctx-handle')) return;
+        if (e.target.closest('.ctx-handle')) return;
         if (e.target.closest('.proj-list-title')) {
           renderView('project-detail', el.dataset.projId);
           return;
         }
         const p = projects.find(x => String(x.id) === el.dataset.projId);
         if (p) showProjectSlideover(p, goals, render);
-      };
-    });
-    document.querySelectorAll('.proj-export-btn').forEach(el => {
-      el.onclick = (e) => {
-        e.stopPropagation();
-        const p = projects.find(x => String(x.id) === el.dataset.projId);
-        showJSONModal(`/api/export/project/${el.dataset.projId}`, `project-${p?.title||el.dataset.projId}.json`);
       };
     });
   }
@@ -9989,6 +10070,16 @@ async function renderGoals() {
       <label class="col-picker-item"><input type="radio" name="goal-kanban-groupby" value="year" ${goalsKanbanGroupBy==='year'?'checked':''}> Year</label>
     </div>
   </div>`;
+  function goalKanbanColVals(g) {
+    return g === 'status' ? GOAL_STATUSES : g === 'type' ? GOAL_TYPES : GOAL_YEARS;
+  }
+  const goalKanbanHidden = kanbanHiddenCols[`goal::${goalsKanbanGroupBy}`] || [];
+  const goalKanbanColHtml = `<div class="col-picker-wrap" id="goal-kanban-cols-wrap" style="${isKanban?'':'display:none'}">
+    <button class="btn btn-sm btn-ghost" id="goal-kanban-cols-btn" title="Show/hide columns">⊟ Columns</button>
+    <div class="col-picker-dropdown hidden" id="goal-kanban-cols-dropdown">
+      ${goalKanbanColVals(goalsKanbanGroupBy).map(v => `<label class="col-picker-item"><input type="checkbox" class="goal-kanban-col-check" data-col="${escHtml(v)}" ${goalKanbanHidden.includes(v)?'':'checked'}> ${escHtml(String(v).replace(/_/g,' '))}</label>`).join('')}
+    </div>
+  </div>`;
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header"><h1 class="view-title">${viewIconHtml('goals')}${viewDisplayName('goals','Goals')}</h1></div>
@@ -9999,7 +10090,7 @@ async function renderGoals() {
   const goalToolbarRight = document.querySelector('#goal-tab-bar .view-toolbar-right');
   if (goalToolbarRight) {
     const newBtn = goalToolbarRight.querySelector('#new-goal-btn');
-    if (newBtn) { newBtn.style.display = ''; newBtn.textContent = '+ New Goal'; goalToolbarRight.insertBefore(document.createRange().createContextualFragment(goalKanbanGbHtml + goalPropVisHtml), newBtn); }
+    if (newBtn) { newBtn.style.display = ''; newBtn.textContent = '+ New Goal'; goalToolbarRight.insertBefore(document.createRange().createContextualFragment(goalKanbanGbHtml + goalKanbanColHtml + goalPropVisHtml), newBtn); }
   }
 
   const goalPropVisBtn = document.getElementById('goal-prop-vis-btn');
@@ -10057,7 +10148,6 @@ async function renderGoals() {
         ${vis('due') && g.due_date ? `<span class="entity-list-meta">${fmtDate(g.due_date)}</span>` : ''}
         ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
         ${vis('tags') ? (g.tags || []).map(t => tagHtml(t)).join('') : ''}
-        <span onclick="event.stopPropagation()"><button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button></span>
       </div>`;
     }).join('')}</div>`;
   }
@@ -10087,6 +10177,26 @@ async function renderGoals() {
         radio.onchange = () => {
           goalsKanbanGroupBy = radio.value;
           localStorage.setItem('goalsKanbanGroupBy', radio.value);
+          render();
+        };
+      });
+    }
+    // Show/hide + refresh toolbar Columns picker (matches Task's kanban toolbar)
+    const colsWrap = document.getElementById('goal-kanban-cols-wrap');
+    if (colsWrap) colsWrap.style.display = goalsViewMode === 'kanban' ? '' : 'none';
+    const colsBtn = document.getElementById('goal-kanban-cols-btn');
+    const colsDrop = document.getElementById('goal-kanban-cols-dropdown');
+    if (colsBtn && colsDrop) {
+      const hiddenNow = kanbanHiddenCols[`goal::${goalsKanbanGroupBy}`] || [];
+      colsDrop.innerHTML = goalKanbanColVals(goalsKanbanGroupBy).map(v =>
+        `<label class="col-picker-item"><input type="checkbox" class="goal-kanban-col-check" data-col="${escHtml(v)}" ${hiddenNow.includes(v)?'':'checked'}> ${escHtml(String(v).replace(/_/g,' '))}</label>`
+      ).join('');
+      colsBtn.onclick = (e) => { e.stopPropagation(); colsDrop.classList.toggle('hidden'); };
+      document.addEventListener('click', () => colsDrop?.classList.add('hidden'), { once: true });
+      colsDrop.querySelectorAll('.goal-kanban-col-check').forEach(chk => {
+        chk.onchange = () => {
+          kanbanHiddenCols[`goal::${goalsKanbanGroupBy}`] = [...colsDrop.querySelectorAll('.goal-kanban-col-check')].filter(c => !c.checked).map(c => c.dataset.col);
+          localStorage.setItem('kanbanHiddenCols', JSON.stringify(kanbanHiddenCols));
           render();
         };
       });
@@ -10121,9 +10231,6 @@ async function renderGoals() {
         <div style="display:flex;align-items:center;gap:6px;min-width:0">
           <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span>
           <span class="card-title"><span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${g.title}<span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></span>
-        </div>
-        <div class="flex gap-8" onclick="event.stopPropagation()">
-          <button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button>
         </div>
       </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
@@ -10166,9 +10273,6 @@ async function renderGoals() {
         ${vis('progress') ? `<td>${pct}%</td>` : ''}
         ${vis('tags')     ? `<td>${(g.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
         ${customCols}
-        <td onclick="event.stopPropagation()">
-          <button class="btn btn-sm btn-ghost goal-export-btn" data-goal-id="${g.id}">Export</button>
-        </td>
       </tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('goal').filter(d => entityPropVisible('goal', d.key)).map(d => `<th>${d.label}</th>`).join('');
@@ -10183,7 +10287,6 @@ async function renderGoals() {
       vis('progress') ? '<th>Progress</th>' : '',
       vis('tags')     ? '<th>Tags</th>'     : '',
       customHeaders,
-      '<th></th>',
       addPropColumnHeader('goal'),
     ].join('');
     return `<div class="notion-table-wrap"><table class="notion-table">
@@ -10206,7 +10309,8 @@ async function renderGoals() {
       if (!grouped[key]) grouped[key] = [];
       grouped[key].push(g);
     });
-    const cols = allVals.filter(v => grouped[v]?.length > 0 || groupBy === 'status');
+    const hiddenCols = kanbanHiddenCols[`goal::${groupBy}`] || [];
+    const cols = allVals.filter(v => (grouped[v]?.length > 0 || groupBy === 'status') && !hiddenCols.includes(v));
     const colsHtml = cols.map(colKey => {
       const items = grouped[colKey] || [];
       const cards = items.map(g => {
@@ -10214,7 +10318,10 @@ async function renderGoals() {
         const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
         const vis = (key) => entityPropVisible('goal', key);
         return `<div class="kanban-card goal-kanban-card" data-goal-id="${g.id}" style="cursor:grab">
-          <div class="kanban-card-title">${g.title}</div>
+          <div class="kanban-card-header">
+            <div class="kanban-card-title">${g.title}</div>
+            <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+          </div>
           <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
             ${vis('status') && groupBy !== 'status' ? builtinSelectChip('goalStatuses', g.status) : ''}
             ${vis('type') && groupBy !== 'type' && g.type ? builtinSelectChip('goal_type', g.type) : ''}
@@ -10258,7 +10365,7 @@ async function renderGoals() {
     bindCtxHandles();
     document.querySelectorAll('.goal-slideover-card').forEach(el => {
       el.onclick = (e) => {
-        if (e.target.closest('.goal-del-btn, .goal-export-btn, .ctx-handle')) return;
+        if (e.target.closest('.goal-del-btn, .ctx-handle')) return;
         if (e.target.closest('.card-title')) {
           renderView('goal-detail', el.dataset.goalId);
           return;
@@ -10275,20 +10382,13 @@ async function renderGoals() {
     });
     document.querySelectorAll('.goal-list-row').forEach(el => {
       el.onclick = (e) => {
-        if (e.target.closest('.goal-export-btn, .ctx-handle')) return;
+        if (e.target.closest('.ctx-handle')) return;
         if (e.target.closest('.goal-list-title')) {
           renderView('goal-detail', el.dataset.goalId);
           return;
         }
         const g = goals.find(x => String(x.id) === el.dataset.goalId);
         if (g) showGoalSlideover(g, render);
-      };
-    });
-    document.querySelectorAll('.goal-export-btn').forEach(el => {
-      el.onclick = (e) => {
-        e.stopPropagation();
-        const g = goals.find(x => String(x.id) === el.dataset.goalId);
-        showJSONModal(`/api/export/goal/${el.dataset.goalId}`, `goal-${g?.title||el.dataset.goalId}.json`);
       };
     });
   }
@@ -10366,6 +10466,8 @@ async function renderNotes() {
       title: n => n.title || '',
       note_date: n => n.note_date || '',
       category_name: n => n.category_name || '',
+      project_title: n => _noteProjects.find(p => String(p.id) === String(n.project_id))?.title || '',
+      goal_title: n => _noteGoals.find(g => String(g.id) === String(n.goal_id))?.title || '',
       _text: n => (n.title || '') + ' ' + (n.body || ''),
     });
   }
@@ -10400,7 +10502,10 @@ async function renderNotes() {
       const cards = items.map(n => {
         const tagChips = vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : '';
         return `<div class="kanban-card note-card" data-note-id="${n.id}" style="cursor:pointer">
-          <div class="kanban-card-title">${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
+          <div class="kanban-card-header">
+            <div class="kanban-card-title">${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
+            <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+          </div>
           <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
             ${vis('date') && n.note_date ? `<span>${fmtDate(n.note_date)}</span>` : ''}
             ${tagChips}
@@ -10443,9 +10548,6 @@ async function renderNotes() {
         <div style="display:flex;align-items:center;gap:6px;min-width:0">
           <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span>
           <div class="note-title"><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="18" style="display:none;margin-right:5px;vertical-align:middle;font-size:18px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
-        </div>
-        <div onclick="event.stopPropagation()">
-          <button class="btn btn-sm btn-ghost note-json-btn" data-note-id="${n.id}">Show JSON</button>
         </div>
       </div>
       <div class="note-body-preview">${n.body || ''}</div>
@@ -10499,16 +10601,9 @@ async function renderNotes() {
     bindCtxHandles();
     document.querySelectorAll('.note-card, .note-item').forEach(el => {
       el.onclick = (e) => {
-        if (e.target.closest('.ctx-handle, .note-json-btn')) return;
+        if (e.target.closest('.ctx-handle')) return;
         const n = notes.find(x => String(x.id) === el.dataset.noteId);
         if (n) showNoteModal(n, () => renderNotes());
-      };
-    });
-    document.querySelectorAll('.note-json-btn').forEach(el => {
-      el.onclick = (e) => {
-        e.stopPropagation();
-        const n = notes.find(x => String(x.id) === el.dataset.noteId);
-        showJSONModal(`/api/export/note/${el.dataset.noteId}`, `note-${n?.title||el.dataset.noteId}.json`);
       };
     });
   }
@@ -12483,9 +12578,6 @@ async function renderProjectDetail(projectId) {
         <button class="btn btn-ghost btn-sm" id="pd-manage-btn">Widgets ⚙</button>
         <button class="btn btn-ghost" id="pd-export-btn">Export JSON</button>
         <button class="btn btn-ghost" id="pd-back-btn">← Back</button>
-        <button class="btn btn-primary" id="pd-add-task-btn">+ Task</button>
-        <button class="btn btn-ghost" id="pd-add-note-btn">+ Note</button>
-        <button class="btn btn-ghost" id="pd-add-res-btn">+ Resource</button>
       </div>
     </div>
     <div id="pd-widget-grid" class="widget-grid">
@@ -12494,9 +12586,6 @@ async function renderProjectDetail(projectId) {
   </div>`;
 
   document.getElementById('pd-back-btn').onclick = () => renderView('projects');
-  document.getElementById('pd-add-task-btn').onclick = () => showNewTaskModal({ project_id: parseInt(projectId) }, () => renderProjectDetail(projectId));
-  document.getElementById('pd-add-note-btn').onclick = () => showNoteModal({ project_id: parseInt(projectId) }, () => renderProjectDetail(projectId));
-  document.getElementById('pd-add-res-btn').onclick = () => showResourceModal({ project_id: parseInt(projectId) }, () => renderProjectDetail(projectId));
   document.getElementById('pd-export-btn').onclick = () =>
     showJSONModal(`/api/export/project/${projectId}`, `project-${p.title}.json`);
   document.getElementById('pd-manage-btn').onclick = (e) => openWidgetManager('project', e.currentTarget, () => renderProjectDetail(projectId));
@@ -15040,6 +15129,8 @@ async function renderPomodoro() {
 }
 
 /* ─── Dashboard task list bindings ──────────────────────────────────── */
+
+
 function bindTaskListEvents() {
   bindCtxHandles();
   document.querySelectorAll('.task-row').forEach(row => {
@@ -15331,31 +15422,16 @@ function bindDateModeToggle(dueWrapId, rangeWrapId) {
 }
 
 async function showNewTaskModal(presets, afterSave) {
-  const resources = await getTaskModalResources();
-  const fake = { status: 'todo', priority: 'medium', ...presets };
-  openFormSlideover('New Task', taskModalBody(fake, resources));
-  bindModalDateChips();
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  bindDateModeToggle('t-date-due-wrap', 't-date-range-wrap');
-  document.getElementById('t-is-recurring')?.addEventListener('change', (e) => {
-    document.getElementById('recur-fields').style.display = e.target.checked ? 'flex' : 'none';
-  });
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const data = collectTaskForm();
-    if (!data.title) { showToast('Title is required', 'error'); return; }
-    const newTask = await api('POST', '/api/tasks', data);
-    // Save custom prop values if any were filled
-    if (newTask && newTask.id) {
-      getCustomPropDefs('task').forEach(def => {
-        const el = document.getElementById(`t-cp-${def.key}`);
-        if (!el) return;
-        const val = def.type === 'checkbox' ? el.checked : el.value;
-        if (val !== '' && val !== false) setCustomPropValue('task', newTask.id, def.key, val);
-      });
-    }
-    closeFormSlideover();
-    if (afterSave) afterSave(); else renderView(currentView);
-  };
+  presets = presets || {};
+  presets.title = presets.title || 'Untitled';
+  let newTask;
+  try {
+    newTask = await api('POST', '/api/tasks', presets);
+  } catch (e) {
+    console.error('Failed to create task', e);
+    return;
+  }
+  showTaskSlideover(newTask.id, afterSave);
 }
 
 async function showEditTaskModal(task) {
@@ -15391,6 +15467,20 @@ async function showEditTaskModal(task) {
 
 /* ─── Goal Modal ─────────────────────────────────────────────────────── */
 async function showGoalModal(goal, afterSave) {
+  if (!goal || !goal.id) {
+    let newId;
+    try {
+      const presets = goal || {};
+      presets.title = presets.title || 'Untitled';
+      const created = await api('POST', '/api/goals', presets);
+      newId = created.id;
+    } catch (e) {
+      console.error(e);
+      return;
+    }
+    showGoalSlideover({ id: newId }, afterSave);
+    return;
+  }
   const v = goal || {};
   const typeOpts = GOAL_TYPES.map(t => `<option value="${t}" ${v.type===t?'selected':''}>${t}</option>`).join('');
   const yearOpts = GOAL_YEARS.map(y => `<option value="${y}" ${v.year===y?'selected':''}>${y}</option>`).join('');
@@ -15959,6 +16049,20 @@ async function showGoalSlideover(goal, afterSave) {
 
 /* ─── Project Modal ──────────────────────────────────────────────────── */
 async function showProjectModal(project, goals, afterSave) {
+  if (!project || !project.id) {
+    let newId;
+    try {
+      const presets = project || {};
+      presets.title = presets.title || 'Untitled';
+      const created = await api('POST', '/api/projects', presets);
+      newId = created.id;
+    } catch (e) {
+      console.error(e);
+      return;
+    }
+    showProjectSlideover({ id: newId }, goals, afterSave);
+    return;
+  }
   const v = project || {};
   const goalOpts = '<option value="">— none —</option>' + (goals||[]).map(g =>
     `<option value="${g.id}" ${String(g.id)===String(v.goal_id)?'selected':''}>${g.title}</option>`).join('');
@@ -16058,8 +16162,21 @@ async function showProjectModal(project, goals, afterSave) {
 
 /* ─── Note Modal ─────────────────────────────────────────────────────── */
 async function showNoteModal(note, afterSave) {
+  if (!note || !note.id) {
+    let newId;
+    try {
+      const presets = note || {};
+      presets.title = presets.title || 'Untitled';
+      const created = await api('POST', '/api/notes', presets);
+      newId = created.id;
+    } catch (e) {
+      console.error(e);
+      return;
+    }
+    showNoteSlideover(newId, afterSave);
+    return;
+  }
   const v = note || {};
-  // Existing notes open the detail sideview; new notes use the form
   if (v.id) { showNoteSlideover(v.id, afterSave); return; }
 
   let projects = [], tasks = [], goals = [];
@@ -16572,7 +16689,21 @@ async function showSprintSlideover(sprintId, afterSave) {
 }
 
 /* ─── Sprint Modal ───────────────────────────────────────────────────── */
-function showSprintModal(projects, sprint) {
+async function showSprintModal(projects, sprint) {
+  if (!sprint || !sprint.id) {
+    let newId;
+    try {
+      const presets = sprint || {};
+      presets.title = presets.title || 'Untitled';
+      const created = await api('POST', '/api/sprints', presets);
+      newId = created.id;
+    } catch (e) {
+      console.error(e);
+      return;
+    }
+    showSprintSlideover(newId);
+    return;
+  }
   const s = sprint || {};
   const projOpts = '<option value="">— none —</option>' + (projects||[]).map(p =>
     `<option value="${p.id}" ${String(p.id)===String(s.project_id)?'selected':''}>${p.title}</option>`).join('');
@@ -16912,6 +17043,19 @@ async function showResourceSlideover(resource, afterSave) {
 
 async function showResourceModal(presets, afterSave) {
   const p = presets || {};
+  if (!p.id) {
+    let newId;
+    try {
+      p.title = p.title || 'Untitled';
+      const created = await api('POST', '/api/resources', p);
+      newId = created.id;
+    } catch (e) {
+      console.error(e);
+      return;
+    }
+    showResourceSlideover(newId, afterSave);
+    return;
+  }
   let projects = [], tasks = [], goals = [];
   try { [projects, tasks, goals] = await Promise.all([
     api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
