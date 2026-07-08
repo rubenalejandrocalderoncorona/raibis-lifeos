@@ -278,6 +278,13 @@ function renderEntityIcon(icon, size = 22) {
   return `<span class="entity-icon-display" style="font-size:${size}px;line-height:1">${icon}</span>`;
 }
 
+// Toggles the class the slideover cover CSS keys off of, so the icon straddles
+// the cover's bottom edge only once an icon is actually set — mirrors the
+// fullscreen view's #fs-icon-row.has-entity-icon behavior.
+function setSlideoverIconStraddle(btnEl, icon) {
+  btnEl?.classList.toggle('has-entity-icon', !!icon);
+}
+
 // ── Lazy icon injection for list views ────────────────────────────────
 // Renders placeholders with data-icon-entity and data-icon-id, then
 // fetches icons in parallel and injects them without a full re-render.
@@ -1812,7 +1819,7 @@ function getCustomPropDefs(entity) {
       opts.forEach(o => { if (o.color) optionColors[o.name] = o.color; });
       return { key: `tax_${tp.key}`, label: tp.label, type: 'multi_select', options: opts.map(o => o.name), optionColors, _taxonomy: tp.key };
     });
-  const allDefs = [...entityDefs, ...taxDefs];
+  let allDefs = [...entityDefs, ...taxDefs];
   // Inject _parent relation for has_subentities custom types (implicit — not stored in prop_defs)
   if (entity.startsWith('custom_') && !entityDefs.find(d => d.key === '_parent')) {
     const typeName = entity.replace('custom_', '');
@@ -1820,6 +1827,20 @@ function getCustomPropDefs(entity) {
     if (typeInfo?.has_subentities) {
       allDefs.unshift({ key: '_parent', label: 'Parent', type: 'relation', relatedEntity: typeName, bilateral: false });
     }
+  }
+  // Drop stray custom defs that shadow a built-in field on the same entity
+  // (e.g. a "project" relation prop on task duplicating the native project_id
+  // link) — these silently break FK sync since edits route through the
+  // generic custom-prop path instead of the built-in one. Custom entity
+  // types have no reserved keys, so this only applies to built-ins.
+  const builtinPropList = ENTITY_ALL_PROPS[entity];
+  if (builtinPropList) {
+    const builtinKeys = new Set(builtinPropList.map(d => d.key));
+    allDefs = allDefs.filter(d => {
+      if (builtinKeys.has(d.key)) return false;
+      if (d.type === 'relation' && builtinKeys.has(d.key.replace(/s$/, ''))) return false;
+      return true;
+    });
   }
   return allDefs;
 }
@@ -3732,6 +3753,11 @@ function bindCustomPropCells() {
         popup.style.cssText = `position:fixed;z-index:9200;min-width:160px;top:${r.bottom+4}px;left:${r.left}px`;
         document.body.appendChild(popup);
         setTimeout(() => { document.addEventListener('click', function h(ev) { if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener('click', h); } }); }, 0);
+      } else if (def.type === 'select' || def.type === 'status') {
+        openSingleSelectPicker(cell, def, entity, recordId, propKey, () => {
+          const newVal = getCustomPropValues(entity, recordId)[propKey] || '';
+          cell.innerHTML = newVal ? selectValueChip(entity, def, newVal) : '—';
+        });
       } else if (def.type === 'relation') {
         const relEntity = def.relatedEntity || 'task';
         const isBuiltin = ['task','goal','project','sprint','note','resource','habit'].includes(relEntity);
@@ -4972,6 +4998,75 @@ function taskRowHtml(task, showProject, indent, viewMode) {
   </li>`;
 }
 
+// Shared list-row skeleton — Task's list view (taskRowHtml above) is the
+// visual reference for every entity's list view (built-in and custom):
+// ctx-handle + icon on the left, title on its own line, meta chips wrapping
+// on the line below, custom prop chips below that, and an optional
+// right-aligned due-like field. Callers supply pre-built HTML fragments
+// (title already wrapped in whatever class/click-behavior it needs) so this
+// only owns the shared skeleton, not entity-specific click wiring.
+function buildStandardListRow(entityKey, id, opts) {
+  const {
+    rowClass = '',
+    rowAttrs = '',
+    titleHtml = '',
+    metaChips = [],
+    dueHtml = '',
+    commentEntity = entityKey,
+    iconSize = 16,
+    afterHandleHtml = '', // e.g. custom entities' subentity expand/collapse arrow
+  } = opts || {};
+  const meta = metaChips.filter(Boolean).join('');
+  const customChips = renderCustomPropChips(entityKey, id, 'list');
+  return `<div class="task-row entity-list-row ${rowClass}" data-id="${id}" ${rowAttrs} style="cursor:pointer">
+    <span class="ctx-handle" data-entity="${entityKey}" data-id="${id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+    ${afterHandleHtml}
+    <span class="list-icon-slot" data-icon-entity="${entityKey}" data-icon-id="${id}" data-icon-size="${iconSize}" style="display:none;flex-shrink:0"></span>
+    <div class="task-content">
+      <div class="task-title-text">${titleHtml}<span class="comment-badge" data-comment-for="${id}" data-comment-entity="${commentEntity}" style="display:none"></span></div>
+      ${meta ? `<div class="task-meta-row">${meta}</div>` : ''}
+      ${customChips ? `<div class="task-chips-outer" data-entity="${entityKey}" data-rid="${id}" data-vm="list">${customChips}</div>` : ''}
+    </div>
+    ${dueHtml ? `<span class="task-row-due-right">${dueHtml}</span>` : ''}
+  </div>`;
+}
+
+// Double-click-to-rename for full-page detail view titles (project/goal/
+// sprint/custom entity detail — the plain <h1 class="view-title">, distinct
+// from the slideover's always-editable textarea). onSave receives the
+// trimmed new title and is responsible for persisting + re-rendering; on
+// cancel (Escape, or blur with no change) the original element is restored.
+function bindDetailTitleDblClickEdit(titleEl, currentTitle, onSave) {
+  if (!titleEl) return;
+  titleEl.title = 'Double-click to rename';
+  titleEl.ondblclick = (e) => {
+    e.stopPropagation();
+    const ta = document.createElement('textarea');
+    ta.value = currentTitle || '';
+    ta.rows = 1;
+    ta.style.cssText = 'display:block;font:inherit;font-family:inherit;font-size:inherit;font-weight:inherit;color:inherit;letter-spacing:inherit;line-height:inherit;background:transparent;border:1px solid var(--color-accent);border-radius:4px;padding:0 4px;margin:0;width:100%;resize:none;overflow:hidden;box-sizing:border-box';
+    titleEl.replaceWith(ta);
+    const autoResize = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
+    autoResize();
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    ta.addEventListener('input', autoResize);
+    let done = false;
+    const finish = (save) => {
+      if (done) return;
+      done = true;
+      const val = ta.value.trim();
+      if (save && val && val !== currentTitle) onSave(val);
+      else ta.replaceWith(titleEl);
+    };
+    ta.addEventListener('blur', () => finish(true));
+    ta.addEventListener('keydown', (ke) => {
+      if (ke.key === 'Enter' && !ke.shiftKey) { ke.preventDefault(); ta.blur(); }
+      else if (ke.key === 'Escape') { ke.preventDefault(); finish(false); }
+    });
+  };
+}
+
 // Module-level tree row builder — used by dashboard and renderTasks list view
 function buildTaskTreeRows(tasks, allTasks, depth, showProject, viewMode) {
   let html = '';
@@ -5952,23 +6047,15 @@ async function renderCustomEntityList(typeName) {
         const toggleBtn = typeInfo?.has_subentities
           ? `<span class="entity-toggle-arrow${isExp ? ' expanded' : ''}" data-eid="${e.id}" data-depth="0" style="flex-shrink:0;margin-right:2px">${_lChev}</span>`
           : '';
-        const visProps = allCustomDefs.filter(pd => entityPropVisible(entityKey, pd.key)).slice(0, 4).map(pd => {
-          const raw = e.props?.[pd.key] || '';
-          if (pd.type === 'select' || pd.type === 'status') return raw ? selectValueChip(entityKey, pd, raw) : '';
-          if (pd.type === 'multi_select') return multiSelectChips(entityKey, pd, raw);
-          const v = renderPropVal(pd, raw);
-          return v ? `<span class="entity-list-meta">${escHtml(v)}</span>` : '';
-        }).filter(Boolean).join('');
-        const tagSpan = entityPropVisible(entityKey, 'tags') && e.tags?.length
+        const tagChip = entityPropVisible(entityKey, 'tags') && e.tags?.length
           ? e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}" style="font-size:11px">${escHtml(t.name)}</span>`).join('')
           : '';
-        return `<div class="entity-list-row custom-entity-row" data-id="${e.id}" style="cursor:pointer">
-          ${toggleBtn}
-          <span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-          <span class="list-icon-slot" data-icon-entity="${escHtml(entityKey)}" data-icon-id="${e.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
-          <span class="entity-list-title">${escHtml(e.title)}</span>
-          ${visProps}${tagSpan}
-        </div><div id="ent-subs-${e.id}"></div>`;
+        return buildStandardListRow(entityKey, e.id, {
+          rowClass: 'custom-entity-row',
+          afterHandleHtml: toggleBtn,
+          titleHtml: `<span class="entity-list-title">${escHtml(e.title)}</span>`,
+          metaChips: [tagChip],
+        }) + `<div id="ent-subs-${e.id}"></div>`;
       }).join('')}</div>`;
     }
 
@@ -6001,8 +6088,8 @@ async function renderCustomEntityList(typeName) {
         const subtreeHtml = hasSubs ? `<div id="ent-subs-${e.id}" style="margin-top:2px"></div>` : '';
         return `<div class="task-card-item custom-entity-row" data-id="${e.id}" style="cursor:pointer">
           <div class="kanban-card-header">
-            <div class="kanban-card-title">${escHtml(e.title)}</div>
             <span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+            <div class="kanban-card-title">${escHtml(e.title)}</div>
           </div>
           ${allChips ? `<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:6px">${allChips}</div>` : ''}
           ${subtreeHtml}
@@ -6088,8 +6175,8 @@ async function renderCustomEntityList(typeName) {
           const allChips = [visProps, tagChips].filter(Boolean).join('');
           return `<div class="kanban-card custom-entity-row" data-id="${item.id}" style="cursor:pointer">
             <div class="kanban-card-header">
-              <div class="kanban-card-title">${escHtml(item.title)}</div>
               <span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${item.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+              <div class="kanban-card-title">${escHtml(item.title)}</div>
             </div>
             ${allChips ? `<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:4px">${allChips}</div>` : ''}
           </div>`;
@@ -6247,7 +6334,7 @@ async function renderCustomEntityDetail(typeName, entityId) {
       <div class="view-header">
         <div>
           <div style="color:var(--text-muted);font-size:12px;margin-bottom:4px;display:flex;align-items:center;gap:2px;flex-wrap:wrap" id="ced-back-crumb">${_cdCrumbHtml}</div>
-          <h1 class="view-title">${escHtml(e.title)}</h1>
+          <h1 class="view-title" id="ced-title">${escHtml(e.title)}</h1>
         </div>
         <div class="flex gap-8">
           <button class="btn btn-ghost btn-sm" id="ced-manage-btn">Widgets ⚙</button>
@@ -6277,6 +6364,11 @@ async function renderCustomEntityDetail(typeName, entityId) {
       el.addEventListener('click', () => renderView('custom-detail', `${typeName}/${el.dataset.ancId}`));
     });
     document.getElementById('ced-edit-btn').onclick = () => openCustomEntitySlideover(typeName, parseInt(entityId));
+    bindDetailTitleDblClickEdit(document.getElementById('ced-title'), e.title, (val) => {
+      api('PUT', `/api/custom/${typeName}/${entityId}`, { title: val, props: e.props || {} })
+        .then(() => renderCustomEntityDetail(typeName, entityId))
+        .catch(() => {});
+    });
     if (typeInfo?.has_subentities) {
       initSubBranch(
         document.getElementById('ced-subents-list'),
@@ -6615,6 +6707,7 @@ async function openCustomEntitySlideover(typeName, id) {
   const cesIconAddLabel = document.getElementById('ces-icon-add-label');
   loadEntityIcon(entityKey, id).then(icon => {
     if (icon) { cesIconDisplay.innerHTML = renderEntityIcon(icon, 32); cesIconDisplay.dataset.icon = icon; cesIconAddLabel.textContent = ''; }
+    setSlideoverIconStraddle(cesIconAddBtn, icon);
   });
   cesIconAddBtn.onclick = (ev) => {
     ev.stopPropagation();
@@ -6623,6 +6716,7 @@ async function openCustomEntitySlideover(typeName, id) {
       cesIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
       cesIconDisplay.dataset.icon = newIcon || '';
       cesIconAddLabel.innerHTML = newIcon ? '' : ACT_ICONS.addIcon + 'Add icon';
+      setSlideoverIconStraddle(cesIconAddBtn, newIcon);
       saveEntityIcon(entityKey, id, newIcon);
     });
   };
@@ -9315,8 +9409,8 @@ async function renderTasks() {
       const subtree = buildSubtree(t.id, 0);
       return `<div class="task-card-item" data-task-id="${t.id}" style="cursor:pointer">
         <div class="kanban-card-header">
-          <div class="kanban-card-title"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div>
           <span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span>
+          <div class="kanban-card-title"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div>
         </div>
         ${projLine}
         ${meta.length ? `<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:6px">${meta.join('')}</div>` : ''}
@@ -9364,8 +9458,8 @@ async function renderTasks() {
         const titleCell = `<td><div class="task-title-cell" style="padding-left:${depth*20}px">${toggleBtn}<span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span><span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div></td>`;
         const customCols = getCustomPropDefs('task').filter(d => propVisible('table', d.key)).map(def => customPropCell('task', t.id, def)).join('');
         html += `<tr class="task-table-row" data-task-id="${t.id}" style="position:relative">
+          <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></td>
           ${titleCell}${visibleCols.map(c => c.cell(t)).join('')}${customCols}
-          <td><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></td>
         </tr>`;
         if (isExpanded && children.length > 0) {
           html += tableRows(children, depth + 1);
@@ -9381,7 +9475,7 @@ async function renderTasks() {
     }
 
     const customHeaders = getCustomPropDefs('task').filter(d => propVisible('table', d.key)).map(d => `<th>${d.label}</th>`).join('');
-    const headers = `<th>Title</th>` + visibleCols.map(c => `<th>${c.header}</th>`).join('') + customHeaders + '<th></th>' + addPropColumnHeader('task');
+    const headers = `<th class="ctx-handle-th"></th><th>Title</th>` + visibleCols.map(c => `<th>${c.header}</th>`).join('') + customHeaders + addPropColumnHeader('task');
     return `<div class="notion-table-wrap"><table class="notion-table">
       <thead><tr>${headers}</tr></thead>
       <tbody>${tableRows(list, 0)}</tbody></table></div>`;
@@ -9461,7 +9555,7 @@ async function renderTasks() {
         const metaLine = [priorityLine, statusLine, dueLine, tagLine, storyPts].some(Boolean)
           ? `<div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">${priorityLine}${statusLine}${dueLine}${tagLine}${storyPts}</div>` : '';
         return `<div class="kanban-card" data-task-id="${t.id}" style="cursor:grab">
-          <div class="kanban-card-header"><div class="kanban-card-title"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span>${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></div>
+          <div class="kanban-card-header"><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span><div class="kanban-card-title"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span>${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div></div>
           ${projLine}${metaLine}
           ${renderCustomPropChips('task', t.id, 'kanban')}
         </div>`;
@@ -9791,8 +9885,8 @@ async function renderProjects() {
         const vis = (key) => entityPropVisible('project', key);
         return `<div class="kanban-card proj-kanban-card" data-proj-id="${p.id}" style="cursor:grab">
           <div class="kanban-card-header">
-            <div class="kanban-card-title">${p.title}</div>
             <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+            <div class="kanban-card-title">${p.title}</div>
           </div>
           ${vis('goal') && p.goal_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${p.goal_title}</div>` : ''}
           <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
@@ -9923,20 +10017,21 @@ async function renderProjects() {
     return `<div class="entity-list-view">${list.map(p => {
       const prog = p.progress || {};
       const pct = prog.pct || 0;
-      return `<div class="entity-list-row proj-list-row" data-proj-id="${p.id}">
-        <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-        <span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
-        <span class="entity-list-title proj-list-title">${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></span>
-        ${vis('status') ? builtinSelectChip('projectStatuses', p.status) : ''}
-        ${vis('goal') ? (() => { const v = renderMultiRelationValue('project', p.id, 'goal', p.goal_title); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
-        ${vis('macro') && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
-        ${vis('kanban') && p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : ''}
-        ${vis('category') && (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name) : ''}
-        ${vis('due') && p.due_date ? `<span class="entity-list-meta">${fmtDate(p.due_date)}</span>` : ''}
-        ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
-        ${vis('tags') ? (p.tags || []).map(t => tagHtml(t)).join('') : ''}
-        ${renderCustomPropChips('project', p.id, 'list')}
-      </div>`;
+      return buildStandardListRow('project', p.id, {
+        rowClass: 'proj-list-row',
+        rowAttrs: `data-proj-id="${p.id}"`,
+        titleHtml: `<span class="proj-list-title" style="cursor:pointer">${p.title}</span>`,
+        metaChips: [
+          vis('status') ? builtinSelectChip('projectStatuses', p.status) : '',
+          vis('goal') ? renderMultiRelationValue('project', p.id, 'goal', p.goal_title) : '',
+          vis('macro') && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : '',
+          vis('kanban') && p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : '',
+          vis('category') && (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name) : '',
+          vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : '',
+          vis('tags') ? (p.tags || []).map(t => tagHtml(t)).join('') : '',
+        ],
+        dueHtml: vis('due') && p.due_date ? fmtDate(p.due_date) : '',
+      });
     }).join('')}</div>`;
   }
 
@@ -10137,18 +10232,20 @@ async function renderGoals() {
     return `<div class="entity-list-view">${list.map(g => {
       const prog = g.progress || {};
       const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
-      return `<div class="entity-list-row goal-list-row" data-goal-id="${g.id}">
-        <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-        <span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
-        <span class="entity-list-title goal-list-title">${g.title}<span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></span>
-        ${vis('type') && g.type ? builtinSelectChip('goal_type', g.type) : ''}
-        ${vis('year') && g.year ? builtinSelectChip('goal_year', g.year) : ''}
-        ${vis('status') ? builtinSelectChip('goalStatuses', g.status) : ''}
-        ${vis('category') && (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name) : ''}
-        ${vis('due') && g.due_date ? `<span class="entity-list-meta">${fmtDate(g.due_date)}</span>` : ''}
-        ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
-        ${vis('tags') ? (g.tags || []).map(t => tagHtml(t)).join('') : ''}
-      </div>`;
+      return buildStandardListRow('goal', g.id, {
+        rowClass: 'goal-list-row',
+        rowAttrs: `data-goal-id="${g.id}"`,
+        titleHtml: `<span class="goal-list-title" style="cursor:pointer">${g.title}</span>`,
+        metaChips: [
+          vis('type') && g.type ? builtinSelectChip('goal_type', g.type) : '',
+          vis('year') && g.year ? builtinSelectChip('goal_year', g.year) : '',
+          vis('status') ? builtinSelectChip('goalStatuses', g.status) : '',
+          vis('category') && (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name) : '',
+          vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : '',
+          vis('tags') ? (g.tags || []).map(t => tagHtml(t)).join('') : '',
+        ],
+        dueHtml: vis('due') && g.due_date ? fmtDate(g.due_date) : '',
+      });
     }).join('')}</div>`;
   }
 
@@ -10319,8 +10416,8 @@ async function renderGoals() {
         const vis = (key) => entityPropVisible('goal', key);
         return `<div class="kanban-card goal-kanban-card" data-goal-id="${g.id}" style="cursor:grab">
           <div class="kanban-card-header">
-            <div class="kanban-card-title">${g.title}</div>
             <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+            <div class="kanban-card-title">${g.title}</div>
           </div>
           <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
             ${vis('status') && groupBy !== 'status' ? builtinSelectChip('goalStatuses', g.status) : ''}
@@ -10476,17 +10573,18 @@ async function renderNotes() {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">◎</div><div class="empty-state-text">No notes found</div></div>`;
     const vis = (key) => entityPropVisible('note', key);
     return `<div class="entity-list-view">${list.map(n => {
-      return `<div class="entity-list-row note-item" data-note-id="${n.id}">
-        <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-        <span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
-        <span class="entity-list-title">${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></span>
-        ${vis('date') && fmtDate(n.note_date) ? `<span class="entity-list-meta">${fmtDate(n.note_date)}</span>` : ''}
-        ${vis('project') ? (() => { const v = renderMultiRelationValue('note', n.id, 'project', (_noteProjects.find(p => String(p.id) === String(n.project_id))?.title)); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
-        ${vis('goal') ? (() => { const v = renderMultiRelationValue('note', n.id, 'goal', (_noteGoals.find(g => String(g.id) === String(n.goal_id))?.title)); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
-        ${vis('category') && n.category_name ? builtinSelectChip('categories', n.category_name) : ''}
-        ${vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : ''}
-        ${renderCustomPropChips('note', n.id, 'list')}
-      </div>`;
+      return buildStandardListRow('note', n.id, {
+        rowClass: 'note-item',
+        rowAttrs: `data-note-id="${n.id}"`,
+        titleHtml: n.title || 'Untitled',
+        metaChips: [
+          vis('project') ? renderMultiRelationValue('note', n.id, 'project', (_noteProjects.find(p => String(p.id) === String(n.project_id))?.title)) : '',
+          vis('goal') ? renderMultiRelationValue('note', n.id, 'goal', (_noteGoals.find(g => String(g.id) === String(n.goal_id))?.title)) : '',
+          vis('category') && n.category_name ? builtinSelectChip('categories', n.category_name) : '',
+          vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : '',
+        ],
+        dueHtml: vis('date') && fmtDate(n.note_date) ? fmtDate(n.note_date) : '',
+      });
     }).join('')}</div>`;
   }
 
@@ -10503,8 +10601,8 @@ async function renderNotes() {
         const tagChips = vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : '';
         return `<div class="kanban-card note-card" data-note-id="${n.id}" style="cursor:pointer">
           <div class="kanban-card-header">
-            <div class="kanban-card-title">${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
             <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
+            <div class="kanban-card-title">${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
           </div>
           <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
             ${vis('date') && n.note_date ? `<span>${fmtDate(n.note_date)}</span>` : ''}
@@ -10783,17 +10881,19 @@ async function renderSprints() {
     return `<div class="entity-list-view">${list.map(s => {
       const prog = s.progress || {};
       const pct = prog.pct || 0;
-      return `<div class="entity-list-row sprint-list-row" data-sprint-id="${s.id}">
-        <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-        <span class="list-icon-slot" data-icon-entity="sprint" data-icon-id="${s.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
-        <span class="entity-list-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)">${s.title}<span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></span>
-        ${vis('status') ? builtinSelectChip('sprintStatuses', s.status) : ''}
-        ${vis('project') && s.project_title ? `<span class="entity-list-meta">${s.project_title}</span>` : ''}
-        ${vis('dates') ? `<span class="entity-list-meta">${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}</span>` : ''}
-        ${vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : ''}
-        ${vis('points') && s.story_points ? `<span class="entity-list-meta">${s.story_points} pts</span>` : ''}
-        ${vis('tags') ? (s.tags || []).map(t => tagHtml(t)).join('') : ''}
-      </div>`;
+      return buildStandardListRow('sprint', s.id, {
+        rowClass: 'sprint-list-row',
+        rowAttrs: `data-sprint-id="${s.id}"`,
+        titleHtml: `<span class="sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)">${s.title}</span>`,
+        metaChips: [
+          vis('status') ? builtinSelectChip('sprintStatuses', s.status) : '',
+          vis('project') && s.project_title ? `<span class="entity-list-meta">${s.project_title}</span>` : '',
+          vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : '',
+          vis('points') && s.story_points ? `<span class="entity-list-meta">${s.story_points} pts</span>` : '',
+          vis('tags') ? (s.tags || []).map(t => tagHtml(t)).join('') : '',
+        ],
+        dueHtml: vis('dates') ? `${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}` : '',
+      });
     }).join('')}</div>`;
   }
 
@@ -10922,17 +11022,33 @@ const WIDGET_DEFAULT_LAYOUTS = {
 };
 
 function getWidgetLayout(entity) {
-  try {
-    const saved = localStorage.getItem(`widget_layout_${entity}`);
-    if (saved) { const p = JSON.parse(saved); if (Array.isArray(p) && p.length) return p; }
-  } catch(e) {}
-  if (WIDGET_DEFAULT_LAYOUTS[entity]) return JSON.parse(JSON.stringify(WIDGET_DEFAULT_LAYOUTS[entity]));
-  if (entity.startsWith('custom_')) return [
+  const defaults = WIDGET_DEFAULT_LAYOUTS[entity] || (entity.startsWith('custom_') ? [
     { id: 'w-properties', type: 'properties', label: 'Properties', visible: true },
     { id: 'w-editor',    type: 'editor',     label: 'Content',    visible: true },
     { id: 'w-comments',  type: 'comments',   label: 'Comments',   visible: true },
-  ];
-  return [];
+  ] : null);
+  try {
+    const saved = localStorage.getItem(`widget_layout_${entity}`);
+    if (saved) {
+      const p = JSON.parse(saved);
+      if (Array.isArray(p) && p.length) {
+        // Self-heal: a widget type added to the defaults after this layout was
+        // first saved (e.g. "editor") would otherwise stay permanently absent
+        // — merge in any default widget whose type isn't in the saved layout.
+        if (defaults) {
+          const existingTypes = new Set(p.map(w => w.type));
+          const missing = defaults.filter(w => !existingTypes.has(w.type));
+          if (missing.length) {
+            const merged = [...p, ...missing.map(w => ({ ...w }))];
+            saveWidgetLayout(entity, merged);
+            return merged;
+          }
+        }
+        return p;
+      }
+    }
+  } catch(e) {}
+  return defaults ? JSON.parse(JSON.stringify(defaults)) : [];
 }
 function saveWidgetLayout(entity, layout) { localStorage.setItem(`widget_layout_${entity}`, JSON.stringify(layout)); }
 function resetWidgetLayout(entity) { localStorage.removeItem(`widget_layout_${entity}`); }
@@ -11408,7 +11524,7 @@ async function renderSprintDetail(sprintId) {
     <div class="view-header">
       <div>
         ${sprint.project_title ? `<div class="breadcrumb" style="margin-bottom:6px"><span class="bc-crumb bc-proj" style="cursor:pointer" data-proj-id="${sprint.project_id}">◆ ${sprint.project_title}</span></div>` : ''}
-        <h1 class="view-title">${sprint.title}</h1>
+        <h1 class="view-title" id="sd-title">${escHtml(sprint.title)}</h1>
         <div class="flex gap-8" style="margin-top:6px">
           ${builtinSelectChip('sprintStatuses', sprint.status)}
           ${sprint.start_date ? `<span class="entity-list-meta" style="font-size:12px;font-family:var(--font-mono);color:var(--text-muted)">${fmtDate(sprint.start_date)} - ${fmtDate(sprint.end_date)}</span>` : ''}
@@ -11460,6 +11576,7 @@ async function renderSprintDetail(sprintId) {
 
   document.getElementById('sd-manage-btn').onclick = (e) => openWidgetManager('sprint', e.currentTarget, () => renderSprintDetail(sprintId));
   document.getElementById('sd-back-btn').onclick = () => renderView('sprints');
+  bindDetailTitleDblClickEdit(document.getElementById('sd-title'), sprint.title, (val) => patchSprint({ title: val }));
   document.getElementById('sd-json-btn').onclick = () =>
     showJSONModal(`/api/export/sprint/${sprintId}`, `sprint-${sprint.title.replace(/\s+/g,'-')}.json`);
   document.getElementById('sd-add-task-btn').onclick = () =>
@@ -12144,27 +12261,19 @@ async function renderResources() {
     if (!list.length) return `<div class="empty-state"><div class="empty-state-icon">⬡</div><div class="empty-state-text">No resources yet</div></div>`;
     const vis = (key) => entityPropVisible('resource', key);
     return `<div class="entity-list-view">${list.map(r => {
-      return `<div class="entity-list-row res-row" data-res-id="${r.id}">
-        <span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-        <span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;flex-shrink:0"></span>
-        <span class="entity-list-title">${r.title}<span class="comment-badge" data-comment-for="${r.id}" data-comment-entity="resource" style="display:none"></span></span>
-        ${vis('type') && r.resource_type ? builtinSelectChip('resource_type', r.resource_type) : ''}
-        ${vis('category') && (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name) : ''}
-        ${vis('project') && r.project_title ? `<span class="entity-list-meta">→ ${r.project_title}</span>` : ''}
-        ${vis('goal') && r.goal_title ? `<span class="entity-list-meta">→ ${r.goal_title}</span>` : ''}
-        ${vis('url') && r.url ? `<span class="entity-list-meta" onclick="event.stopPropagation()"><a href="${r.url}" target="_blank" rel="noopener" style="color:var(--accent)">${r.url.length > 40 ? r.url.slice(0,40)+'…' : r.url}</a></span>` : ''}
-        ${vis('tags') ? (r.tags || []).map(t => tagHtml(t)).join('') : ''}
-        ${getCustomPropDefs('resource').filter(d => entityPropVisible('resource', d.key)).map(d => {
-          const v = (getCustomPropValues('resource', r.id) || {})[d.key] || '';
-          if (!v) return '';
-          if (d.type === 'multi_select') {
-            const arr = (() => { try { const a = JSON.parse(v); return Array.isArray(a) ? a : (v ? [v] : []); } catch { return v ? [v] : []; } })();
-            const oc = d.optionColors || {};
-            return arr.map(x => oc[x] ? `<span class="multi-chip color-${oc[x]}" style="font-size:11px">${escHtml(x)}</span>` : `<span class="multi-chip" style="font-size:11px">${escHtml(x)}</span>`).join('');
-          }
-          return `<span class="entity-list-meta">${escHtml(String(v))}</span>`;
-        }).join('')}
-      </div>`;
+      return buildStandardListRow('resource', r.id, {
+        rowClass: 'res-row',
+        rowAttrs: `data-res-id="${r.id}"`,
+        titleHtml: r.title,
+        metaChips: [
+          vis('type') && r.resource_type ? builtinSelectChip('resource_type', r.resource_type) : '',
+          vis('category') && (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name) : '',
+          vis('project') && r.project_title ? `<span class="entity-list-meta">→ ${r.project_title}</span>` : '',
+          vis('goal') && r.goal_title ? `<span class="entity-list-meta">→ ${r.goal_title}</span>` : '',
+          vis('url') && r.url ? `<span class="entity-list-meta" onclick="event.stopPropagation()"><a href="${r.url}" target="_blank" rel="noopener" style="color:var(--accent)">${r.url.length > 40 ? r.url.slice(0,40)+'…' : r.url}</a></span>` : '',
+          vis('tags') ? (r.tags || []).map(t => tagHtml(t)).join('') : '',
+        ],
+      });
     }).join('')}</div>`;
   }
 
@@ -12565,7 +12674,7 @@ async function renderProjectDetail(projectId) {
     <div class="view-header">
       <div>
         ${goalLink ? `<div class="breadcrumb" style="margin-bottom:6px">${goalLink}</div>` : ''}
-        <h1 class="view-title">${p.title}</h1>
+        <h1 class="view-title" id="pd-title">${escHtml(p.title)}</h1>
         <div class="flex gap-8" style="margin-top:6px">
           ${builtinSelectChip('projectStatuses', p.status)}
           ${p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
@@ -12589,6 +12698,7 @@ async function renderProjectDetail(projectId) {
   document.getElementById('pd-export-btn').onclick = () =>
     showJSONModal(`/api/export/project/${projectId}`, `project-${p.title}.json`);
   document.getElementById('pd-manage-btn').onclick = (e) => openWidgetManager('project', e.currentTarget, () => renderProjectDetail(projectId));
+  bindDetailTitleDblClickEdit(document.getElementById('pd-title'), p.title, (val) => patchProject({ title: val }));
   // ── Project icon + cover ─────────────────────────────────────────────
   const projIconBtn = document.getElementById('proj-icon-btn');
   const projIconDisplay = document.getElementById('proj-icon-display');
@@ -12728,7 +12838,7 @@ async function renderGoalDetail(goalId) {
     </div>
     <div class="view-header">
       <div>
-        <h1 class="view-title">${g.title}</h1>
+        <h1 class="view-title" id="gd-title">${escHtml(g.title)}</h1>
         <div class="flex gap-8" style="margin-top:6px">
           ${builtinSelectChip('goalStatuses', g.status)}
           ${g.type ? builtinSelectChip('goal_type', g.type) : ''}
@@ -12759,6 +12869,7 @@ async function renderGoalDetail(goalId) {
   document.getElementById('gd-add-note-btn').onclick = () => showNoteModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
   document.getElementById('gd-add-res-btn').onclick = () => showResourceModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
   document.getElementById('gd-manage-btn').onclick = (e) => openWidgetManager('goal', e.currentTarget, () => renderGoalDetail(goalId));
+  bindDetailTitleDblClickEdit(document.getElementById('gd-title'), g.title, (val) => patchGoal({ title: val }));
   // ── Goal icon + cover ─────────────────────────────────────────────────
   const goalIconBtn = document.getElementById('goal-icon-btn');
   const goalIconDisplay = document.getElementById('goal-icon-display');
@@ -13724,6 +13835,7 @@ async function showTaskSlideover(taskId) {
   const taskIconAddLabel = document.getElementById('task-icon-add-label');
   loadEntityIcon('task', taskId).then(icon => {
     if (icon) { taskIconDisplay.innerHTML = renderEntityIcon(icon, 32); taskIconDisplay.dataset.icon = icon; taskIconAddLabel.textContent = ''; }
+    setSlideoverIconStraddle(taskIconAddBtn, icon);
   });
   taskIconAddBtn.onclick = (e) => {
     e.stopPropagation();
@@ -13732,6 +13844,7 @@ async function showTaskSlideover(taskId) {
       taskIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
       taskIconDisplay.dataset.icon = newIcon || '';
       taskIconAddLabel.innerHTML = newIcon ? '' : ACT_ICONS.addIcon + 'Add icon';
+      setSlideoverIconStraddle(taskIconAddBtn, newIcon);
       saveEntityIcon('task', taskId, newIcon);
     });
   };
@@ -15695,6 +15808,7 @@ async function showProjectSlideover(project, goals, afterSave) {
   const projIconAddLabel = document.getElementById('proj-icon-add-label');
   loadEntityIcon('project', projectId).then(icon => {
     if (icon) { projIconDisplay.innerHTML = renderEntityIcon(icon, 32); projIconDisplay.dataset.icon = icon; projIconAddLabel.textContent = ''; }
+    setSlideoverIconStraddle(projIconAddBtn, icon);
   });
   projIconAddBtn.onclick = (e) => {
     e.stopPropagation();
@@ -15703,6 +15817,7 @@ async function showProjectSlideover(project, goals, afterSave) {
       projIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
       projIconDisplay.dataset.icon = newIcon || '';
       projIconAddLabel.innerHTML = newIcon ? '' : ACT_ICONS.addIcon + 'Add icon';
+      setSlideoverIconStraddle(projIconAddBtn, newIcon);
       saveEntityIcon('project', projectId, newIcon);
     });
   };
@@ -15921,6 +16036,7 @@ async function showGoalSlideover(goal, afterSave) {
   const goalIconAddLabel = document.getElementById('goal-icon-add-label');
   loadEntityIcon('goal', goalId).then(icon => {
     if (icon) { goalIconDisplay.innerHTML = renderEntityIcon(icon, 32); goalIconDisplay.dataset.icon = icon; goalIconAddLabel.textContent = ''; }
+    setSlideoverIconStraddle(goalIconAddBtn, icon);
   });
   goalIconAddBtn.onclick = (e) => {
     e.stopPropagation();
@@ -15929,6 +16045,7 @@ async function showGoalSlideover(goal, afterSave) {
       goalIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
       goalIconDisplay.dataset.icon = newIcon || '';
       goalIconAddLabel.innerHTML = newIcon ? '' : ACT_ICONS.addIcon + 'Add icon';
+      setSlideoverIconStraddle(goalIconAddBtn, newIcon);
       saveEntityIcon('goal', goalId, newIcon);
     });
   };
@@ -16323,6 +16440,7 @@ async function showNoteSlideover(noteId, afterSave) {
   const noteIconAddLabel = document.getElementById('note-icon-add-label');
   loadEntityIcon('note', noteId).then(icon => {
     if (icon) { noteIconDisplay.innerHTML = renderEntityIcon(icon, 32); noteIconDisplay.dataset.icon = icon; noteIconAddLabel.textContent = ''; }
+    setSlideoverIconStraddle(noteIconAddBtn, icon);
   });
   noteIconAddBtn.onclick = (e) => {
     e.stopPropagation();
@@ -16331,6 +16449,7 @@ async function showNoteSlideover(noteId, afterSave) {
       noteIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
       noteIconDisplay.dataset.icon = newIcon || '';
       noteIconAddLabel.innerHTML = newIcon ? '' : ACT_ICONS.addIcon + 'Add icon';
+      setSlideoverIconStraddle(noteIconAddBtn, newIcon);
       saveEntityIcon('note', noteId, newIcon);
     });
   };
@@ -16547,6 +16666,7 @@ async function showSprintSlideover(sprintId, afterSave) {
   const sprintIconAddLabel = document.getElementById('sprint-icon-add-label');
   loadEntityIcon('sprint', sprintId).then(icon => {
     if (icon) { sprintIconDisplay.innerHTML = renderEntityIcon(icon, 32); sprintIconDisplay.dataset.icon = icon; sprintIconAddLabel.textContent = ''; }
+    setSlideoverIconStraddle(sprintIconAddBtn, icon);
   });
   sprintIconAddBtn.onclick = (e) => {
     e.stopPropagation();
@@ -16555,6 +16675,7 @@ async function showSprintSlideover(sprintId, afterSave) {
       sprintIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 32) : '';
       sprintIconDisplay.dataset.icon = newIcon || '';
       sprintIconAddLabel.innerHTML = newIcon ? '' : ACT_ICONS.addIcon + 'Add icon';
+      setSlideoverIconStraddle(sprintIconAddBtn, newIcon);
       saveEntityIcon('sprint', sprintId, newIcon);
     });
   };
@@ -16889,6 +17010,7 @@ async function showResourceSlideover(resource, afterSave) {
   if (resIconBtn) {
     loadEntityIcon('resource', resId).then(icon => {
       if (icon) { resIconDisplay.innerHTML = renderEntityIcon(icon, 28); resIconAddLabel.style.display = 'none'; }
+      setSlideoverIconStraddle(resIconBtn, icon);
     });
     resIconBtn.addEventListener('click', () => {
       const cur = resIconDisplay.innerHTML ? resIconDisplay.textContent : '';
@@ -16896,6 +17018,7 @@ async function showResourceSlideover(resource, afterSave) {
         await saveEntityIcon('resource', resId, icon || '');
         resIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 28) : '';
         resIconAddLabel.style.display = icon ? 'none' : '';
+        setSlideoverIconStraddle(resIconBtn, icon);
         document.querySelectorAll(`[data-icon-entity="resource"][data-icon-id="${resId}"]`).forEach(el => {
           el.innerHTML = icon ? renderEntityIcon(icon, parseInt(el.dataset.iconSize) || 16) : '';
           el.style.display = icon ? '' : 'none';

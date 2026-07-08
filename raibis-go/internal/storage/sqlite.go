@@ -691,6 +691,22 @@ func (s *sqliteStorage) GetActiveSprint(projectID int64) (*domain.Sprint, error)
 	return scanSprint(row)
 }
 
+func (s *sqliteStorage) UpdateSprint(sp *domain.Sprint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var projID interface{}
+	if sp.ProjectID != 0 {
+		projID = sp.ProjectID
+	}
+	_, err := s.db.Exec(
+		`UPDATE sprints SET project_id=?, title=?, goal=?, start_date=?, end_date=?, status=?, story_points=?
+		 WHERE id=?`,
+		projID, sp.Title, sp.Goal, nullTime(sp.StartDate), nullTime(sp.EndDate), string(sp.Status), sp.StoryPoints,
+		sp.ID,
+	)
+	return err
+}
+
 func (s *sqliteStorage) UpdateSprintStatus(id int64, status string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

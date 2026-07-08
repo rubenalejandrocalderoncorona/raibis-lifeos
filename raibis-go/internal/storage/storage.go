@@ -31,6 +31,7 @@ type Storage interface {
 	GetSprint(id int64) (*domain.Sprint, error)
 	ListSprints(projectID int64) ([]*domain.Sprint, error)
 	GetActiveSprint(projectID int64) (*domain.Sprint, error)
+	UpdateSprint(s *domain.Sprint) error
 	UpdateSprintStatus(id int64, status string) error
 	UpdateSprintStoryPoints(id int64, pts *int) error
 	DeleteSprint(id int64) error

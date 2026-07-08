@@ -1467,22 +1467,53 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 				errJSON(w, 400, "invalid JSON")
 				return
 			}
-			if v, ok := body["status"].(string); ok {
-				if err := store.UpdateSprintStatus(id, v); err != nil {
-					errJSON(w, 500, err.Error())
-					return
+			sp, err := store.GetSprint(id)
+			if err != nil {
+				errJSON(w, 404, "sprint not found")
+				return
+			}
+			if v, ok := body["title"].(string); ok && v != "" {
+				sp.Title = v
+			}
+			if v, ok := body["project_id"]; ok {
+				if v == nil {
+					sp.ProjectID = 0
+				} else if fv, ok := v.(float64); ok {
+					sp.ProjectID = int64(fv)
 				}
 			}
+			if v, ok := body["start_date"]; ok {
+				if v == nil {
+					sp.StartDate = nil
+				} else if sv, ok := v.(string); ok && sv != "" {
+					if t, err := time.Parse("2006-01-02", sv); err == nil {
+						sp.StartDate = &t
+					}
+				}
+			}
+			if v, ok := body["end_date"]; ok {
+				if v == nil {
+					sp.EndDate = nil
+				} else if sv, ok := v.(string); ok && sv != "" {
+					if t, err := time.Parse("2006-01-02", sv); err == nil {
+						sp.EndDate = &t
+					}
+				}
+			}
+			if v, ok := body["status"].(string); ok {
+				sp.Status = domain.Status(v)
+			}
 			if v, ok := body["story_points"]; ok {
-				var pts *int
-				if v != nil {
-					p := int(v.(float64))
-					pts = &p
+				if v == nil {
+					sp.StoryPoints = nil
+				} else if fv, ok := v.(float64); ok {
+					p := int(fv)
+					sp.StoryPoints = &p
 				}
-				if err := store.UpdateSprintStoryPoints(id, pts); err != nil {
-					errJSON(w, 500, err.Error())
-					return
-				}
+			}
+			if err := store.UpdateSprint(sp); err != nil {
+				errJSON(w, 500, err.Error())
+				return
 			}
 			if sp, err := store.GetSprint(id); err == nil {
 				go mirrorIntrinsicsAndPropagate(store, "sprint", id, map[string]string{"status": string(sp.Status)})
