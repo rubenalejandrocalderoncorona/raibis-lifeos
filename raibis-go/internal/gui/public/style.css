@@ -1956,23 +1956,21 @@ body.kanban-dragging-active * {
 .entity-list-view {
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
+/* Top-level list rows use .task-row (buildStandardListRow) for the shared
+   Task-matching skeleton. .entity-list-row now styles only the compact
+   nested sub-entity rows rendered under it (toggle arrow + title, indented) —
+   giving it .task-row's border/hover too would fight over conflicting rules. */
 .entity-list-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border-radius: var(--radius-sm);
-  border: 1px solid transparent;
   cursor: pointer;
-  transition: background 80ms, border-color 80ms;
-  min-height: 38px;
+  transition: background 80ms;
 }
-.entity-list-row:hover {
-  background: var(--bg-card-hover);
-  border-color: var(--border);
-}
+.entity-list-row:hover { background: var(--bg-card-hover); }
 .entity-list-title {
   flex: 1;
   min-width: 0;

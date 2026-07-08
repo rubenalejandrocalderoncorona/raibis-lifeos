@@ -760,9 +760,26 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 			if v, ok := body["description"].(string); ok {
 				t.Description = v
 			}
-			if v, ok := body["due_date"].(string); ok && v != "" {
-				if due, err := time.Parse("2006-01-02", v); err == nil {
-					t.DueDate = &due
+			if v, ok := body["start_date"]; ok {
+				if v == nil {
+					t.StartDate = nil
+				} else if sv, ok := v.(string); ok {
+					if sv == "" {
+						t.StartDate = nil
+					} else if due, err := time.Parse("2006-01-02", sv); err == nil {
+						t.StartDate = &due
+					}
+				}
+			}
+			if v, ok := body["due_date"]; ok {
+				if v == nil {
+					t.DueDate = nil
+				} else if sv, ok := v.(string); ok {
+					if sv == "" {
+						t.DueDate = nil
+					} else if due, err := time.Parse("2006-01-02", sv); err == nil {
+						t.DueDate = &due
+					}
 				}
 			}
 			if v, ok := body["focus_block"].(string); ok {
@@ -901,13 +918,16 @@ func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			goals, err := svc.Goals()
+			// List endpoint must return every goal regardless of status —
+			// svc.Goals() hardcodes status=active, which silently hid any
+			// on_hold/completed/archived goal from the list entirely.
+			goals, err := store.ListGoals("")
 			if err != nil {
 				errJSON(w, 500, err.Error())
 				return
 			}
 			tasks, _ := svc.List(domain.TaskFilter{})
-			projects, _ := svc.Projects()
+			projects, _ := store.ListProjects("")
 			out := enrichGoals(goals, projects, tasks)
 			for i := range out {
 				out[i].Goal.Tags, _ = store.GetEntityTags("goal", out[i].Goal.ID)
@@ -1136,7 +1156,10 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			projects, err := svc.Projects()
+			// List endpoint must return every project regardless of status —
+			// svc.Projects() hardcodes status=active, which silently hid any
+			// on_hold/completed/archived project from the list entirely.
+			projects, err := store.ListProjects("")
 			if err != nil {
 				errJSON(w, 500, err.Error())
 				return
@@ -1298,6 +1321,28 @@ func projectHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http
 				} else if fv, ok := v.(float64); ok {
 					cid := int64(fv)
 					p.CategoryID = &cid
+				}
+			}
+			if v, ok := body["start_date"]; ok {
+				if v == nil {
+					p.StartDate = nil
+				} else if sv, ok := v.(string); ok {
+					if sv == "" {
+						p.StartDate = nil
+					} else if t, err := time.Parse("2006-01-02", sv); err == nil {
+						p.StartDate = &t
+					}
+				}
+			}
+			if v, ok := body["due_date"]; ok {
+				if v == nil {
+					p.DueDate = nil
+				} else if sv, ok := v.(string); ok {
+					if sv == "" {
+						p.DueDate = nil
+					} else if t, err := time.Parse("2006-01-02", sv); err == nil {
+						p.DueDate = &t
+					}
 				}
 			}
 			if err := store.UpdateProject(p); err != nil {

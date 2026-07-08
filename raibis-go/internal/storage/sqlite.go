@@ -483,7 +483,13 @@ func (s *sqliteStorage) CreateGoal(g *domain.Goal) (int64, error) {
 func (s *sqliteStorage) ListGoals(status domain.Status) ([]*domain.Goal, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	rows, err := s.db.Query(goalSelectCols+` WHERE g.status=? ORDER BY g.created_at DESC`, string(status))
+	var rows *sql.Rows
+	var err error
+	if status == "" {
+		rows, err = s.db.Query(goalSelectCols + ` ORDER BY g.created_at DESC`)
+	} else {
+		rows, err = s.db.Query(goalSelectCols+` WHERE g.status=? ORDER BY g.created_at DESC`, string(status))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -567,7 +573,13 @@ func (s *sqliteStorage) CreateProject(p *domain.Project) (int64, error) {
 func (s *sqliteStorage) ListProjects(status domain.Status) ([]*domain.Project, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	rows, err := s.db.Query(projSelectCols+` WHERE p.status=? ORDER BY p.created_at DESC`, string(status))
+	var rows *sql.Rows
+	var err error
+	if status == "" {
+		rows, err = s.db.Query(projSelectCols + ` ORDER BY p.created_at DESC`)
+	} else {
+		rows, err = s.db.Query(projSelectCols+` WHERE p.status=? ORDER BY p.created_at DESC`, string(status))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -728,8 +740,8 @@ func (s *sqliteStorage) DeleteSprint(id int64) error {
 		q    string
 		args []any
 	}{
-		{`DELETE FROM entity_children   WHERE (entity_type='sprint' AND entity_id=?) OR (child_type='sprint' AND child_id=?)`, []any{id, id}},
-		{`DELETE FROM entity_relations  WHERE (entity_type='sprint' AND entity_id=?) OR (related_entity_type='sprint' AND related_entity_id=?)`, []any{id, id}},
+		{`DELETE FROM entity_children   WHERE (parent_entity_type='sprint' AND parent_entity_id=?) OR (child_entity_type='sprint' AND child_entity_id=?)`, []any{id, id}},
+		{`DELETE FROM entity_relations  WHERE (type_a='sprint' AND id_a=?) OR (type_b='sprint' AND id_b=?)`, []any{id, id}},
 		{`DELETE FROM entity_properties WHERE entity_type='sprint' AND entity_id=?`, []any{id}},
 		{`DELETE FROM entity_tags       WHERE entity_type='sprint' AND entity_id=?`, []any{id}},
 		{`DELETE FROM sprints           WHERE id=?`, []any{id}},

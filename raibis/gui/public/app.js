@@ -1735,35 +1735,55 @@ function bindPropVisPanel(anchorEl, props, getVis, setVis, onToggle) {
   if (existing) { existing.remove(); return; }
   const eyeOn  = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
   const eyeOff = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
-  const vis = getVis();
+  // props may be a static array (existing call sites) or a getter — accept
+  // both so the panel can rebuild itself with fresh props (see propDefsChanged
+  // below) without every call site needing to change shape.
+  const getProps = typeof props === 'function' ? props : () => props;
   const panel = document.createElement('div');
   panel.id = 'prop-vis-panel';
   panel.className = 'prop-vis-panel';
-  panel.innerHTML = `<div style="padding:6px 12px 4px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Property visibility</div>` +
-    props.map(p => {
-      const on = vis.includes(p.key);
-      return `<div class="prop-vis-row${on?'':' hidden-prop'}" data-prop="${p.key}">
-        <span class="prop-vis-name">${p.label}</span>
-        <span class="prop-vis-eye">${on ? eyeOn : eyeOff}</span>
-      </div>`;
-    }).join('');
   anchorEl.appendChild(panel);
-  panel.querySelectorAll('.prop-vis-row').forEach(row => {
-    row.onclick = () => {
-      const key = row.dataset.prop;
-      let cur = getVis();
-      if (cur.includes(key)) cur = cur.filter(k => k !== key);
-      else cur = [...cur, key];
-      setVis(cur);
-      row.classList.toggle('hidden-prop', !cur.includes(key));
-      row.querySelector('.prop-vis-eye').innerHTML = cur.includes(key) ? eyeOn : eyeOff;
-      onToggle();
-    };
-  });
+
+  function renderRows() {
+    const vis = getVis();
+    panel.innerHTML = `<div style="padding:6px 12px 4px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em">Property visibility</div>` +
+      getProps().map(p => {
+        const on = vis.includes(p.key);
+        return `<div class="prop-vis-row${on?'':' hidden-prop'}" data-prop="${p.key}">
+          <span class="prop-vis-name">${p.label}</span>
+          <span class="prop-vis-eye">${on ? eyeOn : eyeOff}</span>
+        </div>`;
+      }).join('');
+    panel.querySelectorAll('.prop-vis-row').forEach(row => {
+      row.onclick = () => {
+        const key = row.dataset.prop;
+        let cur = getVis();
+        if (cur.includes(key)) cur = cur.filter(k => k !== key);
+        else cur = [...cur, key];
+        setVis(cur);
+        onToggle();
+        // Re-read from the persisted source of truth (rather than trusting
+        // the local `cur`) so the eye icon can never drift from what's
+        // actually saved, even if onToggle's own re-render touched vis state.
+        const now = getVis();
+        row.classList.toggle('hidden-prop', !now.includes(key));
+        const eyeEl = row.querySelector('.prop-vis-eye');
+        if (eyeEl) eyeEl.innerHTML = now.includes(key) ? eyeOn : eyeOff;
+      };
+    });
+  }
+  renderRows();
+
+  // A property created elsewhere (e.g. the "+" add-property flow) while this
+  // panel is open would otherwise leave it stale until closed and reopened.
+  const onPropDefsChanged = () => renderRows();
+  document.addEventListener('propDefsChanged', onPropDefsChanged);
+
   document.addEventListener('click', function outsideClick(e) {
     if (!panel.contains(e.target) && e.target !== anchorEl && !anchorEl.contains(e.target)) {
       panel.remove();
       document.removeEventListener('click', outsideClick);
+      document.removeEventListener('propDefsChanged', onPropDefsChanged);
     }
   });
 }
@@ -5018,7 +5038,7 @@ function buildStandardListRow(entityKey, id, opts) {
   } = opts || {};
   const meta = metaChips.filter(Boolean).join('');
   const customChips = renderCustomPropChips(entityKey, id, 'list');
-  return `<div class="task-row entity-list-row ${rowClass}" data-id="${id}" ${rowAttrs} style="cursor:pointer">
+  return `<div class="task-row ${rowClass}" data-id="${id}" ${rowAttrs} style="cursor:pointer">
     <span class="ctx-handle" data-entity="${entityKey}" data-id="${id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
     ${afterHandleHtml}
     <span class="list-icon-slot" data-icon-entity="${entityKey}" data-icon-id="${id}" data-icon-size="${iconSize}" style="display:none;flex-shrink:0"></span>
@@ -5624,8 +5644,10 @@ async function renderCustomEntityList(typeName) {
     if (propVisBtn && propVisWrap) {
       propVisBtn.onclick = (e) => {
         e.stopPropagation();
-        // Use full prop defs (including taxonomy) for the visibility panel
-        const propList = [{ key: 'tags', label: 'Tags' }, ...getCustomPropDefs(entityKey).map(pd => ({ key: pd.key, label: pd.label || pd.key }))];
+        // Use full prop defs (including taxonomy) for the visibility panel.
+        // A getter (not a snapshot) so the panel can rebuild with fresh defs
+        // if a property gets added elsewhere while it's still open.
+        const propList = () => [{ key: 'tags', label: 'Tags' }, ...getCustomPropDefs(entityKey).map(pd => ({ key: pd.key, label: pd.label || pd.key }))];
         bindPropVisPanel(propVisWrap, propList, () => getEntityVisProps(entityKey), (keys) => setEntityVisProps(entityKey, keys), render);
       };
     }
@@ -9324,7 +9346,7 @@ async function renderTasks() {
       e.stopPropagation();
       bindPropVisPanel(
         propVisWrap,
-        [...TASK_PROPS, ...getCustomPropDefs('task').map(d => ({ key: d.key, label: d.label }))],
+        () => [...TASK_PROPS, ...getCustomPropDefs('task').map(d => ({ key: d.key, label: d.label }))],
         () => getTaskVisProps(tasksViewMode),
         (keys) => setTaskVisProps(tasksViewMode, keys),
         render
@@ -9976,7 +9998,7 @@ async function renderProjects() {
   if (projPropVisBtn && projPropVisWrap) {
     projPropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(projPropVisWrap, [...(ENTITY_ALL_PROPS.project||[]), ...getCustomPropDefs('project').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('project'), (keys) => setEntityVisProps('project', keys), render);
+      bindPropVisPanel(projPropVisWrap, () => [...(ENTITY_ALL_PROPS.project||[]), ...getCustomPropDefs('project').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('project'), (keys) => setEntityVisProps('project', keys), render);
     };
   }
   // Wire new project button
@@ -10193,7 +10215,7 @@ async function renderGoals() {
   if (goalPropVisBtn && goalPropVisWrap) {
     goalPropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(goalPropVisWrap, [...(ENTITY_ALL_PROPS.goal||[]), ...getCustomPropDefs('goal').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('goal'), (keys) => setEntityVisProps('goal', keys), render);
+      bindPropVisPanel(goalPropVisWrap, () => [...(ENTITY_ALL_PROPS.goal||[]), ...getCustomPropDefs('goal').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('goal'), (keys) => setEntityVisProps('goal', keys), render);
     };
   }
 
@@ -10535,7 +10557,7 @@ async function renderNotes() {
   if (notePropVisBtn && notePropVisWrap) {
     notePropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(notePropVisWrap, [...(ENTITY_ALL_PROPS.note||[]), ...getCustomPropDefs('note').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('note'), (keys) => setEntityVisProps('note', keys), render);
+      bindPropVisPanel(notePropVisWrap, () => [...(ENTITY_ALL_PROPS.note||[]), ...getCustomPropDefs('note').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('note'), (keys) => setEntityVisProps('note', keys), render);
     };
   }
 
@@ -10842,7 +10864,7 @@ async function renderSprints() {
   if (sprintPropVisBtn && sprintPropVisWrap) {
     sprintPropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(sprintPropVisWrap, [...(ENTITY_ALL_PROPS.sprint||[]), ...getCustomPropDefs('sprint').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('sprint'), (keys) => setEntityVisProps('sprint', keys), render);
+      bindPropVisPanel(sprintPropVisWrap, () => [...(ENTITY_ALL_PROPS.sprint||[]), ...getCustomPropDefs('sprint').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('sprint'), (keys) => setEntityVisProps('sprint', keys), render);
     };
   }
 
@@ -12226,7 +12248,7 @@ async function renderResources() {
   if (resPropVisBtn && resPropVisWrap) {
     resPropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(resPropVisWrap, [...(ENTITY_ALL_PROPS.resource||[]), ...getCustomPropDefs('resource').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('resource'), (keys) => setEntityVisProps('resource', keys), render);
+      bindPropVisPanel(resPropVisWrap, () => [...(ENTITY_ALL_PROPS.resource||[]), ...getCustomPropDefs('resource').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('resource'), (keys) => setEntityVisProps('resource', keys), render);
     };
   }
 
@@ -13805,12 +13827,7 @@ async function showTaskSlideover(taskId) {
   // ── patchTask + handleStatusChange ───────────────────────────────────
   async function patchTask(data) {
     try { await api('PATCH', `/api/tasks/${taskId}`, data); } catch(e) { return; }
-    const v = currentView;
-    if (v === 'tasks') renderTasks();
-    else if (v === 'dashboard') renderDashboard();
-    else if (v === 'project-detail' && currentParams) renderProjectDetail(currentParams);
-    else if (v === 'goal-detail' && currentParams) renderGoalDetail(currentParams);
-    else if (v === 'sprint-detail' && currentParams) renderSprintDetail(currentParams);
+    renderCurrentView(); // refresh whatever list/detail view is open behind the slideover
     showTaskSlideover(taskId);
   }
 
@@ -15705,7 +15722,10 @@ async function showProjectSlideover(project, goals, afterSave) {
 
   async function patchProject(data) {
     try { await api('PATCH', `/api/projects/${projectId}`, data); } catch(e) { return; }
-    if (afterSave) afterSave();
+    // afterSave is the caller-supplied refresh (usually the list's own render());
+    // some entry points (relation links, reopeners) pass none, so fall back to
+    // the generic dispatcher rather than leaving the background view stale.
+    if (afterSave) afterSave(); else renderCurrentView();
   }
 
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
@@ -15942,7 +15962,7 @@ async function showGoalSlideover(goal, afterSave) {
 
   async function patchGoal(data) {
     try { await api('PATCH', `/api/goals/${goalId}`, data); } catch(e) { return; }
-    if (afterSave) afterSave();
+    if (afterSave) afterSave(); else renderCurrentView();
   }
 
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
@@ -16370,7 +16390,7 @@ async function showNoteSlideover(noteId, afterSave) {
 
   async function patchNote(data) {
     try { await api('PATCH', `/api/notes/${noteId}`, data); } catch(e) { return; }
-    if (afterSave) afterSave();
+    if (afterSave) afterSave(); else renderCurrentView();
   }
 
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
@@ -16556,7 +16576,7 @@ async function showSprintSlideover(sprintId, afterSave) {
 
   async function patchSprint(data) {
     try { await api('PATCH', `/api/sprints/${sprintId}`, data); } catch(e) { return; }
-    if (afterSave) afterSave();
+    if (afterSave) afterSave(); else renderCurrentView();
   }
 
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
@@ -16916,7 +16936,7 @@ async function showResourceSlideover(resource, afterSave) {
 
   async function patchResource(data) {
     try { await api('PATCH', `/api/resources/${resId}`, data); } catch(e) { return; }
-    if (afterSave) afterSave();
+    if (afterSave) afterSave(); else renderCurrentView();
   }
 
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
