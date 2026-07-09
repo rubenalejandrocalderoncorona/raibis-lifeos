@@ -1975,6 +1975,13 @@ function parseRelationValue(raw) {
   return [];
 }
 
+// Checkbox values round-trip through the backend as text ("true"/"false"),
+// so a plain truthy check would treat an explicitly-unchecked "false" string
+// as checked. Normalize both boolean and string representations here.
+function checkboxTrue(val) {
+  return val === true || val === 'true' || val === '1' || val === 1;
+}
+
 function getCustomPropValues(entity, recordId) {
   const stored = localStorage.getItem(`customPropVals_${entity}_${recordId}`);
   return stored ? JSON.parse(stored) : {};
@@ -3106,11 +3113,12 @@ function customPropCell(entity, recordId, def) {
   const vals = getCustomPropValues(entity, recordId);
   const val = vals[def.key] ?? '';
   if (def.type === 'checkbox') {
-    return `<td><input type="checkbox" class="custom-prop-check" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" ${val?'checked':''}></td>`;
+    return `<td><input type="checkbox" class="custom-prop-check" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" ${checkboxTrue(val)?'checked':''}></td>`;
   }
   if (def.type === 'date') {
     const display = val ? _dateChipDisplay(val) : '—';
-    return `<td><button type="button" class="table-date-chip" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" data-value="${val}" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text-primary);padding:0">${display}</button></td>`;
+    const color = val ? dueDateColor(val) : '';
+    return `<td><button type="button" class="table-date-chip" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" data-value="${val}" style="background:none;border:none;cursor:pointer;font-family:var(--font-mono);font-size:11px;${color?`color:${color}`:'color:var(--text-primary)'};padding:0">${display}</button></td>`;
   }
   if (def.type === 'number') {
     return `<td><input type="number" class="custom-prop-input" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" value="${val}" style="font-size:12px;width:70px;border:1px solid var(--border);border-radius:3px;padding:1px 4px;background:transparent;color:var(--text-primary)"></td>`;
@@ -3140,7 +3148,7 @@ function addPropColumnHeader(entity) {
 // ── showAddOptionsPanel ────────────────────────────────────────────────────
 // After naming a select/multi_select prop, lets user add options before saving.
 // Options are optional — clicking "Create" with no options saves the prop as free-text.
-function showAddOptionsPanel(anchorBtn, key, name, type, entity, onAdd) {
+function showAddOptionsPanel(anchorBtn, key, name, type, entity, onAdd, description) {
   document.getElementById('add-prop-opts-picker')?.remove();
   const opts = [];
   const panel = document.createElement('div');
@@ -3149,7 +3157,7 @@ function showAddOptionsPanel(anchorBtn, key, name, type, entity, onAdd) {
 
   const saveAndClose = () => {
     const defs = getCustomPropDefs(entity);
-    defs.push({ key, label: name, type, options: opts });
+    defs.push({ key, label: name, type, options: opts, description });
     setCustomPropDefs(entity, defs);
     if (entity === 'task') {
       { const v = getTaskVisProps(); if (!v.includes(key)) setTaskVisProps(null, [...v, key]); }
@@ -3215,7 +3223,7 @@ function showAddOptionsPanel(anchorBtn, key, name, type, entity, onAdd) {
 
 // ── showAddRelationPanel ───────────────────────────────────────────────────
 // After naming a relation prop, picks target entity and direction.
-function showAddRelationPanel(anchorBtn, key, name, entity, onAdd) {
+function showAddRelationPanel(anchorBtn, key, name, entity, onAdd, description) {
   document.getElementById('add-prop-rel-picker')?.remove();
   const panel = document.createElement('div');
   panel.id = 'add-prop-rel-picker';
@@ -3253,7 +3261,7 @@ function showAddRelationPanel(anchorBtn, key, name, entity, onAdd) {
       e.stopPropagation();
       const defs = getCustomPropDefs(entity);
       const revKey = bilateral ? `${entity}_${key}` : undefined;
-      defs.push({ key, label: name, type: 'relation', relatedEntity, bilateral, reverseKey: revKey });
+      defs.push({ key, label: name, type: 'relation', relatedEntity, bilateral, reverseKey: revKey, description });
       setCustomPropDefs(entity, defs);
       if (bilateral) {
         // Add reverse relation on the target entity — label = display name of
@@ -3334,7 +3342,7 @@ function syncPropDefsToServer(entity) {
 // ── showAddRollupPanel ─────────────────────────────────────────────────────
 // Cascading config panel for a Rollup-typed property.
 // Builds: child_entity_type → target_property → operation → conditional UI.
-function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup) {
+function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup, description) {
   document.getElementById('add-prop-rollup-picker')?.remove();
   const panel = document.createElement('div');
   panel.id = 'add-prop-rollup-picker';
@@ -3511,7 +3519,7 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup)
         existingDef.rollup = rollupConfig;
         if (name) existingDef.label = name;
       } else {
-        defs.push({ key, label: name, type: 'rollup', rollup: rollupConfig });
+        defs.push({ key, label: name, type: 'rollup', rollup: rollupConfig, description });
         const v = getEntityVisProps(entity);
         if (!v.includes(key)) setEntityVisProps(entity, [...v, key]);
       }
@@ -3590,21 +3598,29 @@ function bindAddPropBtn(entity, onAdd) {
           namePicker.className = 'prop-vis-panel';
           namePicker.innerHTML =
             `<div style="padding:6px 10px 4px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">Name this ${pt?.label || rawType} property</div>
-            <div style="padding:4px 8px 8px;display:flex;gap:6px;align-items:center">
+            <div style="padding:4px 8px 4px;display:flex;gap:6px;align-items:center">
               <input id="add-prop-name-input" type="text" placeholder="Property name…"
                 style="flex:1;font-size:13px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)"/>
+            </div>
+            <div style="padding:0 8px 8px">
+              <textarea id="add-prop-desc-input" placeholder="Description (optional) — shown on hover"
+                style="width:100%;min-height:44px;font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary);resize:vertical;box-sizing:border-box"></textarea>
+            </div>
+            <div style="padding:0 8px 8px;text-align:right">
               <button id="add-prop-name-confirm" class="btn btn-sm btn-primary" style="white-space:nowrap">Add</button>
             </div>`;
           const bRect2 = btn.getBoundingClientRect();
           namePicker.style.cssText = `position:fixed;z-index:9200;min-width:260px;top:${bRect2.bottom+4}px;left:${bRect2.left}px`;
           document.body.appendChild(namePicker);
           const nameInp = document.getElementById('add-prop-name-input');
+          const descInp = document.getElementById('add-prop-desc-input');
           requestAnimationFrame(() => nameInp.focus());
 
           const confirmAdd = () => {
             const name = nameInp.value.trim();
             if (!name) { nameInp.style.borderColor = 'var(--danger)'; nameInp.focus(); return; }
             const key = name.toLowerCase().replace(/\s+/g, '_');
+            const description = descInp.value.trim();
             const defs = getCustomPropDefs(entity);
             if (defs.some(d => d.key === key)) {
               nameInp.style.borderColor = 'var(--danger)';
@@ -3615,22 +3631,22 @@ function bindAddPropBtn(entity, onAdd) {
             namePicker.remove();
             // Types needing extra steps before saving
             if (!isConnected && (rawType === 'select' || rawType === 'multi_select' || rawType === 'status')) {
-              showAddOptionsPanel(btn, key, name, rawType, entity, onAdd);
+              showAddOptionsPanel(btn, key, name, rawType, entity, onAdd, description);
               return;
             }
             if (!isConnected && rawType === 'relation') {
-              showAddRelationPanel(btn, key, name, entity, onAdd);
+              showAddRelationPanel(btn, key, name, entity, onAdd, description);
               return;
             }
             if (!isConnected && rawType === 'rollup') {
-              showAddRollupPanel(btn, key, name, entity, onAdd);
+              showAddRollupPanel(btn, key, name, entity, onAdd, undefined, description);
               return;
             }
             // Simple types: save immediately
             if (isConnected) {
-              defs.push({ key, label: name, type: 'connected', integrationId: pt.integrationId });
+              defs.push({ key, label: name, type: 'connected', integrationId: pt.integrationId, description });
             } else {
-              defs.push({ key, label: name, type: rawType });
+              defs.push({ key, label: name, type: rawType, description });
             }
             setCustomPropDefs(entity, defs);
             // Auto-add to visible sets so new props appear immediately in filter panel
@@ -3671,7 +3687,7 @@ function bindAddPropBtn(entity, onAdd) {
 // ── renderCustomPropChips ─────────────────────────────────────────────────
 // Returns an HTML string of visible custom prop chips for card/list/kanban views.
 // For tasks: uses propVisible(viewMode, key). For others: entityPropVisible(entity, key).
-function renderCustomPropChips(entity, recordId, viewMode) {
+function renderCustomPropChips(entity, recordId, viewMode, excludeDates) {
   const allDefs = getCustomPropDefs(entity);
   if (!allDefs.length) return '';
   // Filter out custom relation props that shadow a built-in prop
@@ -3679,6 +3695,9 @@ function renderCustomPropChips(entity, recordId, viewMode) {
   const defs = allDefs.filter(d => {
     if (builtinKeys.has(d.key)) return false;
     if (d.type === 'relation' && builtinKeys.has(d.key.replace(/s$/, ''))) return false;
+    // List view groups all dates together on the right (see
+    // customDatePropsHtml) instead of scattering them among other chips.
+    if (excludeDates && d.type === 'date') return false;
     return true;
   });
   if (!defs.length) return '';
@@ -3688,14 +3707,14 @@ function renderCustomPropChips(entity, recordId, viewMode) {
   const vals = getCustomPropValues(entity, recordId);
   const chips = defs.filter(d => isVisible(d.key)).map(def => {
     const val = vals[def.key] ?? '';
-    if (def.type !== 'rollup' && !val && val !== false && val !== 0) return '';
+    if (def.type !== 'rollup' && def.type !== 'checkbox' && !val && val !== false && val !== 0) return '';
     if (def.type === 'rollup') {
       const fresh = evaluateRollup(entity, recordId, def);
       const rv = fresh !== null ? Math.round(fresh * 100) / 100 : val;
       return (rv === '' || rv === undefined || rv === null) ? '' : renderRollupCardWidget(def, rv);
     }
     if (def.type === 'checkbox') {
-      return val ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px" title="${def.label}: checked"><span style="color:var(--text-muted)">${def.label}:</span> ✓</span>` : '';
+      return checkboxChipHtml(def.label, val, def.description);
     }
     if (def.type === 'multi_select') {
       return multiSelectChips(entity, def, val);
@@ -3711,12 +3730,36 @@ function renderCustomPropChips(entity, recordId, viewMode) {
       if (!relItems.length) return '';
       return relItems.map(it => relationChipHtml(def, it, 10)).join('');
     }
+    if (def.type === 'date') {
+      // Same treatment as Task's own Due Date badge — plain colored mono
+      // text (overdue/today/soon), not a labeled pill like other props.
+      return `<span class="task-due" style="font-size:10px;color:${dueDateColor(val)}"${tipAttrs(def.label, def.description)}>${fmtDate(val)}</span>`;
+    }
     const display = String(val);
     if (!display) return '';
-    return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${def.label}: ${display}"><span style="color:var(--text-muted)">${def.label}:</span> ${escHtml(display)}</span>`;
+    return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"${tipAttrs(def.label, def.description)}><span style="color:var(--text-muted)">${def.label}:</span> ${escHtml(display)}</span>`;
   }).filter(Boolean);
   if (!chips.length) return '';
   return `<div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:4px">${chips.join('')}</div>`;
+}
+
+// All of a record's visible date-type custom props, comma-separated —
+// grouped together on the list row's right edge instead of scattered among
+// the other chips (paired with excludeDates=true on renderCustomPropChips).
+function customDatePropsHtml(entity, recordId, viewMode) {
+  const allDefs = getCustomPropDefs(entity);
+  if (!allDefs.length) return '';
+  const builtinKeys = new Set((ENTITY_ALL_PROPS[entity] || []).map(d => d.key));
+  const dateDefs = allDefs.filter(d => d.type === 'date' && !builtinKeys.has(d.key));
+  if (!dateDefs.length) return '';
+  const isVisible = entity === 'task'
+    ? (key) => propVisible(viewMode || 'list', key)
+    : (key) => entityPropVisible(entity, key);
+  const vals = getCustomPropValues(entity, recordId);
+  return dateDefs.filter(d => isVisible(d.key)).map(def => {
+    const val = vals[def.key];
+    return val ? datePropBadge(val, def.label, def.description) : '';
+  }).filter(Boolean).join(', ');
 }
 
 function bindCustomPropCells() {
@@ -3735,6 +3778,7 @@ function bindCustomPropCells() {
       openSingleDatePickerGlobal(btn, btn.dataset.value || '', (val) => {
         btn.dataset.value = val || '';
         btn.textContent = val ? _dateChipDisplay(val) : '—';
+        btn.style.color = val ? dueDateColor(val) : 'var(--text-primary)';
         setCustomPropValue(btn.dataset.entity, btn.dataset.recordId, btn.dataset.propKey, val || '');
       });
     };
@@ -3992,7 +4036,7 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
       : (() => {
           const val = customVals[key] ?? '';
           if (custom.type === 'checkbox') {
-            return `<input type="checkbox" class="icp-check" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" ${val?'checked':''}
+            return `<input type="checkbox" class="icp-check" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" ${checkboxTrue(val)?'checked':''}
               style="cursor:pointer;accent-color:var(--accent)" onclick="event.stopPropagation()">`;
           }
           if (custom.type === 'multi_select') {
@@ -4473,22 +4517,82 @@ const CHIP_SEMANTIC_COLORS = {
   todo: 'cyan', planned: 'cyan', blocked: 'red', on_hold: 'orange',
   archived: 'purple', low: 'cyan', medium: 'yellow', high: 'orange', urgent: 'red',
 };
+/* ─── Property hover tooltips (list view) ───────────────────────────────
+   A chip/value carrying data-tip-label (+ optional data-tip-desc) shows a
+   Notion/Height-style dark tooltip on hover, one shared listener for the
+   whole app. Built-in fields get sensible defaults here; custom props use
+   whatever description the user entered when creating the property. */
+const PROPERTY_DESCRIPTIONS = {
+  taskStatuses:     { label: 'Status',   desc: 'The current progress state of this item.' },
+  taskPriorities:   { label: 'Priority', desc: 'Priority level for this item. By default this only matters in priority-sorted views — add a Priority filter or grouping if you want it to affect other views.' },
+  projectStatuses:  { label: 'Status',   desc: 'The current progress state of this project.' },
+  goalStatuses:     { label: 'Status',   desc: 'The current progress state of this goal.' },
+  sprintStatuses:   { label: 'Status',   desc: 'The current progress state of this sprint.' },
+  categories:       { label: 'Category', desc: 'Groups this item with others under the same category for filtering and reporting.' },
+  project_macro_area: { label: 'Macro Area', desc: 'The broad life area this project belongs to.' },
+  project_kanban_col: { label: 'Kanban Column', desc: 'Which column this project sits in on the kanban board.' },
+  goal_type:        { label: 'Type',     desc: 'The timeframe or category this goal falls under.' },
+  goal_year:        { label: 'Year',     desc: 'The target year for this goal.' },
+  resource_type:    { label: 'Type',     desc: 'What kind of resource this is (link, file, etc).' },
+};
+function tipAttrs(label, desc) {
+  if (!label) return '';
+  return ` data-tip-label="${escHtml(label)}"${desc ? ` data-tip-desc="${escHtml(desc)}"` : ''}`;
+}
+let _propTipEl = null, _propTipTimer = null;
+function _hidePropTip() {
+  clearTimeout(_propTipTimer);
+  if (_propTipEl) { _propTipEl.remove(); _propTipEl = null; }
+}
+document.addEventListener('mouseover', (e) => {
+  const target = e.target.closest('[data-tip-label]');
+  if (!target) return;
+  if (_propTipEl && _propTipEl._forTarget === target) return;
+  _hidePropTip();
+  _propTipTimer = setTimeout(() => {
+    const label = target.dataset.tipLabel;
+    const desc = target.dataset.tipDesc;
+    const tip = document.createElement('div');
+    tip.className = 'prop-hover-tip';
+    tip.innerHTML = `<div class="prop-hover-tip-title">${escHtml(label)}</div>${desc ? `<div class="prop-hover-tip-desc">${escHtml(desc)}</div>` : ''}`;
+    document.body.appendChild(tip);
+    const r = target.getBoundingClientRect();
+    let top = r.bottom + 6, left = r.left;
+    const tr = tip.getBoundingClientRect();
+    if (left + tr.width > window.innerWidth - 8) left = window.innerWidth - tr.width - 8;
+    if (top + tr.height > window.innerHeight - 8) top = r.top - tr.height - 6;
+    tip.style.top = `${Math.max(4, top)}px`;
+    tip.style.left = `${Math.max(4, left)}px`;
+    tip._forTarget = target;
+    _propTipEl = tip;
+  }, 400);
+});
+document.addEventListener('mouseout', (e) => {
+  const target = e.target.closest('[data-tip-label]');
+  if (!target) return;
+  if (e.relatedTarget && target.contains(e.relatedTarget)) return;
+  _hidePropTip();
+});
+document.addEventListener('scroll', _hidePropTip, true);
+
 // One pipeline for select values in EVERY view (list, cards, table, kanban,
 // panel): schema optionColors → assigned hex color → semantic → stable hash.
 function selectValueChip(entity, def, value) {
   if (value === '' || value === undefined || value === null) return '';
   const named = (def.optionColors || {})[value];
-  if (named) return `<span class="multi-chip color-${named}" style="font-size:11px">${escHtml(String(value))}</span>`;
-  return builtinSelectChip(`${entity}_${def.key}`, value);
+  const tip = tipAttrs(def.label, def.description);
+  if (named) return `<span class="multi-chip color-${named}" style="font-size:11px"${tip}>${escHtml(String(value))}</span>`;
+  return builtinSelectChip(`${entity}_${def.key}`, value, { tipLabel: def.label, tipDesc: def.description });
 }
 // Relation chip with optional per-item color (def.relationColors, keyed by
 // the referenced entity's id) — the same 8-name palette as tags/multi_select.
 function relationChipHtml(def, item, fontSize) {
   const fs = fontSize || 11;
   const name = (def && def.relationColors || {})[String(item.id)];
+  const tip = tipAttrs(def?.label, def?.description);
   return name
-    ? `<span class="multi-chip color-${name}" style="font-size:${fs}px">${escHtml(item.label)}</span>`
-    : `<span class="multi-chip" style="font-size:${fs}px">${escHtml(item.label)}</span>`;
+    ? `<span class="multi-chip color-${name}" style="font-size:${fs}px"${tip}>${escHtml(item.label)}</span>`
+    : `<span class="multi-chip" style="font-size:${fs}px"${tip}>${escHtml(item.label)}</span>`;
 }
 
 function multiSelectChips(entity, def, rawVal) {
@@ -4499,8 +4603,10 @@ function multiSelectChips(entity, def, rawVal) {
 function builtinSelectChip(storageKey, value, _opts = {}) {
   if (!value) return '';
   const label = escHtml(String(_opts.labelOverride ?? String(value).replace(/_/g, ' ')));
+  const known = PROPERTY_DESCRIPTIONS[storageKey];
+  const tip = tipAttrs(_opts.tipLabel ?? known?.label, _opts.tipDesc ?? known?.desc);
   const hex = getValueColor(storageKey, value);
-  if (hex) return `<span class="multi-chip" style="font-size:11px;background:${hex}22;color:${hex};font-weight:600">${label}</span>`;
+  if (hex) return `<span class="multi-chip" style="font-size:11px;background:${hex}22;color:${hex};font-weight:600"${tip}>${label}</span>`;
   const v = String(value).toLowerCase().replace(/\s+/g, '_');
   let name = CHIP_SEMANTIC_COLORS[v];
   if (!name) {
@@ -4508,7 +4614,7 @@ function builtinSelectChip(storageKey, value, _opts = {}) {
     for (const ch of v) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
     name = CHIP_COLOR_NAMES[h % CHIP_COLOR_NAMES.length];
   }
-  return `<span class="multi-chip color-${name}" style="font-size:11px">${label}</span>`;
+  return `<span class="multi-chip color-${name}" style="font-size:11px"${tip}>${label}</span>`;
 }
 
 function statusBadge(status) {
@@ -4522,14 +4628,16 @@ function statusBadge(status) {
 function priorityBadge(priority) {
   // Assigned colors win — same pipeline as every other select value
   const hex = getValueColor('taskPriorities', priority);
-  if (hex) return `<span class="multi-chip" style="font-size:11px;background:${hex}22;color:${hex};font-weight:600">${escHtml(String(priority || ''))}</span>`;
+  const tip = tipAttrs(PROPERTY_DESCRIPTIONS.taskPriorities.label, PROPERTY_DESCRIPTIONS.taskPriorities.desc);
+  if (hex) return `<span class="multi-chip" style="font-size:11px;background:${hex}22;color:${hex};font-weight:600"${tip}>${escHtml(String(priority || ''))}</span>`;
   return _priorityBadgeClassic(priority);
 }
 function _priorityBadgeClassic(priority) {
   const map = { low: 'badge-low', medium: 'badge-medium', high: 'badge-high', urgent: 'badge-urgent' };
   const customColor = getValueColor('taskPriorities', priority);
   const styleAttr = customColor ? ` style="background:${customColor}22;color:${customColor};border-color:${customColor}55"` : '';
-  return `<span class="badge ${map[priority] || 'badge-low'}"${styleAttr}>${priority || 'low'}</span>`;
+  const tip = tipAttrs(PROPERTY_DESCRIPTIONS.taskPriorities.label, PROPERTY_DESCRIPTIONS.taskPriorities.desc);
+  return `<span class="badge ${map[priority] || 'badge-low'}"${styleAttr}${tip}>${priority || 'low'}</span>`;
 }
 
 function getValueColor(storageKey, value) {
@@ -4584,9 +4692,32 @@ function tagHtml(tag) {
 }
 
 function dueBadgeHtml(dateStr) {
+  return datePropBadge(dateStr, 'Due Date', 'When this task is due. Colored by how soon it is — red once overdue.');
+}
+// Shared date-value styling for any entity's "due"-like field — colored mono
+// text (overdue/today/soon), same treatment as Task's own Due Date.
+function datePropBadge(dateStr, label, desc) {
   if (!dateStr) return '';
   const color = dueDateColor(dateStr);
-  return `<span class="task-due" style="color:${color}">${fmtDate(dateStr)}</span>`;
+  const tip = tipAttrs(label, desc);
+  return `<span class="task-due" style="color:${color}"${tip}>${fmtDate(dateStr)}</span>`;
+}
+// A start→end range where BOTH ends get the same colored/tooltipped
+// treatment (colored by the end date, the more relevant "due" side) — same
+// visual language as a single date, just spanning two values.
+function dateRangeBadge(startStr, endStr, label, desc) {
+  if (!startStr && !endStr) return '';
+  const color = dueDateColor(endStr || startStr);
+  const tip = tipAttrs(label, desc);
+  const text = startStr && endStr ? `${fmtDate(startStr)} → ${fmtDate(endStr)}` : fmtDate(startStr || endStr);
+  return `<span class="task-due" style="color:${color}"${tip}>${text}</span>`;
+}
+// Read-only checkbox glyph used to display a checkbox-type property's value
+// in list/card/kanban chip contexts — always renders (checked or not) so an
+// empty checkbox never falls back to blank or literal "false"/"undefined" text.
+function checkboxChipHtml(label, val, desc) {
+  const isChecked = checkboxTrue(val);
+  return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px"${tipAttrs(label, desc)}><span style="color:var(--text-muted)">${label}:</span> <span style="display:inline-flex;width:11px;height:11px;border-radius:2px;border:1.5px solid ${isChecked?'var(--color-success)':'var(--color-border-strong)'};background:${isChecked?'var(--color-success)':'transparent'};color:#fff;align-items:center;justify-content:center;font-size:8px;line-height:1">${isChecked?'✓':''}</span></span>`;
 }
 
 function downloadJSON(data, filename) {
@@ -5005,16 +5136,17 @@ function taskRowHtml(task, showProject, indent, viewMode) {
   const priorityChip = vis('priority') ? priorityBadge(task.priority) : '';
   const storyPts = vis('story_points') && task.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${task.story_points}pt</span>` : '';
 
+  const excludeCustomDates = vm === 'list';
+  const allDates = excludeCustomDates ? [dueBadge, customDatePropsHtml('task', task.id, vm)].filter(Boolean).join(', ') : dueBadge;
   return `<li class="task-row ${indent ? 'task-row-sub' : ''}" data-task-id="${task.id}" style="${indentStyle}">
     <span class="ctx-handle" data-entity="task" data-id="${task.id}" title="Actions">⠿</span>
     ${toggleArrow}
-    <div class="task-check ${done ? 'done' : ''}" data-check-id="${task.id}">${done ? '✓' : ''}</div>
     <div class="task-content">
       <div class="${titleCls}"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${task.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${task.title} <span class="comment-badge" data-comment-for="${task.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div>
       <div class="task-meta-row">${projBadge}${goalBadge}${catChip}${tagChips}${statusChip}${priorityChip}${storyPts}</div>
-      <div class="task-chips-outer" data-entity="task" data-rid="${task.id}" data-vm="${vm||'list'}">${renderCustomPropChips('task', task.id, vm)}</div>
+      <div class="task-chips-outer" data-entity="task" data-rid="${task.id}" data-vm="${vm||'list'}">${renderCustomPropChips('task', task.id, vm, excludeCustomDates)}</div>
     </div>
-    <span class="task-row-due-right">${dueBadge}</span>
+    <span class="task-row-due-right">${allDates}</span>
   </li>`;
 }
 
@@ -5037,7 +5169,11 @@ function buildStandardListRow(entityKey, id, opts) {
     afterHandleHtml = '', // e.g. custom entities' subentity expand/collapse arrow
   } = opts || {};
   const meta = metaChips.filter(Boolean).join('');
-  const customChips = renderCustomPropChips(entityKey, id, 'list');
+  const customChips = renderCustomPropChips(entityKey, id, 'list', true);
+  // Every date-type value (the entity's own "due"-like field plus any custom
+  // date props) groups together on the right, comma-separated, rather than
+  // scattering across the row.
+  const allDates = [dueHtml, customDatePropsHtml(entityKey, id, 'list')].filter(Boolean).join(', ');
   return `<div class="task-row ${rowClass}" data-id="${id}" ${rowAttrs} style="cursor:pointer">
     <span class="ctx-handle" data-entity="${entityKey}" data-id="${id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
     ${afterHandleHtml}
@@ -5047,7 +5183,7 @@ function buildStandardListRow(entityKey, id, opts) {
       ${meta ? `<div class="task-meta-row">${meta}</div>` : ''}
       ${customChips ? `<div class="task-chips-outer" data-entity="${entityKey}" data-rid="${id}" data-vm="list">${customChips}</div>` : ''}
     </div>
-    ${dueHtml ? `<span class="task-row-due-right">${dueHtml}</span>` : ''}
+    ${allDates ? `<span class="task-row-due-right">${allDates}</span>` : ''}
   </div>`;
 }
 
@@ -6100,6 +6236,12 @@ async function renderCustomEntityList(typeName) {
           if (pd.type === 'multi_select') {
             return multiSelectChips(entityKey, pd, raw);
           }
+          if (pd.type === 'date') {
+            return datePropBadge(raw, pd.label, pd.description);
+          }
+          if (pd.type === 'checkbox') {
+            return checkboxChipHtml(pd.label, raw, pd.description);
+          }
           const v = renderPropVal(pd, raw);
           return v ? `<span style="font-size:11px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 5px">${escHtml(v)}</span>` : '';
         }).filter(Boolean).join('');
@@ -6187,6 +6329,12 @@ async function renderCustomEntityList(typeName) {
             }
             if (pd.type === 'multi_select') {
               return multiSelectChips(entityKey, pd, raw);
+            }
+            if (pd.type === 'date') {
+              return datePropBadge(raw, pd.label, pd.description);
+            }
+            if (pd.type === 'checkbox') {
+              return checkboxChipHtml(pd.label, raw, pd.description);
             }
             const v = renderPropVal(pd, raw);
             return v ? `<span style="font-size:11px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 5px">${escHtml(v)}</span>` : '';
@@ -8179,7 +8327,7 @@ function evChildFieldDefs(childType) {
   const childKey = customEntityTypes.some(t => t.name === childType) ? `custom_${childType}` : childType;
   const custom = getCustomPropDefs(childKey)
     .filter(d => !d._taxonomy && !d.key.startsWith('_') && ['select', 'status', 'text', 'number', 'date', 'checkbox'].includes(d.type))
-    .map(d => ({ key: d.key, label: d.label, chip: (d.type === 'select' || d.type === 'status') ? `${childKey}_${d.key}` : null, date: d.type === 'date', custom: true }));
+    .map(d => ({ key: d.key, label: d.label, chip: (d.type === 'select' || d.type === 'status') ? `${childKey}_${d.key}` : null, date: d.type === 'date', checkbox: d.type === 'checkbox', description: d.description, custom: true }));
   const builtin = EV_CHILD_FIELD_DEFS[childType] || [];
   const seen = new Set(builtin.map(f => f.key));
   return [...builtin, ...custom.filter(f => !seen.has(f.key))];
@@ -8196,8 +8344,9 @@ function setEvViewCols(entityType, childType, cols) {
 }
 function evCellValue(f, rec, childKey, id) {
   const v = f.custom ? getCustomPropValues(childKey, id)[f.key] : (rec ? rec[f.key] : undefined);
+  if (f.checkbox) return checkboxChipHtml(f.label || 'Checkbox', v, f.description);
   if (v === undefined || v === null || v === '') return '—';
-  if (f.date) return `<span style="font-size:11px;font-family:var(--font-mono);color:var(--text-muted)">${fmtDate(v) || escHtml(String(v))}</span>`;
+  if (f.date) return datePropBadge(v, f.label || 'Date', f.description) || escHtml(String(v));
   if (f.chip) return builtinSelectChip(f.chip, v);
   return `<span style="font-size:12px">${escHtml(String(v))}</span>`;
 }
@@ -8926,7 +9075,7 @@ async function renderDashboard() {
       </div>` : '';
     return `
       <div class="sprint-name" style="cursor:pointer" data-sprint-id="${sprint.id}">${sprint.title}</div>
-      <div class="sprint-dates">${fmtDate(sprint.start_date)} → ${fmtDate(sprint.end_date)}</div>
+      <div class="sprint-dates">${dateRangeBadge(sprint.start_date, sprint.end_date, 'Dates', 'The sprint\'s start and end dates.')}</div>
       <div class="sprint-progress-bar"><div class="sprint-progress-fill" style="width:${sprintPctVal}%"></div></div>
       <div class="sprint-stats">${sprint.done || 0}/${sprint.total || 0} tasks · ${sprintPctVal}%</div>
       ${spBar}`;
@@ -8965,7 +9114,7 @@ async function renderDashboard() {
           <thead><tr><th>Title</th><th>Type</th><th>Status</th><th>Due</th></tr></thead>
           <tbody>${goals.slice(0,5).map(g => `<tr style="cursor:pointer" onclick="renderView('goal-detail','${g.id}')">
             <td>${g.title}</td><td>${g.type||'—'}</td><td>${builtinSelectChip('goalStatuses', g.status)}</td>
-            <td style="font-size:11px;color:var(--text-muted)">${fmtDate(g.due_date)||'—'}</td>
+            <td>${datePropBadge(g.due_date, 'Due Date', 'When this goal is due. Colored by how soon it is — red once overdue.') || '—'}</td>
           </tr>`).join('')}</tbody>
         </table></div>
         ${goals.length > 5 ? `<div style="padding:8px 0;text-align:center"><button class="btn btn-sm btn-ghost dash-show-more" data-type="goals">Show ${goals.length-5} more…</button></div>` : ''}
@@ -9423,7 +9572,7 @@ async function renderTasks() {
       ).join('');
     }
     const cards = list.map(t => {
-      const dueLine = t.due_date ? `<span class="task-due" style="font-size:11px;color:${dueDateColor(t.due_date)}">${fmtDate(t.due_date)}</span>` : '';
+      const dueLine = t.due_date ? `<span class="task-due" style="font-size:11px;color:${dueDateColor(t.due_date)}"${tipAttrs('Due Date', 'When this task is due. Colored by how soon it is — red once overdue.')}>${fmtDate(t.due_date)}</span>` : '';
       const projLine = t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">${t.project_title}</div>` : '';
       const tags = (t.tags||[]).slice(0,3).map(tg => tagHtml(tg)).join('');
       const storyPts = t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
@@ -9571,7 +9720,7 @@ async function renderTasks() {
         const projLine = kVis('project') && t.project_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t.project_title}</div>` : '';
         const priorityLine = (groupBy !== 'priority' && kVis('priority')) ? priorityBadge(t.priority) : '';
         const statusLine   = (groupBy !== 'status'   && kVis('status'))   ? builtinSelectChip('taskStatuses', t.status)     : '';
-        const dueLine = kVis('due_date') && t.due_date ? `<span class="task-due" style="font-size:10px;color:${dueDateColor(t.due_date)}">${fmtDate(t.due_date)}</span>` : '';
+        const dueLine = kVis('due_date') && t.due_date ? `<span class="task-due" style="font-size:10px;color:${dueDateColor(t.due_date)}"${tipAttrs('Due Date', 'When this task is due. Colored by how soon it is — red once overdue.')}>${fmtDate(t.due_date)}</span>` : '';
         const tagLine = kVis('tags') ? (t.tags||[]).slice(0,2).map(tg => tagHtml(tg)).join('') : '';
         const storyPts = kVis('story_points') && t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
         const metaLine = [priorityLine, statusLine, dueLine, tagLine, storyPts].some(Boolean)
@@ -9694,15 +9843,13 @@ async function renderTasks() {
       };
     });
 
-    // Task row click → slideover (only arrow and check are excluded)
+    // Task row click → slideover (only arrow is excluded)
     document.querySelectorAll('.task-row').forEach(row => {
       row.onclick = (e) => {
         if (e.target.closest('.task-toggle-arrow') ||
-            e.target.closest('.task-check') ||
             e.target.closest('.add-subtask-inline-btn') ||
             e.target.closest('.inline-subtask-input-row') ||
-            e.target.closest('.ctx-handle') ||
-            e.target.dataset.checkId) return;
+            e.target.closest('.ctx-handle')) return;
         showTaskSlideover(row.dataset.taskId);
       };
     });
@@ -9733,22 +9880,6 @@ async function renderTasks() {
         try { await api('PATCH', `/api/tasks/${id}`, { status: newStatus }); } catch(err) {}
         const t = topLevel.find(x => String(x.id) === String(id));
         if (t) t.status = newStatus;
-      };
-    });
-
-    // Checkboxes
-    document.querySelectorAll('.task-check').forEach(el => {
-      el.onclick = async (e) => {
-        e.stopPropagation();
-        const id = el.dataset.checkId;
-        const isDone = el.classList.contains('done');
-        const newStatus = isDone ? 'todo' : 'done';
-        try { await api('PATCH', `/api/tasks/${id}`, { status: newStatus }); } catch(err) {}
-        // optimistically update
-        const t = topLevel.find(x => String(x.id) === String(id)) ||
-                  allTasksFull.find(x => String(x.id) === String(id));
-        if (t) t.status = newStatus;
-        render();
       };
     });
 
@@ -9823,7 +9954,7 @@ async function renderProjects() {
         ${vis('macro') && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
         ${vis('kanban') && p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : ''}
         ${vis('category') && (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name) : ''}
-        ${vis('due') && p.due_date ? `<span class="entity-list-meta" style="font-size:11px;font-family:var(--font-mono);color:var(--text-muted)">${fmtDate(p.due_date)}</span>` : ''}
+        ${vis('due') ? datePropBadge(p.due_date, 'Due Date', 'When this project is due. Colored by how soon it is — red once overdue.') : ''}
         ${tagChips}
       </div>
       ${vis('goal') && p.goal_title ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">Goal: ${p.goal_title}</div>` : ''}
@@ -9856,7 +9987,7 @@ async function renderProjects() {
         ${vis('macro')    ? `<td>${p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : '—'}</td>` : ''}
         ${vis('kanban')   ? `<td>${p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : '—'}</td>` : ''}
         ${vis('category') ? `<td>${(() => { const cn = (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name; return cn ? builtinSelectChip('categories', cn) : '—'; })()}</td>` : ''}
-        ${vis('due')      ? `<td>${fmtDate(p.due_date) || '—'}</td>` : ''}
+        ${vis('due')      ? `<td>${datePropBadge(p.due_date, 'Due Date', 'When this project is due. Colored by how soon it is — red once overdue.') || '—'}</td>` : ''}
         ${vis('progress') ? `<td>${pct}% (${prog.done||0}/${prog.total||0})</td>` : ''}
         ${vis('tags')     ? `<td>${(p.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
         ${customCols}
@@ -10052,7 +10183,7 @@ async function renderProjects() {
           vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : '',
           vis('tags') ? (p.tags || []).map(t => tagHtml(t)).join('') : '',
         ],
-        dueHtml: vis('due') && p.due_date ? fmtDate(p.due_date) : '',
+        dueHtml: vis('due') ? datePropBadge(p.due_date, 'Due Date', 'When this project is due. Colored by how soon it is — red once overdue.') : '',
       });
     }).join('')}</div>`;
   }
@@ -10266,7 +10397,7 @@ async function renderGoals() {
           vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : '',
           vis('tags') ? (g.tags || []).map(t => tagHtml(t)).join('') : '',
         ],
-        dueHtml: vis('due') && g.due_date ? fmtDate(g.due_date) : '',
+        dueHtml: vis('due') ? datePropBadge(g.due_date, 'Due Date', 'When this goal is due. Colored by how soon it is — red once overdue.') : '',
       });
     }).join('')}</div>`;
   }
@@ -10357,7 +10488,7 @@ async function renderGoals() {
         ${vis('type') && g.type ? builtinSelectChip('goal_type', g.type) : ''}
         ${vis('year') && g.year ? builtinSelectChip('goal_year', g.year) : ''}
         ${vis('category') && catName ? builtinSelectChip('categories', catName) : ''}
-        ${vis('due') && g.due_date ? `<span class="entity-list-meta" style="font-size:11px;font-family:var(--font-mono);color:var(--text-muted)">${fmtDate(g.due_date)}</span>` : ''}
+        ${vis('due') ? datePropBadge(g.due_date, 'Due Date', 'When this goal is due. Colored by how soon it is — red once overdue.') : ''}
         ${tagChips}
       </div>
       ${vis('metrics') && (g.target != null) ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">${g.current_value ?? '—'}/${g.target}</div>` : ''}
@@ -10388,7 +10519,7 @@ async function renderGoals() {
         ${vis('type')     ? `<td>${g.type ? builtinSelectChip('goal_type', g.type) : '—'}</td>` : ''}
         ${vis('year')     ? `<td>${g.year ? builtinSelectChip('goal_year', g.year) : '—'}</td>` : ''}
         ${vis('category') ? `<td>${(() => { const cn = (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name; return cn ? builtinSelectChip('categories', cn) : '—'; })()}</td>` : ''}
-        ${vis('due')      ? `<td>${fmtDate(g.due_date) || '—'}</td>` : ''}
+        ${vis('due')      ? `<td>${datePropBadge(g.due_date, 'Due Date', 'When this goal is due. Colored by how soon it is — red once overdue.') || '—'}</td>` : ''}
         ${vis('progress') ? `<td>${pct}%</td>` : ''}
         ${vis('tags')     ? `<td>${(g.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
         ${customCols}
@@ -10605,7 +10736,7 @@ async function renderNotes() {
           vis('category') && n.category_name ? builtinSelectChip('categories', n.category_name) : '',
           vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : '',
         ],
-        dueHtml: vis('date') && fmtDate(n.note_date) ? fmtDate(n.note_date) : '',
+        dueHtml: vis('date') ? datePropBadge(n.note_date, 'Date', 'The date associated with this note.') : '',
       });
     }).join('')}</div>`;
   }
@@ -10627,7 +10758,7 @@ async function renderNotes() {
             <div class="kanban-card-title">${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
           </div>
           <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
-            ${vis('date') && n.note_date ? `<span>${fmtDate(n.note_date)}</span>` : ''}
+            ${vis('date') ? datePropBadge(n.note_date, 'Date', 'The date associated with this note.') : ''}
             ${tagChips}
           </div>
           ${renderCustomPropChips('note', n.id, 'kanban')}
@@ -10672,7 +10803,7 @@ async function renderNotes() {
       </div>
       <div class="note-body-preview">${n.body || ''}</div>
       <div class="note-meta" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
-        ${vis('date') && fmtDate(n.note_date) ? `<span>${fmtDate(n.note_date)}</span>` : ''}
+        ${vis('date') ? datePropBadge(n.note_date, 'Date', 'The date associated with this note.') : ''}
         ${vis('category') && n.category_name ? builtinSelectChip('categories', n.category_name) : ''}
         ${vis('project') ? (() => { const v = renderMultiRelationValue('note', n.id, 'project', (_noteProjects.find(p => String(p.id) === String(n.project_id))?.title)); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
         ${vis('goal') ? (() => { const v = renderMultiRelationValue('note', n.id, 'goal', (_noteGoals.find(g => String(g.id) === String(n.goal_id))?.title)); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
@@ -10690,7 +10821,7 @@ async function renderNotes() {
       return `<tr class="note-item" data-note-id="${n.id}" style="cursor:pointer">
         <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span></td>
         <td><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></td>
-        ${vis('date')     ? `<td>${fmtDate(n.note_date) || '—'}</td>` : ''}
+        ${vis('date')     ? `<td>${datePropBadge(n.note_date, 'Date', 'The date associated with this note.') || '—'}</td>` : ''}
         ${vis('project')  ? `<td>${renderMultiRelationValue('note', n.id, 'project', (_noteProjects.find(p => String(p.id) === String(n.project_id))?.title)) || '—'}</td>` : ''}
         ${vis('goal')     ? `<td>${renderMultiRelationValue('note', n.id, 'goal', (_noteGoals.find(g => String(g.id) === String(n.goal_id))?.title)) || '—'}</td>` : ''}
         ${vis('category') ? `<td>${n.category_name ? builtinSelectChip('categories', n.category_name) : '—'}</td>` : ''}
@@ -10759,7 +10890,7 @@ async function renderSprints() {
         ${vis('project') && s.project_title ? `<span class="multi-chip" style="font-size:11px">${escHtml(s.project_title)}</span>` : ''}
         ${vis('category') && (allCategories.find(c => String(c.id) === String(s.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(s.category_id)) || {}).name) : ''}
       </div>
-      ${vis('dates') ? `<div class="card-meta">${fmtDate(s.start_date)} - ${fmtDate(s.end_date)}</div>` : ''}
+      ${vis('dates') && (s.start_date || s.end_date) ? `<div class="card-meta">${dateRangeBadge(s.start_date, s.end_date, 'Dates', 'The sprint\'s start and end dates.')}</div>` : ''}
       ${vis('progress') ? `<div class="progress-wrap">
         <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0}</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
@@ -10775,24 +10906,7 @@ async function renderSprints() {
           <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pctSP}%;background:${color}"></div></div>
         </div>`;
       })() : ''}
-      ${(() => {
-        const customVals = getCustomPropValues('sprint', s.id);
-        return getCustomPropDefs('sprint').filter(d => entityPropVisible('sprint', d.key)).map(d => {
-          const v = customVals[d.key] || '';
-          if (!v) return '';
-          if (d.type === 'multi_select') {
-            const arr = (() => { try { const a = JSON.parse(v); return Array.isArray(a) ? a : (v ? [v] : []); } catch { return v ? [v] : []; } })();
-            const oc = d.optionColors || {};
-            if (!arr.length) return '';
-            return `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">${arr.map(x => oc[x] ? `<span class="multi-chip color-${oc[x]}" style="font-size:11px">${escHtml(x)}</span>` : `<span class="multi-chip" style="font-size:11px">${escHtml(x)}</span>`).join('')}</div>`;
-          }
-          if (d.type === 'select' || d.type === 'status') {
-            const oc = d.optionColors || {};
-            return `<div style="margin-top:4px">${oc[v] ? `<span class="multi-chip color-${oc[v]}" style="font-size:11px">${escHtml(v)}</span>` : `<span class="entity-list-meta">${escHtml(d.label)}: ${escHtml(v)}</span>`}</div>`;
-          }
-          return `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${escHtml(d.label)}: ${escHtml(d.type === 'date' ? (fmtDate(v)||v) : String(v))}</div>`;
-        }).filter(Boolean).join('');
-      })()}
+      ${renderCustomPropChips('sprint', s.id, 'cards')}
     </div>`;
   }
 
@@ -10809,7 +10923,7 @@ async function renderSprints() {
         ${vis('status')   ? `<td>${builtinSelectChip('sprintStatuses', s.status)}</td>` : ''}
         ${vis('project')  ? `<td>${s.project_title ? `<span class="multi-chip" style="font-size:11px">${escHtml(s.project_title)}</span>` : '—'}</td>` : ''}
         ${vis('category') ? `<td>${(() => { const cn = (allCategories.find(c => String(c.id) === String(s.category_id)) || {}).name; return cn ? builtinSelectChip('categories', cn) : '—'; })()}</td>` : ''}
-        ${vis('dates')    ? `<td>${fmtDate(s.start_date)} - ${fmtDate(s.end_date)}</td>` : ''}
+        ${vis('dates')    ? `<td>${dateRangeBadge(s.start_date, s.end_date, 'Dates', 'The sprint\'s start and end dates.') || '—'}</td>` : ''}
         ${vis('progress') ? `<td>${pct}%</td>` : ''}
         ${customCols}
         <td>
@@ -10914,7 +11028,7 @@ async function renderSprints() {
           vis('points') && s.story_points ? `<span class="entity-list-meta">${s.story_points} pts</span>` : '',
           vis('tags') ? (s.tags || []).map(t => tagHtml(t)).join('') : '',
         ],
-        dueHtml: vis('dates') ? `${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}` : '',
+        dueHtml: vis('dates') && (s.start_date || s.end_date) ? dateRangeBadge(s.start_date, s.end_date, 'Dates', 'The sprint\'s start and end dates.') : '',
       });
     }).join('')}</div>`;
   }
@@ -11107,7 +11221,7 @@ function _wNotesHtml(notes) {
     ? notes.map(n => `<div class="note-card clickable-note" data-note-id="${n.id}" style="cursor:pointer">
         <div class="note-title">${escHtml(n.title || 'Untitled')}</div>
         <div class="note-body-preview">${escHtml(n.body || '')}</div>
-        <div class="note-meta">${fmtDate(n.note_date) || ''}</div></div>`).join('')
+        <div class="note-meta">${datePropBadge(n.note_date, 'Date', 'The date associated with this note.')}</div></div>`).join('')
     : '<div class="empty-state" style="padding:20px"><div class="empty-state-text">No notes</div></div>';
 }
 
@@ -11549,7 +11663,7 @@ async function renderSprintDetail(sprintId) {
         <h1 class="view-title" id="sd-title">${escHtml(sprint.title)}</h1>
         <div class="flex gap-8" style="margin-top:6px">
           ${builtinSelectChip('sprintStatuses', sprint.status)}
-          ${sprint.start_date ? `<span class="entity-list-meta" style="font-size:12px;font-family:var(--font-mono);color:var(--text-muted)">${fmtDate(sprint.start_date)} - ${fmtDate(sprint.end_date)}</span>` : ''}
+          ${dateRangeBadge(sprint.start_date, sprint.end_date, 'Dates', 'The sprint\'s start and end dates.')}
         </div>
       </div>
       <div class="flex gap-8">
@@ -12375,24 +12489,7 @@ async function renderResources() {
         ${vis('url') && rawUrl ? `<div style="margin-top:6px" onclick="event.stopPropagation()"><a href="${rawUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent)">${rawUrl.length > 60 ? rawUrl.slice(0,60)+'…' : rawUrl}</a></div>` : ''}
         ${r.body ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${r.body.slice(0,120)}${r.body.length>120?'…':''}</div>` : ''}
         ${vis('tags') ? (r.tags || []).map(t => tagHtml(t)).join('') : ''}
-        ${(() => {
-          const customVals = getCustomPropValues('resource', r.id);
-          return getCustomPropDefs('resource').filter(d => entityPropVisible('resource', d.key)).map(d => {
-            const v = customVals[d.key] || '';
-            if (!v) return '';
-            if (d.type === 'multi_select') {
-              const arr = (() => { try { const a = JSON.parse(v); return Array.isArray(a) ? a : (v ? [v] : []); } catch { return v ? [v] : []; } })();
-              const oc = d.optionColors || {};
-              if (!arr.length) return '';
-              return arr.map(x => oc[x] ? `<span class="multi-chip color-${oc[x]}" style="font-size:11px">${escHtml(x)}</span>` : `<span class="multi-chip" style="font-size:11px">${escHtml(x)}</span>`).join('');
-            }
-            if (d.type === 'select' || d.type === 'status') {
-              const oc = d.optionColors || {};
-              return oc[v] ? `<span class="multi-chip color-${oc[v]}" style="font-size:11px">${escHtml(v)}</span>` : `<span class="entity-list-meta">${escHtml(v)}</span>`;
-            }
-            return `<span class="entity-list-meta">${escHtml(d.label)}: ${escHtml(d.type === 'date' ? (fmtDate(v)||v) : String(v))}</span>`;
-          }).filter(Boolean).join('');
-        })()}
+        ${renderCustomPropChips('resource', r.id, 'cards')}
       </div>`;
     }).join('')}</div>`;
   }
@@ -12701,7 +12798,7 @@ async function renderProjectDetail(projectId) {
           ${builtinSelectChip('projectStatuses', p.status)}
           ${p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
           ${p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : ''}
-          ${p.due_date ? `<span class="entity-list-meta" style="font-size:12px;font-family:var(--font-mono);color:var(--text-muted)">${fmtDate(p.due_date)}</span>` : ''}
+          ${datePropBadge(p.due_date, 'Due Date', 'When this project is due. Colored by how soon it is — red once overdue.')}
           ${(() => { const cn = (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name; return cn ? builtinSelectChip('categories', cn) : ''; })()}
         </div>
       </div>
@@ -12865,7 +12962,7 @@ async function renderGoalDetail(goalId) {
           ${builtinSelectChip('goalStatuses', g.status)}
           ${g.type ? builtinSelectChip('goal_type', g.type) : ''}
           ${g.year ? builtinSelectChip('goal_year', g.year) : ''}
-          ${g.due_date ? `<span class="entity-list-meta" style="font-size:12px;font-family:var(--font-mono);color:var(--text-muted)">${fmtDate(g.due_date)}</span>` : ''}
+          ${datePropBadge(g.due_date, 'Due Date', 'When this goal is due. Colored by how soon it is — red once overdue.')}
           ${(() => { const cn = (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name; return cn ? builtinSelectChip('categories', cn) : ''; })()}
         </div>
       </div>
@@ -13539,14 +13636,13 @@ async function showTaskSlideover(taskId) {
         <td style="padding-left:${8+indent}px">
           <div style="display:flex;align-items:center;gap:6px">
             ${chev}
-            <div class="task-check ${st.status==='done'?'done':''}" data-subtask-id="${st.id}" style="flex-shrink:0">${st.status==='done'?'✓':''}</div>
             ${titleEl}
             ${countBadge}
           </div>
         </td>
         <td>${builtinSelectChip('taskStatuses', st.status)}</td>
         <td>${priorityBadge(st.priority)}</td>
-        <td style="font-size:11px;font-family:'DM Mono',monospace;color:var(--text-muted)">${fmtDate(st.due_date)||'—'}</td>
+        <td>${datePropBadge(st.due_date, 'Due Date', 'When this task is due. Colored by how soon it is — red once overdue.')||'—'}</td>
       </tr>`;
       if (hasKids && isExp) rows += buildSubtaskTable(children, depth + 1);
       if (!hasKids || isExp) rows += `<tr class="subtask-quick-add-row" data-add-parent="${st.id}">
@@ -13591,7 +13687,7 @@ async function showTaskSlideover(taskId) {
     // Row click opens the subtask's slideover
     wrap.querySelectorAll('tr.subtask-table-row[data-st-id]').forEach(row => {
       row.onclick = (e) => {
-        if (e.target.closest('.task-check') || e.target.closest('.sub-add-inline-btn') || e.target.closest('.sub-table-toggle')) return;
+        if (e.target.closest('.sub-add-inline-btn') || e.target.closest('.sub-table-toggle')) return;
         e.stopPropagation();
         showTaskSlideover(parseInt(row.dataset.stId));
       };
@@ -13608,20 +13704,6 @@ async function showTaskSlideover(taskId) {
           allTasksFull = allTasksCache;
           renderSubtaskTable();
         });
-      };
-    });
-    // Subtask check click
-    wrap.querySelectorAll('.task-check[data-subtask-id]').forEach(chk => {
-      chk.onclick = async (e) => {
-        e.stopPropagation();
-        const stId = parseInt(chk.dataset.subtaskId);
-        const st = allTasksCache.find(x => x.id === stId);
-        if (!st) return;
-        const newStatus = st.status === 'done' ? 'todo' : 'done';
-        try { await api('PATCH', `/api/tasks/${stId}`, { status: newStatus }); } catch(err) {}
-        allTasksCache = await api('GET', '/api/tasks?all=1');
-        allTasksFull = allTasksCache;
-        renderSubtaskTable();
       };
     });
   }
@@ -15265,8 +15347,7 @@ function bindTaskListEvents() {
   bindCtxHandles();
   document.querySelectorAll('.task-row').forEach(row => {
     row.onclick = (e) => {
-      if (e.target.classList.contains('task-check') || e.target.dataset.checkId ||
-          e.target.classList.contains('task-toggle-arrow') || e.target.closest('.task-toggle-arrow') ||
+      if (e.target.classList.contains('task-toggle-arrow') || e.target.closest('.task-toggle-arrow') ||
           e.target.classList.contains('task-add-sub-btn') || e.target.closest('.task-add-sub-btn') ||
           e.target.closest('.ctx-handle')) return;
       showTaskSlideover(row.dataset.taskId);
@@ -15316,34 +15397,15 @@ function bindTaskListEvents() {
       setTimeout(() => document.addEventListener('click', outsideClick, true), 0);
     };
   });
-  document.querySelectorAll('.task-check').forEach(el => {
-    el.onclick = async (e) => {
-      e.stopPropagation();
-      const id = el.dataset.checkId;
-      const isDone = el.classList.contains('done');
-      try { await api('PATCH', `/api/tasks/${id}`, { status: isDone ? 'todo' : 'done' }); } catch(err) {}
-      renderDashboard();
-    };
-  });
 }
 
 /* ─── Shared detail-view task event binding ──────────────────────────── */
 function bindDetailTaskEvents(onRefresh) {
   document.querySelectorAll('.task-row').forEach(row => {
     row.onclick = (e) => {
-      if (e.target.classList.contains('task-check') || e.target.dataset.checkId ||
-          e.target.classList.contains('task-toggle-arrow') || e.target.closest('.task-toggle-arrow') ||
+      if (e.target.classList.contains('task-toggle-arrow') || e.target.closest('.task-toggle-arrow') ||
           e.target.classList.contains('task-add-sub-btn') || e.target.closest('.task-add-sub-btn')) return;
       showTaskSlideover(row.dataset.taskId);
-    };
-  });
-  document.querySelectorAll('.task-check').forEach(el => {
-    el.onclick = async (e) => {
-      e.stopPropagation();
-      const id = el.dataset.checkId;
-      const isDone = el.classList.contains('done');
-      try { await api('PATCH', `/api/tasks/${id}`, { status: isDone ? 'todo' : 'done' }); } catch(err) {}
-      if (onRefresh) onRefresh();
     };
   });
   document.querySelectorAll('.task-toggle-arrow').forEach(arrow => {
@@ -15494,7 +15556,7 @@ function taskModalBody(task, resources) {
         const existing = (v.id != null) ? (getCustomPropValues('task', v.id)[def.key] ?? '') : (v[def.key] ?? '');
         let input;
         if (def.type === 'checkbox') {
-          input = `<input type="checkbox" id="t-cp-${def.key}" ${existing?'checked':''} style="width:auto;margin-top:4px">`;
+          input = `<input type="checkbox" id="t-cp-${def.key}" ${checkboxTrue(existing)?'checked':''} style="width:auto;margin-top:4px">`;
         } else if (def.type === 'date') {
           input = singleDateChipHtml(`t-cp-${def.key}`, existing);
         } else if (def.type === 'number') {
@@ -15725,7 +15787,7 @@ async function showProjectSlideover(project, goals, afterSave) {
     // afterSave is the caller-supplied refresh (usually the list's own render());
     // some entry points (relation links, reopeners) pass none, so fall back to
     // the generic dispatcher rather than leaving the background view stale.
-    if (afterSave) afterSave(); else renderCurrentView();
+    renderCurrentView(); // always refetch — a cheap afterSave() re-render from stale in-memory data was the bug
   }
 
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
@@ -15767,7 +15829,6 @@ async function showProjectSlideover(project, goals, afterSave) {
 
   const taskRows = tasks.map(t =>
     `<li class="task-row" data-task-id="${t.id}" style="cursor:pointer">
-      <div class="task-check ${t.status==='done'?'done':''}" data-check-id="${t.id}">${t.status==='done'?'✓':''}</div>
       <div class="task-content"><div class="task-title">${t.title}</div></div>
       ${builtinSelectChip('taskStatuses', t.status)}
     </li>`
@@ -15962,7 +16023,7 @@ async function showGoalSlideover(goal, afterSave) {
 
   async function patchGoal(data) {
     try { await api('PATCH', `/api/goals/${goalId}`, data); } catch(e) { return; }
-    if (afterSave) afterSave(); else renderCurrentView();
+    renderCurrentView(); // always refetch — a cheap afterSave() re-render from stale in-memory data was the bug
   }
 
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
@@ -16390,7 +16451,7 @@ async function showNoteSlideover(noteId, afterSave) {
 
   async function patchNote(data) {
     try { await api('PATCH', `/api/notes/${noteId}`, data); } catch(e) { return; }
-    if (afterSave) afterSave(); else renderCurrentView();
+    renderCurrentView(); // always refetch — a cheap afterSave() re-render from stale in-memory data was the bug
   }
 
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
@@ -16576,7 +16637,7 @@ async function showSprintSlideover(sprintId, afterSave) {
 
   async function patchSprint(data) {
     try { await api('PATCH', `/api/sprints/${sprintId}`, data); } catch(e) { return; }
-    if (afterSave) afterSave(); else renderCurrentView();
+    renderCurrentView(); // always refetch — a cheap afterSave() re-render from stale in-memory data was the bug
   }
 
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
@@ -16613,7 +16674,6 @@ async function showSprintSlideover(sprintId, afterSave) {
 
   const taskRows = tasks.map(t =>
     `<li class="task-row" data-task-id="${t.id}" style="cursor:pointer">
-      <div class="task-check ${t.status==='done'?'done':''}" data-check-id="${t.id}">${t.status==='done'?'✓':''}</div>
       <div class="task-content"><div class="task-title">${t.title}</div></div>
       ${builtinSelectChip('taskStatuses', t.status)}
     </li>`
@@ -16936,7 +16996,7 @@ async function showResourceSlideover(resource, afterSave) {
 
   async function patchResource(data) {
     try { await api('PATCH', `/api/resources/${resId}`, data); } catch(e) { return; }
-    if (afterSave) afterSave(); else renderCurrentView();
+    renderCurrentView(); // always refetch — a cheap afterSave() re-render from stale in-memory data was the bug
   }
 
   const pIco = (path) => `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
@@ -17196,7 +17256,7 @@ async function showResourceModal(presets, afterSave) {
       console.error(e);
       return;
     }
-    showResourceSlideover(newId, afterSave);
+    showResourceSlideover({ id: newId }, afterSave);
     return;
   }
   let projects = [], tasks = [], goals = [];
