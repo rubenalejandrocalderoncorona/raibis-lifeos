@@ -46,29 +46,37 @@ also `make svelte-build` if you want to do it as a separate step.
 
 ## Ported so far
 
-Both live in `buildInlinePropPanel`/`bindInlinePropPanel` (app.js) — the
+All live in `buildInlinePropPanel`/`bindInlinePropPanel` (app.js) — the
 inline property panel shown in every entity's detail slideover (Task,
-Project, Goal, Sprint, Note, Resource, custom entity types).
+Project, Goal, Sprint, Note, Resource, custom entity types). Every custom
+property type except `multi_select` and `rollup` is now Svelte-driven.
 
-- `CheckboxProp.svelte` — checkbox-type custom property control. First
-  component ported; establishes the mount-into-placeholder pattern above.
-- `TextProp.svelte` — text/number/email/phone/url custom property control.
-  Click to edit inline, blur/Enter to save, Escape to cancel; url values
-  render as a clickable link when not editing.
+- `CheckboxProp.svelte` — checkbox-type control. First component ported;
+  establishes the mount-into-placeholder pattern above.
+- `TextProp.svelte` — text/number/email/phone/url control. Click to edit
+  inline, blur/Enter to save, Escape to cancel; url values render as a
+  clickable link when not editing. Owns its edit UI entirely — no vanilla
+  global involved.
+- `DateProp.svelte`, `SelectProp.svelte`, `RelationProp.svelte` — these three
+  are deliberately "dumb": they display a value and expose a single
+  `onEditRequest` callback prop. The actual editing UI stays 100% vanilla
+  (`openSingleDatePickerGlobal`, `openSingleSelectPicker`,
+  `openRelationPicker` — the last one is a new standalone function,
+  extracted verbatim from the old click handler including all the
+  bilateral-sync logic, so RelationProp's callback can trigger it). After
+  a pick, the vanilla picker calls `onRerender()` (full panel rebuild +
+  remount) rather than patching the component's props in place — simpler
+  and reuses the mount/unmount lifecycle that already has to exist, at the
+  cost of a full panel re-render per edit instead of a targeted update.
 
 ## Not yet ported (still on the vanilla path)
 
-These depend on shared global picker widgets (`openSingleDatePickerGlobal`,
-`openSingleSelectPicker`, `openCombo`, the rollup-rule panel) that aren't
-built for the mount lifecycle yet — porting them means either wrapping
-those widgets too or accepting a Svelte component whose "edit" click still
-delegates out to a vanilla global:
-
-- `date` — display could be ported now; edit interaction opens the global
-  date picker.
-- `select` / `status`, `multi_select` — same shape, opens `openSingleSelectPicker`.
-- `relation` — opens `openCombo` with bilateral-sync logic in the callback.
-- `rollup` — read-only, opens the rollup-rule config panel on click.
+- `multi_select` — chip add/remove UI (`ms-chip-remove`/`ms-add-btn`
+  bindings) wasn't touched; lower priority since it doesn't have the
+  "empty value renders wrong" failure mode the others had.
+- `rollup` — read-only, opens the rollup-rule config panel on click. Could
+  follow the DateProp/SelectProp "dumb display + onEditRequest" shape
+  whenever it's worth doing.
 
 Also not yet started: the Task list/card/kanban/table row rendering itself
 (`taskRowHtml`, `buildStandardListRow`), subtasks tree, pomodoro widget,

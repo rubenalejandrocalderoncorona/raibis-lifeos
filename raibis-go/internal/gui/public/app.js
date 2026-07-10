@@ -4061,20 +4061,21 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
             // below) — owns its own click-to-edit interaction.
             return `<span class="svelte-text-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-value="${escHtml(String(val))}" data-type="${custom.type}" onclick="event.stopPropagation()"></span>`;
           }
-          if (!val) return `<span class="empty">—</span>`;
-          if (custom.type === 'date') return `<span style="font-size:12px">${fmtDate(val)||val}</span>`;
+          if (custom.type === 'date') {
+            // Mounted as a Svelte component; the actual date picker is the
+            // shared vanilla global widget, opened via onEditRequest below.
+            return `<span class="svelte-date-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-display="${escHtml(fmtDate(val)||val||'')}" onclick="event.stopPropagation()"></span>`;
+          }
           if (custom.type === 'select' || custom.type === 'status') {
             const color = (custom.optionColors || {})[val] || '';
-            return color
-              ? `<span class="multi-chip color-${color}" style="font-size:11px">${escHtml(val)}</span>`
-              : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${escHtml(val)}</span>`;
+            return `<span class="svelte-select-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-value="${escHtml(val||'')}" data-color="${escHtml(color)}" onclick="event.stopPropagation()"></span>`;
           }
           if (custom.type === 'relation') {
             const relItems = parseRelationValue(val);
-            return relItems.length
-              ? relItems.map(it => relationChipHtml(custom, it)).join('')
-              : '<span class="empty">—</span>';
+            const chipsHtml = relItems.length ? relItems.map(it => relationChipHtml(custom, it)).join('') : '';
+            return `<span class="svelte-relation-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-chips="${escHtml(chipsHtml)}" onclick="event.stopPropagation()"></span>`;
           }
+          if (!val) return `<span class="empty">—</span>`;
           return `<span style="font-size:12px">${String(val).replace(/</g,'&lt;')}</span>`;
         })();
     const isCustom = !!custom && !custom._taxonomy;
@@ -4082,7 +4083,7 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
       <span class="inline-prop-drag-handle" title="Drag to reorder">⠿</span>
       <div class="inline-prop-label">${iconHtml}<span class="inline-prop-label-text">${labelText}</span></div>
       <div class="prop-label-resizer" title="Drag to resize columns"></div>
-      <div class="inline-prop-value${!valHtml || valHtml.includes('class="empty"') || valHtml.includes('data-value=""') ? ' empty' : ''}" data-prop-key="${key}">${valHtml}</div>
+      <div class="inline-prop-value${!valHtml || valHtml.includes('class="empty"') || valHtml.includes('data-value=""') || valHtml.includes('data-display=""') || valHtml.includes('data-chips=""') ? ' empty' : ''}" data-prop-key="${key}">${valHtml}</div>
       ${isCustom ? `<button class="prop-del-btn btn btn-sm btn-ghost icp-del-btn" data-entity="${entity}" data-prop-key="${key}" title="Remove property" style="font-size:13px">×</button>` : ''}
     </div>`;
   }).filter(Boolean).join('');
@@ -4094,6 +4095,102 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
   </div>`;
 
   return `<div class="inline-prop-panel" data-entity="${entity}" data-record-id="${recordId || ''}" style="--prop-label-w:${getPropLabelWidth()}px">${rows}${addBtnHtml}</div>`;
+}
+
+// ── openRelationPicker ─────────────────────────────────────────────────────
+// Extracted from bindInlinePropPanel's old relation click-handler so the
+// Svelte RelationProp component (a "dumb display, delegate the click" mount)
+// can trigger the exact same picker + bilateral-sync flow via onEditRequest.
+// anchorEl positions the combo picker; nothing here is Svelte-specific.
+function openRelationPicker(anchorEl, entity, recordId, key, onRerender) {
+  const def = getCustomPropDefs(entity).find(d => d.key === key);
+  if (!def) return;
+  const cur = getCustomPropValues(entity, recordId)[key] ?? '';
+  const relEntity = def.relatedEntity || 'task';
+  const isBuiltin = ['task','goal','project','sprint','note','resource','habit'].includes(relEntity);
+  const relPath = relEntity === 'task' ? '/api/tasks?all=1'
+    : isBuiltin ? `/api/${relEntity}s`
+    : `/api/custom/${relEntity}`;
+  api('GET', relPath).then(async raw => {
+    const list = Array.isArray(raw) ? raw : (raw?.tasks || raw?.goals || raw?.projects || raw?.notes || raw?.resources || raw?.sprints || []);
+    const currentItems = parseRelationValue(cur);
+    const curIds = currentItems.map(x => x.id).filter(Boolean);
+    const relColors = def.relationColors || {};
+    openCombo(
+      anchorEl,
+      list.map(it => ({ value: String(it.id), label: it.title || it.name || String(it.id), color: relColors[String(it.id)] || null })),
+      null,
+      async ({ multiIds }) => {
+        if (!multiIds) return;
+        const newItems = multiIds.map(id => {
+          const it = list.find(x => String(x.id) === String(id));
+          return { id: String(id), label: it ? (it.title || it.name || String(id)) : String(id) };
+        });
+        setCustomPropValue(entity, recordId, key, JSON.stringify(newItems));
+        // Sprint FK + relations table sync
+        if (relEntity === 'sprint' && entity === 'task') {
+          const spId = multiIds.length > 0 ? parseInt(multiIds[0]) : null;
+          api('PATCH', `/api/tasks/${recordId}`, { sprint_id: spId }).catch(() => {});
+          for (const sid of multiIds) api('POST', `/api/relations/sprint/${sid}`, { related_entity_type: 'task', related_entity_id: parseInt(recordId) }).catch(() => {});
+          for (const id of curIds) if (!multiIds.map(String).includes(String(id))) api('DELETE', `/api/relations/sprint/${id}/task/${recordId}`, {}).catch(() => {});
+        }
+        // Bilateral sync
+        if (def.bilateral !== false) {
+          const revKey = def.reverseKey ?? `${entity}_${key}`;
+          let sourceTitle = String(recordId);
+          try {
+            const isBuiltinSrc = ['task','goal','project','sprint','note','resource','habit'].includes(entity);
+            const srcPath = entity === 'task' ? `/api/tasks/${recordId}` : isBuiltinSrc ? `/api/${entity}s/${recordId}` : `/api/custom/${entity}/${recordId}`;
+            const src = await api('GET', srcPath);
+            sourceTitle = src.title || src.name || String(recordId);
+          } catch {}
+          const newIdSet = new Set(multiIds.map(String));
+          const oldIdSet = new Set(curIds.map(String));
+          for (const id of newIdSet) {
+            if (!oldIdSet.has(id)) {
+              let revVals = getCustomPropValues(relEntity, parseInt(id));
+              try {
+                const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
+                revVals = { ...revVals, ...serverProps };
+                localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
+              } catch(e) {}
+              let revArr = parseRelationValue(revVals[revKey] ?? '');
+              if (!revArr.some(x => x.id === String(recordId))) {
+                revArr.push({ id: String(recordId), label: sourceTitle });
+                setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
+              }
+            }
+          }
+          for (const id of oldIdSet) {
+            if (id && !newIdSet.has(id)) {
+              let revVals = getCustomPropValues(relEntity, parseInt(id));
+              try {
+                const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
+                revVals = { ...revVals, ...serverProps };
+                localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
+              } catch(e) {}
+              let revArr = parseRelationValue(revVals[revKey] ?? '');
+              revArr = revArr.filter(x => x.id !== String(recordId));
+              setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
+            }
+          }
+        }
+        onRerender();
+      },
+      {
+        multiSelect: true, selectedIds: curIds, colorAssignable: true,
+        onColorAssign: (id, color) => {
+          const defs = getCustomPropDefs(entity);
+          const d = defs.find(x => x.key === key);
+          if (!d) return;
+          d.relationColors = d.relationColors || {};
+          if (color) d.relationColors[id] = color; else delete d.relationColors[id];
+          setCustomPropDefs(entity, defs);
+          onRerender();
+        },
+      }
+    );
+  }).catch(() => {});
 }
 
 // ── bindInlinePropPanel ───────────────────────────────────────────────────
@@ -4124,6 +4221,40 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
       value: mValue || '',
       type: mType || 'text',
       onChange: (next) => setCustomPropValue(mEntity, mRecordId, mPropKey, next),
+    }));
+  });
+  // date/select/relation stay "dumb display" components — the actual
+  // editing UI is the shared vanilla global pickers, opened here on
+  // onEditRequest with the mount element itself as the anchor.
+  panel.querySelectorAll('.svelte-date-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, display: mDisplay } = mountEl.dataset;
+    svelteInstances.push(window.RaibisSvelte.mountDateProp(mountEl, {
+      display: mDisplay || '',
+      onEditRequest: () => {
+        const cur = getCustomPropValues(mEntity, mRecordId)[mPropKey] ?? '';
+        openSingleDatePickerGlobal(mountEl, cur || null, (val) => {
+          setCustomPropValue(mEntity, mRecordId, mPropKey, val || '');
+          onRerender();
+        });
+      },
+    }));
+  });
+  panel.querySelectorAll('.svelte-select-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, value: mValue, color: mColor } = mountEl.dataset;
+    svelteInstances.push(window.RaibisSvelte.mountSelectProp(mountEl, {
+      value: mValue || '',
+      color: mColor || '',
+      onEditRequest: () => {
+        const def = getCustomPropDefs(mEntity).find(d => d.key === mPropKey);
+        if (def) openSingleSelectPicker(mountEl, def, mEntity, mRecordId, mPropKey, onRerender);
+      },
+    }));
+  });
+  panel.querySelectorAll('.svelte-relation-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, chips: mChips } = mountEl.dataset;
+    svelteInstances.push(window.RaibisSvelte.mountRelationProp(mountEl, {
+      chipsHtml: mChips || '',
+      onEditRequest: () => openRelationPicker(mountEl, mEntity, mRecordId, mPropKey, onRerender),
     }));
   });
 
@@ -4165,128 +4296,10 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
       };
       return;
     }
-    valEl.onclick = (e) => {
-      e.stopPropagation();
-      if (valEl.querySelector('input,textarea')) return;
-      const currentVals = getCustomPropValues(entity, recordId);
-      const cur = currentVals[key] ?? '';
-      if (def.type === 'date') {
-        openSingleDatePickerGlobal(valEl, cur || null, (val) => {
-          setCustomPropValue(entity, recordId, key, val || '');
-          onRerender();
-        });
-        return;
-      }
-      if (def.type === 'select' || def.type === 'status') {
-        openSingleSelectPicker(valEl, def, entity, recordId, key, onRerender);
-        return;
-      }
-      if (def.type === 'multi_select') {
-        // Handled by ms-chip-remove and ms-add-btn wired below; skip generic onclick.
-        return;
-      }
-      if (def.type === 'relation') {
-        const relEntity = def.relatedEntity || 'task';
-        const isBuiltin = ['task','goal','project','sprint','note','resource','habit'].includes(relEntity);
-        const relPath = relEntity === 'task' ? '/api/tasks?all=1'
-          : isBuiltin ? `/api/${relEntity}s`
-          : `/api/custom/${relEntity}`;
-        api('GET', relPath).then(async raw => {
-          const list = Array.isArray(raw) ? raw : (raw?.tasks || raw?.goals || raw?.projects || raw?.notes || raw?.resources || raw?.sprints || []);
-          const currentItems = parseRelationValue(cur);
-          const curIds = currentItems.map(x => x.id).filter(Boolean);
-          const relColors = def.relationColors || {};
-          openCombo(
-            valEl,
-            list.map(it => ({ value: String(it.id), label: it.title || it.name || String(it.id), color: relColors[String(it.id)] || null })),
-            null,
-            async ({ multiIds }) => {
-              if (!multiIds) return;
-              const newItems = multiIds.map(id => {
-                const it = list.find(x => String(x.id) === String(id));
-                return { id: String(id), label: it ? (it.title || it.name || String(id)) : String(id) };
-              });
-              setCustomPropValue(entity, recordId, key, JSON.stringify(newItems));
-              // Sprint FK + relations table sync
-              if (relEntity === 'sprint' && entity === 'task') {
-                const spId = multiIds.length > 0 ? parseInt(multiIds[0]) : null;
-                api('PATCH', `/api/tasks/${recordId}`, { sprint_id: spId }).catch(() => {});
-                for (const sid of multiIds) api('POST', `/api/relations/sprint/${sid}`, { related_entity_type: 'task', related_entity_id: parseInt(recordId) }).catch(() => {});
-                for (const id of curIds) if (!multiIds.map(String).includes(String(id))) api('DELETE', `/api/relations/sprint/${id}/task/${recordId}`, {}).catch(() => {});
-              }
-              // Bilateral sync
-              if (def.bilateral !== false) {
-                const revKey = def.reverseKey ?? `${entity}_${key}`;
-                let sourceTitle = String(recordId);
-                try {
-                  const isBuiltinSrc = ['task','goal','project','sprint','note','resource','habit'].includes(entity);
-                  const srcPath = entity === 'task' ? `/api/tasks/${recordId}` : isBuiltinSrc ? `/api/${entity}s/${recordId}` : `/api/custom/${entity}/${recordId}`;
-                  const src = await api('GET', srcPath);
-                  sourceTitle = src.title || src.name || String(recordId);
-                } catch {}
-                const newIdSet = new Set(multiIds.map(String));
-                const oldIdSet = new Set(curIds.map(String));
-                for (const id of newIdSet) {
-                  if (!oldIdSet.has(id)) {
-                    let revVals = getCustomPropValues(relEntity, parseInt(id));
-                    try {
-                      const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
-                      revVals = { ...revVals, ...serverProps };
-                      localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
-                    } catch(e) {}
-                    let revArr = parseRelationValue(revVals[revKey] ?? '');
-                    if (!revArr.some(x => x.id === String(recordId))) {
-                      revArr.push({ id: String(recordId), label: sourceTitle });
-                      setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
-                    }
-                  }
-                }
-                for (const id of oldIdSet) {
-                  if (id && !newIdSet.has(id)) {
-                    let revVals = getCustomPropValues(relEntity, parseInt(id));
-                    try {
-                      const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
-                      revVals = { ...revVals, ...serverProps };
-                      localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
-                    } catch(e) {}
-                    let revArr = parseRelationValue(revVals[revKey] ?? '');
-                    revArr = revArr.filter(x => x.id !== String(recordId));
-                    setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
-                  }
-                }
-              }
-              valEl.innerHTML = newItems.length
-                ? newItems.map(it => relationChipHtml(getCustomPropDefs(entity).find(d => d.key === key), it)).join('')
-                : '<span class="empty">—</span>';
-            },
-            {
-              multiSelect: true, selectedIds: curIds, colorAssignable: true,
-              onColorAssign: (id, color) => {
-                const defs = getCustomPropDefs(entity);
-                const d = defs.find(x => x.key === key);
-                if (!d) return;
-                d.relationColors = d.relationColors || {};
-                if (color) d.relationColors[id] = color; else delete d.relationColors[id];
-                setCustomPropDefs(entity, defs);
-                onRerender();
-              },
-            }
-          );
-        }).catch(() => {});
-        return;
-      }
-    };
-  });
-
-  // Wire custom checkbox changes — mounts the Svelte CheckboxProp component
-  // into each placeholder span left by the checkbox branch above.
-  panel.querySelectorAll('.svelte-checkbox-mount').forEach(mountEl => {
-    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, value: mValue, description: mDescription } = mountEl.dataset;
-    window.RaibisSvelte.mountCheckboxProp(mountEl, {
-      value: mValue === 'true',
-      description: mDescription || '',
-      onChange: (next) => setCustomPropValue(mEntity, mRecordId, mPropKey, next),
-    });
+    if (def.type === 'date') return; // handled by Svelte DateProp directly
+    if (def.type === 'select' || def.type === 'status') return; // handled by Svelte SelectProp directly
+    if (def.type === 'relation') return; // handled by Svelte RelationProp directly
+    if (def.type === 'multi_select') return; // handled by ms-chip-remove and ms-add-btn wired below
   });
 
   // Wire delete buttons (remove custom prop def + values from all records)

@@ -1,6 +1,9 @@
 import { mount as svelteMount, unmount as svelteUnmount } from 'svelte';
 import CheckboxProp from './CheckboxProp.svelte';
 import TextProp from './TextProp.svelte';
+import DateProp from './DateProp.svelte';
+import SelectProp from './SelectProp.svelte';
+import RelationProp from './RelationProp.svelte';
 
 // Exposed as a plain global so the existing vanilla-JS app (app.js) can
 // mount/unmount Svelte components into specific DOM nodes without either
@@ -16,7 +19,22 @@ function mountTextProp(target, props) {
   return svelteMount(TextProp, { target, props });
 }
 
+function mountDateProp(target, props) {
+  return svelteMount(DateProp, { target, props });
+}
+
+function mountSelectProp(target, props) {
+  return svelteMount(SelectProp, { target, props });
+}
+
+function mountRelationProp(target, props) {
+  return svelteMount(RelationProp, { target, props });
+}
+
 window.RaibisSvelte = window.RaibisSvelte || {};
 window.RaibisSvelte.mountCheckboxProp = mountCheckboxProp;
 window.RaibisSvelte.mountTextProp = mountTextProp;
+window.RaibisSvelte.mountDateProp = mountDateProp;
+window.RaibisSvelte.mountSelectProp = mountSelectProp;
+window.RaibisSvelte.mountRelationProp = mountRelationProp;
 window.RaibisSvelte.unmount = svelteUnmount;
