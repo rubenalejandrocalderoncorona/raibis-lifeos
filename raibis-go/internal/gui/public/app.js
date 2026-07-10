@@ -4036,8 +4036,9 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
       : (() => {
           const val = customVals[key] ?? '';
           if (custom.type === 'checkbox') {
-            return `<input type="checkbox" class="icp-check" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" ${checkboxTrue(val)?'checked':''}
-              style="cursor:pointer;accent-color:var(--accent)" onclick="event.stopPropagation()">`;
+            // Mounted as a Svelte component post-render (see bindInlinePropPanel
+            // below) — first control ported in the Svelte migration.
+            return `<span class="svelte-checkbox-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-value="${checkboxTrue(val)}" data-description="${escHtml(custom.description||'')}" onclick="event.stopPropagation()"></span>`;
           }
           if (custom.type === 'multi_select') {
             const arr = (() => { try { const a = JSON.parse(val); return Array.isArray(a) ? a : (val ? [val] : []); } catch { return val ? [val] : []; } })();
@@ -4263,9 +4264,15 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
     };
   });
 
-  // Wire custom checkbox changes
-  panel.querySelectorAll('.icp-check').forEach(chk => {
-    chk.onchange = () => setCustomPropValue(chk.dataset.entity, chk.dataset.recordId, chk.dataset.propKey, chk.checked);
+  // Wire custom checkbox changes — mounts the Svelte CheckboxProp component
+  // into each placeholder span left by the checkbox branch above.
+  panel.querySelectorAll('.svelte-checkbox-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, value: mValue, description: mDescription } = mountEl.dataset;
+    window.RaibisSvelte.mountCheckboxProp(mountEl, {
+      value: mValue === 'true',
+      description: mDescription || '',
+      onChange: (next) => setCustomPropValue(mEntity, mRecordId, mPropKey, next),
+    });
   });
 
   // Wire delete buttons (remove custom prop def + values from all records)
