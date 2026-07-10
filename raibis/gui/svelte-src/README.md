@@ -48,8 +48,9 @@ also `make svelte-build` if you want to do it as a separate step.
 
 All live in `buildInlinePropPanel`/`bindInlinePropPanel` (app.js) — the
 inline property panel shown in every entity's detail slideover (Task,
-Project, Goal, Sprint, Note, Resource, custom entity types). Every custom
-property type except `multi_select` and `rollup` is now Svelte-driven.
+Project, Goal, Sprint, Note, Resource, custom entity types). **Every
+custom property type is now Svelte-driven** — this closes out the
+property panel as a migration milestone.
 
 - `CheckboxProp.svelte` — checkbox-type control. First component ported;
   establishes the mount-into-placeholder pattern above.
@@ -57,28 +58,29 @@ property type except `multi_select` and `rollup` is now Svelte-driven.
   inline, blur/Enter to save, Escape to cancel; url values render as a
   clickable link when not editing. Owns its edit UI entirely — no vanilla
   global involved.
-- `DateProp.svelte`, `SelectProp.svelte`, `RelationProp.svelte` — these three
-  are deliberately "dumb": they display a value and expose a single
+- `DateProp.svelte`, `SelectProp.svelte`, `RelationProp.svelte`,
+  `RollupProp.svelte` — these are deliberately "dumb": they display a value
+  (RelationProp/RollupProp take pre-rendered HTML from `relationChipHtml`/
+  `renderRollupValue` via `{@html}` so the visual can't drift from every
+  other place in the app that renders the same thing) and expose a single
   `onEditRequest` callback prop. The actual editing UI stays 100% vanilla
   (`openSingleDatePickerGlobal`, `openSingleSelectPicker`,
-  `openRelationPicker` — the last one is a new standalone function,
-  extracted verbatim from the old click handler including all the
-  bilateral-sync logic, so RelationProp's callback can trigger it). After
-  a pick, the vanilla picker calls `onRerender()` (full panel rebuild +
-  remount) rather than patching the component's props in place — simpler
-  and reuses the mount/unmount lifecycle that already has to exist, at the
-  cost of a full panel re-render per edit instead of a targeted update.
+  `openRelationPicker` — a new standalone function extracted verbatim from
+  the old click handler including all the bilateral-sync logic —
+  `showAddRollupPanel`). After an edit, the vanilla picker calls
+  `onRerender()` (full panel rebuild + remount) rather than patching the
+  component's props in place — simpler and reuses the mount/unmount
+  lifecycle that already has to exist, at the cost of a full panel
+  re-render per edit instead of a targeted update.
+- `MultiSelectProp.svelte` — the one exception to "dumb display": chip
+  removal is handled directly in the component (`onRemove` callback,
+  no vanilla global needed for that half) since it doesn't need a picker
+  UI; adding a new value still delegates to `openMultiSelectPicker` via
+  `onEditRequest`, same shape as the others.
 
-## Not yet ported (still on the vanilla path)
+## Not yet ported
 
-- `multi_select` — chip add/remove UI (`ms-chip-remove`/`ms-add-btn`
-  bindings) wasn't touched; lower priority since it doesn't have the
-  "empty value renders wrong" failure mode the others had.
-- `rollup` — read-only, opens the rollup-rule config panel on click. Could
-  follow the DateProp/SelectProp "dumb display + onEditRequest" shape
-  whenever it's worth doing.
-
-Also not yet started: the Task list/card/kanban/table row rendering itself
+The Task list/card/kanban/table row rendering itself
 (`taskRowHtml`, `buildStandardListRow`), subtasks tree, pomodoro widget,
 comments, and the EditorJS content block — i.e. everything outside the
 property panel. The property panel was the natural first slice since it's

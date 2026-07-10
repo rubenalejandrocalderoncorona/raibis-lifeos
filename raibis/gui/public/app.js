@@ -4043,18 +4043,13 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
           if (custom.type === 'multi_select') {
             const arr = (() => { try { const a = JSON.parse(val); return Array.isArray(a) ? a : (val ? [val] : []); } catch { return val ? [val] : []; } })();
             const optColors = custom.optionColors || {};
-            const chips = arr.map(v => {
-              const color = optColors[v] || '';
-              const chipClass = color ? `multi-chip color-${color} ms-chip` : `multi-chip ms-chip`;
-              const chipStyle = color ? '' : 'style="background:var(--accent-glow);color:var(--text-primary);font-size:11px;display:inline-flex;align-items:center;gap:3px;cursor:default"';
-              return `<span class="${chipClass}" data-ms-val="${v.replace(/"/g,'&quot;')}" ${chipStyle}>${v}<span class="ms-chip-remove" data-val="${v.replace(/"/g,'&quot;')}" style="cursor:pointer;font-weight:700;opacity:0.6;font-size:12px;line-height:1" title="Remove">×</span></span>`;
-            }).join('');
-            return `<div class="ms-chips-wrap" style="display:flex;flex-wrap:wrap;gap:3px;align-items:center;min-height:20px">${chips}<button class="btn btn-sm btn-ghost ms-add-btn" data-prop-key="${key}" style="font-size:11px;padding:1px 5px;height:20px;line-height:1" title="Add option">+</button></div>`;
+            return `<span class="svelte-multiselect-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-values="${escHtml(JSON.stringify(arr))}" data-colors="${escHtml(JSON.stringify(optColors))}"${arr.length ? '' : ' data-empty="true"'}></span>`;
           }
           if (custom.type === 'rollup') {
             // Always compute fresh so the panel never shows a stale aggregate
             const fresh = evaluateRollup(entity, recordId, custom);
-            return renderRollupValue(fresh !== null ? fresh : val, custom);
+            const rollupHtml = renderRollupValue(fresh !== null ? fresh : val, custom);
+            return `<span class="svelte-rollup-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-html="${escHtml(rollupHtml)}"${rollupHtml.includes('class="empty"') ? ' data-empty="true"' : ''} onclick="event.stopPropagation()"></span>`;
           }
           if (custom.type === 'text' || custom.type === 'number' || custom.type === 'email' || custom.type === 'phone' || custom.type === 'url') {
             // Mounted as a Svelte component post-render (see bindInlinePropPanel
@@ -4083,7 +4078,7 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
       <span class="inline-prop-drag-handle" title="Drag to reorder">⠿</span>
       <div class="inline-prop-label">${iconHtml}<span class="inline-prop-label-text">${labelText}</span></div>
       <div class="prop-label-resizer" title="Drag to resize columns"></div>
-      <div class="inline-prop-value${!valHtml || valHtml.includes('class="empty"') || valHtml.includes('data-value=""') || valHtml.includes('data-display=""') || valHtml.includes('data-chips=""') ? ' empty' : ''}" data-prop-key="${key}">${valHtml}</div>
+      <div class="inline-prop-value${!valHtml || valHtml.includes('class="empty"') || valHtml.includes('data-value=""') || valHtml.includes('data-display=""') || valHtml.includes('data-chips=""') || valHtml.includes('data-empty="true"') ? ' empty' : ''}" data-prop-key="${key}">${valHtml}</div>
       ${isCustom ? `<button class="prop-del-btn btn btn-sm btn-ghost icp-del-btn" data-entity="${entity}" data-prop-key="${key}" title="Remove property" style="font-size:13px">×</button>` : ''}
     </div>`;
   }).filter(Boolean).join('');
@@ -4257,6 +4252,37 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
       onEditRequest: () => openRelationPicker(mountEl, mEntity, mRecordId, mPropKey, onRerender),
     }));
   });
+  panel.querySelectorAll('.svelte-multiselect-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, values: mValues, colors: mColors } = mountEl.dataset;
+    let values = []; let optionColors = {};
+    try { values = JSON.parse(mValues || '[]'); } catch {}
+    try { optionColors = JSON.parse(mColors || '{}'); } catch {}
+    svelteInstances.push(window.RaibisSvelte.mountMultiSelectProp(mountEl, {
+      values,
+      optionColors,
+      onRemove: (v) => {
+        const cur = getCustomPropValues(mEntity, mRecordId)[mPropKey] ?? '';
+        const arr = (() => { try { const a = JSON.parse(cur); return Array.isArray(a) ? a : []; } catch { return []; } })();
+        setCustomPropValue(mEntity, mRecordId, mPropKey, JSON.stringify(arr.filter(x => x !== v)));
+        onRerender();
+      },
+      onEditRequest: () => {
+        const def = getCustomPropDefs(mEntity).find(d => d.key === mPropKey);
+        if (def) openMultiSelectPicker(mountEl, def, mEntity, mRecordId, mPropKey, onRerender);
+      },
+    }));
+  });
+  panel.querySelectorAll('.svelte-rollup-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, html: mHtml } = mountEl.dataset;
+    svelteInstances.push(window.RaibisSvelte.mountRollupProp(mountEl, {
+      html: mHtml || '',
+      onEditRequest: () => {
+        const def = getCustomPropDefs(mEntity).find(d => d.key === mPropKey);
+        if (!def) return;
+        showAddRollupPanel(mountEl, mPropKey, def.label, mEntity, onRerender, def.rollup ? JSON.parse(JSON.stringify(def.rollup)) : {});
+      },
+    }));
+  });
 
   // Auto re-render when a property is added from another panel (same entity type)
   const propDefsHandler = (e) => { if (e.detail.entity === entity) onRerender(); };
@@ -4286,20 +4312,11 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
     if (!def) return;
     if (def.type === 'checkbox') return; // handled by Svelte CheckboxProp directly
     if (def.type === 'text' || def.type === 'number' || def.type === 'email' || def.type === 'phone' || def.type === 'url') return; // handled by Svelte TextProp directly
-    if (def.type === 'rollup') {
-      // Calculated value — clicking edits the rule, pre-filled with the saved config
-      valEl.style.cursor = 'pointer';
-      valEl.title = 'Click to edit rollup rule';
-      valEl.onclick = (e) => {
-        e.stopPropagation();
-        showAddRollupPanel(valEl, key, def.label, entity, onRerender, def.rollup ? JSON.parse(JSON.stringify(def.rollup)) : {});
-      };
-      return;
-    }
+    if (def.type === 'rollup') return; // handled by Svelte RollupProp directly
     if (def.type === 'date') return; // handled by Svelte DateProp directly
     if (def.type === 'select' || def.type === 'status') return; // handled by Svelte SelectProp directly
     if (def.type === 'relation') return; // handled by Svelte RelationProp directly
-    if (def.type === 'multi_select') return; // handled by ms-chip-remove and ms-add-btn wired below
+    if (def.type === 'multi_select') return; // handled by Svelte MultiSelectProp directly
   });
 
   // Wire delete buttons (remove custom prop def + values from all records)
@@ -4336,32 +4353,6 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
     };
   });
 
-  // Wire multi_select chip removes (× per chip)
-  panel.querySelectorAll('.ms-chip-remove').forEach(btn => {
-    btn.onclick = (e) => {
-      e.stopPropagation();
-      const key = btn.closest('[data-prop-key]')?.dataset.propKey;
-      if (!key) return;
-      const cur = getCustomPropValues(entity, recordId)[key] ?? '';
-      const arr = (() => { try { const a = JSON.parse(cur); return Array.isArray(a) ? a : []; } catch { return []; } })();
-      const updated = arr.filter(v => v !== btn.dataset.val);
-      setCustomPropValue(entity, recordId, key, JSON.stringify(updated));
-      onRerender();
-    };
-  });
-
-  // Wire multi_select + button — opens full tag-like picker
-  panel.querySelectorAll('.ms-add-btn').forEach(btn => {
-    btn.onclick = (e) => {
-      e.stopPropagation();
-      const key = btn.dataset.propKey || btn.closest('[data-prop-key]')?.dataset.propKey;
-      if (!key) return;
-      const defs = getCustomPropDefs(entity);
-      const def = defs.find(d => d.key === key);
-      if (!def) return;
-      openMultiSelectPicker(btn, def, entity, recordId, key, onRerender);
-    };
-  });
 
   // Wire Add property button
   bindAddPropBtn(entity, onRerender);
