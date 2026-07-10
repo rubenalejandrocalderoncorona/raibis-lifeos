@@ -4056,6 +4056,11 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
             const fresh = evaluateRollup(entity, recordId, custom);
             return renderRollupValue(fresh !== null ? fresh : val, custom);
           }
+          if (custom.type === 'text' || custom.type === 'number' || custom.type === 'email' || custom.type === 'phone' || custom.type === 'url') {
+            // Mounted as a Svelte component post-render (see bindInlinePropPanel
+            // below) — owns its own click-to-edit interaction.
+            return `<span class="svelte-text-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-value="${escHtml(String(val))}" data-type="${custom.type}" onclick="event.stopPropagation()"></span>`;
+          }
           if (!val) return `<span class="empty">—</span>`;
           if (custom.type === 'date') return `<span style="font-size:12px">${fmtDate(val)||val}</span>`;
           if (custom.type === 'select' || custom.type === 'status') {
@@ -4063,9 +4068,6 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
             return color
               ? `<span class="multi-chip color-${color}" style="font-size:11px">${escHtml(val)}</span>`
               : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${escHtml(val)}</span>`;
-          }
-          if (custom.type === 'url') {
-            return `<a href="${val}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);text-decoration:underline;font-size:12px" onclick="event.stopPropagation()">${val}</a>`;
           }
           if (custom.type === 'relation') {
             const relItems = parseRelationValue(val);
@@ -4080,7 +4082,7 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
       <span class="inline-prop-drag-handle" title="Drag to reorder">⠿</span>
       <div class="inline-prop-label">${iconHtml}<span class="inline-prop-label-text">${labelText}</span></div>
       <div class="prop-label-resizer" title="Drag to resize columns"></div>
-      <div class="inline-prop-value${!valHtml || valHtml.includes('class="empty"') ? ' empty' : ''}" data-prop-key="${key}">${valHtml}</div>
+      <div class="inline-prop-value${!valHtml || valHtml.includes('class="empty"') || valHtml.includes('data-value=""') ? ' empty' : ''}" data-prop-key="${key}">${valHtml}</div>
       ${isCustom ? `<button class="prop-del-btn btn btn-sm btn-ghost icp-del-btn" data-entity="${entity}" data-prop-key="${key}" title="Remove property" style="font-size:13px">×</button>` : ''}
     </div>`;
   }).filter(Boolean).join('');
@@ -4102,13 +4104,37 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
   const panel = (root || document).querySelector(`.inline-prop-panel[data-entity="${entity}"]`);
   if (!panel) return;
 
+  // Mount Svelte components for ported control types. Svelte 5 doesn't
+  // auto-cleanup effects when its DOM is discarded via innerHTML
+  // replacement (only via explicit unmount()) — so instances are tracked
+  // here and torn down in the same "panel left the DOM" check below that
+  // already existed for the propDefsChanged listener.
+  const svelteInstances = [];
+  panel.querySelectorAll('.svelte-checkbox-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, value: mValue, description: mDescription } = mountEl.dataset;
+    svelteInstances.push(window.RaibisSvelte.mountCheckboxProp(mountEl, {
+      value: mValue === 'true',
+      description: mDescription || '',
+      onChange: (next) => setCustomPropValue(mEntity, mRecordId, mPropKey, next),
+    }));
+  });
+  panel.querySelectorAll('.svelte-text-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, value: mValue, type: mType } = mountEl.dataset;
+    svelteInstances.push(window.RaibisSvelte.mountTextProp(mountEl, {
+      value: mValue || '',
+      type: mType || 'text',
+      onChange: (next) => setCustomPropValue(mEntity, mRecordId, mPropKey, next),
+    }));
+  });
+
   // Auto re-render when a property is added from another panel (same entity type)
   const propDefsHandler = (e) => { if (e.detail.entity === entity) onRerender(); };
   document.addEventListener('propDefsChanged', propDefsHandler);
-  // Clean up listener when panel is removed from DOM
+  // Clean up listener + unmount Svelte children when panel is removed from DOM
   const observer = new MutationObserver(() => {
     if (!document.contains(panel)) {
       document.removeEventListener('propDefsChanged', propDefsHandler);
+      svelteInstances.forEach(inst => { try { window.RaibisSvelte.unmount(inst); } catch (e) {} });
       observer.disconnect();
     }
   });
@@ -4127,7 +4153,8 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
     const defs = getCustomPropDefs(entity);
     const def = defs.find(d => d.key === key);
     if (!def) return;
-    if (def.type === 'checkbox') return; // handled by input directly
+    if (def.type === 'checkbox') return; // handled by Svelte CheckboxProp directly
+    if (def.type === 'text' || def.type === 'number' || def.type === 'email' || def.type === 'phone' || def.type === 'url') return; // handled by Svelte TextProp directly
     if (def.type === 'rollup') {
       // Calculated value — clicking edits the rule, pre-filled with the saved config
       valEl.style.cursor = 'pointer';
@@ -4248,19 +4275,6 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
         }).catch(() => {});
         return;
       }
-      const inp = def.type === 'number'
-        ? Object.assign(document.createElement('input'), { type: 'number', value: cur })
-        : Object.assign(document.createElement('input'), { type: def.type === 'email' ? 'email' : def.type === 'phone' ? 'tel' : 'text', value: cur, placeholder: def.label });
-      inp.style.cssText = 'width:100%;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text-primary)';
-      valEl.innerHTML = '';
-      valEl.appendChild(inp);
-      inp.focus();
-      const save = () => {
-        setCustomPropValue(entity, recordId, key, inp.value);
-        onRerender();
-      };
-      inp.onblur = save;
-      inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); if (ke.key === 'Escape') { valEl.innerHTML = cur || '<span class="empty">—</span>'; } };
     };
   });
 

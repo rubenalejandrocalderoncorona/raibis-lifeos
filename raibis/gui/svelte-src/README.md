@@ -22,6 +22,15 @@ one at a time. It coexists with the vanilla app — nothing here replaces
   site wires the callback to whatever the vanilla state layer needs. This
   keeps components portable and testable without dragging in app.js's
   globals.
+- **Mount/unmount lifecycle**: Svelte 5 does NOT auto-cleanup a mounted
+  component's effects when its DOM is discarded via `innerHTML =` (only
+  `unmount()` does that). `bindInlinePropPanel` mounts into every
+  `.svelte-*-mount` placeholder, collects the returned instances, and
+  unmounts them in the same "panel left the DOM" `MutationObserver` check
+  that already existed for cleaning up its `propDefsChanged` listener. Any
+  new panel/row-level binding function that starts mounting components
+  needs the same pattern — track instances, unmount when that DOM is
+  discarded — or you leak reactive effects on every re-render.
 
 ## Rebuilding after a change
 
@@ -37,9 +46,36 @@ also `make svelte-build` if you want to do it as a separate step.
 
 ## Ported so far
 
-- `CheckboxProp.svelte` — checkbox-type custom property control, used by
-  `buildInlinePropPanel` in app.js. First component ported; establishes the
-  mount-into-placeholder pattern above for everything that follows.
+Both live in `buildInlinePropPanel`/`bindInlinePropPanel` (app.js) — the
+inline property panel shown in every entity's detail slideover (Task,
+Project, Goal, Sprint, Note, Resource, custom entity types).
+
+- `CheckboxProp.svelte` — checkbox-type custom property control. First
+  component ported; establishes the mount-into-placeholder pattern above.
+- `TextProp.svelte` — text/number/email/phone/url custom property control.
+  Click to edit inline, blur/Enter to save, Escape to cancel; url values
+  render as a clickable link when not editing.
+
+## Not yet ported (still on the vanilla path)
+
+These depend on shared global picker widgets (`openSingleDatePickerGlobal`,
+`openSingleSelectPicker`, `openCombo`, the rollup-rule panel) that aren't
+built for the mount lifecycle yet — porting them means either wrapping
+those widgets too or accepting a Svelte component whose "edit" click still
+delegates out to a vanilla global:
+
+- `date` — display could be ported now; edit interaction opens the global
+  date picker.
+- `select` / `status`, `multi_select` — same shape, opens `openSingleSelectPicker`.
+- `relation` — opens `openCombo` with bilateral-sync logic in the callback.
+- `rollup` — read-only, opens the rollup-rule config panel on click.
+
+Also not yet started: the Task list/card/kanban/table row rendering itself
+(`taskRowHtml`, `buildStandardListRow`), subtasks tree, pomodoro widget,
+comments, and the EditorJS content block — i.e. everything outside the
+property panel. The property panel was the natural first slice since it's
+shared across every entity type and was already the most bug-prone surface
+this session (checkbox "undefined", stale re-renders, etc.).
 
 ## Porting the next component
 
