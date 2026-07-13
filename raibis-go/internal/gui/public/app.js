@@ -5134,7 +5134,6 @@ function taskRowHtml(task, showProject, indent, viewMode) {
   const vm = viewMode || 'list';
   const vis = (key) => propVisible(vm, key);
   const done = task.status === 'done';
-  const titleCls = done ? 'task-title-text done' : 'task-title-text';
   // Read the stored multi-relation prop first, FK title as fallback — a
   // relation assigned moments ago shows even before the FK round-trips.
   const projBadge = showProject && vis('project')
@@ -5163,16 +5162,53 @@ function taskRowHtml(task, showProject, indent, viewMode) {
 
   const excludeCustomDates = vm === 'list';
   const allDates = excludeCustomDates ? [dueBadge, customDatePropsHtml('task', task.id, vm)].filter(Boolean).join(', ') : dueBadge;
+  const metaChipsHtml = `${projBadge}${goalBadge}${catChip}${tagChips}${statusChip}${priorityChip}${storyPts}`;
+  const customChipsHtml = renderCustomPropChips('task', task.id, vm, excludeCustomDates);
+  // Content (title/meta/chips/due) is mounted as a Svelte component
+  // post-render (see mountTaskRowSvelteInstances) — ctx-handle and the
+  // toggle-arrow stay vanilla siblings since their wiring is shared,
+  // unchanged infrastructure (bindCtxHandles, bindTaskListEvents) that
+  // doesn't need to move per-row.
   return `<li class="task-row ${indent ? 'task-row-sub' : ''}" data-task-id="${task.id}" style="${indentStyle}">
     <span class="ctx-handle" data-entity="task" data-id="${task.id}" title="Actions">⠿</span>
     ${toggleArrow}
-    <div class="task-content">
-      <div class="${titleCls}"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${task.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${task.title} <span class="comment-badge" data-comment-for="${task.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div>
-      <div class="task-meta-row">${projBadge}${goalBadge}${catChip}${tagChips}${statusChip}${priorityChip}${storyPts}</div>
-      <div class="task-chips-outer" data-entity="task" data-rid="${task.id}" data-vm="${vm||'list'}">${renderCustomPropChips('task', task.id, vm, excludeCustomDates)}</div>
-    </div>
-    <span class="task-row-due-right">${allDates}</span>
+    <span class="svelte-taskrow-mount" data-task-id="${task.id}" data-title="${escHtml(task.title)}" data-done="${done}" data-vm="${vm}" data-recur="${escHtml(recurBadge)}" data-meta="${escHtml(metaChipsHtml)}" data-chips="${escHtml(customChipsHtml)}" data-due="${escHtml(allDates)}"></span>
   </li>`;
+}
+
+// ── Task row Svelte mount registry ──────────────────────────────────────
+// taskRowHtml() is called from ~8 places (dashboard widgets, the main task
+// list, entity-detail "Tasks" widgets) that each independently rebuild
+// their own slice of the DOM. Rather than have every caller manage its own
+// mount/unmount lifecycle, this is one shared registry + a single
+// MutationObserver watching for any .svelte-taskrow-mount that leaves the
+// DOM — call mountTaskRowSvelteInstances(root) after inserting HTML that
+// may contain new placeholders (idempotent: already-mounted elements are
+// skipped) and cleanup happens automatically.
+const _taskRowSvelteInstances = new Map(); // mountEl -> Svelte instance
+let _taskRowCleanupObserverStarted = false;
+function mountTaskRowSvelteInstances(root) {
+  if (!_taskRowCleanupObserverStarted) {
+    _taskRowCleanupObserverStarted = true;
+    const observer = new MutationObserver(() => {
+      for (const [el, inst] of _taskRowSvelteInstances) {
+        if (!document.contains(el)) {
+          try { window.RaibisSvelte.unmount(inst); } catch (e) {}
+          _taskRowSvelteInstances.delete(el);
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+  (root || document).querySelectorAll('.svelte-taskrow-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const { taskId, title, done, vm, recur, meta, chips, due } = mountEl.dataset;
+    const inst = window.RaibisSvelte.mountTaskRowContent(mountEl, {
+      taskId, title: title || '', done: done === 'true', viewMode: vm || 'list',
+      recurBadgeHtml: recur || '', metaChipsHtml: meta || '', customChipsHtml: chips || '', dueHtml: due || '',
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
 }
 
 // Shared list-row skeleton — Task's list view (taskRowHtml above) is the
@@ -9825,6 +9861,7 @@ async function renderTasks() {
 
   function bindTasksContentEvents() {
     bindCtxHandles();
+    mountTaskRowSvelteInstances();
     document.querySelectorAll('.task-toggle-arrow').forEach(arrow => {
       arrow.onclick = async (e) => {
         e.stopPropagation();
@@ -15370,6 +15407,7 @@ async function renderPomodoro() {
 
 function bindTaskListEvents() {
   bindCtxHandles();
+  mountTaskRowSvelteInstances();
   document.querySelectorAll('.task-row').forEach(row => {
     row.onclick = (e) => {
       if (e.target.classList.contains('task-toggle-arrow') || e.target.closest('.task-toggle-arrow') ||
@@ -15426,6 +15464,7 @@ function bindTaskListEvents() {
 
 /* ─── Shared detail-view task event binding ──────────────────────────── */
 function bindDetailTaskEvents(onRefresh) {
+  mountTaskRowSvelteInstances();
   document.querySelectorAll('.task-row').forEach(row => {
     row.onclick = (e) => {
       if (e.target.classList.contains('task-toggle-arrow') || e.target.closest('.task-toggle-arrow') ||

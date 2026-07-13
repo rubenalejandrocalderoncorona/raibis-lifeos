@@ -6,6 +6,7 @@ import SelectProp from './SelectProp.svelte';
 import RelationProp from './RelationProp.svelte';
 import MultiSelectProp from './MultiSelectProp.svelte';
 import RollupProp from './RollupProp.svelte';
+import TaskRowContent from './TaskRowContent.svelte';
 
 // Exposed as a plain global so the existing vanilla-JS app (app.js) can
 // mount/unmount Svelte components into specific DOM nodes without either
@@ -41,6 +42,10 @@ function mountRollupProp(target, props) {
   return svelteMount(RollupProp, { target, props });
 }
 
+function mountTaskRowContent(target, props) {
+  return svelteMount(TaskRowContent, { target, props });
+}
+
 window.RaibisSvelte = window.RaibisSvelte || {};
 window.RaibisSvelte.mountCheckboxProp = mountCheckboxProp;
 window.RaibisSvelte.mountTextProp = mountTextProp;
@@ -49,4 +54,5 @@ window.RaibisSvelte.mountSelectProp = mountSelectProp;
 window.RaibisSvelte.mountRelationProp = mountRelationProp;
 window.RaibisSvelte.mountMultiSelectProp = mountMultiSelectProp;
 window.RaibisSvelte.mountRollupProp = mountRollupProp;
+window.RaibisSvelte.mountTaskRowContent = mountTaskRowContent;
 window.RaibisSvelte.unmount = svelteUnmount;

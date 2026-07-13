@@ -78,14 +78,48 @@ property panel as a migration milestone.
   UI; adding a new value still delegates to `openMultiSelectPicker` via
   `onEditRequest`, same shape as the others.
 
+## Task list row (taskRowHtml)
+
+`TaskRowContent.svelte` renders a task row's title, meta chips,
+custom-prop chips, and right-aligned due-date cluster (all pre-rendered
+HTML from the existing vanilla chip/badge functions, passed through via
+`{@html}` — same approach as RelationProp/RollupProp). It's deliberately
+presentational, same reasoning as the property panel's "dumb" components:
+row click (→ open slideover), the ctx-handle context menu, and the
+subtask toggle-arrow all stay vanilla siblings in the `<li>` that
+`taskRowHtml()` still builds — none of that wiring needed to move, and
+ctx-handle specifically is shared infrastructure used by every entity
+type, not worth re-deriving per component.
+
+`taskRowHtml()` is called from ~8 places (dashboard widgets, the main
+Tasks list, entity-detail "Tasks" widgets) that each independently
+rebuild their own slice of the DOM, so mount/unmount can't live in one
+panel-scoped closure like the property panel's does. Instead there's a
+shared module-level registry (`_taskRowSvelteInstances`, a `Map` from
+mount element → instance) plus a single `MutationObserver` on
+`document.body` that unmounts any instance whose element leaves the DOM
+— call `mountTaskRowSvelteInstances(root)` after inserting HTML that may
+contain new `.svelte-taskrow-mount` placeholders (it's idempotent,
+skips already-mounted elements). This is called from the three distinct
+"post-render, wire this task list" functions that between them cover
+every `taskRowHtml()` call site: `bindTaskListEvents` (dashboard),
+`bindDetailTaskEvents` (Sprint/Project/Goal full-page "Tasks" widget),
+and `bindTasksContentEvents` (the main Tasks page itself — found by
+testing live, not by reading the call graph; it's a third, separate bind
+function that doesn't share a name with the other two).
+
+**Scope note**: this covers `taskRowHtml()`'s callers only — the
+*slideover's own* simpler "Tasks" widget (Project/Sprint/Goal detail,
+title + status chip only, no chips/dates) is a different, already-simple
+hand-rolled renderer that was intentionally left alone; unifying it with
+the richer row would be a visual redesign, not a straight port.
+
 ## Not yet ported
 
-The Task list/card/kanban/table row rendering itself
-(`taskRowHtml`, `buildStandardListRow`), subtasks tree, pomodoro widget,
-comments, and the EditorJS content block — i.e. everything outside the
-property panel. The property panel was the natural first slice since it's
-shared across every entity type and was already the most bug-prone surface
-this session (checkbox "undefined", stale re-renders, etc.).
+Task card/kanban/table row rendering (different markup than the list
+row — `kanban-card`/`task-card-item` classes, not `taskRowHtml`),
+subtasks tree, pomodoro widget, comments, and the EditorJS content
+block.
 
 ## Porting the next component
 
