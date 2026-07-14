@@ -5233,6 +5233,17 @@ function mountTaskRowSvelteInstances(root) {
     });
     _taskRowSvelteInstances.set(mountEl, inst);
   });
+  // buildStandardListRow() — every non-Task entity's list view (Project,
+  // Goal, Sprint, Note, Resource, custom entity types).
+  (root || document).querySelectorAll('.svelte-stdlistrow-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const { entityId, entityKey, title, commentEntity, meta, chips, due } = mountEl.dataset;
+    const inst = window.RaibisSvelte.mountStandardListRowContent(mountEl, {
+      entityId, entityKey, titleHtml: title || '', commentEntity: commentEntity || '',
+      metaChipsHtml: meta || '', customChipsHtml: chips || '', dueHtml: due || '',
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
 }
 
 // Shared list-row skeleton — Task's list view (taskRowHtml above) is the
@@ -5259,16 +5270,15 @@ function buildStandardListRow(entityKey, id, opts) {
   // date props) groups together on the right, comma-separated, rather than
   // scattering across the row.
   const allDates = [dueHtml, customDatePropsHtml(entityKey, id, 'list')].filter(Boolean).join(', ');
+  // .task-content + .task-row-due-right are mounted as a Svelte component
+  // post-render (see mountTaskRowSvelteInstances) — ctx-handle, the icon
+  // slot, and afterHandleHtml all stay vanilla siblings exactly as before,
+  // since nothing inside the mount is interactive here.
   return `<div class="task-row ${rowClass}" data-id="${id}" ${rowAttrs} style="cursor:pointer">
     <span class="ctx-handle" data-entity="${entityKey}" data-id="${id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
     ${afterHandleHtml}
     <span class="list-icon-slot" data-icon-entity="${entityKey}" data-icon-id="${id}" data-icon-size="${iconSize}" style="display:none;flex-shrink:0"></span>
-    <div class="task-content">
-      <div class="task-title-text">${titleHtml}<span class="comment-badge" data-comment-for="${id}" data-comment-entity="${commentEntity}" style="display:none"></span></div>
-      ${meta ? `<div class="task-meta-row">${meta}</div>` : ''}
-      ${customChips ? `<div class="task-chips-outer" data-entity="${entityKey}" data-rid="${id}" data-vm="list">${customChips}</div>` : ''}
-    </div>
-    ${allDates ? `<span class="task-row-due-right">${allDates}</span>` : ''}
+    <span class="svelte-stdlistrow-mount" data-entity-id="${id}" data-entity-key="${entityKey}" data-title="${escHtml(titleHtml)}" data-comment-entity="${escHtml(commentEntity)}" data-meta="${escHtml(meta)}" data-chips="${escHtml(customChips)}" data-due="${escHtml(allDates)}"></span>
   </div>`;
 }
 
@@ -5912,6 +5922,7 @@ async function renderCustomEntityList(typeName) {
 
     function bindRows() {
       bindCtxHandles(main);
+      mountTaskRowSvelteInstances(main);
       injectListIcons(entityKey, list.map(e => e.id));
       main.querySelectorAll('.custom-entity-row[data-id]').forEach(row => {
         row.onclick = e => {
@@ -10351,6 +10362,7 @@ async function renderProjects() {
 
   function bindProjEvents() {
     bindCtxHandles();
+    mountTaskRowSvelteInstances();
     document.querySelectorAll('.proj-slideover-card').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.proj-del-btn, .ctx-handle')) return;
@@ -10706,6 +10718,7 @@ async function renderGoals() {
 
   function bindGoalEvents() {
     bindCtxHandles();
+    mountTaskRowSvelteInstances();
     document.querySelectorAll('.goal-slideover-card').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.goal-del-btn, .ctx-handle')) return;
@@ -10943,6 +10956,7 @@ async function renderNotes() {
 
   function bindNoteEvents() {
     bindCtxHandles();
+    mountTaskRowSvelteInstances();
     document.querySelectorAll('.note-card, .note-item').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.ctx-handle')) return;
@@ -11143,6 +11157,7 @@ async function renderSprints() {
 
   function bindSprintEvents() {
     bindCtxHandles();
+    mountTaskRowSvelteInstances();
     document.querySelectorAll('.sprint-detail-link').forEach(el => {
       el.onclick = (e) => { e.stopPropagation(); renderView('sprint-detail', el.dataset.sprintId); };
     });
@@ -12589,6 +12604,7 @@ async function renderResources() {
 
   function bindResEvents() {
     bindCtxHandles();
+    mountTaskRowSvelteInstances();
     document.querySelectorAll('.res-row').forEach(el => {
       el.onclick = async (e) => {
         if (e.target.closest('.ctx-handle') || e.target.closest('a')) return;

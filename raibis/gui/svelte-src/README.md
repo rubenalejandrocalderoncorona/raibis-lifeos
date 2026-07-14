@@ -215,6 +215,36 @@ with its own working inline `<select>`; title-link click opens the
 right task's slideover with correct breadcrumb; ctx-handle context menu
 opens. Zero console errors, no duplicate mounts.
 
+## Standard list row (every other entity's list view)
+
+`StandardListRowContent.svelte` covers `buildStandardListRow()` — the
+shared list-row skeleton used by Project, Goal, Sprint, Note, Resource,
+and custom entity types (Task's own list view has its own
+`taskRowHtml()`/`TaskRowContent`, already ported). Same shape as
+TaskRowContent, and actually simpler to reason about: ctx-handle, the
+icon slot, and `afterHandleHtml` (e.g. custom entities' subentity
+expand arrow) were already vanilla siblings *outside* `.task-content`
+in the original markup, so nothing interactive lives inside the mount
+and there's no ctx-handle-ordering concern like TaskCardContent/
+TaskTableRow had — call `mountTaskRowSvelteInstances()` anywhere in
+each entity's bind function, order doesn't matter here.
+
+Unlike table view, this one *did* have a real duplication footprint:
+six independent call sites (`buildStandardListRow` calls in Project/
+Goal/Note/Sprint/Resource/custom-entity list builders), each needing
+its own bind function updated — `bindProjEvents`, `bindGoalEvents`,
+`bindNoteEvents`, `bindSprintEvents`, `bindResEvents`, and custom
+entities' `bindRows()` (scoped to `main`, matching that module's
+existing `bindCtxHandles(main)` pattern) all now call
+`mountTaskRowSvelteInstances()`.
+
+Verified live across all six: Project, Goal, Note, Sprint, and Resource
+list views all render correctly (chips, colored dates, relation chips
+for Sprint's project link) with zero console errors; row click opens
+the right slideover; ctx-handle context menu opens. Also verified a
+freshly-created custom entity type end-to-end (list render, row click →
+slideover) to confirm the `bindRows()`-scoped path works the same way.
+
 ## Not yet ported
 
 The pomodoro widget (small and only rendered once per slideover open —
@@ -224,13 +254,14 @@ it is a different kind of problem — who owns the editor instance's
 lifecycle — not chip rendering, so it deserves its own dedicated pass
 rather than being squeezed into this round).
 
-Beyond Task specifically: every other entity's row rendering (Project,
-Goal, Sprint, Note, Resource, custom entity types each have their own
-list/card/kanban/table builders — `buildStandardListRow` is the one
-piece already shared with Task's list view, but card/kanban/table for
-those entities are untouched), creation modals, full-page detail chrome,
-non-task dashboard widgets, and the standalone pages (Calendar, Habits,
-Pomodoro, Automations).
+Beyond list rows: every other entity's card/kanban/table view
+(Project/Goal/Sprint/Note/Resource/custom entities each have their own
+independent builders for these, none shared the way list view was via
+`buildStandardListRow` — porting them would mean redoing the
+TaskCardContent/TaskTableRow work per entity type, not a single shared
+piece), creation modals, full-page detail chrome, non-task dashboard
+widgets, and the standalone pages (Calendar, Habits, Pomodoro,
+Automations).
 
 ## Porting the next component
 
