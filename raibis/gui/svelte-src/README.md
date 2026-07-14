@@ -184,15 +184,53 @@ sets as its own local state. `buildCommentSection()` still renders the
 static `.comment-section-header` ("Comments") as a vanilla sibling —
 only the list + input row are the mount.
 
+## Task table view
+
+`TaskTableRow.svelte` mounts directly into each `<tr>` of the Tasks
+page's table view. Every cell — ctx-handle, the title cell (toggle-
+arrow/add-sub-btn, icon slot, title link, comment badge), every visible
+built-in column, and every custom-prop column (via the same
+`customPropCell()` every other entity's table view already uses) — is
+pre-rendered `<td>...</td>` HTML from the existing column-def `cell()`
+functions in `buildTableView()`, concatenated into one blob and passed
+through via a single `{@html}`. This component doesn't reformat or
+restructure any of it — unlike the other pieces ported so far, table
+view had no real bug-duplication problem to fix (it's already a single
+centralized function), so the value here is purely completing the
+pattern and owning the mount/unmount lifecycle instead of raw
+`innerHTML` replacement, not fixing anything that was broken.
+
+Reuses the same shared row/card mount registry (a 4th
+`.svelte-tasktablerow-mount` branch in `mountTaskRowSvelteInstances`)
+rather than introducing a new one, since it's called from the same
+`bindTasksContentEvents()` that already mounts before `bindCtxHandles()`
+— no new ordering work needed, the existing reorder from the card/kanban
+round already covers it.
+
+Verified live: all built-in columns (project/goal/status/priority/due/
+tags/points/category/recurrence/description/parent-task) plus a custom
+checkbox column render correctly; the inline status `<select>` persists
+a change to the backend; expand/collapse shows the nested child row
+with its own working inline `<select>`; title-link click opens the
+right task's slideover with correct breadcrumb; ctx-handle context menu
+opens. Zero console errors, no duplicate mounts.
+
 ## Not yet ported
 
-Task table-view row rendering, the pomodoro widget (small and only
-rendered once per slideover open — not spread across many call sites
-like the others, so lower priority), and the EditorJS content block
-(wraps a third-party library; "porting" it is a different kind of
-problem — who owns the editor instance's lifecycle — not chip
-rendering, so it deserves its own dedicated pass rather than being
-squeezed into this round).
+The pomodoro widget (small and only rendered once per slideover open —
+not spread across many call sites like the others, so lower priority),
+and the EditorJS content block (wraps a third-party library; "porting"
+it is a different kind of problem — who owns the editor instance's
+lifecycle — not chip rendering, so it deserves its own dedicated pass
+rather than being squeezed into this round).
+
+Beyond Task specifically: every other entity's row rendering (Project,
+Goal, Sprint, Note, Resource, custom entity types each have their own
+list/card/kanban/table builders — `buildStandardListRow` is the one
+piece already shared with Task's list view, but card/kanban/table for
+those entities are untouched), creation modals, full-page detail chrome,
+non-task dashboard widgets, and the standalone pages (Calendar, Habits,
+Pomodoro, Automations).
 
 ## Porting the next component
 

@@ -10,6 +10,7 @@ import TaskRowContent from './TaskRowContent.svelte';
 import TaskCardContent from './TaskCardContent.svelte';
 import SubtaskRow from './SubtaskRow.svelte';
 import CommentSection from './CommentSection.svelte';
+import TaskTableRow from './TaskTableRow.svelte';
 
 // Exposed as a plain global so the existing vanilla-JS app (app.js) can
 // mount/unmount Svelte components into specific DOM nodes without either
@@ -61,6 +62,10 @@ function mountCommentSection(target, props) {
   return svelteMount(CommentSection, { target, props });
 }
 
+function mountTaskTableRow(target, props) {
+  return svelteMount(TaskTableRow, { target, props });
+}
+
 window.RaibisSvelte = window.RaibisSvelte || {};
 window.RaibisSvelte.mountCheckboxProp = mountCheckboxProp;
 window.RaibisSvelte.mountTextProp = mountTextProp;
@@ -73,4 +78,5 @@ window.RaibisSvelte.mountTaskRowContent = mountTaskRowContent;
 window.RaibisSvelte.mountTaskCardContent = mountTaskCardContent;
 window.RaibisSvelte.mountSubtaskRow = mountSubtaskRow;
 window.RaibisSvelte.mountCommentSection = mountCommentSection;
+window.RaibisSvelte.mountTaskTableRow = mountTaskTableRow;
 window.RaibisSvelte.unmount = svelteUnmount;

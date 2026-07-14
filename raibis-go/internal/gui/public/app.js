@@ -5226,6 +5226,13 @@ function mountTaskRowSvelteInstances(root) {
     });
     _taskRowSvelteInstances.set(mountEl, inst);
   });
+  (root || document).querySelectorAll('.svelte-tasktablerow-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const inst = window.RaibisSvelte.mountTaskTableRow(mountEl, {
+      rowCellsHtml: mountEl.dataset.cells || '',
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
 }
 
 // Shared list-row skeleton — Task's list view (taskRowHtml above) is the
@@ -9708,10 +9715,13 @@ async function renderTasks() {
           : `<span class="task-add-sub-btn" data-add-sub-id="${t.id}" title="Add subtask">${chevronSvg}</span>`;
         const titleCell = `<td><div class="task-title-cell" style="padding-left:${depth*20}px">${toggleBtn}<span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span><span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div></td>`;
         const customCols = getCustomPropDefs('task').filter(d => propVisible('table', d.key)).map(def => customPropCell('task', t.id, def)).join('');
-        html += `<tr class="task-table-row" data-task-id="${t.id}" style="position:relative">
-          <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></td>
-          ${titleCell}${visibleCols.map(c => c.cell(t)).join('')}${customCols}
-        </tr>`;
+        const ctxHandleCell = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></td>`;
+        const rowCellsHtml = `${ctxHandleCell}${titleCell}${visibleCols.map(c => c.cell(t)).join('')}${customCols}`;
+        // Row is mounted as a Svelte component post-render (see
+        // mountTaskRowSvelteInstances) — every cell here is pre-rendered
+        // HTML from the existing column-def/customPropCell functions
+        // above, passed through unchanged.
+        html += `<tr class="task-table-row svelte-tasktablerow-mount" data-task-id="${t.id}" style="position:relative" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
         if (isExpanded && children.length > 0) {
           html += tableRows(children, depth + 1);
           const colspan = visibleCols.length + 2;
