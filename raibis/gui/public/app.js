@@ -5176,15 +5176,22 @@ function taskRowHtml(task, showProject, indent, viewMode) {
   </li>`;
 }
 
-// ── Task row Svelte mount registry ──────────────────────────────────────
-// taskRowHtml() is called from ~8 places (dashboard widgets, the main task
-// list, entity-detail "Tasks" widgets) that each independently rebuild
-// their own slice of the DOM. Rather than have every caller manage its own
-// mount/unmount lifecycle, this is one shared registry + a single
-// MutationObserver watching for any .svelte-taskrow-mount that leaves the
-// DOM — call mountTaskRowSvelteInstances(root) after inserting HTML that
-// may contain new placeholders (idempotent: already-mounted elements are
-// skipped) and cleanup happens automatically.
+// ── Task row/card Svelte mount registry ───────────────────────────────────
+// taskRowHtml() and the Tasks page's card/kanban builders are called from
+// many places (dashboard widgets, the main task list, entity-detail "Tasks"
+// widgets) that each independently rebuild their own slice of the DOM.
+// Rather than have every caller manage its own mount/unmount lifecycle,
+// this is one shared registry + a single MutationObserver watching for any
+// .svelte-taskrow-mount/.svelte-taskcard-mount that leaves the DOM — call
+// mountTaskRowSvelteInstances(root) after inserting HTML that may contain
+// new placeholders (idempotent: already-mounted elements are skipped) and
+// cleanup happens automatically.
+//
+// Note on ordering: .svelte-taskcard-mount renders its own ctx-handle
+// (unlike the row version, which keeps it as a vanilla sibling — see
+// TaskCardContent.svelte for why), so callers that render cards/kanban
+// must call this BEFORE bindCtxHandles(), or the newly-mounted ctx-handles
+// won't exist yet when bindCtxHandles() runs its querySelectorAll.
 const _taskRowSvelteInstances = new Map(); // mountEl -> Svelte instance
 let _taskRowCleanupObserverStarted = false;
 function mountTaskRowSvelteInstances(root) {
@@ -5206,6 +5213,16 @@ function mountTaskRowSvelteInstances(root) {
     const inst = window.RaibisSvelte.mountTaskRowContent(mountEl, {
       taskId, title: title || '', done: done === 'true', viewMode: vm || 'list',
       recurBadgeHtml: recur || '', metaChipsHtml: meta || '', customChipsHtml: chips || '', dueHtml: due || '',
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
+  (root || document).querySelectorAll('.svelte-taskcard-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const { taskId, title, iconSize, recur, proj, meta, chips, subtree } = mountEl.dataset;
+    const inst = window.RaibisSvelte.mountTaskCardContent(mountEl, {
+      taskId, title: title || '', iconSize: iconSize || 16,
+      recurBadgeHtml: recur || '', projLineHtml: proj || '', metaHtml: meta || '',
+      customChipsHtml: chips || '', subtreeHtml: subtree || '',
     });
     _taskRowSvelteInstances.set(mountEl, inst);
   });
@@ -9638,16 +9655,14 @@ async function renderTasks() {
       const tags = (t.tags||[]).slice(0,3).map(tg => tagHtml(tg)).join('');
       const storyPts = t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
       const meta = [builtinSelectChip('taskStatuses', t.status), priorityBadge(t.priority), dueLine, tags, storyPts].filter(Boolean);
+      const metaHtml = meta.length ? `<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:6px">${meta.join('')}</div>` : '';
       const subtree = buildSubtree(t.id, 0);
+      const customChipsHtml = renderCustomPropChips('task', t.id, 'cards');
+      // Content is mounted as a Svelte component post-render (see
+      // mountTaskCardSvelteInstances) — the outer div stays vanilla since
+      // the "click to open" wiring operates on it regardless of content.
       return `<div class="task-card-item" data-task-id="${t.id}" style="cursor:pointer">
-        <div class="kanban-card-header">
-          <span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span>
-          <div class="kanban-card-title"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div>
-        </div>
-        ${projLine}
-        ${meta.length ? `<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:6px">${meta.join('')}</div>` : ''}
-        ${renderCustomPropChips('task', t.id, 'cards')}
-        ${subtree ? `<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:4px">${subtree}</div>` : ''}
+        <span class="svelte-taskcard-mount" data-task-id="${t.id}" data-title="${escHtml(t.title)}" data-icon-size="16" data-proj="${escHtml(projLine)}" data-meta="${escHtml(metaHtml)}" data-chips="${escHtml(customChipsHtml)}" data-subtree="${escHtml(subtree)}"></span>
       </div>`;
     }).join('');
     return `<div class="task-cards-grid">${cards}</div>`;
@@ -9786,10 +9801,9 @@ async function renderTasks() {
         const storyPts = kVis('story_points') && t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
         const metaLine = [priorityLine, statusLine, dueLine, tagLine, storyPts].some(Boolean)
           ? `<div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">${priorityLine}${statusLine}${dueLine}${tagLine}${storyPts}</div>` : '';
+        const customChipsHtml = renderCustomPropChips('task', t.id, 'kanban');
         return `<div class="kanban-card" data-task-id="${t.id}" style="cursor:grab">
-          <div class="kanban-card-header"><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span><div class="kanban-card-title"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span>${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div></div>
-          ${projLine}${metaLine}
-          ${renderCustomPropChips('task', t.id, 'kanban')}
+          <span class="svelte-taskcard-mount" data-task-id="${t.id}" data-title="${escHtml(t.title)}" data-icon-size="15" data-recur="${escHtml(recurBadge)}" data-proj="${escHtml(projLine)}" data-meta="${escHtml(metaLine)}" data-chips="${escHtml(customChipsHtml)}"></span>
         </div>`;
       }).join('');
       const label = colKey.replace(/_/g,' ');
@@ -9860,8 +9874,11 @@ async function renderTasks() {
   _viewPropDefsCallback = (entity) => { if (entity === 'task') render(); };
 
   function bindTasksContentEvents() {
-    bindCtxHandles();
+    // Must mount before bindCtxHandles() — card/kanban mounts render their
+    // own ctx-handle (see mountTaskRowSvelteInstances' note), so it needs
+    // to exist in the DOM before bindCtxHandles() queries for it.
     mountTaskRowSvelteInstances();
+    bindCtxHandles();
     document.querySelectorAll('.task-toggle-arrow').forEach(arrow => {
       arrow.onclick = async (e) => {
         e.stopPropagation();

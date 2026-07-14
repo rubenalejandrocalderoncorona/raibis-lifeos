@@ -114,12 +114,41 @@ title + status chip only, no chips/dates) is a different, already-simple
 hand-rolled renderer that was intentionally left alone; unifying it with
 the richer row would be a visual redesign, not a straight port.
 
+## Task cards (card view + kanban view)
+
+`TaskCardContent.svelte` covers the Tasks page's own `buildCardsView`/
+`buildKanbanView` (different markup than the list row — `kanban-card`/
+`task-card-item` classes, not `taskRowHtml`, and only used by the main
+Tasks page, not the dashboard/detail widgets). One component serves
+both views since their structure is nearly identical (header + meta
+chips + custom chips; card view additionally has a project line and a
+subtask subtree).
+
+Unlike TaskRowContent, **ctx-handle lives inside this component** rather
+than as a vanilla sibling. Reason: here it's a flex child of
+`.kanban-card-header` alongside the title (`display:flex;
+justify-content:space-between`) — pulling it out to a sibling position
+would've changed the header's layout, whereas in the list row ctx-handle
+was already a `<li>`-level sibling with no such flex dependency. The
+tradeoff: `bindCtxHandles()` must run *after* the card mount now, or it
+queries for `.ctx-handle` elements that don't exist yet. `mountTaskRowSvelteInstances`
+now mounts both `.svelte-taskrow-mount` and `.svelte-taskcard-mount`
+placeholders (shared registry/observer), and `bindTasksContentEvents`
+(the only bind function that renders cards/kanban) was reordered to
+mount before calling `bindCtxHandles()` — this is called out explicitly
+in both places since it's an easy invariant to break by pasting a new
+`bindCtxHandles()` call in the wrong order.
+
+The outer wrapper (`.task-card-item[data-task-id]` / `.kanban-card[data-task-id]`,
+carrying the cursor style and — for kanban — the mousedown-based drag
+binding from `bindKanbanDrag`) stays vanilla, same reasoning as
+`taskRowHtml()`'s `<li>`: those bindings only need the outer element to
+exist, not care what's inside it.
+
 ## Not yet ported
 
-Task card/kanban/table row rendering (different markup than the list
-row — `kanban-card`/`task-card-item` classes, not `taskRowHtml`),
-subtasks tree, pomodoro widget, comments, and the EditorJS content
-block.
+Task table-view row rendering, subtasks tree, pomodoro widget,
+comments, and the EditorJS content block.
 
 ## Porting the next component
 
