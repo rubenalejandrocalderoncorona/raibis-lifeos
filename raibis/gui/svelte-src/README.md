@@ -382,9 +382,30 @@ lifecycle — not chip rendering, so it deserves its own dedicated pass
 rather than being squeezed into this round).
 
 Beyond list rows, cards, kanban, and table views for every entity:
-creation modals, full-page detail chrome, non-task dashboard widgets,
-and the standalone pages (Calendar,
-Habits, Pomodoro, Automations).
+full-page detail chrome, non-task dashboard widgets, and the standalone
+pages (Calendar, Habits, Pomodoro, Automations).
+
+**Creation modals were investigated and turned out to be dead code, not
+a migration target.** `showProjectModal`/`showGoalModal`/
+`showNoteModal`/`showSprintModal`/`showResourceModal` each had a
+guard — `if (!x.id) { create a blank record via POST, open the
+(already-Svelte) property-panel slideover, return }` — followed by a
+large multi-field form body that only ran in "edit mode" (`x.id`
+truthy). Tracing every call site of all five functions found none that
+ever pass an object with a real `.id`; `showNoteModal` even had a
+*second*, redundant id-guard immediately after the first. So the form
+bodies were unreachable in every live user flow — the app already
+creates a blank record and lets you fill it in via the property panel
+(itself Svelte-driven since the very first round of this migration).
+Ported this to Svelte first, then discovered the flow it lived in
+doesn't trigger; reverted the port and deleted the five dead form
+bodies instead (along with `tagPickerHtml`/`bindTagPicker`/
+`getSelectedTagIds`, which became fully orphaned once nothing called
+them). Verified live: all five "+ New X" buttons still create a blank
+record and open the correct slideover; Task's edit-form (unaffected,
+still live) still renders correctly since it shares
+`singleDateChipHtml`/`bindModalDateChips`/`bindDateModeToggle`/
+`categoryOptions` with the code that was removed.
 
 ## Porting the next component
 

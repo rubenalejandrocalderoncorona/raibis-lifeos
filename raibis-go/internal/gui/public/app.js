@@ -5111,25 +5111,6 @@ function applySortFilter(list, state, fieldMap) {
   return result;
 }
 
-function tagPickerHtml(selectedIds) {
-  if (!allTags.length) return '<span style="font-size:12px;color:var(--text-muted)">No tags available</span>';
-  return allTags.map(t => {
-    const hex = COLOR_HEX[t.color] || t.color || '#378ADD';
-    const sel = (selectedIds || []).includes(t.id) ? 'selected' : '';
-    return `<span class="tag-chip ${sel}" data-tag-id="${t.id}" style="color:${hex}">${t.name}</span>`;
-  }).join('');
-}
-
-function bindTagPicker() {
-  document.querySelectorAll('.modal-body .tag-chip, #form-slideover-body .tag-chip').forEach(chip => {
-    chip.onclick = () => chip.classList.toggle('selected');
-  });
-}
-
-function getSelectedTagIds() {
-  return [...document.querySelectorAll('.modal-body .tag-chip.selected, #form-slideover-body .tag-chip.selected')].map(c => parseInt(c.dataset.tagId));
-}
-
 function taskRowHtml(task, showProject, indent, viewMode) {
   const vm = viewMode || 'list';
   const vis = (key) => propVisible(vm, key);
@@ -15823,113 +15804,21 @@ async function showEditTaskModal(task) {
 }
 
 /* ─── Goal Modal ─────────────────────────────────────────────────────── */
+// Every call site passes an id-less goal, so this always creates a blank
+// record and opens the (Svelte-driven) property-panel slideover for it —
+// there is no reachable multi-field form here anymore.
 async function showGoalModal(goal, afterSave) {
-  if (!goal || !goal.id) {
-    let newId;
-    try {
-      const presets = goal || {};
-      presets.title = presets.title || 'Untitled';
-      const created = await api('POST', '/api/goals', presets);
-      newId = created.id;
-    } catch (e) {
-      console.error(e);
-      return;
-    }
-    showGoalSlideover({ id: newId }, afterSave);
+  let newId;
+  try {
+    const presets = goal || {};
+    presets.title = presets.title || 'Untitled';
+    const created = await api('POST', '/api/goals', presets);
+    newId = created.id;
+  } catch (e) {
+    console.error(e);
     return;
   }
-  const v = goal || {};
-  const typeOpts = GOAL_TYPES.map(t => `<option value="${t}" ${v.type===t?'selected':''}>${t}</option>`).join('');
-  const yearOpts = GOAL_YEARS.map(y => `<option value="${y}" ${v.year===y?'selected':''}>${y}</option>`).join('');
-  const statusOpts = GOAL_STATUSES.map(s =>
-    `<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
-  const catOpts = categoryOptions(v.category_id, true);
-
-  let existingTagIds = [];
-  if (v.id) {
-    try { existingTagIds = (await api('GET', `/api/goals/${v.id}/tags`) || []).map(t => t.id); } catch(e) {}
-  }
-
-  const body = `
-    <div class="form-group"><label class="form-label">Title *</label>
-      <input type="text" id="g-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
-    <div class="form-group"><label class="form-label">Description</label>
-      <textarea id="g-desc">${v.description||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Type</label><select id="g-type">${typeOpts}</select></div>
-      <div class="form-group"><label class="form-label">Year</label><select id="g-year">${yearOpts}</select></div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Status</label><select id="g-status">${statusOpts}</select></div>
-      <div class="form-group"><label class="form-label">Category</label><select id="g-category">${catOpts}</select></div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Date</label>
-      <div class="date-mode-toggle">
-        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
-        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
-      </div>
-      <div id="g-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        ${singleDateChipHtml('g-due', stripDate(v.due_date))}
-      </div>
-      <div id="g-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        ${rangeDateChipHtml('g-start', stripDate(v.start_date), 'g-due-range', stripDate(v.due_date))}
-      </div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Start Value</label><input type="number" id="g-sv" value="${v.start_value||''}" /></div>
-      <div class="form-group"><label class="form-label">Current Value</label><input type="number" id="g-cv" value="${v.current_value||''}" /></div>
-    </div>
-    <div class="form-group"><label class="form-label">Target Value</label>
-      <input type="number" id="g-target" value="${v.target||''}" /></div>
-    <div class="form-group"><label class="form-label">Tags</label>
-      ${tagPickerHtml(existingTagIds)}</div>
-    <div class="form-actions">
-      ${v.id ? `<button class="btn btn-danger" id="modal-delete-btn">Delete</button>` : ''}
-      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">Save</button>
-    </div>`;
-
-  openFormSlideover(v.id ? 'Edit Goal' : 'New Goal', body);
-  bindModalDateChips();
-  bindTagPicker();
-  bindDateModeToggle('g-date-due-wrap', 'g-date-range-wrap');
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const isRange = document.getElementById('g-date-range-wrap')?.style.display !== 'none';
-    const data = {
-      title: document.getElementById('g-title').value.trim(),
-      description: document.getElementById('g-desc').value,
-      type: document.getElementById('g-type').value,
-      year: document.getElementById('g-year').value,
-      status: document.getElementById('g-status').value,
-      category_id: document.getElementById('g-category').value ? parseInt(document.getElementById('g-category').value) : null,
-      start_date: isRange ? (document.getElementById('g-start')?.value || null) : null,
-      due_date: isRange ? (document.getElementById('g-due-range')?.value || null) : (document.getElementById('g-due')?.value || null),
-      start_value: parseFloat(document.getElementById('g-sv').value) || 0,
-      current_value: parseFloat(document.getElementById('g-cv').value) || 0,
-      target: parseFloat(document.getElementById('g-target').value) || 0,
-    };
-    if (!data.title) { showToast('Title is required', 'error'); return; }
-    let savedId = v.id;
-    if (v.id) await api('PATCH', `/api/goals/${v.id}`, data);
-    else { const r = await api('POST', '/api/goals', data); savedId = r?.id; }
-    if (savedId) {
-      const tagIds = getSelectedTagIds();
-      try { await api('PUT', `/api/goals/${savedId}/tags`, { tag_ids: tagIds }); } catch(e) {}
-    }
-    closeFormSlideover();
-    if (afterSave) afterSave();
-    else renderGoals();
-  };
-  if (v.id) {
-    document.getElementById('modal-delete-btn').onclick = async () => {
-      if (!confirm('Delete this goal?')) return;
-      await api('DELETE', `/api/goals/${v.id}`);
-      closeFormSlideover();
-      renderGoals();
-    };
-  }
+  showGoalSlideover({ id: newId }, afterSave);
 }
 
 /* ─── Project Slideover (auto-save, expand to detail) ───────────────── */
@@ -16411,192 +16300,41 @@ async function showGoalSlideover(goal, afterSave) {
 }
 
 /* ─── Project Modal ──────────────────────────────────────────────────── */
+// Every call site passes an id-less project, so this always creates a
+// blank record and opens the (Svelte-driven) property-panel slideover for
+// it — there is no reachable multi-field form here anymore.
 async function showProjectModal(project, goals, afterSave) {
-  if (!project || !project.id) {
-    let newId;
-    try {
-      const presets = project || {};
-      presets.title = presets.title || 'Untitled';
-      const created = await api('POST', '/api/projects', presets);
-      newId = created.id;
-    } catch (e) {
-      console.error(e);
-      return;
-    }
-    showProjectSlideover({ id: newId }, goals, afterSave);
+  let newId;
+  try {
+    const presets = project || {};
+    presets.title = presets.title || 'Untitled';
+    const created = await api('POST', '/api/projects', presets);
+    newId = created.id;
+  } catch (e) {
+    console.error(e);
     return;
   }
-  const v = project || {};
-  const goalOpts = '<option value="">— none —</option>' + (goals||[]).map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(v.goal_id)?'selected':''}>${g.title}</option>`).join('');
-  const statusOpts = ['active','on_hold','completed','archived'].map(s =>
-    `<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
-  const macroOpts = '<option value="">— none —</option>' + MACRO_AREAS.map(m =>
-    `<option value="${m}" ${v.macro_area===m?'selected':''}>${m}</option>`).join('');
-  const kanbanOpts = '<option value="">— none —</option>' + KANBAN_COLS.map(k =>
-    `<option value="${k}" ${v.kanban_col===k?'selected':''}>${k}</option>`).join('');
-  const catOpts = categoryOptions(v.category_id, true);
-
-  let existingTagIds = [];
-  if (v.id) {
-    try { existingTagIds = (await api('GET', `/api/projects/${v.id}/tags`) || []).map(t => t.id); } catch(e) {}
-  }
-
-  const body = `
-    <div class="form-group"><label class="form-label">Title *</label>
-      <input type="text" id="p-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
-    <div class="form-group"><label class="form-label">Description</label>
-      <textarea id="p-desc">${v.description||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Goal</label><select id="p-goal">${goalOpts}</select></div>
-      <div class="form-group"><label class="form-label">Status</label><select id="p-status">${statusOpts}</select></div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Macro Area</label><select id="p-macro">${macroOpts}</select></div>
-      <div class="form-group"><label class="form-label">Kanban Column</label><select id="p-kanban">${kanbanOpts}</select></div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Category</label><select id="p-category">${catOpts}</select></div>
-      <div class="form-group"><label class="form-label" style="margin-top:20px;display:flex;align-items:center;gap:8px">
-        <input type="checkbox" id="p-archived" ${v.archived?'checked':''} style="width:auto" /> Archived
-      </label></div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Date</label>
-      <div class="date-mode-toggle">
-        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
-        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
-      </div>
-      <div id="p-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        ${singleDateChipHtml('p-due', stripDate(v.due_date))}
-      </div>
-      <div id="p-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        ${rangeDateChipHtml('p-start', stripDate(v.start_date), 'p-due-range', stripDate(v.due_date))}
-      </div>
-    </div>
-    <div class="form-group"><label class="form-label">Tags</label>
-      ${tagPickerHtml(existingTagIds)}</div>
-    <div class="form-actions">
-      ${v.id ? `<button class="btn btn-danger" id="modal-delete-btn">Delete</button>` : ''}
-      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">Save</button>
-    </div>`;
-
-  openFormSlideover(v.id ? 'Edit Project' : 'New Project', body);
-  bindModalDateChips();
-  bindTagPicker();
-  bindDateModeToggle('p-date-due-wrap', 'p-date-range-wrap');
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const isRange = document.getElementById('p-date-range-wrap')?.style.display !== 'none';
-    const data = {
-      title: document.getElementById('p-title').value.trim(),
-      description: document.getElementById('p-desc').value,
-      goal_id: document.getElementById('p-goal').value ? parseInt(document.getElementById('p-goal').value) : null,
-      status: document.getElementById('p-status').value,
-      macro_area: document.getElementById('p-macro').value || null,
-      kanban_col: document.getElementById('p-kanban').value || null,
-      category_id: document.getElementById('p-category').value ? parseInt(document.getElementById('p-category').value) : null,
-      archived: document.getElementById('p-archived').checked,
-      start_date: isRange ? (document.getElementById('p-start')?.value || null) : null,
-      due_date: isRange ? (document.getElementById('p-due-range')?.value || null) : (document.getElementById('p-due')?.value || null),
-    };
-    if (!data.title) { showToast('Title is required', 'error'); return; }
-    let savedId = v.id;
-    if (v.id) await api('PATCH', `/api/projects/${v.id}`, data);
-    else { const r = await api('POST', '/api/projects', data); savedId = r?.id; }
-    if (savedId) {
-      const tagIds = getSelectedTagIds();
-      try { await api('PUT', `/api/projects/${savedId}/tags`, { tag_ids: tagIds }); } catch(e) {}
-    }
-    closeFormSlideover();
-    if (afterSave) afterSave();
-    else renderProjects();
-  };
-  if (v.id) {
-    document.getElementById('modal-delete-btn').onclick = async () => {
-      if (!confirm('Delete this project?')) return;
-      await api('DELETE', `/api/projects/${v.id}`);
-      closeFormSlideover();
-      renderProjects();
-    };
-  }
+  showProjectSlideover({ id: newId }, goals, afterSave);
 }
 
 /* ─── Note Modal ─────────────────────────────────────────────────────── */
+// Every call site either passes an id-less note (creates a blank record)
+// or an existing note (redirects straight to the slideover) — either way
+// this always ends at showNoteSlideover, so there is no reachable
+// multi-field form here anymore.
 async function showNoteModal(note, afterSave) {
-  if (!note || !note.id) {
-    let newId;
-    try {
-      const presets = note || {};
-      presets.title = presets.title || 'Untitled';
-      const created = await api('POST', '/api/notes', presets);
-      newId = created.id;
-    } catch (e) {
-      console.error(e);
-      return;
-    }
-    showNoteSlideover(newId, afterSave);
+  if (note && note.id) { showNoteSlideover(note.id, afterSave); return; }
+  let newId;
+  try {
+    const presets = note || {};
+    presets.title = presets.title || 'Untitled';
+    const created = await api('POST', '/api/notes', presets);
+    newId = created.id;
+  } catch (e) {
+    console.error(e);
     return;
   }
-  const v = note || {};
-  if (v.id) { showNoteSlideover(v.id, afterSave); return; }
-
-  let projects = [], tasks = [], goals = [];
-  try { [projects, tasks, goals] = await Promise.all([
-    api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
-  ]); } catch(e) {}
-
-  const catOpts = categoryOptions(v.category_id, true);
-  const goalOpts = '<option value="">— none —</option>' + goals.map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(v.goal_id)?'selected':''}>${g.title}</option>`).join('');
-  const projOpts = '<option value="">— none —</option>' + projects.map(p =>
-    `<option value="${p.id}" ${String(p.id)===String(v.project_id)?'selected':''}>${p.title}</option>`).join('');
-  const taskOpts = '<option value="">— none —</option>' + tasks.map(t =>
-    `<option value="${t.id}" ${String(t.id)===String(v.task_id)?'selected':''}>${t.title}</option>`).join('');
-
-  const body = `
-    <div class="form-group"><label class="form-label">Title *</label>
-      <input type="text" id="n-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
-    <div class="form-group"><label class="form-label">Body</label>
-      <textarea id="n-body" style="min-height:120px">${v.body||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Category</label><select id="n-category">${catOpts}</select></div>
-      <div class="form-group"><label class="form-label">Note Date</label>${singleDateChipHtml('n-date', v.note_date||'')}</div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Goal</label><select id="n-goal">${goalOpts}</select></div>
-      <div class="form-group"><label class="form-label">Project</label><select id="n-project">${projOpts}</select></div>
-    </div>
-    <div class="form-group"><label class="form-label">Task</label><select id="n-task">${taskOpts}</select></div>
-    <div class="form-actions">
-      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">Save</button>
-    </div>`;
-
-  openFormSlideover('New Note', body);
-  bindModalDateChips();
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const data = {
-      title: document.getElementById('n-title').value.trim(),
-      body: document.getElementById('n-body').value,
-      category_id: document.getElementById('n-category').value ? parseInt(document.getElementById('n-category').value) : null,
-      note_date: document.getElementById('n-date').value || null,
-      goal_id: document.getElementById('n-goal').value ? parseInt(document.getElementById('n-goal').value) : null,
-      project_id: document.getElementById('n-project').value ? parseInt(document.getElementById('n-project').value) : null,
-      task_id: document.getElementById('n-task').value ? parseInt(document.getElementById('n-task').value) : null,
-      ...(v.task_id && { task_id: parseInt(v.task_id) }),
-      ...(v.project_id && { project_id: parseInt(v.project_id) }),
-      ...(v.goal_id && { goal_id: parseInt(v.goal_id) }),
-    };
-    if (!data.title) { showToast('Title is required', 'error'); return; }
-    try {
-      await api('POST', '/api/notes', data);
-      closeFormSlideover();
-      if (afterSave) afterSave(); else renderNotes();
-    } catch(err) { showToast('Error saving note: ' + (err.message || String(err)), 'error'); }
-  };
+  showNoteSlideover(newId, afterSave);
 }
 
 /* ─── Note Sideview (task-sideview style for existing notes) ─────────── */
@@ -17055,90 +16793,21 @@ async function showSprintSlideover(sprintId, afterSave) {
 }
 
 /* ─── Sprint Modal ───────────────────────────────────────────────────── */
+// Every call site passes an id-less sprint, so this always creates a
+// blank record and opens the (Svelte-driven) property-panel slideover for
+// it — there is no reachable multi-field form here anymore.
 async function showSprintModal(projects, sprint) {
-  if (!sprint || !sprint.id) {
-    let newId;
-    try {
-      const presets = sprint || {};
-      presets.title = presets.title || 'Untitled';
-      const created = await api('POST', '/api/sprints', presets);
-      newId = created.id;
-    } catch (e) {
-      console.error(e);
-      return;
-    }
-    showSprintSlideover(newId);
+  let newId;
+  try {
+    const presets = sprint || {};
+    presets.title = presets.title || 'Untitled';
+    const created = await api('POST', '/api/sprints', presets);
+    newId = created.id;
+  } catch (e) {
+    console.error(e);
     return;
   }
-  const s = sprint || {};
-  const projOpts = '<option value="">— none —</option>' + (projects||[]).map(p =>
-    `<option value="${p.id}" ${String(p.id)===String(s.project_id)?'selected':''}>${p.title}</option>`).join('');
-
-  const body = `
-    <div class="form-group"><label class="form-label">Title *</label>
-      <div style="display:flex;align-items:center;gap:8px">
-        <button type="button" class="entity-icon-btn" id="sprint-icon-btn" title="Set icon"><span id="sprint-icon-display">☐</span></button>
-        <input type="text" id="sp-title" placeholder="Sprint name" value="${(s.title||'').replace(/"/g,'&quot;')}" style="flex:1" />
-      </div>
-    </div>
-    <div class="form-group"><label class="form-label">Project</label>
-      <select id="sp-project">${projOpts}</select></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Start Date</label>${singleDateChipHtml('sp-start', s.start_date||'')}</div>
-      <div class="form-group"><label class="form-label">End Date</label>${singleDateChipHtml('sp-end', s.end_date||'')}</div>
-    </div>
-    <div class="form-group"><label class="form-label">Capacity (Story Points)</label>
-      <input type="number" id="sp-story-points" min="0" placeholder="e.g. 40" value="${s.story_points != null ? s.story_points : ''}" style="width:100%" />
-    </div>
-    <div class="form-actions">
-      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">${s.id ? 'Save' : 'Create'}</button>
-    </div>`;
-
-  openFormSlideover(s.id ? 'Edit Sprint' : 'New Sprint', body);
-  bindModalDateChips();
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  // ── Sprint icon picker ────────────────────────────────────────────────
-  const sprintIconBtn = document.getElementById('sprint-icon-btn');
-  const sprintIconDisplay = document.getElementById('sprint-icon-display');
-  if (s.id) {
-    loadEntityIcon('sprint', s.id).then(icon => {
-      if (sprintIconDisplay) { sprintIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 20) : '☐'; sprintIconDisplay.dataset.icon = icon || ''; }
-    });
-  }
-  if (sprintIconBtn) {
-    sprintIconBtn.onclick = (e) => {
-      e.stopPropagation();
-      const cur = sprintIconDisplay ? sprintIconDisplay.dataset.icon || '' : '';
-      showIconPicker(sprintIconBtn, 'sprint', s.id || null, cur, (newIcon) => {
-        if (sprintIconDisplay) { sprintIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 20) : '☐'; sprintIconDisplay.dataset.icon = newIcon; }
-        if (s.id) {
-          saveEntityIcon('sprint', s.id, newIcon).catch(() => {
-            if (sprintIconDisplay) { sprintIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 20) : '☐'; sprintIconDisplay.dataset.icon = cur; }
-          });
-        }
-      });
-    };
-  }
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const spVal = document.getElementById('sp-story-points').value.trim();
-    const data = {
-      title: document.getElementById('sp-title').value.trim(),
-      project_id: document.getElementById('sp-project').value ? parseInt(document.getElementById('sp-project').value) : null,
-      start_date: document.getElementById('sp-start').value || null,
-      end_date: document.getElementById('sp-end').value || null,
-      story_points: spVal !== '' ? parseInt(spVal, 10) : null,
-    };
-    if (!data.title) { showToast('Title is required', 'error'); return; }
-    if (s.id) {
-      await api('PATCH', `/api/sprints/${s.id}`, data);
-    } else {
-      data.status = 'planned';
-      await api('POST', '/api/sprints', data);
-    }
-    closeFormSlideover();
-    renderSprints();
-  };
+  showSprintSlideover(newId);
 }
 
 /* ─── Resource Slideover (view + auto-save) ──────────────────────────── */
@@ -17409,87 +17078,21 @@ async function showResourceSlideover(resource, afterSave) {
 
 /* ─── Category Modal ─────────────────────────────────────────────────── */
 
+// Every call site passes an id-less presets object, so this always
+// creates a blank record and opens the (Svelte-driven) property-panel
+// slideover for it — there is no reachable multi-field form here anymore.
 async function showResourceModal(presets, afterSave) {
   const p = presets || {};
-  if (!p.id) {
-    let newId;
-    try {
-      p.title = p.title || 'Untitled';
-      const created = await api('POST', '/api/resources', p);
-      newId = created.id;
-    } catch (e) {
-      console.error(e);
-      return;
-    }
-    showResourceSlideover({ id: newId }, afterSave);
+  let newId;
+  try {
+    p.title = p.title || 'Untitled';
+    const created = await api('POST', '/api/resources', p);
+    newId = created.id;
+  } catch (e) {
+    console.error(e);
     return;
   }
-  let projects = [], tasks = [], goals = [];
-  try { [projects, tasks, goals] = await Promise.all([
-    api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
-  ]); } catch(e) {}
-
-  const goalOpts = '<option value="">— none —</option>' + goals.map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(p.goal_id)?'selected':''}>${g.title}</option>`).join('');
-  const projOpts = '<option value="">— none —</option>' + projects.map(pr =>
-    `<option value="${pr.id}" ${String(pr.id)===String(p.project_id)?'selected':''}>${pr.title}</option>`).join('');
-  const taskOpts = '<option value="">— none —</option>' + tasks.map(t =>
-    `<option value="${t.id}" ${String(t.id)===String(p.task_id)?'selected':''}>${t.title}</option>`).join('');
-
-  const body = `
-    <div style="display:flex;flex-direction:column;gap:12px;padding:4px 0">
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Title *</label>
-        <input type="text" id="rs-title" placeholder="Resource title" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Type</label>
-        <input type="text" id="rs-type" placeholder="e.g. link, book, tool…" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">URL</label>
-        <input type="url" id="rs-url" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Body / Notes</label>
-        <textarea id="rs-body" style="width:100%;box-sizing:border-box;min-height:80px"></textarea>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        <div class="form-group" style="margin:0"><label class="form-label">Goal</label><select id="rs-goal" style="width:100%">${goalOpts}</select></div>
-        <div class="form-group" style="margin:0"><label class="form-label">Project</label><select id="rs-project" style="width:100%">${projOpts}</select></div>
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Task</label>
-        <select id="rs-task" style="width:100%">${taskOpts}</select>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-        <button class="btn btn-primary" id="modal-save-btn">Create</button>
-      </div>
-    </div>`;
-
-  openFormSlideover('New Resource', body);
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const title = document.getElementById('rs-title').value.trim();
-    if (!title) { showToast('Title is required', 'error'); return; }
-    const data = {
-      title,
-      resource_type: document.getElementById('rs-type').value || 'note',
-      url: document.getElementById('rs-url').value.trim() || null,
-      body: document.getElementById('rs-body').value,
-      goal_id: document.getElementById('rs-goal').value ? parseInt(document.getElementById('rs-goal').value) : null,
-      project_id: document.getElementById('rs-project').value ? parseInt(document.getElementById('rs-project').value) : null,
-      task_id: document.getElementById('rs-task').value ? parseInt(document.getElementById('rs-task').value) : null,
-    };
-    try {
-      await api('POST', '/api/resources', data);
-      closeFormSlideover();
-      if (afterSave) afterSave();
-    } catch(e) {
-      showToast('Failed to create resource: ' + e.message, 'error');
-    }
-  };
+  showResourceSlideover({ id: newId }, afterSave);
 }
 
 function showCategoryModal(cat) {
