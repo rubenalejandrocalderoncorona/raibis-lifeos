@@ -291,6 +291,46 @@ the right slideover; ctx-handle still opens the context menu; Sprint's
 Start/Complete/↩/Edit buttons still work (verified status transition
 persists and re-renders correctly).
 
+## Standard kanban card (Project, Goal, Note, custom-entity kanban views)
+
+`StandardKanbanCard.svelte` covers the kanban-card header + body for
+`buildProjectKanbanView()`, `buildGoalKanbanView()`,
+`buildNoteKanbanView()`, and custom entities' `buildKanbanView()`
+(inside `renderCustomEntityList`). Sprint and Resource don't have
+kanban views in this app (no `buildSprintKanbanView`/
+`buildResKanbanView` exist), so there are only four call sites, not
+five.
+
+Unlike `StandardCardContent`, the header can't stay a vanilla sibling
+here: `.kanban-card-header` is `display:flex` with exactly two
+children (ctx-handle, `.kanban-card-title`) — the same "flex sibling
+at the same nesting level" situation `TaskCardContent` hit for Task's
+own kanban view. Pulling ctx-handle out would break the header's flex
+layout, so `StandardKanbanCard` renders it inside the mount (mirroring
+`TaskCardContent` exactly), taking `entityKey`/`entityId` props plus a
+`titleHtml` prop for whatever the caller needs inline (a comment-badge
+for Note, nothing extra for Project/Goal/custom entities) and a
+`bodyHtml` prop for everything below the header (chips, progress bar,
+custom-prop chips), both pre-rendered and passed through via `{@html}`.
+
+Because ctx-handle now lives inside this mount, `mountTaskRowSvelteInstances()`
+must run *before* `bindCtxHandles()` in every caller — same requirement
+Task's kanban/card round already established. `bindProjEvents`,
+`bindGoalEvents`, `bindNoteEvents`, and custom entities' `bindRows()`
+all had `bindCtxHandles()` first (harmless for the card-view/list-view
+mounts, which keep ctx-handle vanilla) — all four were reordered to
+mount first. Project/Goal's `render()` also had a second, already-
+correctly-ordered `bindCtxHandles()` call specific to kanban mode (run
+after `bindProjEvents()`/`bindGoalEvents()` already mounted) — that
+call is now redundant but harmless, left as-is rather than removed to
+minimize the diff.
+
+Verified live: Project, Goal, Note, and a freshly-created custom entity
+type (with a status property) all render kanban cards correctly (chips,
+progress bars, comment badge on Note, per-column grouping/counts) with
+zero console errors; ctx-handle opens the right entity's slideover for
+all four.
+
 ## Not yet ported
 
 The pomodoro widget (small and only rendered once per slideover open —
@@ -300,13 +340,13 @@ it is a different kind of problem — who owns the editor instance's
 lifecycle — not chip rendering, so it deserves its own dedicated pass
 rather than being squeezed into this round).
 
-Beyond list rows and the five standard cards: every entity's
-kanban/table view besides Task's (Project/Goal/Sprint/Note/Resource/
-custom entities each have their own independent builders for these,
-none shared — porting them would mean redoing the
-TaskCardContent/TaskTableRow work per entity type, not a single shared
-piece), creation modals, full-page detail chrome, non-task dashboard
-widgets, and the standalone pages (Calendar,
+Beyond list rows, the five standard cards, and the four standard kanban
+views: every entity's table view besides Task's (Project/Goal/Sprint/
+Note/Resource/custom entities each have their own independent table
+builders, none shared — porting them would mean redoing the
+TaskTableRow work per entity type, not a single shared piece), creation
+modals, full-page detail chrome, non-task dashboard widgets, and the
+standalone pages (Calendar,
 Habits, Pomodoro, Automations).
 
 ## Porting the next component

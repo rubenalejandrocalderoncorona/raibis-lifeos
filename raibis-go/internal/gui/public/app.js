@@ -5253,6 +5253,19 @@ function mountTaskRowSvelteInstances(root) {
     });
     _taskRowSvelteInstances.set(mountEl, inst);
   });
+  // Kanban-card header + body for Project/Goal/Note/custom entities — see
+  // StandardKanbanCard.svelte for why ctx-handle is rendered inside this
+  // mount (unlike the card-view mount above). Callers must call this
+  // function before bindCtxHandles() so the freshly-mounted ctx-handle
+  // exists in the DOM when bindCtxHandles() queries for it.
+  (root || document).querySelectorAll('.svelte-stdkanban-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const { entityId, entityKey, title, body } = mountEl.dataset;
+    const inst = window.RaibisSvelte.mountStandardKanbanCard(mountEl, {
+      entityId, entityKey, titleHtml: title || '', bodyHtml: body || '',
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
 }
 
 // Shared list-row skeleton — Task's list view (taskRowHtml above) is the
@@ -5930,8 +5943,11 @@ async function renderCustomEntityList(typeName) {
     }
 
     function bindRows() {
-      bindCtxHandles(main);
+      // Must mount before bindCtxHandles() — the kanban mount renders its
+      // own ctx-handle (see mountTaskRowSvelteInstances' note), so it
+      // needs to exist in the DOM before bindCtxHandles() queries for it.
       mountTaskRowSvelteInstances(main);
+      bindCtxHandles(main);
       injectListIcons(entityKey, list.map(e => e.id));
       main.querySelectorAll('.custom-entity-row[data-id]').forEach(row => {
         row.onclick = e => {
@@ -6448,12 +6464,10 @@ async function renderCustomEntityList(typeName) {
             ? item.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}" style="font-size:10px">${escHtml(t.name)}</span>`).join('')
             : '';
           const allChips = [visProps, tagChips].filter(Boolean).join('');
+          const titleHtml = escHtml(item.title);
+          const bodyHtml = allChips ? `<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:4px">${allChips}</div>` : '';
           return `<div class="kanban-card custom-entity-row" data-id="${item.id}" style="cursor:pointer">
-            <div class="kanban-card-header">
-              <span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${item.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-              <div class="kanban-card-title">${escHtml(item.title)}</div>
-            </div>
-            ${allChips ? `<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:4px">${allChips}</div>` : ''}
+            <span class="svelte-stdkanban-mount" data-entity-key="${escHtml(entityKey)}" data-entity-id="${item.id}" data-title="${escHtml(titleHtml)}" data-body="${escHtml(bodyHtml)}"></span>
           </div>`;
         }).join('');
         const label = colKey || '(None)';
@@ -10154,12 +10168,7 @@ async function renderProjects() {
         const prog = p.progress || {};
         const pct = prog.pct || 0;
         const vis = (key) => entityPropVisible('project', key);
-        return `<div class="kanban-card proj-kanban-card" data-proj-id="${p.id}" style="cursor:grab">
-          <div class="kanban-card-header">
-            <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-            <div class="kanban-card-title">${p.title}</div>
-          </div>
-          ${vis('goal') && p.goal_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${p.goal_title}</div>` : ''}
+        const bodyHtml = `${vis('goal') && p.goal_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${p.goal_title}</div>` : ''}
           <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
             ${vis('status') && groupBy !== 'status' ? builtinSelectChip('projectStatuses', p.status) : ''}
             ${vis('macro') && groupBy !== 'macro_area' && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
@@ -10169,7 +10178,9 @@ async function renderProjects() {
             <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${pct}% · ${prog.done||0}/${prog.total||0}</div>
           </div>` : ''}
-          ${renderCustomPropChips('project', p.id, 'kanban')}
+          ${renderCustomPropChips('project', p.id, 'kanban')}`;
+        return `<div class="kanban-card proj-kanban-card" data-proj-id="${p.id}" style="cursor:grab">
+          <span class="svelte-stdkanban-mount" data-entity-key="project" data-entity-id="${p.id}" data-title="${escHtml(p.title)}" data-body="${escHtml(bodyHtml)}"></span>
         </div>`;
       }).join('');
       const label = colKey.replace(/_/g,' ');
@@ -10375,8 +10386,11 @@ async function renderProjects() {
   _viewPropDefsCallback = (entity) => { if (entity === 'project') render(); };
 
   function bindProjEvents() {
-    bindCtxHandles();
+    // Must mount before bindCtxHandles() — the kanban mount renders its
+    // own ctx-handle (see mountTaskRowSvelteInstances' note), so it needs
+    // to exist in the DOM before bindCtxHandles() queries for it.
     mountTaskRowSvelteInstances();
+    bindCtxHandles();
     document.querySelectorAll('.proj-slideover-card').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.proj-del-btn, .ctx-handle')) return;
@@ -10687,12 +10701,7 @@ async function renderGoals() {
         const prog = g.progress || {};
         const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
         const vis = (key) => entityPropVisible('goal', key);
-        return `<div class="kanban-card goal-kanban-card" data-goal-id="${g.id}" style="cursor:grab">
-          <div class="kanban-card-header">
-            <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-            <div class="kanban-card-title">${g.title}</div>
-          </div>
-          <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
+        const bodyHtml = `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
             ${vis('status') && groupBy !== 'status' ? builtinSelectChip('goalStatuses', g.status) : ''}
             ${vis('type') && groupBy !== 'type' && g.type ? builtinSelectChip('goal_type', g.type) : ''}
             ${vis('year') && groupBy !== 'year' && g.year ? builtinSelectChip('goal_year', g.year) : ''}
@@ -10701,7 +10710,9 @@ async function renderGoals() {
             <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${pct}% · ${prog.done||0}/${prog.total||0}</div>
           </div>` : ''}
-          ${renderCustomPropChips('goal', g.id, 'kanban')}
+          ${renderCustomPropChips('goal', g.id, 'kanban')}`;
+        return `<div class="kanban-card goal-kanban-card" data-goal-id="${g.id}" style="cursor:grab">
+          <span class="svelte-stdkanban-mount" data-entity-key="goal" data-entity-id="${g.id}" data-title="${escHtml(g.title)}" data-body="${escHtml(bodyHtml)}"></span>
         </div>`;
       }).join('');
       const label = colKey.replace(/_/g,' ');
@@ -10732,8 +10743,11 @@ async function renderGoals() {
   }
 
   function bindGoalEvents() {
-    bindCtxHandles();
+    // Must mount before bindCtxHandles() — the kanban mount renders its
+    // own ctx-handle (see mountTaskRowSvelteInstances' note), so it needs
+    // to exist in the DOM before bindCtxHandles() queries for it.
     mountTaskRowSvelteInstances();
+    bindCtxHandles();
     document.querySelectorAll('.goal-slideover-card').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.goal-del-btn, .ctx-handle')) return;
@@ -10873,16 +10887,14 @@ async function renderNotes() {
       const items = grouped[cat] || [];
       const cards = items.map(n => {
         const tagChips = vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : '';
-        return `<div class="kanban-card note-card" data-note-id="${n.id}" style="cursor:pointer">
-          <div class="kanban-card-header">
-            <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-            <div class="kanban-card-title">${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
-          </div>
-          <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
+        const titleHtml = `${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span>`;
+        const bodyHtml = `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
             ${vis('date') ? datePropBadge(n.note_date, 'Date', 'The date associated with this note.') : ''}
             ${tagChips}
           </div>
-          ${renderCustomPropChips('note', n.id, 'kanban')}
+          ${renderCustomPropChips('note', n.id, 'kanban')}`;
+        return `<div class="kanban-card note-card" data-note-id="${n.id}" style="cursor:pointer">
+          <span class="svelte-stdkanban-mount" data-entity-key="note" data-entity-id="${n.id}" data-title="${escHtml(titleHtml)}" data-body="${escHtml(bodyHtml)}"></span>
         </div>`;
       }).join('');
       return `<div class="kanban-col" data-col="${cat}">
@@ -10971,8 +10983,11 @@ async function renderNotes() {
   }
 
   function bindNoteEvents() {
-    bindCtxHandles();
+    // Must mount before bindCtxHandles() — the kanban mount renders its
+    // own ctx-handle (see mountTaskRowSvelteInstances' note), so it needs
+    // to exist in the DOM before bindCtxHandles() queries for it.
     mountTaskRowSvelteInstances();
+    bindCtxHandles();
     document.querySelectorAll('.note-card, .note-item').forEach(el => {
       el.onclick = (e) => {
         if (e.target.closest('.ctx-handle')) return;
