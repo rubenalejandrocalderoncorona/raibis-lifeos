@@ -245,6 +245,42 @@ the right slideover; ctx-handle context menu opens. Also verified a
 freshly-created custom entity type end-to-end (list render, row click →
 slideover) to confirm the `bindRows()`-scoped path works the same way.
 
+## Standard card body (Project, Goal, Note, Resource card views)
+
+`StandardCardContent.svelte` covers the body of `buildProjectCard()`,
+`buildGoalCard()`, `buildNoteCard()`, and Resource's `buildCards()` —
+unlike list view, there's no shared *vanilla* builder here (each entity
+independently implements its own card function), so this is one Svelte
+component reused by four still-separate vanilla wrapper functions
+rather than a single shared call site.
+
+The header (`.flex-between` row with ctx-handle + `.card-title`/
+`.note-title`) stays vanilla, same reasoning as
+`StandardListRowContent`'s header: nothing interactive lives below it.
+Everything below — chip row, entity-specific extras (Project/Goal's
+progress bar, Note's `.note-body-preview`), and custom-prop chips — is
+computed into one `bodyHtml` string exactly as it was inlined before,
+then passed through a `<span class="svelte-stdcard-mount"
+data-body="...">` placeholder via `{@html}`. Same "don't reformat, just
+own the mount lifecycle" approach as `TaskTableRow`/table view.
+
+Reuses the shared row/card mount registry (a 6th
+`.svelte-stdcard-mount` branch in `mountTaskRowSvelteInstances`) — no
+new bind-function wiring needed since `bindProjEvents`,
+`bindGoalEvents`, `bindNoteEvents`, and `bindResEvents` already call
+`mountTaskRowSvelteInstances()` from the list-row round.
+
+Sprint's card is deliberately **not** ported here — it has extra
+interactive buttons (prev/next status, Edit) inside the header row
+itself, the same "interactive content inside the mount" complexity
+class as `TaskCardContent`'s ctx-handle. Left for a follow-up.
+
+Verified live: Project, Goal, Note, and Resource card views all render
+their body content correctly (status/type/category chips, due-date
+badges, progress bars, note preview text, resource URL link) with zero
+console errors; card click still opens the right slideover; ctx-handle
+still opens the context menu.
+
 ## Not yet ported
 
 The pomodoro widget (small and only rendered once per slideover open —
@@ -254,14 +290,14 @@ it is a different kind of problem — who owns the editor instance's
 lifecycle — not chip rendering, so it deserves its own dedicated pass
 rather than being squeezed into this round).
 
-Beyond list rows: every other entity's card/kanban/table view
-(Project/Goal/Sprint/Note/Resource/custom entities each have their own
-independent builders for these, none shared the way list view was via
-`buildStandardListRow` — porting them would mean redoing the
-TaskCardContent/TaskTableRow work per entity type, not a single shared
-piece), creation modals, full-page detail chrome, non-task dashboard
-widgets, and the standalone pages (Calendar, Habits, Pomodoro,
-Automations).
+Beyond list rows and the four standard cards: Sprint's card (extra
+header buttons, see above), every entity's kanban/table view besides
+Task's (Project/Goal/Sprint/Note/Resource/custom entities each have
+their own independent builders for these, none shared — porting them
+would mean redoing the TaskCardContent/TaskTableRow work per entity
+type, not a single shared piece), creation modals, full-page detail
+chrome, non-task dashboard widgets, and the standalone pages (Calendar,
+Habits, Pomodoro, Automations).
 
 ## Porting the next component
 

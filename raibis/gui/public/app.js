@@ -5244,6 +5244,15 @@ function mountTaskRowSvelteInstances(root) {
     });
     _taskRowSvelteInstances.set(mountEl, inst);
   });
+  // Card-view body (below the header) for Project/Goal/Note/Resource —
+  // see StandardCardContent.svelte for why the header stays vanilla.
+  (root || document).querySelectorAll('.svelte-stdcard-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const inst = window.RaibisSvelte.mountStandardCardContent(mountEl, {
+      bodyHtml: mountEl.dataset.body || '',
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
 }
 
 // Shared list-row skeleton — Task's list view (taskRowHtml above) is the
@@ -10046,14 +10055,11 @@ async function renderProjects() {
       `<div style="font-size:12px;color:var(--text-muted);padding:2px 0">• ${t}</div>`
     ).join('');
     const tagChips = vis('tags') ? (p.tags || []).map(t => tagHtml(t)).join('') : '';
-    return `<div class="card proj-slideover-card" data-proj-id="${p.id}" style="cursor:pointer">
-      <div class="flex-between gap-8" style="margin-bottom:6px">
-        <div style="display:flex;align-items:center;gap:6px;min-width:0">
-          <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span>
-          <span class="card-title"><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></span>
-        </div>
-      </div>
-      <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
+    // Body (everything below the header) is mounted as a Svelte component
+    // post-render (see mountTaskRowSvelteInstances) — ctx-handle and
+    // card-title stay vanilla siblings, matching StandardListRowContent's
+    // header-stays-outside reasoning.
+    const bodyHtml = `<div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
         ${vis('status') ? builtinSelectChip('projectStatuses', p.status) : ''}
         ${vis('macro') && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
         ${vis('kanban') && p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : ''}
@@ -10067,7 +10073,15 @@ async function renderProjects() {
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>` : ''}
       ${activeTasks ? `<div style="margin-top:8px">${activeTasks}</div>` : ''}
-      ${renderCustomPropChips('project', p.id, 'cards')}
+      ${renderCustomPropChips('project', p.id, 'cards')}`;
+    return `<div class="card proj-slideover-card" data-proj-id="${p.id}" style="cursor:pointer">
+      <div class="flex-between gap-8" style="margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span>
+          <span class="card-title"><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></span>
+        </div>
+      </div>
+      <span class="svelte-stdcard-mount" data-body="${escHtml(bodyHtml)}"></span>
     </div>`;
   }
 
@@ -10581,14 +10595,7 @@ async function renderGoals() {
     const vis = (key) => entityPropVisible('goal', key);
     const tagChips = vis('tags') ? (g.tags || []).map(t => tagHtml(t)).join('') : '';
     const catName = (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name;
-    return `<div class="card goal-slideover-card" data-goal-id="${g.id}" style="cursor:pointer">
-      <div class="flex-between gap-8" style="margin-bottom:6px">
-        <div style="display:flex;align-items:center;gap:6px;min-width:0">
-          <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span>
-          <span class="card-title"><span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${g.title}<span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></span>
-        </div>
-      </div>
-      <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
+    const bodyHtml = `<div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
         ${vis('status') ? builtinSelectChip('goalStatuses', g.status) : ''}
         ${vis('type') && g.type ? builtinSelectChip('goal_type', g.type) : ''}
         ${vis('year') && g.year ? builtinSelectChip('goal_year', g.year) : ''}
@@ -10601,7 +10608,15 @@ async function renderGoals() {
         <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0} tasks</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>` : ''}
-      ${renderCustomPropChips('goal', g.id, 'cards')}
+      ${renderCustomPropChips('goal', g.id, 'cards')}`;
+    return `<div class="card goal-slideover-card" data-goal-id="${g.id}" style="cursor:pointer">
+      <div class="flex-between gap-8" style="margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span>
+          <span class="card-title"><span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${g.title}<span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></span>
+        </div>
+      </div>
+      <span class="svelte-stdcard-mount" data-body="${escHtml(bodyHtml)}"></span>
     </div>`;
   }
 
@@ -10900,14 +10915,7 @@ async function renderNotes() {
   function buildNoteCard(n) {
     const vis = (key) => entityPropVisible('note', key);
     const tagChips = vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : '';
-    return `<div class="note-card" data-note-id="${n.id}">
-      <div class="flex-between gap-8">
-        <div style="display:flex;align-items:center;gap:6px;min-width:0">
-          <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span>
-          <div class="note-title"><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="18" style="display:none;margin-right:5px;vertical-align:middle;font-size:18px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
-        </div>
-      </div>
-      <div class="note-body-preview">${n.body || ''}</div>
+    const bodyHtml = `<div class="note-body-preview">${n.body || ''}</div>
       <div class="note-meta" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
         ${vis('date') ? datePropBadge(n.note_date, 'Date', 'The date associated with this note.') : ''}
         ${vis('category') && n.category_name ? builtinSelectChip('categories', n.category_name) : ''}
@@ -10915,7 +10923,15 @@ async function renderNotes() {
         ${vis('goal') ? (() => { const v = renderMultiRelationValue('note', n.id, 'goal', (_noteGoals.find(g => String(g.id) === String(n.goal_id))?.title)); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
         ${tagChips}
       </div>
-      ${renderCustomPropChips('note', n.id, 'cards')}
+      ${renderCustomPropChips('note', n.id, 'cards')}`;
+    return `<div class="note-card" data-note-id="${n.id}">
+      <div class="flex-between gap-8">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span>
+          <div class="note-title"><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="18" style="display:none;margin-right:5px;vertical-align:middle;font-size:18px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
+        </div>
+      </div>
+      <span class="svelte-stdcard-mount" data-body="${escHtml(bodyHtml)}"></span>
     </div>`;
   }
 
@@ -12583,6 +12599,14 @@ async function renderResources() {
       const rawUrl = r.url || '';
       const linked = r.goal_title || r.project_title || r.task_title;
       const vis = (key) => entityPropVisible('resource', key);
+      const bodyHtml = `${vis('type') && r.resource_type ? builtinSelectChip('resource_type', r.resource_type) : ''}
+        ${vis('category') && (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name) : ''}
+        ${vis('project') && r.project_title ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">→ ${r.project_title}</div>` : ''}
+        ${vis('goal') && r.goal_title ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">→ ${r.goal_title}</div>` : ''}
+        ${vis('url') && rawUrl ? `<div style="margin-top:6px" onclick="event.stopPropagation()"><a href="${rawUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent)">${rawUrl.length > 60 ? rawUrl.slice(0,60)+'…' : rawUrl}</a></div>` : ''}
+        ${r.body ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${r.body.slice(0,120)}${r.body.length>120?'…':''}</div>` : ''}
+        ${vis('tags') ? (r.tags || []).map(t => tagHtml(t)).join('') : ''}
+        ${renderCustomPropChips('resource', r.id, 'cards')}`;
       return `<div class="card res-row" data-res-id="${r.id}" style="cursor:pointer">
         <div class="flex-between gap-8" style="margin-bottom:6px">
           <div style="display:flex;align-items:center;gap:6px;min-width:0">
@@ -12590,14 +12614,7 @@ async function renderResources() {
             <span class="card-title"><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="18" style="display:none;margin-right:6px;vertical-align:middle;font-size:18px"></span>${r.title}<span class="comment-badge" data-comment-for="${r.id}" data-comment-entity="resource" style="display:none"></span></span>
           </div>
         </div>
-        ${vis('type') && r.resource_type ? builtinSelectChip('resource_type', r.resource_type) : ''}
-        ${vis('category') && (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name) : ''}
-        ${vis('project') && r.project_title ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">→ ${r.project_title}</div>` : ''}
-        ${vis('goal') && r.goal_title ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">→ ${r.goal_title}</div>` : ''}
-        ${vis('url') && rawUrl ? `<div style="margin-top:6px" onclick="event.stopPropagation()"><a href="${rawUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent)">${rawUrl.length > 60 ? rawUrl.slice(0,60)+'…' : rawUrl}</a></div>` : ''}
-        ${r.body ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${r.body.slice(0,120)}${r.body.length>120?'…':''}</div>` : ''}
-        ${vis('tags') ? (r.tags || []).map(t => tagHtml(t)).join('') : ''}
-        ${renderCustomPropChips('resource', r.id, 'cards')}
+        <span class="svelte-stdcard-mount" data-body="${escHtml(bodyHtml)}"></span>
       </div>`;
     }).join('')}</div>`;
   }
