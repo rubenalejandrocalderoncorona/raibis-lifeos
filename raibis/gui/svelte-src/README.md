@@ -372,18 +372,74 @@ title-link/ctx-handle clicks still navigate/open correctly; Sprint's
 Start button still persists a status change from inside the mounted
 row.
 
+## Timeline grid (Calendar's Timeline scope + Pomodoro's Focus Block Timeline)
+
+`TimelineGrid.svelte` covers `buildTimeline()` (Calendar page,
+`calScope === 'timeline'`) and `renderFocusTimeline()` (Pomodoro page's
+"Focus Block Timeline" section) — two ~70-line near-duplicates found
+during a survey of the three previously-unexamined standalone pages
+(Calendar/Pomodoro/Automations). Both computed the same day-window
+math, the same month/day header, and the same today-line/bar track
+markup; they differed only in window size (30±60 days vs. 7±30 days),
+month-name format (full vs. 3-letter abbreviations), and — the
+genuinely different part — how each row's title/dates/color/click-
+target are derived from the underlying domain data (calendar events
+across four entity types vs. focus-blocked tasks with status colors).
+
+Unlike every prior component, this one isn't entity-row shaped, so it
+doesn't reuse the existing mount registry's *concept* — but it does
+reuse the registry *infrastructure* itself (the `_taskRowSvelteInstances`
+map + cleanup `MutationObserver` in `mountTaskRowSvelteInstances`),
+since that machinery is generic, not actually task-specific despite
+the name. `buildTimeline()`/`renderFocusTimeline()` now only do the
+per-caller data derivation (event type → color, task status → color,
+truncated bar labels, etc.) and hand off a normalized `items` array
+(`{ key, title, start, end, color, taskId, barLabel, barTitle,
+trackTitle, trackClass, barExtraStyle }`) to the component via a
+`<span class="svelte-timelinegrid-mount" data-items="...">` placeholder
+— same JSON-in-data-attribute pattern as everywhere else pre-rendered
+HTML gets passed through via `{@html}`, just structured data instead
+of markup this time, since the component needs to do its own date-math
+and layout, not just paste markup.
+
+Both callers' existing scroll-sync and click-to-open-task bindings
+(`.tl-bar[data-task-id]`, `.pom-tl-wrap .tl-label[data-task-id]`, the
+`.tl-hdr-scroll`/`.tl-tracks-scroll` scroll-lock pairing) stay fully
+vanilla, bound by class/attribute selector after the mount — same as
+every other component here. Calendar's `rebind()` (called after every
+content re-render: initial load, prev/next, scope switch, filter
+change) and Pomodoro's post-render binding block both now call
+`mountTaskRowSvelteInstances()` first, matching the established
+mount-before-bind ordering.
+
+Verified live: Calendar's Timeline scope renders task/goal event bars
+correctly (color, position, click → task slideover) with zero console
+errors; Month/Week/Gantt scopes (untouched) still work; Pomodoro's
+Focus Block Timeline renders a focus-blocked task's bar/label
+correctly (status color, truncated label, click → task slideover);
+both empty states (`pom-timeline-empty` / the plain "No events"
+message) render the exact pre-existing markup.
+
 ## Not yet ported
 
-The pomodoro widget (small and only rendered once per slideover open —
-not spread across many call sites like the others, so lower priority),
-and the EditorJS content block (wraps a third-party library; "porting"
-it is a different kind of problem — who owns the editor instance's
-lifecycle — not chip rendering, so it deserves its own dedicated pass
-rather than being squeezed into this round).
+The pomodoro widget's timer itself (small, single-instance, no
+duplication across call sites), and the EditorJS content block (wraps
+a third-party library; "porting" it is a different kind of problem —
+who owns the editor instance's lifecycle, with substantial hand-tuned
+behavior around popover positioning and slash-command triggering — not
+chip rendering, and there's no duplication or bug to justify the
+regression risk of touching it).
 
-Beyond list rows, cards, kanban, and table views for every entity:
-full-page detail chrome, non-task dashboard widgets, and the standalone
-pages (Calendar, Habits, Pomodoro, Automations).
+Beyond list rows, cards, kanban, table views, and the timeline grid:
+full-page detail chrome (already correctly wired to the existing
+mount registry via `taskRowHtml()`/`bindDetailTaskEvents()` —
+verified, no work needed), non-task dashboard widgets (same — already
+wired via `bindTaskListEvents()`), and the rest of Calendar/Habits/
+Pomodoro/Automations, which were surveyed and found to have no further
+cross-entity duplication or bugs worth fixing this way (Habits uses
+inline Edit/Delete buttons rather than the ctx-handle pattern that
+motivated everything else here; Automations' rule-card template is
+used exactly once, no duplication).
 
 **Creation modals were investigated and turned out to be dead code, not
 a migration target.** `showProjectModal`/`showGoalModal`/

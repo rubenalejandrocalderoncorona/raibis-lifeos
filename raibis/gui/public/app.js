@@ -5247,6 +5247,24 @@ function mountTaskRowSvelteInstances(root) {
     });
     _taskRowSvelteInstances.set(mountEl, inst);
   });
+  // Day-window timeline/Gantt grid — shared by Calendar's Timeline scope
+  // (buildTimeline) and Pomodoro's Focus Block Timeline
+  // (renderFocusTimeline). Not entity-row related, but reuses this same
+  // mount registry/cleanup-observer infrastructure rather than building a
+  // separate one from scratch.
+  (root || document).querySelectorAll('.svelte-timelinegrid-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const { daysBefore, daysAfter, monthFormat, wrapClass, emptyHtml, items } = mountEl.dataset;
+    const inst = window.RaibisSvelte.mountTimelineGrid(mountEl, {
+      daysBefore: parseInt(daysBefore) || 30,
+      daysAfter: parseInt(daysAfter) || 60,
+      monthFormat: monthFormat || 'long',
+      wrapClass: wrapClass || '',
+      emptyHtml: emptyHtml || '',
+      items: items ? JSON.parse(items) : [],
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
 }
 
 // Shared list-row skeleton — Task's list view (taskRowHtml above) is the
@@ -14828,74 +14846,28 @@ async function renderCalendarView() {
     </div>`;
   }
 
+  // Day-grid layout (month/day header, today-line/bar tracks) is owned by
+  // TimelineGrid.svelte, shared with Pomodoro's Focus Block Timeline — see
+  // that component for why. This function only derives the normalized
+  // items array from calendar events, which is genuinely different per
+  // caller (event type/color/click-target logic).
   function buildTimeline() {
-    const DAYS_BEFORE = 30, DAYS_AFTER = 60, PX = 38, LABEL_W = 180;
-    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-    const today = new Date(); today.setHours(0,0,0,0);
-    const winStart = dateAdd(today, -DAYS_BEFORE);
-    const total = DAYS_BEFORE + DAYS_AFTER + 1;
-    const totalWidth = total * PX;
-    const todayX = DAYS_BEFORE * PX;
-
-    const dayList = Array.from({length: total}, (_, i) => dateAdd(winStart, i));
-
-    // Month header groups
-    const monthGroups = []; let curKey = null;
-    dayList.forEach((d, i) => {
-      const key = `${d.getFullYear()}-${d.getMonth()}`;
-      if (key !== curKey) {
-        monthGroups.push({ label: `${monthNames[d.getMonth()]} ${d.getFullYear()}`, startI: i, count: 1 });
-        curKey = key;
-      } else {
-        monthGroups[monthGroups.length - 1].count++;
-      }
-    });
-    const monthHdr = monthGroups.map(g =>
-      `<div style="position:absolute;left:${g.startI*PX}px;width:${g.count*PX}px;font-size:11px;font-weight:600;color:var(--text-muted);border-right:1px solid var(--border-light);padding:2px 4px;white-space:nowrap;overflow:hidden">${g.label}</div>`
-    ).join('');
-    const dayHdr = dayList.map((d, i) => {
-      const isT = d.getTime() === today.getTime();
-      const dayNames = ['Su','Mo','Tu','We','Th','Fr','Sa'];
-      return `<div style="position:absolute;left:${i*PX}px;width:${PX}px;text-align:center;font-size:10px;color:${isT?'var(--danger)':'var(--text-muted)'};font-weight:${isT?700:400};line-height:1.3">${d.getDate()}<br><span style="font-size:9px">${dayNames[d.getDay()]}</span></div>`;
-    }).join('');
-
     const allEvs = events.filter(ev => calEventTypes.includes(ev.type.split('-')[0]));
-    if (!allEvs.length) {
-      return `<div style="color:var(--text-muted);padding:32px;font-size:13px">No events with dates. Add start/due dates to tasks, goals, projects, or sprints.</div>`;
-    }
-
-    return `<div class="tl-wrap">
-      <div class="tl-header-row">
-        <div style="min-width:${LABEL_W}px;flex-shrink:0;border-right:1px solid var(--border-light)"></div>
-        <div class="tl-hdr-scroll">
-          <div style="width:${totalWidth}px;height:22px;position:relative;border-bottom:1px solid var(--border-light)">${monthHdr}</div>
-          <div style="width:${totalWidth}px;height:32px;position:relative;border-bottom:2px solid var(--border)">
-            ${dayHdr}
-            <div class="tl-today-dot" style="left:${todayX + PX/2}px"></div>
-          </div>
-        </div>
-      </div>
-      <div class="tl-body-wrap">
-        <div class="tl-labels-col">${allEvs.map(ev => `<div class="tl-label" title="${ev.title}">${ev.title}</div>`).join('')}</div>
-        <div class="tl-tracks-scroll">
-          ${allEvs.map(ev => {
-            const sd = ev.ranged ? ev.start : ev.date;
-            const ed = ev.ranged ? ev.end : ev.date;
-            const startDayOff = Math.round((new Date(sd + 'T00:00:00').getTime() - winStart.getTime()) / 86400000);
-            const endDayOff   = Math.round((new Date(ed + 'T00:00:00').getTime() - winStart.getTime()) / 86400000);
-            const x = Math.max(0, startDayOff * PX);
-            const rawW = (endDayOff - startDayOff + 1) * PX;
-            const w = Math.min(rawW, totalWidth - x);
-            const color = chipColor(ev);
-            const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
-            return `<div class="tl-track-row" style="width:${totalWidth}px">
-              <div class="tl-today-line" style="left:${todayX + PX/2}px"></div>
-              ${w > 0 ? `<div class="tl-bar" ${taskId} style="left:${x}px;width:${w}px;background:${color}" title="${ev.title}: ${sd}${ev.ranged?' → '+ed:''}">${ev.title}</div>` : ''}
-            </div>`;
-          }).join('')}
-        </div>
-      </div>
-    </div>`;
+    const items = allEvs.map(ev => {
+      const sd = ev.ranged ? ev.start : ev.date;
+      const ed = ev.ranged ? ev.end : ev.date;
+      return {
+        key: `${ev.type}-${ev.id}`,
+        title: ev.title,
+        start: sd,
+        end: ed,
+        color: chipColor(ev),
+        taskId: ev.type === 'task' ? ev.id : null,
+        barTitle: `${ev.title}: ${sd}${ev.ranged ? ' → ' + ed : ''}`,
+      };
+    });
+    const emptyHtml = `<div style="color:var(--text-muted);padding:32px;font-size:13px">No events with dates. Add start/due dates to tasks, goals, projects, or sprints.</div>`;
+    return `<span class="svelte-timelinegrid-mount" data-days-before="30" data-days-after="60" data-month-format="long" data-empty-html="${escHtml(emptyHtml)}" data-items="${escHtml(JSON.stringify(items))}"></span>`;
   }
 
   function buildNav() {
@@ -14971,6 +14943,10 @@ async function renderCalendarView() {
   });
 
   function rebind() {
+    // Must mount before the .tl-bar/.tl-label click bindings below, since
+    // Timeline scope's day-grid is rendered by TimelineGrid.svelte —
+    // the elements they query for don't exist until the mount runs.
+    mountTaskRowSvelteInstances();
     document.getElementById('cal-prev')?.addEventListener('click', () => {
       if (calScope === 'timeline') return;
       if (calScope === 'month' || calScope === 'gantt') {
@@ -15137,76 +15113,35 @@ async function renderPomodoro() {
   // Tasks that have pomodoro sessions planned
 
   // Focus block timeline helper — horizontal timeline like calendar Timeline view
+  // Day-grid layout is owned by TimelineGrid.svelte, shared with
+  // Calendar's Timeline scope (buildTimeline) — see that component for
+  // why. This function only derives the normalized items array from
+  // focus-blocked tasks, which is genuinely different per caller
+  // (status-color logic, truncated bar labels, clickable labels).
   function renderFocusTimeline() {
-    const DAYS_BEFORE = 7, DAYS_AFTER = 30, PX = 38, LABEL_W = 180;
-    const today = new Date(); today.setHours(0,0,0,0);
-    function dateAdd(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
-    function dateStr(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
-
     const focusTasks = allTasksCache.filter(t => t.focus_block && t.status !== 'done');
-    if (!focusTasks.length) {
-      return `<div class="pom-timeline-empty">No focus blocks scheduled. Open a task and set a Focus Block date in the properties panel to see it here.</div>`;
-    }
-
-    const winStart = dateAdd(today, -DAYS_BEFORE);
-    const total = DAYS_BEFORE + DAYS_AFTER + 1;
-    const totalWidth = total * PX;
-    const todayX = DAYS_BEFORE * PX;
-    const dayList = Array.from({length: total}, (_, i) => dateAdd(winStart, i));
-
-    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const monthGroups = []; let curKey = null;
-    dayList.forEach((d, i) => {
-      const key = `${d.getFullYear()}-${d.getMonth()}`;
-      if (key !== curKey) {
-        monthGroups.push({ label: `${monthNames[d.getMonth()]} ${d.getFullYear()}`, startI: i, count: 1 });
-        curKey = key;
-      } else {
-        monthGroups[monthGroups.length - 1].count++;
-      }
-    });
-    const monthHdr = monthGroups.map(g =>
-      `<div style="position:absolute;left:${g.startI*PX}px;width:${g.count*PX}px;font-size:11px;font-weight:600;color:var(--color-text-secondary);border-right:1px solid var(--color-border);padding:2px 4px;white-space:nowrap;overflow:hidden">${g.label}</div>`
-    ).join('');
-    const dayNames = ['Su','Mo','Tu','We','Th','Fr','Sa'];
-    const dayHdr = dayList.map((d, i) => {
-      const isT = d.getTime() === today.getTime();
-      return `<div style="position:absolute;left:${i*PX}px;width:${PX}px;text-align:center;font-size:10px;color:${isT?'var(--color-danger)':'var(--color-text-tertiary)'};font-weight:${isT?700:400};line-height:1.3">${d.getDate()}<br><span style="font-size:9px">${dayNames[d.getDay()]}</span></div>`;
-    }).join('');
-
-    const rows = focusTasks.map(t => {
+    const items = focusTasks.map(t => {
       const endDs = stripDate(t.focus_block);
       const startDs = t.focus_block_start ? stripDate(t.focus_block_start) : endDs;
-      const startDayOff = Math.round((new Date(startDs + 'T00:00:00').getTime() - winStart.getTime()) / 86400000);
-      const endDayOff = Math.round((new Date(endDs + 'T00:00:00').getTime() - winStart.getTime()) / 86400000);
-      const spanDays = Math.max(1, endDayOff - startDayOff + 1);
-      const x = Math.max(0, startDayOff * PX);
-      const w = Math.min(spanDays * PX, totalWidth - x);
       const statusColor = { todo:'var(--color-accent)', in_progress:'var(--color-success)', blocked:'var(--color-danger)' }[t.status] || 'var(--color-accent)';
       const barLabel = t.title.length > 14 ? t.title.slice(0, 12) + '…' : t.title;
       const rangeLabel = startDs !== endDs ? `${startDs} → ${endDs}` : endDs;
-      return `<div class="tl-track-row pom-tl-track-row" style="width:${totalWidth}px" data-task-id="${t.id}" title="${t.title}">
-        <div class="tl-today-line" style="left:${todayX + PX/2}px"></div>
-        ${w > 0 ? `<div class="tl-bar" data-task-id="${t.id}" style="left:${x}px;width:${w}px;background:${statusColor};border-radius:3px" title="${t.title}: ${rangeLabel}">${barLabel}</div>` : ''}
-      </div>`;
-    }).join('');
-
-    return `<div class="tl-wrap pom-tl-wrap">
-      <div class="tl-header-row">
-        <div style="min-width:${LABEL_W}px;flex-shrink:0;border-right:1px solid var(--color-border)"></div>
-        <div class="tl-hdr-scroll">
-          <div style="width:${totalWidth}px;height:22px;position:relative;border-bottom:1px solid var(--color-border)">${monthHdr}</div>
-          <div style="width:${totalWidth}px;height:32px;position:relative;border-bottom:2px solid var(--color-border-strong)">
-            ${dayHdr}
-            <div class="tl-today-dot" style="left:${todayX + PX/2}px"></div>
-          </div>
-        </div>
-      </div>
-      <div class="tl-body-wrap">
-        <div class="tl-labels-col" style="min-width:${LABEL_W}px">${focusTasks.map(t => `<div class="tl-label" title="${t.title}" data-task-id="${t.id}" style="cursor:pointer">${t.title}</div>`).join('')}</div>
-        <div class="tl-tracks-scroll">${rows}</div>
-      </div>
-    </div>`;
+      return {
+        key: String(t.id),
+        title: t.title,
+        start: startDs,
+        end: endDs,
+        color: statusColor,
+        taskId: t.id,
+        barLabel,
+        barTitle: `${t.title}: ${rangeLabel}`,
+        trackTitle: t.title,
+        trackClass: 'pom-tl-track-row',
+        barExtraStyle: 'border-radius:3px',
+      };
+    });
+    const emptyHtml = `<div class="pom-timeline-empty">No focus blocks scheduled. Open a task and set a Focus Block date in the properties panel to see it here.</div>`;
+    return `<span class="svelte-timelinegrid-mount" data-days-before="7" data-days-after="30" data-month-format="short" data-wrap-class="pom-tl-wrap" data-empty-html="${escHtml(emptyHtml)}" data-items="${escHtml(JSON.stringify(items))}"></span>`;
   }
   const pomTasks = allTasksCache.filter(t => t.pomodoro);
 
@@ -15467,6 +15402,10 @@ async function renderPomodoro() {
   updateDisplay();
   renderLog();
 
+  // Must mount before the click bindings below — the Focus Block
+  // Timeline's day-grid is rendered by TimelineGrid.svelte, so the
+  // elements they query for don't exist until the mount runs.
+  mountTaskRowSvelteInstances();
   // Focus block timeline — click label or bar to open task
   document.querySelectorAll('.pom-tl-wrap .tl-label[data-task-id], .pom-tl-wrap .tl-bar[data-task-id], .pom-tl-track-row').forEach(el => {
     el.onclick = () => { const id = el.dataset.taskId; if (id) showTaskSlideover(id); };

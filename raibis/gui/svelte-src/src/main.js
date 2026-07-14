@@ -14,6 +14,7 @@ import TaskTableRow from './TaskTableRow.svelte';
 import StandardListRowContent from './StandardListRowContent.svelte';
 import StandardCardContent from './StandardCardContent.svelte';
 import StandardKanbanCard from './StandardKanbanCard.svelte';
+import TimelineGrid from './TimelineGrid.svelte';
 
 // Exposed as a plain global so the existing vanilla-JS app (app.js) can
 // mount/unmount Svelte components into specific DOM nodes without either
@@ -81,6 +82,10 @@ function mountStandardKanbanCard(target, props) {
   return svelteMount(StandardKanbanCard, { target, props });
 }
 
+function mountTimelineGrid(target, props) {
+  return svelteMount(TimelineGrid, { target, props });
+}
+
 window.RaibisSvelte = window.RaibisSvelte || {};
 window.RaibisSvelte.mountCheckboxProp = mountCheckboxProp;
 window.RaibisSvelte.mountTextProp = mountTextProp;
@@ -97,4 +102,5 @@ window.RaibisSvelte.mountTaskTableRow = mountTaskTableRow;
 window.RaibisSvelte.mountStandardListRowContent = mountStandardListRowContent;
 window.RaibisSvelte.mountStandardCardContent = mountStandardCardContent;
 window.RaibisSvelte.mountStandardKanbanCard = mountStandardKanbanCard;
+window.RaibisSvelte.mountTimelineGrid = mountTimelineGrid;
 window.RaibisSvelte.unmount = svelteUnmount;
