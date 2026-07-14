@@ -8960,60 +8960,64 @@ async function initRelationsSection(entityType, entityId) {
 function buildCommentSection(entityType, entityId) {
   return `<div class="comment-section" data-entity-type="${entityType}" data-entity-id="${entityId}">
     <div class="comment-section-header">Comments</div>
-    <div class="comment-list"></div>
-    <div class="comment-input-row">
-      <div class="comment-avatar">M</div>
-      <input class="comment-input" placeholder="Add a comment…" autocomplete="off">
-      <button class="comment-send-btn" title="Send">↑</button>
-    </div>
+    <span class="svelte-comments-mount" data-entity-type="${entityType}" data-entity-id="${entityId}"></span>
   </div>`;
 }
+
+// Pre-formats raw /api/comments rows into the plain {initial, author,
+// relTime, text} shape CommentSection.svelte renders — keeps relativeTime()/
+// author-fallback logic here in app.js rather than inside the component,
+// matching the rest of this migration's "components don't call app.js
+// globals directly" rule.
+function formatCommentsForDisplay(comments) {
+  return (comments || []).map(c => ({
+    initial: (c.author || 'M').charAt(0).toUpperCase(),
+    author: c.author || 'me',
+    relTime: relativeTime(c.created_at),
+    text: c.body,
+  }));
+}
+
+const _commentSectionInstances = new Map(); // mountEl -> Svelte instance
 
 async function bindCommentSection(el) {
   if (!el) return;
   const entityType = el.dataset.entityType;
   const entityId   = el.dataset.entityId;
-  const listEl     = el.querySelector('.comment-list');
-  const inp        = el.querySelector('.comment-input');
-  const sendBtn    = el.querySelector('.comment-send-btn');
+  const mountEl    = el.querySelector('.svelte-comments-mount');
+  if (!mountEl) return;
 
-  async function loadComments() {
-    let comments = [];
-    try { comments = await api('GET', `/api/comments?entity_type=${entityType}&entity_id=${entityId}`); } catch(e) {}
-    if (!comments || !comments.length) {
-      listEl.innerHTML = '<div class="comment-empty">No comments yet.</div>';
-      updateSlideoverCommentIcon(0);
-      return;
-    }
-    listEl.innerHTML = comments.map(c => {
-      const initial = (c.author || 'M').charAt(0).toUpperCase();
-      const relTime = relativeTime(c.created_at);
-      return `<div class="comment-row">
-        <div class="comment-avatar">${initial}</div>
-        <div class="comment-body">
-          <div class="comment-meta"><span class="comment-author">${c.author || 'me'}</span><span class="comment-time">${relTime}</span></div>
-          <div class="comment-text">${escHtml(c.body)}</div>
-        </div>
-      </div>`;
-    }).join('');
-    updateSlideoverCommentIcon(comments.length);
+  let comments = [];
+  try { comments = await api('GET', `/api/comments?entity_type=${entityType}&entity_id=${entityId}`); } catch(e) {}
+  updateSlideoverCommentIcon(comments.length);
+
+  if (_commentSectionInstances.has(mountEl)) {
+    try { window.RaibisSvelte.unmount(_commentSectionInstances.get(mountEl)); } catch(e) {}
+    _commentSectionInstances.delete(mountEl);
   }
-
-  await loadComments();
-
-  async function sendComment() {
-    const body = inp.value.trim();
-    if (!body) return;
-    inp.value = '';
-    try {
-      await api('POST', '/api/comments', { entity_type: entityType, entity_id: parseInt(entityId), body, author: 'me' });
-      await loadComments();
+  const inst = window.RaibisSvelte.mountCommentSection(mountEl, {
+    comments: formatCommentsForDisplay(comments),
+    onSend: async (body) => {
+      try {
+        await api('POST', '/api/comments', { entity_type: entityType, entity_id: parseInt(entityId), body, author: 'me' });
+      } catch(e) {}
+      let fresh = [];
+      try { fresh = await api('GET', `/api/comments?entity_type=${entityType}&entity_id=${entityId}`); } catch(e) {}
       updateCommentBadge(entityType, entityId);
-    } catch(e) {}
-  }
+      updateSlideoverCommentIcon(fresh.length);
+      return formatCommentsForDisplay(fresh);
+    },
+  });
+  _commentSectionInstances.set(mountEl, inst);
 
-  sendBtn.onclick = sendComment;
-  inp.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendComment(); } };
+  const observer = new MutationObserver(() => {
+    if (!document.contains(mountEl)) {
+      try { window.RaibisSvelte.unmount(inst); } catch(e) {}
+      _commentSectionInstances.delete(mountEl);
+      observer.disconnect();
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
 }
 
 function updateCommentBadge(entityType, entityId) {
@@ -13693,9 +13697,14 @@ async function showTaskSlideover(taskId) {
 
   // Build interactive nested subtask table. Rows with children carry a
   // chevron to expand/collapse their branch — same interaction as the
-  // sub-entity tree custom types use. Branches start collapsed.
-  const chevSvgSub = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,3 5,7 8,3"/></svg>`;
+  // sub-entity tree custom types use. Branches start collapsed. Row
+  // content is mounted as a Svelte component (SubtaskRow) directly into
+  // each <tr>; the <tr> itself stays vanilla since the existing row-click
+  // (open slideover) and .sub-table-toggle chevron bindings both just
+  // need the elements to exist post-mount — see bindSubtaskTableEvents,
+  // called after mountSubtaskRowInstances below.
   const _expandedSubRows = new Set();
+  let _subtaskRowInstances = [];
   function buildSubtaskTable(items, depth) {
     if (!items.length) return '';
     let rows = '';
@@ -13704,25 +13713,10 @@ async function showTaskSlideover(taskId) {
       const hasKids = children.length > 0;
       const isExp = _expandedSubRows.has(String(st.id));
       const indent = depth * 18;
-      const titleEl = `<span class="task-title-text${st.status==='done'?' done':''}">${st.title}</span>`;
-      const chev = hasKids
-        ? `<span class="task-toggle-arrow sub-table-toggle${isExp ? ' expanded' : ''}" data-toggle-id="${st.id}" title="${isExp ? 'Hide' : 'Show'} subtasks" style="cursor:pointer;flex-shrink:0">${chevSvgSub}</span>`
-        : `<span style="width:14px;flex-shrink:0"></span>`;
-      const countBadge = hasKids && !isExp
-        ? `<span style="font-size:10px;color:var(--text-muted);background:var(--accent-glow);border-radius:8px;padding:0 6px;flex-shrink:0">${children.length}</span>`
-        : '';
-      rows += `<tr class="subtask-table-row" data-st-id="${st.id}" style="cursor:pointer">
-        <td style="padding-left:${8+indent}px">
-          <div style="display:flex;align-items:center;gap:6px">
-            ${chev}
-            ${titleEl}
-            ${countBadge}
-          </div>
-        </td>
-        <td>${builtinSelectChip('taskStatuses', st.status)}</td>
-        <td>${priorityBadge(st.priority)}</td>
-        <td>${datePropBadge(st.due_date, 'Due Date', 'When this task is due. Colored by how soon it is — red once overdue.')||'—'}</td>
-      </tr>`;
+      const statusChipHtml = builtinSelectChip('taskStatuses', st.status);
+      const priorityChipHtml = priorityBadge(st.priority);
+      const dueHtml = datePropBadge(st.due_date, 'Due Date', 'When this task is due. Colored by how soon it is — red once overdue.') || '—';
+      rows += `<tr class="subtask-table-row svelte-subtaskrow-mount" data-st-id="${st.id}" style="cursor:pointer" data-task-id="${st.id}" data-title="${escHtml(st.title)}" data-done="${st.status==='done'}" data-has-kids="${hasKids}" data-expanded="${isExp}" data-child-count="${children.length}" data-indent="${indent}" data-status="${escHtml(statusChipHtml)}" data-priority="${escHtml(priorityChipHtml)}" data-due="${escHtml(dueHtml)}"></tr>`;
       if (hasKids && isExp) rows += buildSubtaskTable(children, depth + 1);
       if (!hasKids || isExp) rows += `<tr class="subtask-quick-add-row" data-add-parent="${st.id}">
         <td colspan="4" style="padding:4px 8px 4px ${8+indent+18}px">
@@ -13733,9 +13727,40 @@ async function showTaskSlideover(taskId) {
     return rows;
   }
 
+  let _subtaskCleanupObserverStarted = false;
+  function mountSubtaskRowInstances(wrap) {
+    // Safety net for when the whole slideover closes without
+    // renderSubtaskTable() running again (the explicit unmount-before-
+    // replace above only covers re-renders, not the panel disappearing).
+    if (!_subtaskCleanupObserverStarted) {
+      _subtaskCleanupObserverStarted = true;
+      const observer = new MutationObserver(() => {
+        if (!document.contains(wrap)) {
+          _subtaskRowInstances.forEach(inst => { try { window.RaibisSvelte.unmount(inst); } catch (e) {} });
+          _subtaskRowInstances = [];
+          observer.disconnect();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+    wrap.querySelectorAll('.svelte-subtaskrow-mount').forEach(mountEl => {
+      const { taskId: stId, title, done, hasKids, expanded, childCount, indent, status, priority, due } = mountEl.dataset;
+      const inst = window.RaibisSvelte.mountSubtaskRow(mountEl, {
+        taskId: stId, title: title || '', done: done === 'true',
+        hasKids: hasKids === 'true', isExpanded: expanded === 'true', childCount: parseInt(childCount) || 0,
+        indent: parseInt(indent) || 0, statusChipHtml: status || '', priorityChipHtml: priority || '', dueHtml: due || '',
+      });
+      _subtaskRowInstances.push(inst);
+    });
+  }
+
   function renderSubtaskTable() {
     const wrap = document.getElementById('subtask-list');
     if (!wrap) return;
+    // Unmount previous instances before their DOM gets discarded below —
+    // Svelte 5 doesn't auto-cleanup effects on innerHTML replacement.
+    _subtaskRowInstances.forEach(inst => { try { window.RaibisSvelte.unmount(inst); } catch (e) {} });
+    _subtaskRowInstances = [];
     const currentSubtasks = allTasksCache.filter(x => String(x.parent_task_id) === String(taskId));
     if (!currentSubtasks.length) {
       wrap.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No subtasks</div>';
@@ -13747,6 +13772,7 @@ async function showTaskSlideover(taskId) {
         <tbody>${buildSubtaskTable(currentSubtasks, 0)}</tbody>
       </table>
     </div>`;
+    mountSubtaskRowInstances(wrap);
     bindSubtaskTableEvents();
   }
 

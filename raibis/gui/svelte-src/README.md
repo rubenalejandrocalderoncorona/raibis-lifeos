@@ -145,10 +145,54 @@ binding from `bindKanbanDrag`) stays vanilla, same reasoning as
 `taskRowHtml()`'s `<li>`: those bindings only need the outer element to
 exist, not care what's inside it.
 
+## Subtask table (Task's own slideover)
+
+`SubtaskRow.svelte` mounts directly into each `<tr>` of the "SUBTASKS (N)"
+mini-table shown inside a Task's slideover (title/status/priority/due,
+nested to arbitrary depth via the expand chevron). Same shape as
+TaskCardContent: the chevron keeps its original `sub-table-toggle` class
+so the existing `bindSubtaskTableEvents()` binding works unchanged, as
+long as it runs after the mount (same ordering requirement, same reason
+— the chevron is Svelte-rendered content, not a vanilla sibling).
+
+Lifecycle here differs from the row/card registries: this table has
+exactly one call site (`renderSubtaskTable()`, inside `showTaskSlideover`),
+so instead of a shared module-level registry it uses a local array that's
+explicitly unmounted at the top of `renderSubtaskTable()` before the next
+`innerHTML` replace (covers the common case — expanding/collapsing a
+branch re-renders the whole table), plus a one-time `MutationObserver` as
+a backstop for the "slideover closes without re-rendering" case that the
+explicit unmount doesn't reach.
+
+## Comments
+
+`CommentSection.svelte` is shared by every entity type's comment thread
+(Task/Project/Goal/Note/Sprint/Resource all call the same
+`bindCommentSection()` — that's the one function this needed to change,
+so all ~8 call sites picked it up automatically). Unlike the row/card/
+subtask components, this one owns real state (the comment list, the
+input value) rather than just formatting a display — there's genuine
+interactivity (send, clear input, re-render the list) that isn't just
+"click to delegate elsewhere."
+
+It still doesn't call `api()`/`relativeTime()` directly, keeping with
+the rest of the migration's rule: comments arrive pre-formatted via
+`formatCommentsForDisplay()` ({initial, author, relTime, text}), and
+`onSend(body)` is a callback that performs the actual POST + refetch in
+app.js and returns the fresh, pre-formatted list, which the component
+sets as its own local state. `buildCommentSection()` still renders the
+static `.comment-section-header` ("Comments") as a vanilla sibling —
+only the list + input row are the mount.
+
 ## Not yet ported
 
-Task table-view row rendering, subtasks tree, pomodoro widget,
-comments, and the EditorJS content block.
+Task table-view row rendering, the pomodoro widget (small and only
+rendered once per slideover open — not spread across many call sites
+like the others, so lower priority), and the EditorJS content block
+(wraps a third-party library; "porting" it is a different kind of
+problem — who owns the editor instance's lifecycle — not chip
+rendering, so it deserves its own dedicated pass rather than being
+squeezed into this round).
 
 ## Porting the next component
 
