@@ -6401,12 +6401,11 @@ async function renderCustomEntityList(typeName) {
           const toggleBtn = hasSubs
             ? `<span class="entity-toggle-arrow${isExp ? ' expanded' : ''}" data-eid="${e.id}" data-depth="0" style="flex-shrink:0;margin-right:4px">${_lChev}</span>`
             : '';
-          return `<tr class="custom-entity-row ent-table-row" data-id="${e.id}" style="cursor:pointer">
-            <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span></td>
+          const rowCellsHtml = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span></td>
             <td data-title-cell style="font-weight:500"><div style="display:flex;align-items:center;gap:4px">${toggleBtn}${escHtml(e.title)}</div></td>
             ${visDefs.map(pd => customPropCell(entityKey, e.id, pd)).join('')}
-            ${showTags ? `<td>${e.tags?.length ? e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${escHtml(t.name)}</span>`).join('') : ''}</td>` : ''}
-          </tr>`;
+            ${showTags ? `<td>${e.tags?.length ? e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${escHtml(t.name)}</span>`).join('') : ''}</td>` : ''}`;
+          return `<tr class="custom-entity-row ent-table-row svelte-tasktablerow-mount" data-id="${e.id}" style="cursor:pointer" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
         }).join('')}
         </tbody>
       </table></div>`;
@@ -10111,8 +10110,7 @@ async function renderProjects() {
       const prog = p.progress || {};
       const pct = prog.pct || 0;
       const customCols = getCustomPropDefs('project').filter(d => entityPropVisible('project', d.key)).map(def => customPropCell('project', p.id, def)).join('');
-      return `<tr>
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span></td>
+      const rowCellsHtml = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span></td>
         <td><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-proj-id="${p.id}">${p.title}</span><span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></td>
         ${vis('status')   ? `<td>${builtinSelectChip('projectStatuses', p.status)}</td>` : ''}
         ${vis('goal')     ? `<td>${p.goal_title || '—'}</td>` : ''}
@@ -10122,8 +10120,8 @@ async function renderProjects() {
         ${vis('due')      ? `<td>${datePropBadge(p.due_date, 'Due Date', 'When this project is due. Colored by how soon it is — red once overdue.') || '—'}</td>` : ''}
         ${vis('progress') ? `<td>${pct}% (${prog.done||0}/${prog.total||0})</td>` : ''}
         ${vis('tags')     ? `<td>${(p.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
-        ${customCols}
-      </tr>`;
+        ${customCols}`;
+      return `<tr class="svelte-tasktablerow-mount" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('project').filter(d => entityPropVisible('project', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
@@ -10646,8 +10644,7 @@ async function renderGoals() {
       const prog = g.progress || {};
       const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
       const customCols = getCustomPropDefs('goal').filter(d => entityPropVisible('goal', d.key)).map(def => customPropCell('goal', g.id, def)).join('');
-      return `<tr>
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span></td>
+      const rowCellsHtml = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span></td>
         <td><span style="cursor:pointer;color:var(--accent)" class="goal-nav-link" data-goal-id="${g.id}">${g.title}</span><span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></td>
         ${vis('status')   ? `<td>${builtinSelectChip('goalStatuses', g.status)}</td>` : ''}
         ${vis('type')     ? `<td>${g.type ? builtinSelectChip('goal_type', g.type) : '—'}</td>` : ''}
@@ -10656,8 +10653,8 @@ async function renderGoals() {
         ${vis('due')      ? `<td>${datePropBadge(g.due_date, 'Due Date', 'When this goal is due. Colored by how soon it is — red once overdue.') || '—'}</td>` : ''}
         ${vis('progress') ? `<td>${pct}%</td>` : ''}
         ${vis('tags')     ? `<td>${(g.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
-        ${customCols}
-      </tr>`;
+        ${customCols}`;
+      return `<tr class="svelte-tasktablerow-mount" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('goal').filter(d => entityPropVisible('goal', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
@@ -10952,8 +10949,7 @@ async function renderNotes() {
     const vis = (key) => entityPropVisible('note', key);
     const rows = list.map(n => {
       const customCols = getCustomPropDefs('note').filter(d => entityPropVisible('note', d.key)).map(def => customPropCell('note', n.id, def)).join('');
-      return `<tr class="note-item" data-note-id="${n.id}" style="cursor:pointer">
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span></td>
+      const rowCellsHtml = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span></td>
         <td><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></td>
         ${vis('date')     ? `<td>${datePropBadge(n.note_date, 'Date', 'The date associated with this note.') || '—'}</td>` : ''}
         ${vis('project')  ? `<td>${renderMultiRelationValue('note', n.id, 'project', (_noteProjects.find(p => String(p.id) === String(n.project_id))?.title)) || '—'}</td>` : ''}
@@ -10961,8 +10957,8 @@ async function renderNotes() {
         ${vis('category') ? `<td>${n.category_name ? builtinSelectChip('categories', n.category_name) : '—'}</td>` : ''}
         ${vis('tags')     ? `<td>${(n.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
         ${customCols}
-        <td onclick="event.stopPropagation()"></td>
-      </tr>`;
+        <td onclick="event.stopPropagation()"></td>`;
+      return `<tr class="note-item svelte-tasktablerow-mount" data-note-id="${n.id}" style="cursor:pointer" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('note').filter(d => entityPropVisible('note', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
@@ -11061,8 +11057,7 @@ async function renderSprints() {
       const prog = s.progress || {};
       const pct = prog.pct || 0;
       const customCols = getCustomPropDefs('sprint').filter(d => entityPropVisible('sprint', d.key)).map(def => customPropCell('sprint', s.id, def)).join('');
-      return `<tr class="sprint-row" data-sprint-id="${s.id}" style="cursor:pointer">
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span></td>
+      const rowCellsHtml = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span></td>
         <td><span class="sprint-detail-link" data-sprint-id="${s.id}" style="color:var(--accent);cursor:pointer">${s.title}</span><span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></td>
         ${vis('status')   ? `<td>${builtinSelectChip('sprintStatuses', s.status)}</td>` : ''}
         ${vis('project')  ? `<td>${s.project_title ? `<span class="multi-chip" style="font-size:11px">${escHtml(s.project_title)}</span>` : '—'}</td>` : ''}
@@ -11076,8 +11071,8 @@ async function renderSprints() {
           ${s.status === 'planned' ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="active">Start</button>` : ''}
           ${s.status === 'active' ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="completed">Complete</button>` : ''}
           <button class="btn btn-sm btn-ghost sprint-edit-btn" data-sprint-id="${s.id}">Edit</button>
-        </td>
-      </tr>`;
+        </td>`;
+      return `<tr class="sprint-row svelte-tasktablerow-mount" data-sprint-id="${s.id}" style="cursor:pointer" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('sprint').filter(d => entityPropVisible('sprint', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
@@ -12583,8 +12578,7 @@ async function renderResources() {
         : (r.body ? r.body.slice(0,60) + '…' : '—');
       const customCols = getCustomPropDefs('resource').filter(d => entityPropVisible('resource', d.key)).map(def => customPropCell('resource', r.id, def)).join('');
       const catName = (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name;
-      return `<tr class="res-row" data-res-id="${r.id}" style="cursor:pointer">
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions">⠿</span></td>
+      const rowCellsHtml = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions">⠿</span></td>
         <td><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${r.title}<span class="comment-badge" data-comment-for="${r.id}" data-comment-entity="resource" style="display:none"></span></td>
         ${vis('type')     ? `<td>${r.resource_type ? builtinSelectChip('resource_type', r.resource_type) : '—'}</td>` : ''}
         ${vis('project')  ? `<td>${r.project_title || '—'}</td>` : ''}
@@ -12592,8 +12586,8 @@ async function renderResources() {
         ${vis('category') ? `<td>${catName ? builtinSelectChip('categories', catName) : '—'}</td>` : ''}
         ${vis('url')      ? `<td>${link}</td>` : ''}
         ${customCols}
-        <td onclick="event.stopPropagation()"></td>
-      </tr>`;
+        <td onclick="event.stopPropagation()"></td>`;
+      return `<tr class="res-row svelte-tasktablerow-mount" data-res-id="${r.id}" style="cursor:pointer" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('resource').filter(d => entityPropVisible('resource', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [

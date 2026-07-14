@@ -331,6 +331,47 @@ progress bars, comment badge on Note, per-column grouping/counts) with
 zero console errors; ctx-handle opens the right entity's slideover for
 all four.
 
+## Table views (Project, Goal, Note, Sprint, Resource, custom entities)
+
+Unlike card/kanban view, table view needed **no new component at all**
+— `TaskTableRow.svelte` (already built for Task's own table view) is
+fully generic: it takes a single `rowCellsHtml` prop and renders
+`{@html rowCellsHtml}`, with no task-specific data or logic anywhere in
+it. The mount target is the `<tr>` element itself (`<tr>` only accepts
+`<td>` children, so there's no vanilla-sibling option the way list-row
+had — same reasoning documented in `TaskTableRow.svelte`'s own
+comment), and the existing `.svelte-tasktablerow-mount` branch in
+`mountTaskRowSvelteInstances` doesn't reference Task anywhere either.
+So porting every other entity's table view was just: build the same
+`rowCellsHtml` string each `buildTableView()`/`buildTable()` already
+computed inline, and emit `<tr class="... svelte-tasktablerow-mount"
+data-cells="...">` instead of a literal `<tr>...</tr>`.
+
+Six call sites ported: `buildTableView()` for Project, Goal, and
+custom entities (inside `renderCustomEntityList`); `buildNoteTable()`;
+`buildSprintTable()`; and Resource's `buildTable()`. Each preserves
+whatever the original `<tr>` carried beyond the mount class — Note's
+`note-item` class + `data-note-id`, Sprint's `sprint-row` class +
+`data-sprint-id` (plus its Start/Complete/↩/Edit buttons, which are
+bound globally via `document.querySelectorAll` in `bindSprintEvents`,
+so they need no special handling), Resource's `res-row` class +
+`data-res-id`, and custom entities' `custom-entity-row ent-table-row`
+classes + `data-id` (which `_insertSubRows`/`_bindEntToggles` rely on
+querying for sub-entity expansion — unaffected, since that's the `<tr>`
+itself, not anything inside the mount).
+
+No ordering changes were needed here (unlike the kanban round) — every
+affected bind function already mounts before `bindCtxHandles()` from
+prior rounds, and none of these `<tr>`s render ctx-handle in a
+flex-dependent position the way kanban cards do.
+
+Verified live: Project, Goal, Note, Sprint, Resource, and a freshly-
+created custom entity type all render table rows correctly (all
+columns, custom-prop cells, action buttons) with zero console errors;
+title-link/ctx-handle clicks still navigate/open correctly; Sprint's
+Start button still persists a status change from inside the mounted
+row.
+
 ## Not yet ported
 
 The pomodoro widget (small and only rendered once per slideover open —
@@ -340,13 +381,9 @@ it is a different kind of problem — who owns the editor instance's
 lifecycle — not chip rendering, so it deserves its own dedicated pass
 rather than being squeezed into this round).
 
-Beyond list rows, the five standard cards, and the four standard kanban
-views: every entity's table view besides Task's (Project/Goal/Sprint/
-Note/Resource/custom entities each have their own independent table
-builders, none shared — porting them would mean redoing the
-TaskTableRow work per entity type, not a single shared piece), creation
-modals, full-page detail chrome, non-task dashboard widgets, and the
-standalone pages (Calendar,
+Beyond list rows, cards, kanban, and table views for every entity:
+creation modals, full-page detail chrome, non-task dashboard widgets,
+and the standalone pages (Calendar,
 Habits, Pomodoro, Automations).
 
 ## Porting the next component
