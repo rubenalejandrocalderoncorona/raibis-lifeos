@@ -270,16 +270,26 @@ new bind-function wiring needed since `bindProjEvents`,
 `bindGoalEvents`, `bindNoteEvents`, and `bindResEvents` already call
 `mountTaskRowSvelteInstances()` from the list-row round.
 
-Sprint's card is deliberately **not** ported here — it has extra
-interactive buttons (prev/next status, Edit) inside the header row
-itself, the same "interactive content inside the mount" complexity
-class as `TaskCardContent`'s ctx-handle. Left for a follow-up.
+`buildSprintCard()` also reuses this same component. It was initially
+deferred over a concern that its extra header buttons (prev/next
+status, Edit) would need the same "interactive content inside the
+mount" handling `TaskCardContent`'s ctx-handle needed — but unlike
+that case, Sprint's buttons are bound globally via
+`document.querySelectorAll('.sprint-status-btn')` etc. in
+`bindSprintEvents()`, not scoped to anything mount-order-dependent.
+Since the buttons live in the header's `.flex-between` row (a sibling
+of the mount, not inside it), the whole header — ctx-handle, title,
+*and* the buttons — stays vanilla exactly like the other four entities,
+and only the chip row / dates / progress / story-points bar below it
+moves into the `bodyHtml` mount. No ordering concern, no new branch.
 
-Verified live: Project, Goal, Note, and Resource card views all render
-their body content correctly (status/type/category chips, due-date
-badges, progress bars, note preview text, resource URL link) with zero
-console errors; card click still opens the right slideover; ctx-handle
-still opens the context menu.
+Verified live: Project, Goal, Note, Resource, and Sprint card views all
+render their body content correctly (status/type/category chips,
+due-date badges, progress bars, note preview text, resource URL link,
+sprint date range) with zero console errors; card click still opens
+the right slideover; ctx-handle still opens the context menu; Sprint's
+Start/Complete/↩/Edit buttons still work (verified status transition
+persists and re-renders correctly).
 
 ## Not yet ported
 
@@ -290,13 +300,13 @@ it is a different kind of problem — who owns the editor instance's
 lifecycle — not chip rendering, so it deserves its own dedicated pass
 rather than being squeezed into this round).
 
-Beyond list rows and the four standard cards: Sprint's card (extra
-header buttons, see above), every entity's kanban/table view besides
-Task's (Project/Goal/Sprint/Note/Resource/custom entities each have
-their own independent builders for these, none shared — porting them
-would mean redoing the TaskCardContent/TaskTableRow work per entity
-type, not a single shared piece), creation modals, full-page detail
-chrome, non-task dashboard widgets, and the standalone pages (Calendar,
+Beyond list rows and the five standard cards: every entity's
+kanban/table view besides Task's (Project/Goal/Sprint/Note/Resource/
+custom entities each have their own independent builders for these,
+none shared — porting them would mean redoing the
+TaskCardContent/TaskTableRow work per entity type, not a single shared
+piece), creation modals, full-page detail chrome, non-task dashboard
+widgets, and the standalone pages (Calendar,
 Habits, Pomodoro, Automations).
 
 ## Porting the next component

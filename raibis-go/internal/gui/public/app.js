@@ -10996,19 +10996,12 @@ async function renderSprints() {
     const nextLabel = s.status === 'planned' ? 'Start' : s.status === 'active' ? 'Complete' : null;
     const prevStatus = s.status === 'active' ? 'planned' : s.status === 'completed' ? 'active' : null;
     const prevLabel = s.status === 'active' ? '↩ Planned' : s.status === 'completed' ? '↩ Active' : null;
-    return `<div class="card" data-sprint-id="${s.id}" style="cursor:pointer">
-      <div class="flex-between gap-8" style="margin-bottom:6px">
-        <div style="display:flex;align-items:center;gap:6px;min-width:0">
-          <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span>
-          <span class="card-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)"><span class="list-icon-slot" data-icon-entity="sprint" data-icon-id="${s.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${s.title}<span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></span>
-        </div>
-        <div class="flex gap-8">
-          ${prevStatus ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
-          ${nextStatus ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="${nextStatus}">${nextLabel}</button>` : ''}
-          <button class="btn btn-sm btn-ghost sprint-edit-btn" data-sprint-id="${s.id}">Edit</button>
-        </div>
-      </div>
-      <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
+    // Header (both the ctx-handle/title side AND the status/Edit buttons
+    // side) stays vanilla — the buttons are bound globally via
+    // document.querySelectorAll in bindSprintEvents, so there's no
+    // mount-ordering concern even though they live inside the same
+    // .flex-between row as everything else that stays outside the mount.
+    const bodyHtml = `<div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
         ${vis('status') ? builtinSelectChip('sprintStatuses', s.status) : ''}
         ${vis('project') && s.project_title ? `<span class="multi-chip" style="font-size:11px">${escHtml(s.project_title)}</span>` : ''}
         ${vis('category') && (allCategories.find(c => String(c.id) === String(s.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(s.category_id)) || {}).name) : ''}
@@ -11029,7 +11022,20 @@ async function renderSprints() {
           <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pctSP}%;background:${color}"></div></div>
         </div>`;
       })() : ''}
-      ${renderCustomPropChips('sprint', s.id, 'cards')}
+      ${renderCustomPropChips('sprint', s.id, 'cards')}`;
+    return `<div class="card" data-sprint-id="${s.id}" style="cursor:pointer">
+      <div class="flex-between gap-8" style="margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span>
+          <span class="card-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)"><span class="list-icon-slot" data-icon-entity="sprint" data-icon-id="${s.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${s.title}<span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></span>
+        </div>
+        <div class="flex gap-8">
+          ${prevStatus ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
+          ${nextStatus ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="${nextStatus}">${nextLabel}</button>` : ''}
+          <button class="btn btn-sm btn-ghost sprint-edit-btn" data-sprint-id="${s.id}">Edit</button>
+        </div>
+      </div>
+      <span class="svelte-stdcard-mount" data-body="${escHtml(bodyHtml)}"></span>
     </div>`;
   }
 
