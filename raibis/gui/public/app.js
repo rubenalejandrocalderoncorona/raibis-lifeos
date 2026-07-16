@@ -5712,14 +5712,15 @@ async function loadWorkspaces() {
 }
 
 // true if entityTypeKey should show in the sidebar given the current
-// activeWorkspaceId — either no workspace is active (no filtering at all),
-// the type isn't assigned to any workspace ("General", always visible), or
-// it's assigned to the currently-active workspace.
+// activeWorkspaceId. "All workspaces" (activeWorkspaceId == null) shows
+// everything, unfiltered — that's the only place unassigned entity types
+// are visible/discoverable. Once a specific workspace is active, only the
+// entity types explicitly assigned to THAT workspace show — strict scoping,
+// not a fallback to "general/unassigned".
 function isEntityTypeVisibleInActiveWorkspace(entityTypeKey) {
   if (activeWorkspaceId == null) return true;
   const owner = workspaces.find(w => (w.entity_types || []).includes(entityTypeKey));
-  if (!owner) return true;
-  return owner.id === activeWorkspaceId;
+  return !!owner && owner.id === activeWorkspaceId;
 }
 
 function applyWorkspaceFilterToNav() {
@@ -5745,13 +5746,23 @@ function renderWorkspaceSwitcher() {
     return;
   }
   const active = workspaces.find(w => w.id === activeWorkspaceId);
-  const label = active ? `${active.icon || '🗂️'} ${escHtml(active.name)}` : '🗂️ All workspaces';
+  const icon = active ? (active.icon || '🗂️') : '🗂️';
+  const label = active ? escHtml(active.name) : 'All workspaces';
+  // Trigger uses the same .nav-item styling as every other sidebar row
+  // (Dashboard, Tasks, …) instead of a toolbar-style bordered button, so it
+  // reads as part of the nav list rather than a foreign control. The
+  // dropdown panel itself already reuses the app-wide .col-picker-dropdown/
+  // .col-picker-item classes (same as the kanban group-by/column pickers).
   wrap.innerHTML = `
-    <div class="col-picker-wrap" style="position:relative;margin-bottom:8px">
-      <button class="btn btn-sm btn-ghost" id="workspace-switcher-btn" style="width:100%;justify-content:space-between;display:flex;align-items:center" title="Switch workspace">
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</span><span style="opacity:.6;flex-shrink:0">▾</span>
-      </button>
-      <div class="col-picker-dropdown hidden" id="workspace-switcher-dropdown" style="width:100%">
+    <div class="col-picker-wrap">
+      <a class="nav-item" id="workspace-switcher-btn" href="#" style="justify-content:space-between">
+        <span style="display:flex;align-items:center;gap:var(--space-2);overflow:hidden;min-width:0">
+          <span class="nav-icon" style="font-size:16px;opacity:1">${icon}</span>
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</span>
+        </span>
+        <span style="opacity:.5;flex-shrink:0;font-size:11px">▾</span>
+      </a>
+      <div class="col-picker-dropdown hidden" id="workspace-switcher-dropdown" style="left:var(--space-2);right:var(--space-2)">
         <div class="col-picker-item" data-ws-id="">🗂️ All workspaces</div>
         ${workspaces.map(w => `<div class="col-picker-item" data-ws-id="${w.id}">${w.icon || '🗂️'} ${escHtml(w.name)}</div>`).join('')}
         <div class="col-picker-item" id="workspace-manage-btn" style="border-top:1px solid var(--border);color:var(--text-muted)">⚙ Manage workspaces…</div>
@@ -5759,7 +5770,7 @@ function renderWorkspaceSwitcher() {
     </div>`;
   const btn = document.getElementById('workspace-switcher-btn');
   const drop = document.getElementById('workspace-switcher-dropdown');
-  btn.onclick = (e) => { e.stopPropagation(); drop.classList.toggle('hidden'); };
+  btn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.toggle('hidden'); };
   document.addEventListener('click', () => drop.classList.add('hidden'), { once: true });
   drop.querySelectorAll('[data-ws-id]').forEach(item => {
     item.onclick = () => {

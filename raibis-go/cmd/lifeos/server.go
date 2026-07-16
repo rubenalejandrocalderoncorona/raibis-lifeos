@@ -250,8 +250,8 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 	mux.HandleFunc("/api/custom/", withCORS(customEntitiesHandler(store, v)))
 
 	// Workspaces — group entity types (built-in or custom) under a named container
-	mux.HandleFunc("/api/workspaces", withCORS(workspacesHandler(store)))
-	mux.HandleFunc("/api/workspaces/", withCORS(workspaceHandler(store)))
+	mux.HandleFunc("/api/workspaces", withCORS(workspacesHandler(store, v)))
+	mux.HandleFunc("/api/workspaces/", withCORS(workspaceHandler(store, v)))
 
 	// Vault sync (on-demand)
 	mux.HandleFunc("/api/sync", withCORS(vaultSyncHandler(v, dbPath)))
@@ -4643,7 +4643,33 @@ func customTypeHandler(store storage.Storage) http.HandlerFunc {
 // ── Workspaces Handler ────────────────────────────────────────────────────────
 
 // workspacesHandler handles GET/POST /api/workspaces
-func workspacesHandler(store storage.Storage) http.HandlerFunc {
+// workspaceFM builds the vault frontmatter for a workspace's raibis/workspace/workspace-{id}.md file.
+func workspaceFM(ws *domain.Workspace) map[string]any {
+	return map[string]any{
+		"id":       ws.ID,
+		"title":    ws.Name,
+		"aliases":  []string{ws.Name},
+		"icon":     ws.Icon,
+		"position": ws.Position,
+	}
+}
+
+// workspaceLinksBody lists the entity types currently assigned to a
+// workspace — analogous to the "## Sub-items"/"## Children" sections other
+// entity types get, just listing type keys rather than wiki-linking to
+// individual records (entity types don't have their own vault pages).
+func workspaceLinksBody(ws *domain.Workspace) string {
+	if len(ws.EntityTypes) == 0 {
+		return ""
+	}
+	lines := []string{"", "## Entity Types"}
+	for _, et := range ws.EntityTypes {
+		lines = append(lines, fmt.Sprintf("- %s", et))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func workspacesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -4676,6 +4702,9 @@ func workspacesHandler(store storage.Storage) http.HandlerFunc {
 				return
 			}
 			ws.ID = id
+			if vlt != nil {
+				_ = vlt.WriteEntityMD("workspace", id, workspaceFM(&ws), workspaceLinksBody(&ws))
+			}
 			writeJSON(w, 201, ws)
 
 		default:
@@ -4686,7 +4715,7 @@ func workspacesHandler(store storage.Storage) http.HandlerFunc {
 
 // workspaceHandler handles PUT/DELETE /api/workspaces/{id} and
 // PUT /api/workspaces/{id}/entity-types
-func workspaceHandler(store storage.Storage) http.HandlerFunc {
+func workspaceHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.TrimPrefix(r.URL.Path, "/api/workspaces/")
 		rest = strings.TrimRight(rest, "/")
@@ -4724,6 +4753,9 @@ func workspaceHandler(store storage.Storage) http.HandlerFunc {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			if vlt != nil {
+				_ = vlt.WriteEntityMD("workspace", id, workspaceFM(ws), workspaceLinksBody(ws))
+			}
 			writeJSON(w, 200, ws)
 			return
 		}
@@ -4745,12 +4777,18 @@ func workspaceHandler(store storage.Storage) http.HandlerFunc {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			if vlt != nil {
+				_ = vlt.WriteEntityMD("workspace", id, workspaceFM(updated), workspaceLinksBody(updated))
+			}
 			writeJSON(w, 200, updated)
 
 		case http.MethodDelete:
 			if err := store.DeleteWorkspace(id); err != nil {
 				errJSON(w, 500, err.Error())
 				return
+			}
+			if vlt != nil {
+				_ = vlt.DeleteEntityMD("workspace", id)
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
