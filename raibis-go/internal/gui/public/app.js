@@ -19274,6 +19274,99 @@ document.addEventListener('propDefsChanged', (e) => {
   if (_viewPropDefsCallback) _viewPropDefsCallback(e.detail.entity);
 });
 
+/* ─── Vault sync conflict resolution ─────────────────────────────────
+   Shown when /api/sync finds fields changed on BOTH sides (app and
+   Obsidian) since the last sync. Mirrors a GitHub merge-conflict
+   screen: one card per conflicting entity, one row per conflicting
+   field, pick which side wins per field, then POST the choices to
+   /api/sync/resolve. */
+function showSyncConflictsModal(conflicts) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9100;display:flex;align-items:center;justify-content:center';
+
+  // choiceKey = "entityType:entityId:field" → "app" | "obsidian"
+  const choices = {};
+  conflicts.forEach(c => {
+    c.fields.forEach(f => {
+      choices[`${c.entity_type}:${c.entity_id}:${f.key}`] = 'app';
+    });
+  });
+
+  function render() {
+    overlay.innerHTML = `
+      <div style="background:var(--bg-card);border-radius:12px;padding:28px 32px;width:640px;max-width:95vw;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <h2 style="font-size:17px;font-weight:700;margin:0">Sync conflicts</h2>
+          <button id="_sc-close" style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--text-muted);line-height:1">×</button>
+        </div>
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
+          These changed both in the app and in Obsidian since the last sync. Pick which version to keep for each field.
+        </div>
+        <div style="display:flex;flex-direction:column;gap:16px;margin-bottom:20px">
+          ${conflicts.map(c => `
+            <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px">
+              <div style="font-weight:600;font-size:13px;margin-bottom:4px">${escHtml(c.title)} <span style="font-weight:400;color:var(--text-muted);font-size:11px">(${escHtml(c.entity_type)})</span></div>
+              ${c.fields.map(f => {
+                const ck = `${c.entity_type}:${c.entity_id}:${f.key}`;
+                const isApp = choices[ck] === 'app';
+                return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--border)">
+                  <span style="font-size:12px;font-weight:500;width:100px;flex-shrink:0">${escHtml(f.label)}</span>
+                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;flex:1;padding:5px 8px;border-radius:6px;border:1px solid ${isApp ? 'var(--accent)' : 'var(--border)'};min-width:0">
+                    <input type="radio" name="${escHtml(ck)}" value="app" data-choice-key="${escHtml(ck)}" ${isApp ? 'checked' : ''} style="flex-shrink:0">
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">App: <strong>${escHtml(f.app_value || '—')}</strong></span>
+                  </label>
+                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;flex:1;padding:5px 8px;border-radius:6px;border:1px solid ${!isApp ? 'var(--accent)' : 'var(--border)'};min-width:0">
+                    <input type="radio" name="${escHtml(ck)}" value="obsidian" data-choice-key="${escHtml(ck)}" ${!isApp ? 'checked' : ''} style="flex-shrink:0">
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Obsidian: <strong>${escHtml(f.obsidian_value || '—')}</strong></span>
+                  </label>
+                </div>`;
+              }).join('')}
+            </div>`).join('')}
+        </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+          <button id="_sc-cancel" class="btn btn-ghost">Resolve later</button>
+          <button id="_sc-resolve" class="btn btn-primary">Apply resolution</button>
+        </div>
+      </div>`;
+    bind();
+  }
+
+  function bind() {
+    overlay.querySelector('#_sc-close').onclick = () => overlay.remove();
+    overlay.querySelector('#_sc-cancel').onclick = () => overlay.remove();
+    overlay.querySelectorAll('[data-choice-key]').forEach(radio => {
+      radio.onchange = () => {
+        choices[radio.dataset.choiceKey] = radio.value;
+        render();
+      };
+    });
+    overlay.querySelector('#_sc-resolve').onclick = async () => {
+      const resolutions = Object.entries(choices).map(([ck, keep]) => {
+        const [entity_type, entity_id, field] = ck.split(':');
+        return { entity_type, entity_id: parseInt(entity_id), field, keep };
+      });
+      try {
+        const r = await api('POST', '/api/sync/resolve', resolutions);
+        overlay.remove();
+        if (r.conflicts && r.conflicts.length) {
+          showToast(`Resolved; ${r.conflicts.length} conflict${r.conflicts.length===1?'':'s'} still pending`, 'error');
+          showSyncConflictsModal(r.conflicts);
+        } else {
+          showToast(`Sync resolved: ${r.applied} updated`);
+        }
+        renderView(currentView);
+      } catch (e) {
+        showToast('Failed to resolve: ' + (e.message || e), 'error');
+      }
+    };
+  }
+
+  document.body.appendChild(overlay);
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) overlay.remove(); });
+  render();
+}
+
 /* ─── Init ───────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   // Hide any built-in entity nav items the user has deleted
@@ -19421,14 +19514,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Connected apps panel
   document.getElementById('connected-apps-btn').onclick = openConnectedAppsPanel;
 
-  // Sync vault button
+  // Sync vault button — two-way: app changes flow to Obsidian automatically
+  // as they happen; this pulls in anything changed directly in Obsidian
+  // since the last sync, and flags real conflicts (both sides changed the
+  // same field) for the user to resolve instead of silently picking one.
   const syncBtn = document.getElementById('sync-btn');
   if (syncBtn) {
     syncBtn.onclick = async () => {
       syncBtn.classList.add('spinning');
       try {
         const r = await api('POST', '/api/sync');
-        showToast(`Vault sync: ${r.inserted} inserted, ${r.updated} updated`);
+        if (r.conflicts && r.conflicts.length) {
+          showToast(`Vault sync: ${r.applied} updated, ${r.conflicts.length} conflict${r.conflicts.length===1?'':'s'} to resolve`, 'error');
+          showSyncConflictsModal(r.conflicts);
+        } else {
+          showToast(`Vault sync: ${r.applied} updated`);
+        }
         await loadCustomEntityTypes();
         renderView(currentView);
       } catch(e) { showToast('Sync failed', 'error'); }

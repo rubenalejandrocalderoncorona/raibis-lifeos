@@ -75,11 +75,19 @@ func serve(cfg serverConfig) {
 	}
 	log.Printf("vault at %s", v.Root)
 
-	// Rebuild SQLite from vault — imports any entities missing from the index.
-	// Safe to run on every start: upsert means existing rows are only overwritten when vault is newer.
-	ins, upd := syncVaultToSQLite(v, cfg.dbPath)
-	if ins+upd > 0 {
-		log.Printf("vault sync on start: %d inserted, %d updated", ins, upd)
+	// Reconcile SQLite with vault — imports any entities missing from the
+	// index and pulls in any hand-edits made in Obsidian since the app was
+	// last open. Safe to run on every start: per-field conflict detection
+	// means this never silently overwrites a change on one side with a
+	// stale value from the other. Conflicts (both sides changed the same
+	// field since last sync) are just logged here — no UI to show a merge
+	// prompt at boot time — and stay pending until the user clicks Sync.
+	applied, startupConflicts := twoWaySyncVault(v, cfg.dbPath)
+	if applied > 0 {
+		log.Printf("vault sync on start: %d entities reconciled", applied)
+	}
+	if len(startupConflicts) > 0 {
+		log.Printf("vault sync on start: %d entities have pending conflicts — resolve via the Sync button", len(startupConflicts))
 	}
 
 	// One-time per boot: feed the entity-agnostic rollup graph from rows that
@@ -255,6 +263,7 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 
 	// Vault sync (on-demand)
 	mux.HandleFunc("/api/sync", withCORS(vaultSyncHandler(v, dbPath)))
+	mux.HandleFunc("/api/sync/resolve", withCORS(vaultSyncResolveHandler(v, dbPath)))
 
 	// Server config (vault path, db path)
 	mux.HandleFunc("/api/config", withCORS(configHandler(v, dbPath)))
@@ -4331,212 +4340,788 @@ func integrationsProbeHandler() http.HandlerFunc {
 	}
 }
 
-// ── Vault → SQLite startup sync ───────────────────────────────────────────────
+// ── Two-way vault sync (with per-field conflict detection) ──────────────────
+//
+// Goal/Project/Sprint/Task are the only types covered — they're what the
+// prior one-way vault→DB sync already handled. Notes/Resources use a
+// different filename convention (title-slug, not raibis/{type}/{type}-{id}.md)
+// and custom entities/workspaces have no existing reverse-sync path; both are
+// out of scope here rather than new ground.
+//
+// Conflict detection: vault_sync_state stores the last-reconciled value of
+// each tracked field per entity. A field only counts as "conflicting" when
+// BOTH the current DB value and the current vault value differ from that
+// stored baseline AND from each other — a single-sided change (only DB, or
+// only vault, changed since last sync) is applied automatically, same as the
+// old one-way sync did. On the very first sync for an entity (no baseline
+// yet), a field whose DB and vault values already agree (the common case,
+// since the app write-throughs to vault on every change) is treated as
+// already in sync, not a conflict — only genuine, pre-existing divergence
+// surfaces as a conflict on that first pass.
 
-// syncVaultToSQLite scans vault entity dirs and upserts entities into SQLite.
-// For entities with updated_at (tasks), only overwrites when vault is newer.
-// Returns (inserted, updated) counts.
-// Dependency order: goals → projects → sprints → tasks.
-func syncVaultToSQLite(v *vault.Vault, dbPath string) (inserted int, updated int) {
+type syncFieldConflict struct {
+	Key           string `json:"key"`
+	Label         string `json:"label"`
+	AppValue      string `json:"app_value"`
+	ObsidianValue string `json:"obsidian_value"`
+}
+
+type syncConflict struct {
+	EntityType string              `json:"entity_type"`
+	EntityID   int64               `json:"entity_id"`
+	Title      string              `json:"title"`
+	Fields     []syncFieldConflict `json:"fields"`
+}
+
+var syncFieldLabels = map[string]string{
+	"title": "Title", "description": "Description", "status": "Status",
+	"priority": "Priority", "due_date": "Due Date", "start_date": "Start Date",
+	"end_date": "End Date", "story_points": "Story Points", "type": "Type",
+	"year": "Year", "target": "Target", "current_value": "Current Value",
+	"start_value": "Start Value", "macro_area": "Macro Area", "goal": "Goal",
+	"goal_id": "Goal", "project_id": "Project", "sprint_id": "Sprint",
+	"parent_task_id": "Parent Task",
+}
+
+func syncFieldLabel(key string) string {
+	if l, ok := syncFieldLabels[key]; ok {
+		return l
+	}
+	return key
+}
+
+func getVaultSyncFields(db *sql.DB, entityType string, entityID int64) map[string]string {
+	var raw string
+	if err := db.QueryRow(
+		`SELECT fields_json FROM vault_sync_state WHERE entity_type=? AND entity_id=?`,
+		entityType, entityID,
+	).Scan(&raw); err != nil {
+		return map[string]string{}
+	}
+	var m map[string]string
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return map[string]string{}
+	}
+	return m
+}
+
+func setVaultSyncFields(db *sql.DB, entityType string, entityID int64, fields map[string]string) {
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return
+	}
+	_, _ = db.Exec(
+		`INSERT INTO vault_sync_state (entity_type, entity_id, fields_json, synced_at)
+		 VALUES (?,?,?,CURRENT_TIMESTAMP)
+		 ON CONFLICT(entity_type, entity_id) DO UPDATE SET fields_json=excluded.fields_json, synced_at=CURRENT_TIMESTAMP`,
+		entityType, entityID, string(raw),
+	)
+}
+
+// diffEntityFields compares current DB/vault field values against the last-
+// synced baseline. resolved holds the field set to apply going forward
+// (vault's value wins where only vault changed; DB's value is kept — and
+// flagged as a conflict — where both sides changed to different values).
+// fieldsEqual reports whether a and b agree on every key in keys — used to
+// detect when a resolved value already matches one side, so that side can be
+// left untouched instead of being rewritten (and re-timestamped) every sync.
+func fieldsEqual(a, b map[string]string, keys []string) bool {
+	for _, k := range keys {
+		if a[k] != b[k] {
+			return false
+		}
+	}
+	return true
+}
+
+func diffEntityFields(dbFields, vaultFields, synced map[string]string, keys []string) (resolved map[string]string, conflicts []syncFieldConflict) {
+	resolved = map[string]string{}
+	for _, k := range keys {
+		dbVal, vaultVal, syncedVal := dbFields[k], vaultFields[k], synced[k]
+		dbChanged := dbVal != syncedVal
+		vaultChanged := vaultVal != syncedVal
+		switch {
+		case dbChanged && vaultChanged && dbVal != vaultVal:
+			conflicts = append(conflicts, syncFieldConflict{Key: k, Label: syncFieldLabel(k), AppValue: dbVal, ObsidianValue: vaultVal})
+			resolved[k] = dbVal // left as-is until the user resolves it
+		case vaultChanged:
+			resolved[k] = vaultVal
+		default:
+			resolved[k] = dbVal
+		}
+	}
+	return resolved, conflicts
+}
+
+// readOneEntityFields reads the current DB and vault field values for a
+// single entity — used by the resolve handler to know what "keep app" /
+// "keep obsidian" actually mean for the fields being resolved, without
+// re-scanning every row of that entity type.
+func readOneEntityFields(db *sql.DB, v *vault.Vault, entityType string, entityID int64) (dbFields, vaultFields map[string]string) {
+	dbFields = map[string]string{}
+	switch entityType {
+	case "goal":
+		var title, desc, status, typ, year, startDate, dueDate string
+		var startVal, curVal, target sql.NullFloat64
+		row := db.QueryRow(`SELECT title, COALESCE(description,''), status, COALESCE(type,''), COALESCE(year,''),
+			COALESCE(start_date,''), COALESCE(due_date,''), start_value, current_value, target FROM goals WHERE id=?`, entityID)
+		if row.Scan(&title, &desc, &status, &typ, &year, &startDate, &dueDate, &startVal, &curVal, &target) == nil {
+			dbFields = map[string]string{"title": title, "description": desc, "status": status, "type": typ, "year": year, "start_date": startDate, "due_date": dueDate}
+			if startVal.Valid {
+				dbFields["start_value"] = fmt.Sprintf("%g", startVal.Float64)
+			}
+			if curVal.Valid {
+				dbFields["current_value"] = fmt.Sprintf("%g", curVal.Float64)
+			}
+			if target.Valid {
+				dbFields["target"] = fmt.Sprintf("%g", target.Float64)
+			}
+		}
+	case "project":
+		var title, desc, status, macro, startDate, dueDate string
+		var goalID sql.NullInt64
+		row := db.QueryRow(`SELECT title, COALESCE(description,''), status, COALESCE(macro_area,''), goal_id,
+			COALESCE(start_date,''), COALESCE(due_date,'') FROM projects WHERE id=?`, entityID)
+		if row.Scan(&title, &desc, &status, &macro, &goalID, &startDate, &dueDate) == nil {
+			dbFields = map[string]string{"title": title, "description": desc, "status": status, "macro_area": macro, "start_date": startDate, "due_date": dueDate}
+			if goalID.Valid {
+				dbFields["goal_id"] = strconv.FormatInt(goalID.Int64, 10)
+			}
+		}
+	case "sprint":
+		var title, goal, startDate, endDate, status string
+		var projID int64
+		var storyPts sql.NullInt64
+		row := db.QueryRow(`SELECT project_id, title, COALESCE(goal,''), COALESCE(start_date,''), COALESCE(end_date,''), status, story_points FROM sprints WHERE id=?`, entityID)
+		if row.Scan(&projID, &title, &goal, &startDate, &endDate, &status, &storyPts) == nil {
+			dbFields = map[string]string{"title": title, "goal": goal, "start_date": startDate, "end_date": endDate, "status": status, "project_id": strconv.FormatInt(projID, 10)}
+			if storyPts.Valid {
+				dbFields["story_points"] = strconv.FormatInt(storyPts.Int64, 10)
+			}
+		}
+	case "task":
+		var title, desc, status, priority, dueDate, startDate string
+		var storyPts, goalID, projID, sprintID, parentID sql.NullInt64
+		row := db.QueryRow(`SELECT title, COALESCE(description,''), status, priority, COALESCE(due_date,''), COALESCE(start_date,''),
+			story_points, goal_id, project_id, sprint_id, parent_task_id FROM tasks WHERE id=?`, entityID)
+		if row.Scan(&title, &desc, &status, &priority, &dueDate, &startDate, &storyPts, &goalID, &projID, &sprintID, &parentID) == nil {
+			dbFields = map[string]string{"title": title, "description": desc, "status": status, "priority": priority, "due_date": dueDate, "start_date": startDate}
+			if storyPts.Valid {
+				dbFields["story_points"] = strconv.FormatInt(storyPts.Int64, 10)
+			}
+			if goalID.Valid {
+				dbFields["goal_id"] = strconv.FormatInt(goalID.Int64, 10)
+			}
+			if projID.Valid {
+				dbFields["project_id"] = strconv.FormatInt(projID.Int64, 10)
+			}
+			if sprintID.Valid {
+				dbFields["sprint_id"] = strconv.FormatInt(sprintID.Int64, 10)
+			}
+			if parentID.Valid {
+				dbFields["parent_task_id"] = strconv.FormatInt(parentID.Int64, 10)
+			}
+		}
+	}
+	content, _ := v.ReadFile(v.EntityFilePath(entityType, entityID))
+	vaultFields, _ = vault.ParseFrontmatter(content)
+	if vaultFields == nil {
+		vaultFields = map[string]string{}
+	}
+	return dbFields, vaultFields
+}
+
+// syncResolution is one field-level conflict resolution choice from the
+// frontend's merge-conflict modal.
+type syncResolution struct {
+	EntityType string `json:"entity_type"`
+	EntityID   int64  `json:"entity_id"`
+	Field      string `json:"field"`
+	Keep       string `json:"keep"` // "app" | "obsidian"
+}
+
+// vaultSyncResolveHandler applies the user's per-field conflict choices, then
+// re-runs the full two-way sync so the now-unblocked entities (and anything
+// else already resolvable) get applied in the same pass.
+//
+// The trick: rather than duplicating twoWaySyncVault's apply logic, resolving
+// a field just means seeding vault_sync_state's baseline for that field to
+// whichever side was NOT chosen — that makes the chosen side look like "the
+// only thing that changed since last sync" to diffEntityFields, so the next
+// sync pass applies it automatically instead of flagging a conflict again.
+func vaultSyncResolveHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var resolutions []syncResolution
+		if err := readJSON(r, &resolutions); err != nil {
+			errJSON(w, 400, "invalid JSON: "+err.Error())
+			return
+		}
+		db, err := openRawDB(dbPath)
+		if err != nil {
+			errJSON(w, 500, err.Error())
+			return
+		}
+		type entityKey struct {
+			entityType string
+			entityID   int64
+		}
+		grouped := map[entityKey][]syncResolution{}
+		for _, res := range resolutions {
+			k := entityKey{res.EntityType, res.EntityID}
+			grouped[k] = append(grouped[k], res)
+		}
+		for k, fieldResolutions := range grouped {
+			dbFields, vaultFields := readOneEntityFields(db, v, k.entityType, k.entityID)
+			baseline := getVaultSyncFields(db, k.entityType, k.entityID)
+			for _, res := range fieldResolutions {
+				if res.Keep == "app" {
+					baseline[res.Field] = vaultFields[res.Field]
+				} else {
+					baseline[res.Field] = dbFields[res.Field]
+				}
+			}
+			setVaultSyncFields(db, k.entityType, k.entityID, baseline)
+		}
+		db.Close()
+
+		applied, remaining := twoWaySyncVault(v, dbPath)
+		writeJSON(w, 200, map[string]any{"applied": applied, "conflicts": remaining})
+	}
+}
+
+// twoWaySyncVault reconciles goal/project/sprint/task rows against their
+// vault files in both directions, returning the number of entities updated
+// automatically and any per-field conflicts that need user resolution.
+func twoWaySyncVault(v *vault.Vault, dbPath string) (applied int, conflicts []syncConflict) {
 	db, err := openRawDB(dbPath)
 	if err != nil {
 		log.Printf("vault sync: open db: %v", err)
-		return
+		return 0, nil
 	}
 	defer db.Close()
 
-	// Known core fields per entity type (anything else becomes an entity_property).
-	goalCoreFields := map[string]bool{
-		"id": true, "title": true, "description": true, "status": true,
-		"type": true, "year": true, "start_date": true, "due_date": true,
-		"start_value": true, "current_value": true, "target": true,
-		"created_at": true, "aliases": true,
-	}
-	projectCoreFields := map[string]bool{
-		"id": true, "title": true, "description": true, "status": true,
-		"macro_area": true, "goal_id": true, "created_at": true, "aliases": true,
-	}
-	sprintCoreFields := map[string]bool{
-		"id": true, "title": true, "goal": true, "start_date": true,
-		"end_date": true, "status": true, "project_id": true, "created_at": true, "aliases": true,
-	}
-	taskCoreFields := map[string]bool{
-		"id": true, "title": true, "description": true, "status": true,
-		"priority": true, "due_date": true, "start_date": true, "story_points": true,
-		"goal_id": true, "project_id": true, "sprint_id": true, "parent_task_id": true,
-		"created_at": true, "updated_at": true, "aliases": true,
-	}
-
-	// saveExtraProps stores any non-core frontmatter keys as entity_properties.
-	saveExtraProps := func(entityType string, entityID int64, fm map[string]string, coreFields map[string]bool) {
-		for k, v := range fm {
-			if coreFields[k] || v == "" {
-				continue
-			}
-			_, _ = db.Exec(
-				`INSERT INTO entity_properties (entity_type, entity_id, key, value)
-				 VALUES (?,?,?,?)
-				 ON CONFLICT(entity_type, entity_id, key) DO UPDATE SET value=excluded.value`,
-				entityType, entityID, k, v,
-			)
-		}
-	}
-
-	// preExists returns true if a row with the given id already exists in the table.
-	preExists := func(table string, id int64) bool {
-		var cnt int
-		_ = db.QueryRow("SELECT COUNT(*) FROM "+table+" WHERE id=?", id).Scan(&cnt) //nolint:gosec
-		return cnt > 0
-	}
-
-	// Goals
-	if files, _ := v.ScanEntityFiles("goal"); len(files) > 0 {
-		for _, fm := range files {
-			id, _ := strconv.ParseInt(fm["id"], 10, 64)
-			if id == 0 {
-				continue
-			}
-			wasNew := !preExists("goals", id)
-			_, err := db.Exec(`INSERT INTO goals
-				(id,title,description,status,type,year,start_date,due_date,
-				 start_value,current_value,target,created_at)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-				ON CONFLICT(id) DO UPDATE SET
-				  title=excluded.title, description=excluded.description,
-				  status=excluded.status, type=excluded.type, year=excluded.year,
-				  start_date=excluded.start_date, due_date=excluded.due_date,
-				  start_value=excluded.start_value, current_value=excluded.current_value,
-				  target=excluded.target
-				WHERE 1=1`,
-				id, fm["title"], nullStr(fm["description"]),
-				fmDefault(fm["status"], "active"),
-				nullStr(fm["type"]), nullStr(fm["year"]),
-				nullStr(fm["start_date"]), nullStr(fm["due_date"]),
-				fmFloat64(fm["start_value"]), fmFloat64(fm["current_value"]),
-				fmFloat64(fm["target"]),
-				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
-			)
-			if err == nil {
-				if wasNew {
-					inserted++
-				} else {
-					updated++
-				}
-				saveExtraProps("goal", id, fm, goalCoreFields)
-			}
-		}
-	}
-
-	// Projects
-	if files, _ := v.ScanEntityFiles("project"); len(files) > 0 {
-		for _, fm := range files {
-			id, _ := strconv.ParseInt(fm["id"], 10, 64)
-			if id == 0 {
-				continue
-			}
-			wasNew := !preExists("projects", id)
-			_, err := db.Exec(`INSERT INTO projects
-				(id,goal_id,title,description,status,macro_area,created_at)
-				VALUES (?,?,?,?,?,?,?)
-				ON CONFLICT(id) DO UPDATE SET
-				  title=excluded.title, description=excluded.description,
-				  status=excluded.status, macro_area=excluded.macro_area,
-				  goal_id=excluded.goal_id
-				WHERE 1=1`,
-				id, fmInt64(fm["goal_id"]), fm["title"],
-				nullStr(fm["description"]),
-				fmDefault(fm["status"], "active"),
-				nullStr(fm["macro_area"]),
-				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
-			)
-			if err == nil {
-				if wasNew {
-					inserted++
-				} else {
-					updated++
-				}
-				saveExtraProps("project", id, fm, projectCoreFields)
-			}
-		}
-	}
-
-	// Sprints (need project to exist first)
-	if files, _ := v.ScanEntityFiles("sprint"); len(files) > 0 {
-		for _, fm := range files {
-			id, _ := strconv.ParseInt(fm["id"], 10, 64)
-			projID, _ := strconv.ParseInt(fm["project_id"], 10, 64)
-			if id == 0 || projID == 0 {
-				continue
-			}
-			wasNew := !preExists("sprints", id)
-			_, err := db.Exec(`INSERT INTO sprints
-				(id,project_id,title,goal,start_date,end_date,status,created_at)
-				VALUES (?,?,?,?,?,?,?,?)
-				ON CONFLICT(id) DO UPDATE SET
-				  title=excluded.title, goal=excluded.goal,
-				  start_date=excluded.start_date, end_date=excluded.end_date,
-				  status=excluded.status, project_id=excluded.project_id
-				WHERE 1=1`,
-				id, projID, fm["title"], nullStr(fm["goal"]),
-				nullStr(fm["start_date"]), nullStr(fm["end_date"]),
-				fmDefault(fm["status"], "planned"),
-				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
-			)
-			if err == nil {
-				if wasNew {
-					inserted++
-				} else {
-					updated++
-				}
-				saveExtraProps("sprint", id, fm, sprintCoreFields)
-			}
-		}
-	}
-
-	// Tasks (need project/sprint/goal to exist first)
-	if files, _ := v.ScanEntityFiles("task"); len(files) > 0 {
-		for _, fm := range files {
-			id, _ := strconv.ParseInt(fm["id"], 10, 64)
-			if id == 0 {
-				continue
-			}
-			wasNew := !preExists("tasks", id)
-			_, err := db.Exec(`INSERT INTO tasks
-				(id,goal_id,project_id,sprint_id,title,description,
-				 status,priority,due_date,start_date,story_points,
-				 created_at,updated_at)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-				ON CONFLICT(id) DO UPDATE SET
-				  title=excluded.title, description=excluded.description,
-				  status=excluded.status, priority=excluded.priority,
-				  due_date=excluded.due_date, start_date=excluded.start_date,
-				  story_points=excluded.story_points, goal_id=excluded.goal_id,
-				  project_id=excluded.project_id, sprint_id=excluded.sprint_id,
-				  updated_at=excluded.updated_at
-				WHERE excluded.updated_at >= tasks.updated_at`,
-				id,
-				fmInt64(fm["goal_id"]), fmInt64(fm["project_id"]), fmInt64(fm["sprint_id"]),
-				fm["title"], nullStr(fm["description"]),
-				fmDefault(fm["status"], "todo"),
-				fmDefault(fm["priority"], "medium"),
-				nullStr(fm["due_date"]), nullStr(fm["start_date"]),
-				fmInt64(fm["story_points"]),
-				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
-				fmDefault(fm["updated_at"], time.Now().Format(time.RFC3339)),
-			)
-			if err == nil {
-				if wasNew {
-					inserted++
-				} else {
-					updated++
-				}
-				saveExtraProps("task", id, fm, taskCoreFields)
-			}
-		}
-	}
-
-	return inserted, updated
+	applied += syncGoalsTwoWay(db, v, &conflicts)
+	applied += syncProjectsTwoWay(db, v, &conflicts)
+	applied += syncSprintsTwoWay(db, v, &conflicts)
+	applied += syncTasksTwoWay(db, v, &conflicts)
+	return applied, conflicts
 }
+
+var goalSyncKeys = []string{"title", "description", "status", "type", "year", "start_date", "due_date", "start_value", "current_value", "target"}
+
+func syncGoalsTwoWay(db *sql.DB, v *vault.Vault, conflicts *[]syncConflict) int {
+	applied := 0
+	dbRows := map[int64]map[string]string{}
+	createdAts := map[int64]string{}
+	rows, err := db.Query(`SELECT id, title, COALESCE(description,''), status, COALESCE(type,''), COALESCE(year,''),
+		COALESCE(start_date,''), COALESCE(due_date,''), start_value, current_value, target, created_at FROM goals`)
+	if err == nil {
+		for rows.Next() {
+			var id int64
+			var title, desc, status, typ, year, startDate, dueDate, createdAt string
+			var startVal, curVal, target sql.NullFloat64
+			if rows.Scan(&id, &title, &desc, &status, &typ, &year, &startDate, &dueDate, &startVal, &curVal, &target, &createdAt) != nil {
+				continue
+			}
+			f := map[string]string{"title": title, "description": desc, "status": status, "type": typ, "year": year, "start_date": startDate, "due_date": dueDate}
+			if startVal.Valid {
+				f["start_value"] = fmt.Sprintf("%g", startVal.Float64)
+			}
+			if curVal.Valid {
+				f["current_value"] = fmt.Sprintf("%g", curVal.Float64)
+			}
+			if target.Valid {
+				f["target"] = fmt.Sprintf("%g", target.Float64)
+			}
+			dbRows[id] = f
+			createdAts[id] = createdAt
+		}
+		rows.Close()
+	}
+
+	vaultFiles, _ := v.ScanEntityFiles("goal")
+	vaultRows := map[int64]map[string]string{}
+	for _, fm := range vaultFiles {
+		id, _ := strconv.ParseInt(fm["id"], 10, 64)
+		if id > 0 {
+			vaultRows[id] = fm
+		}
+	}
+
+	ids := map[int64]bool{}
+	for id := range dbRows {
+		ids[id] = true
+	}
+	for id := range vaultRows {
+		ids[id] = true
+	}
+
+	for id := range ids {
+		dbFields, hadDB := dbRows[id]
+		vaultFields, hadVault := vaultRows[id]
+		if dbFields == nil {
+			dbFields = map[string]string{}
+		}
+		if vaultFields == nil {
+			vaultFields = map[string]string{}
+		}
+		synced := getVaultSyncFields(db, "goal", id)
+		resolved, fieldConflicts := diffEntityFields(dbFields, vaultFields, synced, goalSyncKeys)
+
+		if len(fieldConflicts) > 0 {
+			title := resolved["title"]
+			if title == "" {
+				title = fmt.Sprintf("goal-%d", id)
+			}
+			*conflicts = append(*conflicts, syncConflict{EntityType: "goal", EntityID: id, Title: title, Fields: fieldConflicts})
+			continue
+		}
+
+		dbMatches := hadDB && fieldsEqual(resolved, dbFields, goalSyncKeys)
+		vaultMatches := hadVault && fieldsEqual(resolved, vaultFields, goalSyncKeys)
+		if dbMatches && vaultMatches {
+			continue
+		}
+
+		createdAt := createdAts[id]
+		if createdAt == "" {
+			createdAt = fmDefault(vaultFields["created_at"], time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+		}
+		if !dbMatches {
+			var dbErr error
+			if !hadDB {
+				_, dbErr = db.Exec(`INSERT INTO goals (id,title,description,status,type,year,start_date,due_date,start_value,current_value,target,created_at)
+					VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+					id, resolved["title"], nullStr(resolved["description"]), fmDefault(resolved["status"], "active"),
+					nullStr(resolved["type"]), nullStr(resolved["year"]), nullStr(resolved["start_date"]), nullStr(resolved["due_date"]),
+					fmFloat64(resolved["start_value"]), fmFloat64(resolved["current_value"]), fmFloat64(resolved["target"]), createdAt)
+			} else {
+				_, dbErr = db.Exec(`UPDATE goals SET title=?, description=?, status=?, type=?, year=?, start_date=?, due_date=?, start_value=?, current_value=?, target=? WHERE id=?`,
+					resolved["title"], nullStr(resolved["description"]), fmDefault(resolved["status"], "active"),
+					nullStr(resolved["type"]), nullStr(resolved["year"]), nullStr(resolved["start_date"]), nullStr(resolved["due_date"]),
+					fmFloat64(resolved["start_value"]), fmFloat64(resolved["current_value"]), fmFloat64(resolved["target"]), id)
+			}
+			if dbErr != nil {
+				continue
+			}
+		}
+		applied++
+		if !vaultMatches {
+			fm := map[string]any{"id": id, "title": resolved["title"], "aliases": []string{resolved["title"]}, "status": resolved["status"], "created_at": createdAt}
+			if resolved["description"] != "" {
+				fm["description"] = resolved["description"]
+			}
+			if resolved["type"] != "" {
+				fm["type"] = resolved["type"]
+			}
+			if resolved["year"] != "" {
+				fm["year"] = resolved["year"]
+			}
+			if resolved["due_date"] != "" {
+				fm["due_date"] = resolved["due_date"]
+			}
+			if resolved["start_date"] != "" {
+				fm["start_date"] = resolved["start_date"]
+			}
+			if resolved["target"] != "" {
+				fm["target"] = fmFloat64(resolved["target"])
+			}
+			if resolved["current_value"] != "" {
+				fm["current_value"] = fmFloat64(resolved["current_value"])
+			}
+			_ = v.WriteEntityMD("goal", id, fm, "")
+		}
+		setVaultSyncFields(db, "goal", id, resolved)
+	}
+	return applied
+}
+
+var projectSyncKeys = []string{"title", "description", "status", "macro_area", "goal_id", "start_date", "due_date"}
+
+func syncProjectsTwoWay(db *sql.DB, v *vault.Vault, conflicts *[]syncConflict) int {
+	applied := 0
+	dbRows := map[int64]map[string]string{}
+	createdAts := map[int64]string{}
+	rows, err := db.Query(`SELECT id, title, COALESCE(description,''), status, COALESCE(macro_area,''), goal_id,
+		COALESCE(start_date,''), COALESCE(due_date,''), created_at FROM projects`)
+	if err == nil {
+		for rows.Next() {
+			var id int64
+			var title, desc, status, macro, startDate, dueDate, createdAt string
+			var goalID sql.NullInt64
+			if rows.Scan(&id, &title, &desc, &status, &macro, &goalID, &startDate, &dueDate, &createdAt) != nil {
+				continue
+			}
+			f := map[string]string{"title": title, "description": desc, "status": status, "macro_area": macro, "start_date": startDate, "due_date": dueDate}
+			if goalID.Valid {
+				f["goal_id"] = strconv.FormatInt(goalID.Int64, 10)
+			}
+			dbRows[id] = f
+			createdAts[id] = createdAt
+		}
+		rows.Close()
+	}
+
+	vaultFiles, _ := v.ScanEntityFiles("project")
+	vaultRows := map[int64]map[string]string{}
+	for _, fm := range vaultFiles {
+		id, _ := strconv.ParseInt(fm["id"], 10, 64)
+		if id > 0 {
+			vaultRows[id] = fm
+		}
+	}
+
+	ids := map[int64]bool{}
+	for id := range dbRows {
+		ids[id] = true
+	}
+	for id := range vaultRows {
+		ids[id] = true
+	}
+
+	for id := range ids {
+		dbFields, hadDB := dbRows[id]
+		vaultFields, hadVault := vaultRows[id]
+		if dbFields == nil {
+			dbFields = map[string]string{}
+		}
+		if vaultFields == nil {
+			vaultFields = map[string]string{}
+		}
+		synced := getVaultSyncFields(db, "project", id)
+		resolved, fieldConflicts := diffEntityFields(dbFields, vaultFields, synced, projectSyncKeys)
+
+		if len(fieldConflicts) > 0 {
+			title := resolved["title"]
+			if title == "" {
+				title = fmt.Sprintf("project-%d", id)
+			}
+			*conflicts = append(*conflicts, syncConflict{EntityType: "project", EntityID: id, Title: title, Fields: fieldConflicts})
+			continue
+		}
+
+		dbMatches := hadDB && fieldsEqual(resolved, dbFields, projectSyncKeys)
+		vaultMatches := hadVault && fieldsEqual(resolved, vaultFields, projectSyncKeys)
+		if dbMatches && vaultMatches {
+			continue
+		}
+
+		createdAt := createdAts[id]
+		if createdAt == "" {
+			createdAt = fmDefault(vaultFields["created_at"], time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+		}
+		if !dbMatches {
+			var dbErr error
+			if !hadDB {
+				_, dbErr = db.Exec(`INSERT INTO projects (id,goal_id,title,description,status,macro_area,start_date,due_date,created_at)
+					VALUES (?,?,?,?,?,?,?,?,?)`,
+					id, fmInt64(resolved["goal_id"]), resolved["title"], nullStr(resolved["description"]),
+					fmDefault(resolved["status"], "active"), nullStr(resolved["macro_area"]),
+					nullStr(resolved["start_date"]), nullStr(resolved["due_date"]), createdAt)
+			} else {
+				_, dbErr = db.Exec(`UPDATE projects SET title=?, description=?, status=?, macro_area=?, goal_id=?, start_date=?, due_date=? WHERE id=?`,
+					resolved["title"], nullStr(resolved["description"]), fmDefault(resolved["status"], "active"),
+					nullStr(resolved["macro_area"]), fmInt64(resolved["goal_id"]),
+					nullStr(resolved["start_date"]), nullStr(resolved["due_date"]), id)
+			}
+			if dbErr != nil {
+				continue
+			}
+		}
+		applied++
+		if !vaultMatches {
+			fm := map[string]any{"id": id, "title": resolved["title"], "aliases": []string{resolved["title"]}, "status": resolved["status"], "created_at": createdAt}
+			if resolved["description"] != "" {
+				fm["description"] = resolved["description"]
+			}
+			if resolved["goal_id"] != "" {
+				fm["goal_id"] = fmInt64(resolved["goal_id"])
+			}
+			if resolved["macro_area"] != "" {
+				fm["macro_area"] = resolved["macro_area"]
+			}
+			if resolved["due_date"] != "" {
+				fm["due_date"] = resolved["due_date"]
+			}
+			if resolved["start_date"] != "" {
+				fm["start_date"] = resolved["start_date"]
+			}
+			_ = v.WriteEntityMD("project", id, fm, "")
+		}
+		setVaultSyncFields(db, "project", id, resolved)
+	}
+	return applied
+}
+
+var sprintSyncKeys = []string{"title", "goal", "start_date", "end_date", "status", "project_id", "story_points"}
+
+func syncSprintsTwoWay(db *sql.DB, v *vault.Vault, conflicts *[]syncConflict) int {
+	applied := 0
+	dbRows := map[int64]map[string]string{}
+	createdAts := map[int64]string{}
+	rows, err := db.Query(`SELECT id, project_id, title, COALESCE(goal,''), COALESCE(start_date,''), COALESCE(end_date,''), status, story_points, created_at FROM sprints`)
+	if err == nil {
+		for rows.Next() {
+			var id, projID int64
+			var title, goal, startDate, endDate, status, createdAt string
+			var storyPts sql.NullInt64
+			if rows.Scan(&id, &projID, &title, &goal, &startDate, &endDate, &status, &storyPts, &createdAt) != nil {
+				continue
+			}
+			f := map[string]string{"title": title, "goal": goal, "start_date": startDate, "end_date": endDate, "status": status, "project_id": strconv.FormatInt(projID, 10)}
+			if storyPts.Valid {
+				f["story_points"] = strconv.FormatInt(storyPts.Int64, 10)
+			}
+			dbRows[id] = f
+			createdAts[id] = createdAt
+		}
+		rows.Close()
+	}
+
+	vaultFiles, _ := v.ScanEntityFiles("sprint")
+	vaultRows := map[int64]map[string]string{}
+	for _, fm := range vaultFiles {
+		id, _ := strconv.ParseInt(fm["id"], 10, 64)
+		if id > 0 {
+			vaultRows[id] = fm
+		}
+	}
+
+	ids := map[int64]bool{}
+	for id := range dbRows {
+		ids[id] = true
+	}
+	for id := range vaultRows {
+		ids[id] = true
+	}
+
+	for id := range ids {
+		dbFields, hadDB := dbRows[id]
+		vaultFields, hadVault := vaultRows[id]
+		if dbFields == nil {
+			dbFields = map[string]string{}
+		}
+		if vaultFields == nil {
+			vaultFields = map[string]string{}
+		}
+		// A sprint needs a project to attach to — skip vault-only files with no resolvable project_id.
+		projID := fmInt64(dbFields["project_id"])
+		if projID == nil {
+			projID = fmInt64(vaultFields["project_id"])
+		}
+		if projID == nil {
+			continue
+		}
+		synced := getVaultSyncFields(db, "sprint", id)
+		resolved, fieldConflicts := diffEntityFields(dbFields, vaultFields, synced, sprintSyncKeys)
+
+		if len(fieldConflicts) > 0 {
+			title := resolved["title"]
+			if title == "" {
+				title = fmt.Sprintf("sprint-%d", id)
+			}
+			*conflicts = append(*conflicts, syncConflict{EntityType: "sprint", EntityID: id, Title: title, Fields: fieldConflicts})
+			continue
+		}
+
+		dbMatches := hadDB && fieldsEqual(resolved, dbFields, sprintSyncKeys)
+		vaultMatches := hadVault && fieldsEqual(resolved, vaultFields, sprintSyncKeys)
+		if dbMatches && vaultMatches {
+			continue
+		}
+
+		createdAt := createdAts[id]
+		if createdAt == "" {
+			createdAt = fmDefault(vaultFields["created_at"], time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+		}
+		if !dbMatches {
+			var dbErr error
+			if !hadDB {
+				_, dbErr = db.Exec(`INSERT INTO sprints (id,project_id,title,goal,start_date,end_date,status,story_points,created_at)
+					VALUES (?,?,?,?,?,?,?,?,?)`,
+					id, projID, resolved["title"], nullStr(resolved["goal"]),
+					nullStr(resolved["start_date"]), nullStr(resolved["end_date"]),
+					fmDefault(resolved["status"], "planned"), fmInt64(resolved["story_points"]), createdAt)
+			} else {
+				_, dbErr = db.Exec(`UPDATE sprints SET title=?, goal=?, start_date=?, end_date=?, status=?, project_id=?, story_points=? WHERE id=?`,
+					resolved["title"], nullStr(resolved["goal"]), nullStr(resolved["start_date"]), nullStr(resolved["end_date"]),
+					fmDefault(resolved["status"], "planned"), projID, fmInt64(resolved["story_points"]), id)
+			}
+			if dbErr != nil {
+				continue
+			}
+		}
+		applied++
+		if !vaultMatches {
+			fm := map[string]any{"id": id, "title": resolved["title"], "aliases": []string{resolved["title"]}, "project_id": projID, "status": resolved["status"], "created_at": createdAt}
+			if resolved["goal"] != "" {
+				fm["goal"] = resolved["goal"]
+			}
+			if resolved["start_date"] != "" {
+				fm["start_date"] = resolved["start_date"]
+			}
+			if resolved["end_date"] != "" {
+				fm["end_date"] = resolved["end_date"]
+			}
+			if resolved["story_points"] != "" {
+				fm["story_points"] = fmInt64(resolved["story_points"])
+			}
+			_ = v.WriteEntityMD("sprint", id, fm, "")
+		}
+		setVaultSyncFields(db, "sprint", id, resolved)
+	}
+	return applied
+}
+
+var taskSyncKeys = []string{"title", "description", "status", "priority", "due_date", "start_date", "story_points", "goal_id", "project_id", "sprint_id", "parent_task_id"}
+
+func syncTasksTwoWay(db *sql.DB, v *vault.Vault, conflicts *[]syncConflict) int {
+	applied := 0
+	dbRows := map[int64]map[string]string{}
+	createdAts := map[int64]string{}
+	updatedAts := map[int64]string{}
+	rows, err := db.Query(`SELECT id, title, COALESCE(description,''), status, priority, COALESCE(due_date,''), COALESCE(start_date,''),
+		story_points, goal_id, project_id, sprint_id, parent_task_id, created_at, updated_at FROM tasks`)
+	if err == nil {
+		for rows.Next() {
+			var id int64
+			var title, desc, status, priority, dueDate, startDate, createdAt, updatedAt string
+			var storyPts, goalID, projID, sprintID, parentID sql.NullInt64
+			if rows.Scan(&id, &title, &desc, &status, &priority, &dueDate, &startDate, &storyPts, &goalID, &projID, &sprintID, &parentID, &createdAt, &updatedAt) != nil {
+				continue
+			}
+			f := map[string]string{"title": title, "description": desc, "status": status, "priority": priority, "due_date": dueDate, "start_date": startDate}
+			if storyPts.Valid {
+				f["story_points"] = strconv.FormatInt(storyPts.Int64, 10)
+			}
+			if goalID.Valid {
+				f["goal_id"] = strconv.FormatInt(goalID.Int64, 10)
+			}
+			if projID.Valid {
+				f["project_id"] = strconv.FormatInt(projID.Int64, 10)
+			}
+			if sprintID.Valid {
+				f["sprint_id"] = strconv.FormatInt(sprintID.Int64, 10)
+			}
+			if parentID.Valid {
+				f["parent_task_id"] = strconv.FormatInt(parentID.Int64, 10)
+			}
+			dbRows[id] = f
+			createdAts[id] = createdAt
+			updatedAts[id] = updatedAt
+		}
+		rows.Close()
+	}
+
+	vaultFiles, _ := v.ScanEntityFiles("task")
+	vaultRows := map[int64]map[string]string{}
+	for _, fm := range vaultFiles {
+		id, _ := strconv.ParseInt(fm["id"], 10, 64)
+		if id > 0 {
+			vaultRows[id] = fm
+		}
+	}
+
+	ids := map[int64]bool{}
+	for id := range dbRows {
+		ids[id] = true
+	}
+	for id := range vaultRows {
+		ids[id] = true
+	}
+
+	for id := range ids {
+		dbFields, hadDB := dbRows[id]
+		vaultFields, hadVault := vaultRows[id]
+		if dbFields == nil {
+			dbFields = map[string]string{}
+		}
+		if vaultFields == nil {
+			vaultFields = map[string]string{}
+		}
+		synced := getVaultSyncFields(db, "task", id)
+		resolved, fieldConflicts := diffEntityFields(dbFields, vaultFields, synced, taskSyncKeys)
+
+		if len(fieldConflicts) > 0 {
+			title := resolved["title"]
+			if title == "" {
+				title = fmt.Sprintf("task-%d", id)
+			}
+			*conflicts = append(*conflicts, syncConflict{EntityType: "task", EntityID: id, Title: title, Fields: fieldConflicts})
+			continue
+		}
+
+		dbMatches := hadDB && fieldsEqual(resolved, dbFields, taskSyncKeys)
+		vaultMatches := hadVault && fieldsEqual(resolved, vaultFields, taskSyncKeys)
+		if dbMatches && vaultMatches {
+			continue
+		}
+
+		createdAt := createdAts[id]
+		if createdAt == "" {
+			createdAt = fmDefault(vaultFields["created_at"], time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+		}
+		updatedAt := updatedAts[id]
+		if !dbMatches {
+			updatedAt = time.Now().UTC().Format("2006-01-02T15:04:05Z")
+			var dbErr error
+			if !hadDB {
+				_, dbErr = db.Exec(`INSERT INTO tasks (id,goal_id,project_id,sprint_id,parent_task_id,title,description,status,priority,due_date,start_date,story_points,created_at,updated_at)
+					VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+					id, fmInt64(resolved["goal_id"]), fmInt64(resolved["project_id"]), fmInt64(resolved["sprint_id"]), fmInt64(resolved["parent_task_id"]),
+					resolved["title"], nullStr(resolved["description"]), fmDefault(resolved["status"], "todo"), fmDefault(resolved["priority"], "medium"),
+					nullStr(resolved["due_date"]), nullStr(resolved["start_date"]), fmInt64(resolved["story_points"]), createdAt, updatedAt)
+			} else {
+				_, dbErr = db.Exec(`UPDATE tasks SET title=?, description=?, status=?, priority=?, due_date=?, start_date=?, story_points=?, goal_id=?, project_id=?, sprint_id=?, parent_task_id=?, updated_at=? WHERE id=?`,
+					resolved["title"], nullStr(resolved["description"]), fmDefault(resolved["status"], "todo"), fmDefault(resolved["priority"], "medium"),
+					nullStr(resolved["due_date"]), nullStr(resolved["start_date"]), fmInt64(resolved["story_points"]),
+					fmInt64(resolved["goal_id"]), fmInt64(resolved["project_id"]), fmInt64(resolved["sprint_id"]), fmInt64(resolved["parent_task_id"]), updatedAt, id)
+			}
+			if dbErr != nil {
+				continue
+			}
+		}
+		applied++
+		if updatedAt == "" {
+			updatedAt = createdAt
+		}
+		if !vaultMatches {
+			fm := map[string]any{"id": id, "title": resolved["title"], "aliases": []string{resolved["title"]}, "status": resolved["status"], "priority": resolved["priority"], "created_at": createdAt, "updated_at": updatedAt}
+			if resolved["description"] != "" {
+				fm["description"] = resolved["description"]
+			}
+			if resolved["goal_id"] != "" {
+				fm["goal_id"] = fmInt64(resolved["goal_id"])
+			}
+			if resolved["project_id"] != "" {
+				fm["project_id"] = fmInt64(resolved["project_id"])
+			}
+			if resolved["sprint_id"] != "" {
+				fm["sprint_id"] = fmInt64(resolved["sprint_id"])
+			}
+			if resolved["parent_task_id"] != "" {
+				fm["parent_task_id"] = fmInt64(resolved["parent_task_id"])
+			}
+			if resolved["due_date"] != "" {
+				fm["due_date"] = resolved["due_date"]
+			}
+			if resolved["start_date"] != "" {
+				fm["start_date"] = resolved["start_date"]
+			}
+			if resolved["story_points"] != "" {
+				fm["story_points"] = fmInt64(resolved["story_points"])
+			}
+			_ = v.WriteEntityMD("task", id, fm, "")
+		}
+		setVaultSyncFields(db, "task", id, resolved)
+	}
+	return applied
+}
+
 
 // ── Vault Sync Handler ────────────────────────────────────────────────────────
 
@@ -4546,8 +5131,11 @@ func vaultSyncHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		ins, upd := syncVaultToSQLite(v, dbPath)
-		writeJSON(w, 200, map[string]int{"inserted": ins, "updated": upd})
+		applied, conflicts := twoWaySyncVault(v, dbPath)
+		if conflicts == nil {
+			conflicts = []syncConflict{}
+		}
+		writeJSON(w, 200, map[string]any{"applied": applied, "conflicts": conflicts})
 	}
 }
 

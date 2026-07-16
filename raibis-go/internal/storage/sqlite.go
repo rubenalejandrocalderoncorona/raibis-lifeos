@@ -256,6 +256,18 @@ func applyMigrations(db *sql.DB) error {
 			workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
 			entity_type  TEXT NOT NULL UNIQUE
 		)`,
+
+		// ── vault_sync_state: last-reconciled field values per entity, so a
+		// two-way vault sync can tell "changed since last sync" apart from
+		// "always was this way" per field, and detect real conflicts (both
+		// sides changed the same field to different values).
+		`CREATE TABLE IF NOT EXISTS vault_sync_state (
+			entity_type  TEXT NOT NULL,
+			entity_id    INTEGER NOT NULL,
+			fields_json  TEXT NOT NULL DEFAULT '{}',
+			synced_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (entity_type, entity_id)
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -2051,7 +2063,7 @@ func (s *sqliteStorage) PurgeAll() error {
 		"tasks", "sprints", "projects", "goals",
 		"tags", "categories",
 		"custom_entities", "custom_entity_types",
-		"workspace_entity_types", "workspaces",
+		"workspace_entity_types", "workspaces", "vault_sync_state",
 	}
 	for _, t := range tables {
 		if _, err := s.db.Exec("DELETE FROM " + t); err != nil { //nolint:gosec — table name is a hardcoded string literal
