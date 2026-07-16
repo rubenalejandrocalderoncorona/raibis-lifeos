@@ -385,13 +385,33 @@ async function injectListIcons(entityType, ids) {
 /* ─── State ──────────────────────────────────────────────────────────── */
 let customEntityTypes = [];
 // Workspaces group entity types (built-in or custom) under a named
-// container. An entity type belongs to at most one workspace; unassigned
-// types are "General" — always visible regardless of the active workspace.
+// container. An entity type can be assigned to more than one workspace at
+// once (e.g. both "Work" and "School" show a Tasks section); which specific
+// records show under each workspace is controlled by that record's own
+// workspace_id, not by this assignment. Records with no workspace_id are
+// "General" — visible only in the "All workspaces" view.
 let workspaces = [];
 let activeWorkspaceId = (() => {
   const v = localStorage.getItem('activeWorkspaceId');
   return v ? parseInt(v) : null;
 })();
+
+// withWorkspaceFilter appends the active workspace as a query param when one
+// is selected, so list endpoints only return that workspace's own records.
+// A no-op in "All workspaces" mode (activeWorkspaceId == null).
+function withWorkspaceFilter(url) {
+  if (activeWorkspaceId == null) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'workspace_id=' + activeWorkspaceId;
+}
+
+// withActiveWorkspace stamps a new record's create payload with the active
+// workspace, so it shows up under that workspace instead of vanishing into
+// "unassigned". A no-op in "All workspaces" mode, or if the caller already
+// set workspace_id explicitly.
+function withActiveWorkspace(body) {
+  if (activeWorkspaceId == null || (body && body.workspace_id != null)) return body;
+  return { ...body, workspace_id: activeWorkspaceId };
+}
 let currentView = 'dashboard';
 let _connectedPropTypesCache = null;
 let currentParams = null;
@@ -5714,13 +5734,15 @@ async function loadWorkspaces() {
 // true if entityTypeKey should show in the sidebar given the current
 // activeWorkspaceId. "All workspaces" (activeWorkspaceId == null) shows
 // everything, unfiltered — that's the only place unassigned entity types
-// are visible/discoverable. Once a specific workspace is active, only the
-// entity types explicitly assigned to THAT workspace show — strict scoping,
-// not a fallback to "general/unassigned".
+// are visible/discoverable. Once a specific workspace is active, it shows
+// only the entity types assigned to THAT workspace's own list — checked
+// directly against the active workspace, not "whichever workspace claims
+// this type first", since a type can now be assigned to more than one
+// workspace at once (e.g. Tasks showing under both Work and School).
 function isEntityTypeVisibleInActiveWorkspace(entityTypeKey) {
   if (activeWorkspaceId == null) return true;
-  const owner = workspaces.find(w => (w.entity_types || []).includes(entityTypeKey));
-  return !!owner && owner.id === activeWorkspaceId;
+  const active = workspaces.find(w => w.id === activeWorkspaceId);
+  return !!active && (active.entity_types || []).includes(entityTypeKey);
 }
 
 function applyWorkspaceFilterToNav() {
@@ -5809,8 +5831,11 @@ function showWorkspaceManagerModal() {
   function resetForm() { editingId = null; nameValue = ''; iconSelected = '🗂️'; selectedTypes = []; }
 
   function ownerHint(typeKey) {
-    const owner = workspaces.find(w => w.id !== editingId && (w.entity_types || []).includes(typeKey));
-    return owner ? ` <span style="color:var(--text-muted)">(in ${escHtml(owner.name)})</span>` : '';
+    // A type can be assigned to more than one workspace at once now, so this
+    // is just an informational "also in X, Y" note, not a steal warning.
+    const others = workspaces.filter(w => w.id !== editingId && (w.entity_types || []).includes(typeKey));
+    if (!others.length) return '';
+    return ` <span style="color:var(--text-muted)">(also in ${others.map(w => escHtml(w.name)).join(', ')})</span>`;
   }
 
   function renderBody() {
@@ -5868,7 +5893,7 @@ function showWorkspaceManagerModal() {
     overlay.querySelectorAll('[data-del-ws]').forEach(btn => {
       btn.onclick = () => {
         const id = parseInt(btn.dataset.delWs);
-        showConfirmModal('Delete this workspace? Its entity types become unassigned (General) again.', async () => {
+        showConfirmModal('Delete this workspace? Items tagged with it lose that tag and only show up in "All workspaces" again.', async () => {
           try {
             await api('DELETE', `/api/workspaces/${id}`);
             if (activeWorkspaceId === id) { activeWorkspaceId = null; localStorage.removeItem('activeWorkspaceId'); }
@@ -6046,7 +6071,7 @@ async function renderCustomEntityList(typeName) {
 
   const main = document.getElementById('main-content');
   try {
-    const entities = await api('GET', `/api/custom/${typeName}`);
+    const entities = await api('GET', withWorkspaceFilter(`/api/custom/${typeName}`));
     let list = Array.isArray(entities) ? entities : [];
 
     main.innerHTML = `<div class="view">
@@ -6413,7 +6438,7 @@ async function renderCustomEntityList(typeName) {
           try {
             const inList = list.find(x => String(x.id) === String(parentId));
             const parentTitle = inList ? inList.title : displayName;
-            const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
+            const newE = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title, props: {} }));
             await api('POST', `/api/children/${entityKey}/${parentId}`, { child_entity_type: entityKey, child_entity_id: newE.id });
             const parentRef = JSON.stringify([{ id: String(parentId), label: parentTitle }]);
             await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
@@ -6500,7 +6525,7 @@ async function renderCustomEntityList(typeName) {
           const inList = list.find(x => String(x.id) === String(parentId));
           if (inList) parentTitle = inList.title;
           else { try { const pe = await api('GET', `/api/custom/${typeName}/${parentId}`); parentTitle = pe.title || displayName; } catch {} }
-          const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
+          const newE = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title, props: {} }));
           await api('POST', `/api/children/${entityKey}/${parentId}`, { child_entity_type: entityKey, child_entity_id: newE.id });
           const parentRef = JSON.stringify([{ id: String(parentId), label: parentTitle }]);
           await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
@@ -7009,7 +7034,7 @@ function initSubBranch(listEl, addBtnEl, typeName, entityId, displayName, entity
         const title = inp.value.trim();
         if (!title) { cancel(); return; }
         try {
-          const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
+          const newE = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title, props: {} }));
           await api('POST', `/api/children/${entityKey}/${parentId}`, { child_entity_type: entityKey, child_entity_id: newE.id });
           const parentRef = JSON.stringify([{ id: String(parentId), label: displayName }]);
           await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
@@ -7118,7 +7143,7 @@ function initSubBranch(listEl, addBtnEl, typeName, entityId, displayName, entity
         const title = inp.value.trim();
         if (!title) { row.remove(); return; }
         try {
-          const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
+          const newE = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title, props: {} }));
           await api('POST', `/api/children/${entityKey}/${entityId}`, { child_entity_type: entityKey, child_entity_id: newE.id });
           const parentRef = JSON.stringify([{ id: String(entityId), label: entityTitle || displayName }]);
           await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
@@ -7380,7 +7405,7 @@ async function openCustomEntityForm(typeName, entityOrNull, presets = {}) {
     let newId;
     try {
       const p = { title: presets.title || 'Untitled', props: presets };
-      const created = await api('POST', `/api/custom/${typeName}`, p);
+      const created = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace(p));
       newId = created.id;
     } catch (e) {
       console.error(e);
@@ -7489,7 +7514,7 @@ async function openCustomEntityForm(typeName, entityOrNull, presets = {}) {
         entityId = entity.id;
         showToast(`${displayName} updated`);
       } else {
-        const created = await api('POST', `/api/custom/${typeName}`, { title, props: newProps });
+        const created = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title, props: newProps }));
         entityId = created.id;
         showToast(`${displayName} created`);
       }
@@ -8581,13 +8606,13 @@ async function initSubItemsSection(entityType, entityId) {
     try {
       let newId;
       if (childType === 'task') {
-        const t = await api('POST', '/api/tasks', { title: title.trim(), status: 'todo', priority: 'medium' });
+        const t = await api('POST', '/api/tasks', withActiveWorkspace({ title: title.trim(), status: 'todo', priority: 'medium' }));
         newId = t.id;
       } else if (childType === 'goal') {
-        const g = await api('POST', '/api/goals', { title: title.trim(), status: 'active' });
+        const g = await api('POST', '/api/goals', withActiveWorkspace({ title: title.trim(), status: 'active' }));
         newId = g.id;
       } else if (childType === 'project') {
-        const p = await api('POST', '/api/projects', { title: title.trim(), status: 'active' });
+        const p = await api('POST', '/api/projects', withActiveWorkspace({ title: title.trim(), status: 'active' }));
         newId = p.id;
       } else if (childType === 'note') {
         const n = await api('POST', '/api/notes', { title: title.trim(), body: '' });
@@ -9743,9 +9768,9 @@ async function renderTasks() {
   let apiError = null;
   try {
     [tasks, projects, allTasksFull] = await Promise.all([
-      api('GET', '/api/tasks'),
-      api('GET', '/api/projects'),
-      api('GET', '/api/tasks?all=1'),
+      api('GET', withWorkspaceFilter('/api/tasks')),
+      api('GET', withWorkspaceFilter('/api/projects')),
+      api('GET', withWorkspaceFilter('/api/tasks?all=1')),
     ]);
     allTasksCache = allTasksFull;
   } catch(e) { apiError = e.message || String(e); }
@@ -10187,7 +10212,7 @@ async function renderTasks() {
         const pt = allTasksFull.find(t => t.id === parentId);
         showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium',
           goal_id: pt?.goal_id || null, project_id: pt?.project_id || null, sprint_id: pt?.sprint_id || null }, async () => {
-          allTasksFull = await api('GET', '/api/tasks?all=1');
+          allTasksFull = await api('GET', withWorkspaceFilter('/api/tasks?all=1'));
           allTasksCache = allTasksFull;
           const parent = allTasksFull.find(t => t.id === parentId);
           if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
@@ -10204,7 +10229,7 @@ async function renderTasks() {
         const pt = allTasksFull.find(t => t.id === parentId);
         showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium',
           goal_id: pt?.goal_id || null, project_id: pt?.project_id || null, sprint_id: pt?.sprint_id || null }, async () => {
-          allTasksFull = await api('GET', '/api/tasks?all=1');
+          allTasksFull = await api('GET', withWorkspaceFilter('/api/tasks?all=1'));
           allTasksCache = allTasksFull;
           expandedTasks.add(String(parentId));
           render();
@@ -10294,7 +10319,7 @@ async function renderTasks() {
 async function renderProjects() {
   let projects = [], goals = [];
   let apiError = null;
-  try { [projects, goals] = await Promise.all([api('GET', '/api/projects'), api('GET', '/api/goals')]); } catch(e) { apiError = e.message || String(e); }
+  try { [projects, goals] = await Promise.all([api('GET', withWorkspaceFilter('/api/projects')), api('GET', withWorkspaceFilter('/api/goals'))]); } catch(e) { apiError = e.message || String(e); }
 
   if (apiError) {
     document.getElementById('main-content').innerHTML = `<div class="view">
@@ -10667,7 +10692,7 @@ async function renderProjects() {
 async function renderGoals() {
   let goals = [];
   let apiError = null;
-  try { goals = await api('GET', '/api/goals'); } catch(e) { apiError = e.message || String(e); }
+  try { goals = await api('GET', withWorkspaceFilter('/api/goals')); } catch(e) { apiError = e.message || String(e); }
 
   if (apiError) {
     document.getElementById('main-content').innerHTML = `<div class="view">
@@ -11240,7 +11265,7 @@ async function renderNotes() {
 /* ─── Sprints View ───────────────────────────────────────────────────── */
 async function renderSprints() {
   let sprints = [], projects = [];
-  try { [sprints, projects] = await Promise.all([api('GET', '/api/sprints'), api('GET', '/api/projects')]); } catch(e) {}
+  try { [sprints, projects] = await Promise.all([api('GET', withWorkspaceFilter('/api/sprints')), api('GET', withWorkspaceFilter('/api/projects'))]); } catch(e) {}
 
   function buildSprintCard(s) {
     const prog = s.progress || {};
@@ -12324,7 +12349,7 @@ async function renderSprintDetail(sprintId) {
 async function renderHabits() {
   let habits = [];
   let apiError = null;
-  try { habits = await api('GET', '/api/habits'); } catch(e) { apiError = e.message || String(e); }
+  try { habits = await api('GET', withWorkspaceFilter('/api/habits')); } catch(e) { apiError = e.message || String(e); }
 
   if (apiError) {
     document.getElementById('main-content').innerHTML = `<div class="view">
@@ -12691,7 +12716,7 @@ function showHabitModal(habit) {
         payload.id = habit.id;
         await api('PATCH', `/api/habits/${habit.id}`, payload);
       } else {
-        await api('POST', '/api/habits', payload);
+        await api('POST', '/api/habits', withActiveWorkspace(payload));
       }
       closeFormSlideover();
       renderHabits();
@@ -12711,7 +12736,7 @@ function showHabitModal(habit) {
 async function renderResources() {
   let resources = [];
   let apiError = null;
-  try { resources = await api('GET', '/api/resources'); } catch(e) { apiError = e.message || String(e); }
+  try { resources = await api('GET', withWorkspaceFilter('/api/resources')); } catch(e) { apiError = e.message || String(e); }
 
   if (apiError) {
     document.getElementById('main-content').innerHTML = `<div class="view">
@@ -15947,7 +15972,7 @@ async function showNewTaskModal(presets, afterSave) {
   presets.title = presets.title || 'Untitled';
   let newTask;
   try {
-    newTask = await api('POST', '/api/tasks', presets);
+    newTask = await api('POST', '/api/tasks', withActiveWorkspace(presets));
   } catch (e) {
     console.error('Failed to create task', e);
     return;
@@ -15995,7 +16020,7 @@ async function showGoalModal(goal, afterSave) {
   try {
     const presets = goal || {};
     presets.title = presets.title || 'Untitled';
-    const created = await api('POST', '/api/goals', presets);
+    const created = await api('POST', '/api/goals', withActiveWorkspace(presets));
     newId = created.id;
   } catch (e) {
     console.error(e);
@@ -16491,7 +16516,7 @@ async function showProjectModal(project, goals, afterSave) {
   try {
     const presets = project || {};
     presets.title = presets.title || 'Untitled';
-    const created = await api('POST', '/api/projects', presets);
+    const created = await api('POST', '/api/projects', withActiveWorkspace(presets));
     newId = created.id;
   } catch (e) {
     console.error(e);
@@ -16984,7 +17009,7 @@ async function showSprintModal(projects, sprint) {
   try {
     const presets = sprint || {};
     presets.title = presets.title || 'Untitled';
-    const created = await api('POST', '/api/sprints', presets);
+    const created = await api('POST', '/api/sprints', withActiveWorkspace(presets));
     newId = created.id;
   } catch (e) {
     console.error(e);
@@ -17269,7 +17294,7 @@ async function showResourceModal(presets, afterSave) {
   let newId;
   try {
     p.title = p.title || 'Untitled';
-    const created = await api('POST', '/api/resources', p);
+    const created = await api('POST', '/api/resources', withActiveWorkspace(p));
     newId = created.id;
   } catch (e) {
     console.error(e);
@@ -18947,7 +18972,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
       if (projectId) payload.project_id = projectId;
       if (ptsRaw !== '') payload.story_points = parseInt(ptsRaw) || 0;
       try {
-        await api('POST', '/api/sprints', payload);
+        await api('POST', '/api/sprints', withActiveWorkspace(payload));
         showToast('Sprint created', 'success');
         close();
         onCreated?.();

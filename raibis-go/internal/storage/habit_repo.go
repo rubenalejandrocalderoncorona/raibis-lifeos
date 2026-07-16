@@ -109,8 +109,8 @@ func (s *sqliteStorage) CreateHabit(h *domain.Habit) (int64, error) {
 	defer s.mu.Unlock()
 
 	res, err := s.db.Exec(
-		`INSERT INTO habits (title, type, reference_id) VALUES (?, ?, ?)`,
-		h.Title, string(h.Type), nullableStr(h.ReferenceID),
+		`INSERT INTO habits (title, type, reference_id, workspace_id) VALUES (?, ?, ?, ?)`,
+		h.Title, string(h.Type), nullableStr(h.ReferenceID), h.WorkspaceID,
 	)
 	if err != nil {
 		return 0, err
@@ -124,7 +124,7 @@ func (s *sqliteStorage) GetHabit(id int64) (*domain.Habit, error) {
 	defer s.mu.RUnlock()
 
 	row := s.db.QueryRow(
-		`SELECT id, title, type, reference_id, created_at FROM habits WHERE id = ?`, id,
+		`SELECT id, title, type, reference_id, created_at, workspace_id FROM habits WHERE id = ?`, id,
 	)
 	return scanHabit(row)
 }
@@ -135,7 +135,7 @@ func (s *sqliteStorage) ListHabits() ([]*domain.Habit, error) {
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(
-		`SELECT id, title, type, reference_id, created_at FROM habits ORDER BY created_at DESC`,
+		`SELECT id, title, type, reference_id, created_at, workspace_id FROM habits ORDER BY created_at DESC`,
 	)
 	if err != nil {
 		return nil, err
@@ -162,8 +162,8 @@ func (s *sqliteStorage) UpdateHabit(h *domain.Habit) error {
 	defer s.mu.Unlock()
 
 	_, err := s.db.Exec(
-		`UPDATE habits SET title = ?, type = ?, reference_id = ? WHERE id = ?`,
-		h.Title, string(h.Type), nullableStr(h.ReferenceID), h.ID,
+		`UPDATE habits SET title = ?, type = ?, reference_id = ?, workspace_id = ? WHERE id = ?`,
+		h.Title, string(h.Type), nullableStr(h.ReferenceID), h.WorkspaceID, h.ID,
 	)
 	return err
 }
@@ -185,15 +185,19 @@ type scannerRow interface {
 
 func scanHabit(sc scannerRow) (*domain.Habit, error) {
 	var (
-		h      domain.Habit
-		refID  sql.NullString
-		rawAt  string
+		h           domain.Habit
+		refID       sql.NullString
+		rawAt       string
+		workspaceID sql.NullInt64
 	)
-	if err := sc.Scan(&h.ID, &h.Title, &h.Type, &refID, &rawAt); err != nil {
+	if err := sc.Scan(&h.ID, &h.Title, &h.Type, &refID, &rawAt, &workspaceID); err != nil {
 		return nil, err
 	}
 	if refID.Valid {
 		h.ReferenceID = &refID.String
+	}
+	if workspaceID.Valid {
+		h.WorkspaceID = &workspaceID.Int64
 	}
 	if t, err := time.Parse("2006-01-02 15:04:05", rawAt); err == nil {
 		h.CreatedAt = t

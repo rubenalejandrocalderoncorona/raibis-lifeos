@@ -248,14 +248,39 @@ func applyMigrations(db *sql.DB) error {
 			position   INTEGER NOT NULL DEFAULT 0,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
-		// entity_type is globally UNIQUE — an entity type belongs to at most
-		// one workspace at a time; not present here means "General" (always
-		// visible regardless of the active workspace).
+		// A (workspace_id, entity_type) pair is unique — the same entity type
+		// (e.g. "task") can be assigned to multiple workspaces at once, so
+		// each one shows a Tasks nav section; a type absent from this table
+		// entirely is always visible (top-level / General).
+		// NOTE: this table's entity_type column was globally UNIQUE prior to
+		// the multi-workspace change — migrateWorkspaceEntityTypesMultiWorkspace
+		// rebuilds it if that old constraint is still present.
 		`CREATE TABLE IF NOT EXISTS workspace_entity_types (
 			id           INTEGER PRIMARY KEY AUTOINCREMENT,
 			workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-			entity_type  TEXT NOT NULL UNIQUE
+			entity_type  TEXT NOT NULL
 		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_wet_ws_type ON workspace_entity_types(workspace_id, entity_type)`,
+
+		// ── workspace_id: which specific workspace a RECORD belongs to (not
+		// just its entity type). NULL means unassigned — visible only in the
+		// "All workspaces" view, not inside any specific workspace's filtered
+		// list. This is what makes "Work" and "School" both show a Tasks
+		// section while displaying a different subset of task records.
+		`ALTER TABLE tasks ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL`,
+		`ALTER TABLE goals ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL`,
+		`ALTER TABLE projects ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL`,
+		`ALTER TABLE sprints ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL`,
+		`ALTER TABLE habits ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL`,
+		`ALTER TABLE resources ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL`,
+		`ALTER TABLE custom_entities ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_tasks_workspace ON tasks(workspace_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_goals_workspace ON goals(workspace_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_sprints_workspace ON sprints(workspace_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_habits_workspace ON habits(workspace_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_resources_workspace ON resources(workspace_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_custom_entities_workspace ON custom_entities(workspace_id)`,
 
 		// ── vault_sync_state: last-reconciled field values per entity, so a
 		// two-way vault sync can tell "changed since last sync" apart from
@@ -284,7 +309,128 @@ func applyMigrations(db *sql.DB) error {
 			return fmt.Errorf("migration failed %q: %w", preview, err)
 		}
 	}
-	return migrateSprintsProjectIdNullable(db)
+	if err := migrateSprintsProjectIdNullable(db); err != nil {
+		return err
+	}
+	migratedWET, err := migrateWorkspaceEntityTypesMultiWorkspace(db)
+	if err != nil {
+		return err
+	}
+	if migratedWET {
+		return backfillEntityWorkspaceIDs(db)
+	}
+	return nil
+}
+
+// migrateWorkspaceEntityTypesMultiWorkspace rebuilds workspace_entity_types
+// to drop its old "entity_type globally UNIQUE" constraint, so the same
+// entity type can be assigned to more than one workspace. Idempotent: checks
+// for that specific single-column unique index first and skips (returning
+// migrated=false) if it's already gone. Returns migrated=true only the one
+// time it actually performs the rebuild, so callers can trigger one-time
+// follow-up work (the per-record workspace_id backfill) off that signal.
+func migrateWorkspaceEntityTypesMultiWorkspace(db *sql.DB) (migrated bool, err error) {
+	rows, err := db.Query(`PRAGMA index_list(workspace_entity_types)`)
+	if err != nil {
+		return false, nil // table may not exist yet
+	}
+	var idxNames []string
+	for rows.Next() {
+		var seq, unique, partial int
+		var name, origin string
+		if rows.Scan(&seq, &name, &unique, &origin, &partial) != nil {
+			continue
+		}
+		if unique == 1 {
+			idxNames = append(idxNames, name)
+		}
+	}
+	rows.Close()
+
+	needsMigration := false
+	for _, name := range idxNames {
+		infoRows, err := db.Query(fmt.Sprintf(`PRAGMA index_info(%q)`, name))
+		if err != nil {
+			continue
+		}
+		var cols []string
+		for infoRows.Next() {
+			var seqno, cid int
+			var colName string
+			if infoRows.Scan(&seqno, &cid, &colName) == nil {
+				cols = append(cols, colName)
+			}
+		}
+		infoRows.Close()
+		if len(cols) == 1 && cols[0] == "entity_type" {
+			needsMigration = true
+			break
+		}
+	}
+	if !needsMigration {
+		return false, nil
+	}
+
+	stmts := []string{
+		`CREATE TABLE workspace_entity_types_v2 (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+			entity_type  TEXT NOT NULL
+		)`,
+		`INSERT INTO workspace_entity_types_v2 (workspace_id, entity_type) SELECT workspace_id, entity_type FROM workspace_entity_types`,
+		`DROP TABLE workspace_entity_types`,
+		`ALTER TABLE workspace_entity_types_v2 RENAME TO workspace_entity_types`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_wet_ws_type ON workspace_entity_types(workspace_id, entity_type)`,
+	}
+	for _, s := range stmts {
+		if _, err := db.Exec(s); err != nil {
+			return false, fmt.Errorf("workspace_entity_types multi-workspace migration: %w", err)
+		}
+	}
+	return true, nil
+}
+
+// backfillEntityWorkspaceIDs is a one-time migration: for every entity type
+// that was exclusively assigned to a workspace under the old model, back-
+// fill workspace_id onto all of its existing records so they keep showing
+// up under that workspace once per-record filtering ships, instead of
+// silently falling back to "unassigned". Only ever called once, right after
+// migrateWorkspaceEntityTypesMultiWorkspace performs its one-time rebuild —
+// never on ordinary startup, so it can't re-stamp workspace_id onto records
+// a user has since deliberately unassigned.
+func backfillEntityWorkspaceIDs(db *sql.DB) error {
+	rows, err := db.Query(`SELECT workspace_id, entity_type FROM workspace_entity_types`)
+	if err != nil {
+		return nil
+	}
+	type assignment struct {
+		workspaceID int64
+		entityType  string
+	}
+	var assignments []assignment
+	for rows.Next() {
+		var a assignment
+		if rows.Scan(&a.workspaceID, &a.entityType) == nil {
+			assignments = append(assignments, a)
+		}
+	}
+	rows.Close()
+
+	tableFor := map[string]string{
+		"task": "tasks", "goal": "goals", "project": "projects",
+		"sprint": "sprints", "habit": "habits", "resource": "resources",
+	}
+	for _, a := range assignments {
+		if table, ok := tableFor[a.entityType]; ok {
+			_, _ = db.Exec(fmt.Sprintf(`UPDATE %s SET workspace_id=? WHERE workspace_id IS NULL`, table), a.workspaceID)
+			continue
+		}
+		if strings.HasPrefix(a.entityType, "custom_") {
+			typeName := strings.TrimPrefix(a.entityType, "custom_")
+			_, _ = db.Exec(`UPDATE custom_entities SET workspace_id=? WHERE type_name=? AND workspace_id IS NULL`, a.workspaceID, typeName)
+		}
+	}
+	return nil
 }
 
 // migrateSprintsProjectIdNullable rebuilds the sprints table so that
@@ -354,14 +500,14 @@ func (s *sqliteStorage) CreateTask(t *domain.Task) (int64, error) {
 		    (goal_id, project_id, sprint_id, parent_task_id, title, description,
 		     status, priority, start_date, due_date, estimated_mins, logged_mins,
 		     category, category_id, focus_block, focus_block_start, recur_interval, recur_unit,
-		     story_points, pomodoros_planned, pomodoros_finished, pomodoro)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		     story_points, pomodoros_planned, pomodoros_finished, pomodoro, workspace_id)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.GoalID, t.ProjectID, t.SprintID, t.ParentTaskID,
 		t.Title, t.Description,
 		string(t.Status), string(t.Priority),
 		nullTime(t.StartDate), nullTime(t.DueDate), t.EstimatedMin, t.LoggedMins,
 		t.Category, t.CategoryID, t.FocusBlock, t.FocusBlockStart, t.RecurInterval, t.RecurUnit,
-		t.StoryPoints, t.PomodorosPlanned, t.PomodorosFinished, t.Pomodoro,
+		t.StoryPoints, t.PomodorosPlanned, t.PomodorosFinished, t.Pomodoro, t.WorkspaceID,
 	)
 	if err != nil {
 		return 0, err
@@ -450,7 +596,7 @@ func (s *sqliteStorage) UpdateTask(t *domain.Task) error {
 		    title=?, description=?, status=?, priority=?,
 		    start_date=?, due_date=?, estimated_mins=?, logged_mins=?,
 		    category=?, category_id=?, focus_block=?, focus_block_start=?, recur_interval=?, recur_unit=?,
-		    story_points=?, pomodoros_planned=?, pomodoros_finished=?, pomodoro=?,
+		    story_points=?, pomodoros_planned=?, pomodoros_finished=?, pomodoro=?, workspace_id=?,
 		    content_json=COALESCE(?,content_json),
 		    updated_at=datetime('now')
 		 WHERE id=?`,
@@ -459,7 +605,7 @@ func (s *sqliteStorage) UpdateTask(t *domain.Task) error {
 		string(t.Status), string(t.Priority),
 		nullTime(t.StartDate), nullTime(t.DueDate), t.EstimatedMin, t.LoggedMins,
 		t.Category, t.CategoryID, t.FocusBlock, t.FocusBlockStart, t.RecurInterval, t.RecurUnit,
-		t.StoryPoints, t.PomodorosPlanned, t.PomodorosFinished, t.Pomodoro,
+		t.StoryPoints, t.PomodorosPlanned, t.PomodorosFinished, t.Pomodoro, t.WorkspaceID,
 		contentJSON,
 		t.ID,
 	)
@@ -484,7 +630,8 @@ SELECT t.id, t.goal_id, t.project_id, t.sprint_id, t.parent_task_id,
        COALESCE(c.name,'') AS category_name,
        COALESCE(t.pomodoro, 0),
        COALESCE(t.content_json,''),
-       COALESCE(g.title,'') AS goal_title
+       COALESCE(g.title,'') AS goal_title,
+       t.workspace_id
 FROM tasks t
 LEFT JOIN categories c ON t.category_id = c.id
 LEFT JOIN goals g ON t.goal_id = g.id`
@@ -496,12 +643,12 @@ func (s *sqliteStorage) CreateGoal(g *domain.Goal) (int64, error) {
 	defer s.mu.Unlock()
 	res, err := s.db.Exec(
 		`INSERT INTO goals (title, description, status, type, year, start_date, due_date,
-		  start_value, current_value, target, category_id)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		  start_value, current_value, target, category_id, workspace_id)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		g.Title, g.Description, string(g.Status),
 		emptyToNil(g.Type), emptyToNil(g.Year),
 		g.StartDate, g.DueDate,
-		g.StartValue, g.CurrentValue, g.Target, g.CategoryID,
+		g.StartValue, g.CurrentValue, g.Target, g.CategoryID, g.WorkspaceID,
 	)
 	if err != nil {
 		return 0, err
@@ -551,12 +698,12 @@ func (s *sqliteStorage) UpdateGoal(g *domain.Goal) error {
 	_, err := s.db.Exec(
 		`UPDATE goals SET title=?, description=?, status=?, type=?, year=?,
 		  start_date=?, due_date=?, start_value=?, current_value=?, target=?,
-		  category_id=?, content_json=COALESCE(?,content_json)
+		  category_id=?, workspace_id=?, content_json=COALESCE(?,content_json)
 		 WHERE id=?`,
 		g.Title, g.Description, string(g.Status),
 		emptyToNil(g.Type), emptyToNil(g.Year),
 		g.StartDate, g.DueDate,
-		g.StartValue, g.CurrentValue, g.Target, g.CategoryID,
+		g.StartValue, g.CurrentValue, g.Target, g.CategoryID, g.WorkspaceID,
 		contentJSON, g.ID,
 	)
 	return err
@@ -574,7 +721,7 @@ SELECT g.id, g.title, COALESCE(g.description,''), g.status, g.created_at,
        COALESCE(g.type,''), COALESCE(g.year,''),
        g.start_date, g.due_date, g.start_value, g.current_value, g.target,
        g.category_id, COALESCE(c.name,'') AS category_name,
-       COALESCE(g.content_json,'')
+       COALESCE(g.content_json,''), g.workspace_id
 FROM goals g
 LEFT JOIN categories c ON g.category_id = c.id`
 
@@ -588,10 +735,10 @@ func (s *sqliteStorage) CreateProject(p *domain.Project) (int64, error) {
 		archived = 1
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO projects (goal_id, title, description, status, macro_area, kanban_col, archived, category_id)
-		 VALUES (?,?,?,?,?,?,?,?)`,
+		`INSERT INTO projects (goal_id, title, description, status, macro_area, kanban_col, archived, category_id, workspace_id)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
 		p.GoalID, p.Title, p.Description, string(p.Status),
-		emptyToNil(p.MacroArea), emptyToNil(p.KanbanCol), archived, p.CategoryID,
+		emptyToNil(p.MacroArea), emptyToNil(p.KanbanCol), archived, p.CategoryID, p.WorkspaceID,
 	)
 	if err != nil {
 		return 0, err
@@ -644,11 +791,11 @@ func (s *sqliteStorage) UpdateProject(p *domain.Project) error {
 	}
 	_, err := s.db.Exec(
 		`UPDATE projects SET goal_id=?, title=?, description=?, status=?,
-		  macro_area=?, kanban_col=?, archived=?, category_id=?,
+		  macro_area=?, kanban_col=?, archived=?, category_id=?, workspace_id=?,
 		  start_date=?, due_date=?, content_json=COALESCE(?,content_json)
 		 WHERE id=?`,
 		p.GoalID, p.Title, p.Description, string(p.Status),
-		emptyToNil(p.MacroArea), emptyToNil(p.KanbanCol), archived, p.CategoryID,
+		emptyToNil(p.MacroArea), emptyToNil(p.KanbanCol), archived, p.CategoryID, p.WorkspaceID,
 		nullTime(p.StartDate), nullTime(p.DueDate),
 		contentJSON, p.ID,
 	)
@@ -667,7 +814,7 @@ SELECT p.id, p.goal_id, p.title, COALESCE(p.description,''), p.status, p.created
        COALESCE(g.title,'') AS goal_title,
        COALESCE(p.macro_area,''), COALESCE(p.kanban_col,''), p.archived,
        p.category_id, COALESCE(c.name,'') AS category_name,
-       p.start_date, p.due_date, COALESCE(p.content_json,'')
+       p.start_date, p.due_date, COALESCE(p.content_json,''), p.workspace_id
 FROM projects p
 LEFT JOIN goals g      ON p.goal_id     = g.id
 LEFT JOIN categories c ON p.category_id = c.id`
@@ -682,10 +829,10 @@ func (s *sqliteStorage) CreateSprint(sp *domain.Sprint) (int64, error) {
 		projID = sp.ProjectID
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO sprints (project_id, title, goal, start_date, end_date, status, story_points)
-		 VALUES (?,?,?,?,?,?,?)`,
+		`INSERT INTO sprints (project_id, title, goal, start_date, end_date, status, story_points, workspace_id)
+		 VALUES (?,?,?,?,?,?,?,?)`,
 		projID, sp.Title, sp.Goal,
-		nullTime(sp.StartDate), nullTime(sp.EndDate), string(sp.Status), sp.StoryPoints,
+		nullTime(sp.StartDate), nullTime(sp.EndDate), string(sp.Status), sp.StoryPoints, sp.WorkspaceID,
 	)
 	if err != nil {
 		return 0, err
@@ -697,7 +844,7 @@ func (s *sqliteStorage) GetSprint(id int64) (*domain.Sprint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row := s.db.QueryRow(
-		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points, COALESCE(content_json,'')
+		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points, COALESCE(content_json,''), workspace_id
 		 FROM sprints WHERE id=?`, id)
 	return scanSprint(row)
 }
@@ -706,7 +853,7 @@ func (s *sqliteStorage) ListSprints(projectID int64) ([]*domain.Sprint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rows, err := s.db.Query(
-		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points, COALESCE(content_json,'')
+		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points, COALESCE(content_json,''), workspace_id
 		 FROM sprints WHERE project_id=? ORDER BY created_at DESC`, projectID)
 	if err != nil {
 		return nil, err
@@ -727,7 +874,7 @@ func (s *sqliteStorage) GetActiveSprint(projectID int64) (*domain.Sprint, error)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row := s.db.QueryRow(
-		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points, COALESCE(content_json,'')
+		`SELECT id, project_id, title, COALESCE(goal,''), start_date, end_date, status, created_at, story_points, COALESCE(content_json,''), workspace_id
 		 FROM sprints WHERE project_id=? AND status='active' LIMIT 1`, projectID)
 	return scanSprint(row)
 }
@@ -740,9 +887,9 @@ func (s *sqliteStorage) UpdateSprint(sp *domain.Sprint) error {
 		projID = sp.ProjectID
 	}
 	_, err := s.db.Exec(
-		`UPDATE sprints SET project_id=?, title=?, goal=?, start_date=?, end_date=?, status=?, story_points=?
+		`UPDATE sprints SET project_id=?, title=?, goal=?, start_date=?, end_date=?, status=?, story_points=?, workspace_id=?
 		 WHERE id=?`,
-		projID, sp.Title, sp.Goal, nullTime(sp.StartDate), nullTime(sp.EndDate), string(sp.Status), sp.StoryPoints,
+		projID, sp.Title, sp.Goal, nullTime(sp.StartDate), nullTime(sp.EndDate), string(sp.Status), sp.StoryPoints, sp.WorkspaceID,
 		sp.ID,
 	)
 	return err
@@ -1099,6 +1246,7 @@ func scanTask(sc scanner) (*domain.Task, error) {
 		pomodorosFinished     sql.NullInt64
 		categoryID            sql.NullInt64
 		goalID                sql.NullInt64
+		workspaceID           sql.NullInt64
 		pomodoro              int
 		contentJSON           string
 	)
@@ -1111,10 +1259,13 @@ func scanTask(sc scanner) (*domain.Task, error) {
 		&recurInterval, &recurUnit, &storyPoints,
 		&pomodorosPlanned, &pomodorosFinished,
 		&t.CategoryName, &pomodoro, &contentJSON,
-		&t.GoalTitle,
+		&t.GoalTitle, &workspaceID,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if workspaceID.Valid {
+		t.WorkspaceID = &workspaceID.Int64
 	}
 	t.Status = domain.Status(status)
 	t.Priority = domain.Priority(priority)
@@ -1171,14 +1322,18 @@ func scanGoal(sc scanner) (*domain.Goal, error) {
 		startDate, dueDate   sql.NullString
 		startVal, curVal, target sql.NullFloat64
 		categoryID           sql.NullInt64
+		workspaceID          sql.NullInt64
 		contentJSON          string
 	)
 	if err := sc.Scan(
 		&g.ID, &g.Title, &g.Description, &g.Status, &createdAt,
 		&g.Type, &g.Year, &startDate, &dueDate, &startVal, &curVal, &target,
-		&categoryID, &g.CategoryName, &contentJSON,
+		&categoryID, &g.CategoryName, &contentJSON, &workspaceID,
 	); err != nil {
 		return nil, err
+	}
+	if workspaceID.Valid {
+		g.WorkspaceID = &workspaceID.Int64
 	}
 	g.CreatedAt, _ = parseTime(createdAt)
 	if startDate.Valid {
@@ -1212,11 +1367,12 @@ func scanProject(sc scanner) (*domain.Project, error) {
 		startDate   sql.NullString
 		dueDate     sql.NullString
 		contentJSON string
+		workspaceID sql.NullInt64
 	)
 	if err := sc.Scan(
 		&p.ID, &p.GoalID, &p.Title, &p.Description, &p.Status, &createdAt,
 		&p.GoalTitle, &p.MacroArea, &p.KanbanCol, &archived,
-		&categoryID, &p.CategoryName, &startDate, &dueDate, &contentJSON,
+		&categoryID, &p.CategoryName, &startDate, &dueDate, &contentJSON, &workspaceID,
 	); err != nil {
 		return nil, err
 	}
@@ -1224,6 +1380,9 @@ func scanProject(sc scanner) (*domain.Project, error) {
 	p.Archived = archived == 1
 	if categoryID.Valid {
 		p.CategoryID = &categoryID.Int64
+	}
+	if workspaceID.Valid {
+		p.WorkspaceID = &workspaceID.Int64
 	}
 	if startDate.Valid && startDate.String != "" {
 		if t, err := time.Parse("2006-01-02", startDate.String[:10]); err == nil {
@@ -1293,13 +1452,17 @@ func scanSprint(sc scanner) (*domain.Sprint, error) {
 	var startDate, endDate sql.NullString
 	var storyPoints sql.NullInt64
 	var contentJSON string
+	var workspaceID sql.NullInt64
 	err := sc.Scan(&sp.ID, &projectID, &sp.Title, &sp.Goal,
-		&startDate, &endDate, &status, &createdAt, &storyPoints, &contentJSON)
+		&startDate, &endDate, &status, &createdAt, &storyPoints, &contentJSON, &workspaceID)
 	if projectID.Valid {
 		sp.ProjectID = projectID.Int64
 	}
 	if err != nil {
 		return nil, err
+	}
+	if workspaceID.Valid {
+		sp.WorkspaceID = &workspaceID.Int64
 	}
 	sp.Status = domain.Status(status)
 	if startDate.Valid {
@@ -1838,8 +2001,10 @@ func (s *sqliteStorage) DeleteWorkspace(id int64) error {
 }
 
 // SetWorkspaceEntityTypes replaces the full set of entity types assigned to
-// workspaceID. Since entity_type is globally UNIQUE, assigning a type here
-// steals it from whatever workspace (if any) currently holds it.
+// workspaceID. A type may be assigned to more than one workspace at once
+// (e.g. both "Work" and "School" show a Tasks section) — which workspace a
+// given record belongs to is tracked per-record via workspace_id, not by
+// this table, so there's no exclusivity to enforce here.
 func (s *sqliteStorage) SetWorkspaceEntityTypes(workspaceID int64, entityTypes []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1852,9 +2017,6 @@ func (s *sqliteStorage) SetWorkspaceEntityTypes(workspaceID int64, entityTypes [
 		return err
 	}
 	for _, et := range entityTypes {
-		if _, err := tx.Exec(`DELETE FROM workspace_entity_types WHERE entity_type=?`, et); err != nil {
-			return err
-		}
 		if _, err := tx.Exec(`INSERT INTO workspace_entity_types (workspace_id, entity_type) VALUES (?,?)`, workspaceID, et); err != nil {
 			return err
 		}
@@ -1868,8 +2030,8 @@ func (s *sqliteStorage) CreateCustomEntity(e *domain.CustomEntity) (int64, error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	res, err := s.db.Exec(
-		`INSERT INTO custom_entities (type_name, title) VALUES (?,?)`,
-		e.TypeName, e.Title,
+		`INSERT INTO custom_entities (type_name, title, workspace_id) VALUES (?,?,?)`,
+		e.TypeName, e.Title, e.WorkspaceID,
 	)
 	if err != nil {
 		return 0, err
@@ -1897,12 +2059,16 @@ func (s *sqliteStorage) GetCustomEntity(typeName string, id int64) (*domain.Cust
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	row := s.db.QueryRow(
-		`SELECT id, type_name, title, created_at, updated_at FROM custom_entities WHERE type_name=? AND id=?`,
+		`SELECT id, type_name, title, created_at, updated_at, workspace_id FROM custom_entities WHERE type_name=? AND id=?`,
 		typeName, id,
 	)
 	e := &domain.CustomEntity{}
-	if err := row.Scan(&e.ID, &e.TypeName, &e.Title, &e.CreatedAt, &e.UpdatedAt); err != nil {
+	var workspaceID sql.NullInt64
+	if err := row.Scan(&e.ID, &e.TypeName, &e.Title, &e.CreatedAt, &e.UpdatedAt, &workspaceID); err != nil {
 		return nil, err
+	}
+	if workspaceID.Valid {
+		e.WorkspaceID = &workspaceID.Int64
 	}
 	// Load props
 	props, err := s.listPropsNoLock(typeName, id)
@@ -1920,7 +2086,7 @@ func (s *sqliteStorage) ListCustomEntities(typeName string) ([]*domain.CustomEnt
 	// Collect entities first, then load all props in one pass to avoid nested
 	// queries on the same connection (MaxOpenConns=1 would deadlock otherwise).
 	rows, err := s.db.Query(
-		`SELECT id, type_name, title, created_at, updated_at FROM custom_entities WHERE type_name=? ORDER BY id ASC`,
+		`SELECT id, type_name, title, created_at, updated_at, workspace_id FROM custom_entities WHERE type_name=? ORDER BY id ASC`,
 		typeName,
 	)
 	if err != nil {
@@ -1929,9 +2095,13 @@ func (s *sqliteStorage) ListCustomEntities(typeName string) ([]*domain.CustomEnt
 	var out []*domain.CustomEntity
 	for rows.Next() {
 		e := &domain.CustomEntity{Props: map[string]string{}}
-		if err := rows.Scan(&e.ID, &e.TypeName, &e.Title, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		var workspaceID sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.TypeName, &e.Title, &e.CreatedAt, &e.UpdatedAt, &workspaceID); err != nil {
 			rows.Close()
 			return nil, err
+		}
+		if workspaceID.Valid {
+			e.WorkspaceID = &workspaceID.Int64
 		}
 		out = append(out, e)
 	}
@@ -1994,8 +2164,8 @@ func (s *sqliteStorage) UpdateCustomEntity(e *domain.CustomEntity) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(
-		`UPDATE custom_entities SET title=?, updated_at=CURRENT_TIMESTAMP WHERE type_name=? AND id=?`,
-		e.Title, e.TypeName, e.ID,
+		`UPDATE custom_entities SET title=?, workspace_id=?, updated_at=CURRENT_TIMESTAMP WHERE type_name=? AND id=?`,
+		e.Title, e.WorkspaceID, e.TypeName, e.ID,
 	)
 	if err != nil {
 		return err

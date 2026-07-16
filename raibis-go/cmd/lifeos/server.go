@@ -167,20 +167,20 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 	mux := http.NewServeMux()
 
 	// Tasks
-	mux.HandleFunc("/api/tasks", withCORS(tasksHandler(svc, store, v)))
+	mux.HandleFunc("/api/tasks", withCORS(tasksHandler(svc, store, v, dbPath)))
 	mux.HandleFunc("/api/tasks/", withCORS(taskHandler(svc, store, dbPath, v)))
 
 	// Goals
-	mux.HandleFunc("/api/goals", withCORS(goalsHandler(svc, store, v)))
+	mux.HandleFunc("/api/goals", withCORS(goalsHandler(svc, store, v, dbPath)))
 	mux.HandleFunc("/api/goals/", withCORS(goalHandler(store, dbPath, v)))
 
 	// Projects
-	mux.HandleFunc("/api/projects", withCORS(projectsHandler(svc, store, v)))
+	mux.HandleFunc("/api/projects", withCORS(projectsHandler(svc, store, v, dbPath)))
 	mux.HandleFunc("/api/projects/", withCORS(projectHandler(store, dbPath, v)))
 
 	// Sprints
 	mux.HandleFunc("/api/sprints", withCORS(sprintsHandler(svc, store, dbPath, v)))
-	mux.HandleFunc("/api/sprints/", withCORS(sprintHandler(store, v)))
+	mux.HandleFunc("/api/sprints/", withCORS(sprintHandler(store, v, dbPath)))
 
 	// Notes — vault-backed file-only
 	mux.HandleFunc("/api/notes", withCORS(notesHandler(store, v)))
@@ -195,8 +195,8 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 	mux.HandleFunc("/api/tags/", withCORS(tagHandler(store)))
 
 	// Habits
-	mux.HandleFunc("/api/habits", withCORS(habitsHandler(habitSvc, v)))
-	mux.HandleFunc("/api/habits/", withCORS(habitHandler(habitSvc, v)))
+	mux.HandleFunc("/api/habits", withCORS(habitsHandler(habitSvc, v, dbPath)))
+	mux.HandleFunc("/api/habits/", withCORS(habitHandler(habitSvc, v, dbPath)))
 
 	// Kanban, Resources, Pomodoro, misc
 	mux.HandleFunc("/api/kanban", withCORS(kanbanHandler(svc, store)))
@@ -255,7 +255,7 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 	mux.HandleFunc("/api/custom-types/", withCORS(customTypeHandler(store)))
 
 	// Custom Entities — /api/custom/{type} and /api/custom/{type}/{id}
-	mux.HandleFunc("/api/custom/", withCORS(customEntitiesHandler(store, v)))
+	mux.HandleFunc("/api/custom/", withCORS(customEntitiesHandler(store, v, dbPath)))
 
 	// Workspaces — group entity types (built-in or custom) under a named container
 	mux.HandleFunc("/api/workspaces", withCORS(workspacesHandler(store, v, dbPath)))
@@ -474,7 +474,7 @@ func taskIntrinsics(t *domain.Task) map[string]string {
 	return m
 }
 
-func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
+func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -497,11 +497,18 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 			if q.Get("all") == "1" {
 				f.TopLevelOnly = false
 			}
+			var workspaceFilter *int64
+			if v := q.Get("workspace_id"); v != "" {
+				if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+					workspaceFilter = &id
+				}
+			}
 			tasks, err := svc.List(f)
 			if err != nil {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			tasks = filterByWorkspace(tasks, workspaceFilter, func(t *domain.Task) *int64 { return t.WorkspaceID })
 			projects, _ := svc.Projects()
 			projMap := make(map[int64]string)
 			for _, p := range projects {
@@ -552,6 +559,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				ProjectID         *int64 `json:"project_id"`
 				SprintID          *int64 `json:"sprint_id"`
 				ParentTaskID      *int64 `json:"parent_task_id"`
+				WorkspaceID       *int64 `json:"workspace_id"`
 				CategoryID        *int64 `json:"category_id"`
 				Category          string `json:"category"`
 				RecurInterval     *int   `json:"recur_interval"`
@@ -578,6 +586,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				ProjectID:         body.ProjectID,
 				SprintID:          body.SprintID,
 				ParentTaskID:      body.ParentTaskID,
+				WorkspaceID:       body.WorkspaceID,
 				CategoryID:        body.CategoryID,
 				Category:          body.Category,
 				RecurUnit:         body.RecurUnit,
@@ -615,6 +624,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				resyncTaskParentsVault(store, vlt, created)
 			}()
 			go func() {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("task", created.ID, mergeFMWithProps(taskFM(created), store, "task", created.ID), taskLinksBody(created, store)+relationsLinksBody("task", created.ID, store)); err != nil {
 					log.Printf("vault: write task %d: %v", created.ID, err)
 				}
@@ -835,6 +845,14 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 				}
 			}
 			_ = oldParentTaskID // used in goroutine below
+			if v, ok := body["workspace_id"]; ok {
+				if v == nil {
+					t.WorkspaceID = nil
+				} else if fv, ok := v.(float64); ok {
+					wid := int64(fv)
+					t.WorkspaceID = &wid
+				}
+			}
 			if v, ok := body["category_id"]; ok {
 				if v == nil {
 					t.CategoryID = nil
@@ -881,6 +899,7 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 				resyncTaskParentsVault(store, vlt, updated)
 			}()
 			go func(oldPID *int64) {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("task", updated.ID, mergeFMWithProps(taskFM(updated), store, "task", updated.ID), taskLinksBody(updated, store)+relationsLinksBody("task", updated.ID, store)); err != nil {
 					log.Printf("vault: update task %d: %v", updated.ID, err)
 				}
@@ -927,7 +946,7 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 
 // ── Goals ─────────────────────────────────────────────────────────────────────
 
-func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
+func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -939,6 +958,13 @@ func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				errJSON(w, 500, err.Error())
 				return
 			}
+			var workspaceFilter *int64
+			if v := r.URL.Query().Get("workspace_id"); v != "" {
+				if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+					workspaceFilter = &id
+				}
+			}
+			goals = filterByWorkspace(goals, workspaceFilter, func(g *domain.Goal) *int64 { return g.WorkspaceID })
 			tasks, _ := svc.List(domain.TaskFilter{})
 			projects, _ := store.ListProjects("")
 			out := enrichGoals(goals, projects, tasks)
@@ -959,6 +985,7 @@ func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				CurrentValue *float64 `json:"current_value"`
 				Target       *float64 `json:"target"`
 				CategoryID   *int64   `json:"category_id"`
+				WorkspaceID  *int64   `json:"workspace_id"`
 			}
 			if err := readJSON(r, &body); err != nil || body.Title == "" {
 				errJSON(w, 400, "title is required")
@@ -974,6 +1001,7 @@ func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				CurrentValue: body.CurrentValue,
 				Target:       body.Target,
 				CategoryID:   body.CategoryID,
+				WorkspaceID:  body.WorkspaceID,
 			}
 			if body.StartDate != "" {
 				g.StartDate = &body.StartDate
@@ -989,6 +1017,7 @@ func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 			created, _ := store.GetGoal(id)
 			go mirrorIntrinsicsAndPropagate(store, "goal", id, map[string]string{"status": string(created.Status)})
 			go func() {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("goal", created.ID, mergeFMWithProps(goalFM(created), store, "goal", created.ID), childrenLinksBody("goal", created.ID, store)+commentsSection("goal", created.ID, store)); err != nil {
 					log.Printf("vault: write goal %d: %v", created.ID, err)
 				}
@@ -1131,6 +1160,14 @@ func goalHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.Ha
 					g.CategoryID = &cid
 				}
 			}
+			if v, ok := body["workspace_id"]; ok {
+				if v == nil {
+					g.WorkspaceID = nil
+				} else if fv, ok := v.(float64); ok {
+					wid := int64(fv)
+					g.WorkspaceID = &wid
+				}
+			}
 			if err := store.UpdateGoal(g); err != nil {
 				errJSON(w, 500, err.Error())
 				return
@@ -1139,6 +1176,7 @@ func goalHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.Ha
 			updated.Tags, _ = store.GetEntityTags("goal", id)
 			go mirrorIntrinsicsAndPropagate(store, "goal", id, map[string]string{"status": string(updated.Status)})
 			go func() {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("goal", updated.ID, mergeFMWithProps(goalFM(updated), store, "goal", updated.ID), childrenLinksBody("goal", updated.ID, store)+commentsSection("goal", updated.ID, store)); err != nil {
 					log.Printf("vault: update goal %d: %v", updated.ID, err)
 				}
@@ -1165,7 +1203,7 @@ func goalHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.Ha
 
 // ── Projects ──────────────────────────────────────────────────────────────────
 
-func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
+func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -1177,6 +1215,13 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 				errJSON(w, 500, err.Error())
 				return
 			}
+			var workspaceFilter *int64
+			if v := r.URL.Query().Get("workspace_id"); v != "" {
+				if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+					workspaceFilter = &id
+				}
+			}
+			projects = filterByWorkspace(projects, workspaceFilter, func(p *domain.Project) *int64 { return p.WorkspaceID })
 			tasks, _ := svc.List(domain.TaskFilter{})
 			out := enrichProjects(projects, tasks)
 			for i := range out {
@@ -1192,6 +1237,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 				MacroArea   string `json:"macro_area"`
 				KanbanCol   string `json:"kanban_col"`
 				CategoryID  *int64 `json:"category_id"`
+				WorkspaceID *int64 `json:"workspace_id"`
 			}
 			if err := readJSON(r, &body); err != nil || body.Title == "" {
 				errJSON(w, 400, "title is required")
@@ -1205,6 +1251,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 				MacroArea:   body.MacroArea,
 				KanbanCol:   body.KanbanCol,
 				CategoryID:  body.CategoryID,
+				WorkspaceID: body.WorkspaceID,
 			}
 			id, err := store.CreateProject(p)
 			if err != nil {
@@ -1214,6 +1261,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 			created, _ := store.GetProject(id)
 			go mirrorIntrinsicsAndPropagate(store, "project", id, map[string]string{"status": string(created.Status)})
 			go func() {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("project", created.ID, mergeFMWithProps(projectFM(created), store, "project", created.ID), projectLinksBody(created, store)+childrenLinksBody("project", created.ID, store)+commentsSection("project", created.ID, store)); err != nil {
 					log.Printf("vault: write project %d: %v", created.ID, err)
 				}
@@ -1336,6 +1384,14 @@ func projectHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http
 					p.CategoryID = &cid
 				}
 			}
+			if v, ok := body["workspace_id"]; ok {
+				if v == nil {
+					p.WorkspaceID = nil
+				} else if fv, ok := v.(float64); ok {
+					wid := int64(fv)
+					p.WorkspaceID = &wid
+				}
+			}
 			if v, ok := body["start_date"]; ok {
 				if v == nil {
 					p.StartDate = nil
@@ -1366,6 +1422,7 @@ func projectHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http
 			updated.Tags, _ = store.GetEntityTags("project", id)
 			go mirrorIntrinsicsAndPropagate(store, "project", id, map[string]string{"status": string(updated.Status)})
 			go func() {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("project", updated.ID, mergeFMWithProps(projectFM(updated), store, "project", updated.ID), projectLinksBody(updated, store)+childrenLinksBody("project", updated.ID, store)+commentsSection("project", updated.ID, store)); err != nil {
 					log.Printf("vault: update project %d: %v", updated.ID, err)
 				}
@@ -1402,7 +1459,15 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 					projectID = &id
 				}
 			}
-			writeJSON(w, 200, listSprints(store, svc, dbPath, projectID))
+			sprints := listSprints(store, svc, dbPath, projectID)
+			var workspaceFilter *int64
+			if v := r.URL.Query().Get("workspace_id"); v != "" {
+				if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+					workspaceFilter = &id
+				}
+			}
+			sprints = filterByWorkspace(sprints, workspaceFilter, func(s sprintOut) *int64 { return s.WorkspaceID })
+			writeJSON(w, 200, sprints)
 
 		case http.MethodPost:
 			var body struct {
@@ -1411,6 +1476,7 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 				StartDate   string `json:"start_date"`
 				EndDate     string `json:"end_date"`
 				StoryPoints *int   `json:"story_points"`
+				WorkspaceID *int64 `json:"workspace_id"`
 			}
 			if err := readJSON(r, &body); err != nil || body.Title == "" {
 				errJSON(w, 400, "title is required")
@@ -1421,6 +1487,7 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 				Title:       body.Title,
 				Status:      domain.Status("planned"),
 				StoryPoints: body.StoryPoints,
+				WorkspaceID: body.WorkspaceID,
 			}
 			if body.StartDate != "" {
 				if t, err := time.Parse("2006-01-02", body.StartDate); err == nil {
@@ -1440,6 +1507,7 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 			sp.ID = id
 			go mirrorIntrinsicsAndPropagate(store, "sprint", id, map[string]string{"status": string(sp.Status)})
 			go func() {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("sprint", sp.ID, mergeFMWithProps(sprintFM(sp), store, "sprint", sp.ID), sprintLinksBody(sp, store)); err != nil {
 					log.Printf("vault: write sprint %d: %v", sp.ID, err)
 				}
@@ -1452,7 +1520,7 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 	}
 }
 
-func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
+func sprintHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
 		if strings.HasSuffix(path, "/tags") {
@@ -1511,6 +1579,7 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 				"start_date":    startDate,
 				"end_date":      endDate,
 				"story_points":  sp.StoryPoints,
+				"workspace_id":  sp.WorkspaceID,
 				"tasks":         tasks,
 				"progress": map[string]any{
 					"total": len(tasks),
@@ -1569,6 +1638,14 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 					sp.StoryPoints = &p
 				}
 			}
+			if v, ok := body["workspace_id"]; ok {
+				if v == nil {
+					sp.WorkspaceID = nil
+				} else if fv, ok := v.(float64); ok {
+					wid := int64(fv)
+					sp.WorkspaceID = &wid
+				}
+			}
 			if err := store.UpdateSprint(sp); err != nil {
 				errJSON(w, 500, err.Error())
 				return
@@ -1576,6 +1653,7 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 			if sp, err := store.GetSprint(id); err == nil {
 				go mirrorIntrinsicsAndPropagate(store, "sprint", id, map[string]string{"status": string(sp.Status)})
 				go func() {
+					refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 					if err := vlt.WriteEntityMD("sprint", sp.ID, mergeFMWithProps(sprintFM(sp), store, "sprint", sp.ID), sprintLinksBody(sp, store)); err != nil {
 						log.Printf("vault: update sprint %d: %v", sp.ID, err)
 					}
@@ -2133,11 +2211,15 @@ func resourcesHandler(store storage.Storage, dbPath string, vlt *vault.Vault) ht
 				where += " AND r.task_id=?"
 				args = append(args, v)
 			}
+			if v := q.Get("workspace_id"); v != "" {
+				where += " AND r.workspace_id=?"
+				args = append(args, v)
+			}
 			rows, err := db.Query(fmt.Sprintf(`
 				SELECT r.id, r.title, COALESCE(r.url,''), COALESCE(r.file_path,''),
 				       r.resource_type, COALESCE(r.body,''),
 				       COALESCE(t.title,''), COALESCE(p.title,''), COALESCE(g.title,''),
-				       r.created_at
+				       r.created_at, r.workspace_id
 				FROM resources r
 				LEFT JOIN tasks    t ON r.task_id = t.id
 				LEFT JOIN projects p ON r.project_id = p.id
@@ -2159,16 +2241,21 @@ func resourcesHandler(store storage.Storage, dbPath string, vlt *vault.Vault) ht
 				ProjectTitle string `json:"project_title,omitempty"`
 				GoalTitle    string `json:"goal_title,omitempty"`
 				CreatedAt    string `json:"created_at"`
+				WorkspaceID  *int64 `json:"workspace_id,omitempty"`
 			}
 			var out []resOut
 			for rows.Next() {
 				var res resOut
+				var workspaceID sql.NullInt64
 				if err := rows.Scan(&res.ID, &res.Title, &res.URL, &res.FilePath,
 					&res.ResourceType, &res.Body,
 					&res.TaskTitle, &res.ProjectTitle, &res.GoalTitle,
-					&res.CreatedAt); err != nil {
+					&res.CreatedAt, &workspaceID); err != nil {
 					errJSON(w, 500, err.Error())
 					return
+				}
+				if workspaceID.Valid {
+					res.WorkspaceID = &workspaceID.Int64
 				}
 				out = append(out, res)
 			}
@@ -2186,6 +2273,7 @@ func resourcesHandler(store storage.Storage, dbPath string, vlt *vault.Vault) ht
 				GoalID       *int64 `json:"goal_id"`
 				ProjectID    *int64 `json:"project_id"`
 				TaskID       *int64 `json:"task_id"`
+				WorkspaceID  *int64 `json:"workspace_id"`
 			}
 			if err := readJSON(r, &body); err != nil || body.Title == "" {
 				errJSON(w, 400, "title is required")
@@ -2195,10 +2283,10 @@ func resourcesHandler(store storage.Storage, dbPath string, vlt *vault.Vault) ht
 				body.ResourceType = "note"
 			}
 			res, err := db.Exec(
-				`INSERT INTO resources (title, url, resource_type, body, goal_id, project_id, task_id)
-				 VALUES (?,?,?,?,?,?,?)`,
+				`INSERT INTO resources (title, url, resource_type, body, goal_id, project_id, task_id, workspace_id)
+				 VALUES (?,?,?,?,?,?,?,?)`,
 				body.Title, nullStr(body.URL), body.ResourceType, nullStr(body.Body),
-				body.GoalID, body.ProjectID, body.TaskID,
+				body.GoalID, body.ProjectID, body.TaskID, body.WorkspaceID,
 			)
 			if err != nil {
 				errJSON(w, 500, err.Error())
@@ -2206,6 +2294,7 @@ func resourcesHandler(store storage.Storage, dbPath string, vlt *vault.Vault) ht
 			}
 			id, _ := res.LastInsertId()
 			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				_ = vlt.WriteEntityMD("resource", id, resourceFM(id, body.Title, body.URL, body.ResourceType, body.Body, body.GoalID, body.ProjectID, body.TaskID), "")
 			}
 			writeJSON(w, 201, map[string]any{"id": id, "title": body.Title})
@@ -2247,18 +2336,20 @@ func resourceHandler(store storage.Storage, dbPath string, vlt *vault.Vault) htt
 				GoalID       *int64  `json:"goal_id"`
 				ProjectID    *int64  `json:"project_id"`
 				TaskID       *int64  `json:"task_id"`
+				WorkspaceID  *int64  `json:"workspace_id"`
 			}
-			var goalID, projectID, taskID sql.NullInt64
+			var goalID, projectID, taskID, workspaceID sql.NullInt64
 			row := db.QueryRow(`SELECT id, title, COALESCE(url,''), COALESCE(body,''), resource_type,
-				goal_id, project_id, task_id FROM resources WHERE id=?`, id)
+				goal_id, project_id, task_id, workspace_id FROM resources WHERE id=?`, id)
 			if err := row.Scan(&res.ID, &res.Title, &res.URL, &res.Body, &res.ResourceType,
-				&goalID, &projectID, &taskID); err != nil {
+				&goalID, &projectID, &taskID, &workspaceID); err != nil {
 				errJSON(w, 404, "resource not found")
 				return
 			}
 			if goalID.Valid    { res.GoalID    = &goalID.Int64 }
 			if projectID.Valid { res.ProjectID = &projectID.Int64 }
 			if taskID.Valid    { res.TaskID    = &taskID.Int64 }
+			if workspaceID.Valid { res.WorkspaceID = &workspaceID.Int64 }
 			writeJSON(w, 200, res)
 		case http.MethodPatch:
 			var bodyMap map[string]any
@@ -2275,11 +2366,12 @@ func resourceHandler(store storage.Storage, dbPath string, vlt *vault.Vault) htt
 				goalID       sql.NullInt64
 				projectID    sql.NullInt64
 				taskID       sql.NullInt64
+				workspaceID  sql.NullInt64
 			}
 			row := db.QueryRow(`SELECT title, COALESCE(url,''), COALESCE(body,''), resource_type,
-				goal_id, project_id, task_id FROM resources WHERE id=?`, id)
+				goal_id, project_id, task_id, workspace_id FROM resources WHERE id=?`, id)
 			if err := row.Scan(&cur.title, &cur.url, &cur.body, &cur.resourceType,
-				&cur.goalID, &cur.projectID, &cur.taskID); err != nil {
+				&cur.goalID, &cur.projectID, &cur.taskID, &cur.workspaceID); err != nil {
 				errJSON(w, 404, "resource not found")
 				return
 			}
@@ -2320,12 +2412,20 @@ func resourceHandler(store storage.Storage, dbPath string, vlt *vault.Vault) htt
 					taskID = sql.NullInt64{Int64: int64(fv), Valid: true}
 				}
 			}
+			workspaceID := cur.workspaceID
+			if val, ok := bodyMap["workspace_id"]; ok {
+				if val == nil {
+					workspaceID = sql.NullInt64{}
+				} else if fv, ok := val.(float64); ok {
+					workspaceID = sql.NullInt64{Int64: int64(fv), Valid: true}
+				}
+			}
 			if _, err := db.Exec(
 				`UPDATE resources SET title=?, url=?, body=?, resource_type=?,
-				 goal_id=?, project_id=?, task_id=?, updated_at=datetime('now')
+				 goal_id=?, project_id=?, task_id=?, workspace_id=?, updated_at=datetime('now')
 				 WHERE id=?`,
 				nullStr(cur.title), nullStr(cur.url), nullStr(cur.body), cur.resourceType,
-				nullInt(goalID), nullInt(projectID), nullInt(taskID), id,
+				nullInt(goalID), nullInt(projectID), nullInt(taskID), nullInt(workspaceID), id,
 			); err != nil {
 				errJSON(w, 500, err.Error())
 				return
@@ -2341,6 +2441,7 @@ func resourceHandler(store storage.Storage, dbPath string, vlt *vault.Vault) htt
 				if taskID.Valid {
 					taskIDPtr = &taskID.Int64
 				}
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				_ = vlt.WriteEntityMD("resource", id, resourceFM(id, cur.title, cur.url, cur.resourceType, cur.body, goalIDPtr, projectIDPtr, taskIDPtr), "")
 			}
 			writeJSON(w, 200, map[string]any{"id": id, "ok": true})
@@ -2988,6 +3089,7 @@ type sprintOut struct {
 	Status       string `json:"status"`
 	StartDate    string `json:"start_date,omitempty"`
 	EndDate      string `json:"end_date,omitempty"`
+	WorkspaceID  *int64 `json:"workspace_id,omitempty"`
 	Progress     struct {
 		Done  int `json:"done"`
 		Total int `json:"total"`
@@ -3004,7 +3106,7 @@ func listSprints(store storage.Storage, svc service.TaskService, dbPath string, 
 
 	q := `SELECT s.id, s.project_id, s.title, s.status,
 	             COALESCE(s.start_date,''), COALESCE(s.end_date,''),
-	             COALESCE(p.title,'')
+	             COALESCE(p.title,''), s.workspace_id
 	      FROM sprints s LEFT JOIN projects p ON s.project_id = p.id
 	      WHERE 1=1`
 	args := []any{}
@@ -3023,13 +3125,16 @@ func listSprints(store storage.Storage, svc service.TaskService, dbPath string, 
 	var out []sprintOut
 	for rows.Next() {
 		var so sprintOut
-		var projID sql.NullInt64
+		var projID, workspaceID sql.NullInt64
 		if err := rows.Scan(&so.ID, &projID, &so.Title, &so.Status,
-			&so.StartDate, &so.EndDate, &so.ProjectTitle); err != nil {
+			&so.StartDate, &so.EndDate, &so.ProjectTitle, &workspaceID); err != nil {
 			continue
 		}
 		if projID.Valid {
 			so.ProjectID = projID.Int64
+		}
+		if workspaceID.Valid {
+			so.WorkspaceID = &workspaceID.Int64
 		}
 		tasks, _ := svc.List(domain.TaskFilter{SprintID: &so.ID})
 		for _, t := range tasks {
@@ -4708,89 +4813,157 @@ func vaultSyncResolveHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
 // twoWaySyncVault reconciles goal/project/sprint/task rows against their
 // vault files in both directions, returning the number of entities updated
 // automatically and any per-field conflicts that need user resolution.
-// computeEntityTypeFolders reads workspace_entity_types and returns, for
-// every currently-assigned entity type, the vault subfolder its files should
-// live under (the owning workspace's sanitized name). Custom entity types are
-// stored as "custom_{name}" in workspace_entity_types but as the bare
-// "{name}" in the vault (matching EntityFilePath's convention), so the
-// prefix is stripped here. Two workspaces that sanitize to the same folder
-// name are disambiguated with a numeric suffix, keyed by workspace ID so the
-// same workspace always gets the same folder across calls.
-func computeEntityTypeFolders(db *sql.DB) map[string]string {
-	rows, err := db.Query(`SELECT w.id, w.name, wet.entity_type FROM workspace_entity_types wet JOIN workspaces w ON w.id = wet.workspace_id ORDER BY w.id ASC`)
+// workspaceFolderNames returns every workspace's sanitized, deduped vault
+// folder name, keyed by workspace ID — the single source of truth for "what
+// folder does workspace X's stuff live under" used by both the per-record
+// folder computation below and anything else that needs a workspace's
+// on-disk name. Two workspaces that sanitize to the same name are
+// disambiguated with a numeric suffix, keyed by ID so a given workspace's
+// folder name is stable across calls regardless of iteration order.
+func workspaceFolderNames(db *sql.DB) map[int64]string {
+	rows, err := db.Query(`SELECT id, name FROM workspaces ORDER BY id ASC`)
 	if err != nil {
-		return map[string]string{}
+		return map[int64]string{}
 	}
 	defer rows.Close()
 
-	type assignment struct {
-		workspaceID int64
-		name        string
-		entityType  string
+	type ws struct {
+		id   int64
+		name string
 	}
-	var assignments []assignment
+	var all []ws
 	for rows.Next() {
-		var a assignment
-		if rows.Scan(&a.workspaceID, &a.name, &a.entityType) != nil {
-			continue
+		var w ws
+		if rows.Scan(&w.id, &w.name) == nil {
+			all = append(all, w)
 		}
-		a.entityType = strings.TrimPrefix(a.entityType, "custom_")
-		assignments = append(assignments, a)
 	}
 
 	folderByWorkspace := map[int64]string{}
 	usedNames := map[string]int64{}
-	for _, a := range assignments {
-		if _, ok := folderByWorkspace[a.workspaceID]; ok {
-			continue
-		}
-		base := vault.SanitizeFolderName(a.name)
+	for _, w := range all {
+		base := vault.SanitizeFolderName(w.name)
 		name := base
 		for suffix := 2; ; suffix++ {
 			owner, taken := usedNames[name]
-			if !taken || owner == a.workspaceID {
+			if !taken || owner == w.id {
 				break
 			}
 			name = fmt.Sprintf("%s-%d", base, suffix)
 		}
-		usedNames[name] = a.workspaceID
-		folderByWorkspace[a.workspaceID] = name
+		usedNames[name] = w.id
+		folderByWorkspace[w.id] = name
 	}
-
-	out := map[string]string{}
-	for _, a := range assignments {
-		out[a.entityType] = folderByWorkspace[a.workspaceID]
-	}
-	return out
+	return folderByWorkspace
 }
 
-// refreshWorkspaceVaultFolders recomputes the entity-type → workspace-folder
-// map from the DB, physically moves every entity type whose folder changed
-// (including back to top-level for types no longer assigned to any
-// workspace), and swaps the vault's resolver over to the new map. Safe to
-// call often — a no-op pass costs one query and a handful of map diffs.
-func refreshWorkspaceVaultFolders(db *sql.DB, v *vault.Vault) {
-	newMap := computeEntityTypeFolders(db)
-	oldMap := v.TypeFolders()
+// computeRecordFolders reads every entity table's workspace_id column and
+// returns the record → workspace-folder map the vault needs (keyed
+// "{entityType}:{id}"), plus the full list of folder names currently in use.
+// A record with workspace_id NULL is simply absent from the map — the vault
+// treats an absent key as top-level.
+func computeRecordFolders(db *sql.DB) (records map[string]string, folders []string) {
+	folderByWorkspace := workspaceFolderNames(db)
+	records = map[string]string{}
+
+	tableFor := map[string]string{
+		"task": "tasks", "goal": "goals", "project": "projects",
+		"sprint": "sprints", "habit": "habits", "resource": "resources",
+	}
+	for entityType, table := range tableFor {
+		rows, err := db.Query(fmt.Sprintf(`SELECT id, workspace_id FROM %s WHERE workspace_id IS NOT NULL`, table))
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var id, wsID int64
+			if rows.Scan(&id, &wsID) == nil {
+				if folder, ok := folderByWorkspace[wsID]; ok {
+					records[recordFolderKey(entityType, id)] = folder
+				}
+			}
+		}
+		rows.Close()
+	}
+
+	rows, err := db.Query(`SELECT id, type_name, workspace_id FROM custom_entities WHERE workspace_id IS NOT NULL`)
+	if err == nil {
+		for rows.Next() {
+			var id, wsID int64
+			var typeName string
+			if rows.Scan(&id, &typeName, &wsID) == nil {
+				if folder, ok := folderByWorkspace[wsID]; ok {
+					records[recordFolderKey(typeName, id)] = folder
+				}
+			}
+		}
+		rows.Close()
+	}
 
 	seen := map[string]bool{}
-	for entityType, newFolder := range newMap {
-		seen[entityType] = true
-		if oldMap[entityType] != newFolder {
-			if err := v.MoveEntityFolder(entityType, oldMap[entityType], newFolder); err != nil {
-				log.Printf("vault: move %s to workspace folder %q: %v", entityType, newFolder, err)
+	for _, folder := range folderByWorkspace {
+		if !seen[folder] {
+			seen[folder] = true
+			folders = append(folders, folder)
+		}
+	}
+	return records, folders
+}
+
+// recordFolderKey matches vault.recordKey's format (unexported there, so
+// duplicated here — must stay in sync with how SetRecordFolders' keys read).
+func recordFolderKey(entityType string, id int64) string {
+	return fmt.Sprintf("%s:%d", entityType, id)
+}
+
+// refreshWorkspaceVaultFolders recomputes the record → workspace-folder map
+// from the DB, physically moves every record whose folder changed (including
+// back to top-level for records no longer assigned to any workspace), and
+// swaps the vault's resolver over to the new map. Safe to call often — a
+// no-op pass costs a handful of queries and map diffs.
+func refreshWorkspaceVaultFolders(db *sql.DB, v *vault.Vault) {
+	newRecords, folders := computeRecordFolders(db)
+	oldRecords := v.RecordFolders()
+
+	seen := map[string]bool{}
+	for key, newFolder := range newRecords {
+		seen[key] = true
+		if oldRecords[key] != newFolder {
+			entityType, id := splitRecordFolderKey(key)
+			if entityType == "" {
+				continue
+			}
+			if err := v.MoveEntityFile(entityType, id, oldRecords[key], newFolder); err != nil {
+				log.Printf("vault: move %s to workspace folder %q: %v", key, newFolder, err)
 			}
 		}
 	}
-	for entityType, oldFolder := range oldMap {
-		if seen[entityType] || oldFolder == "" {
+	for key, oldFolder := range oldRecords {
+		if seen[key] || oldFolder == "" {
 			continue
 		}
-		if err := v.MoveEntityFolder(entityType, oldFolder, ""); err != nil {
-			log.Printf("vault: move %s back to top level: %v", entityType, err)
+		entityType, id := splitRecordFolderKey(key)
+		if entityType == "" {
+			continue
+		}
+		if err := v.MoveEntityFile(entityType, id, oldFolder, ""); err != nil {
+			log.Printf("vault: move %s back to top level: %v", key, err)
 		}
 	}
-	v.SetTypeFolders(newMap)
+	v.SetRecordFolders(newRecords, folders)
+}
+
+// splitRecordFolderKey parses a "{entityType}:{id}" key back into its parts.
+func splitRecordFolderKey(key string) (entityType string, id int64) {
+	idx := strings.LastIndex(key, ":")
+	if idx < 0 {
+		return "", 0
+	}
+	n, err := strconv.ParseInt(key[idx+1:], 10, 64)
+	if err != nil {
+		return "", 0
+	}
+	return key[:idx], n
 }
 
 func twoWaySyncVault(v *vault.Vault, dbPath string) (applied int, conflicts []syncConflict) {
@@ -6087,7 +6260,7 @@ func customEntityLinksBody(typeName string, entityID int64, store storage.Storag
 	return strings.Join(lines, "\n")
 }
 
-func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
+func customEntitiesHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Parse path: /api/custom/{type} or /api/custom/{type}/{id}
 		// Strip prefix "/api/custom/"
@@ -6109,6 +6282,13 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 					errJSON(w, 500, err.Error())
 					return
 				}
+				var workspaceFilter *int64
+				if v := r.URL.Query().Get("workspace_id"); v != "" {
+					if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+						workspaceFilter = &id
+					}
+				}
+				entities = filterByWorkspace(entities, workspaceFilter, func(e *domain.CustomEntity) *int64 { return e.WorkspaceID })
 				if entities == nil {
 					entities = []*domain.CustomEntity{}
 				}
@@ -6131,6 +6311,7 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 				}
 				e.ID = id
 				if vlt != nil {
+					refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 					_ = vlt.WriteEntityMD(typeName, id, customEntityFM(&e), customEntityLinksBody(typeName, id, store))
 				}
 				writeJSON(w, 201, e)
@@ -6184,6 +6365,7 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 				return
 			}
 			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				_ = vlt.WriteEntityMD(typeName, entityID, customEntityFM(&e), customEntityLinksBody(typeName, entityID, store))
 			}
 			go rollup.TriggerPropagation(store, typeName, entityID)
@@ -6203,6 +6385,22 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	}
+}
+
+// filterByWorkspace narrows items to those whose workspace (via get) matches
+// filter. filter == nil means "All workspaces" — no filtering, every item
+// passes through unchanged (including ones with no workspace of their own).
+func filterByWorkspace[T any](items []T, filter *int64, get func(T) *int64) []T {
+	if filter == nil {
+		return items
+	}
+	out := items[:0]
+	for _, it := range items {
+		if ws := get(it); ws != nil && *ws == *filter {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // fmDefault returns s if non-empty, otherwise def.
@@ -7159,7 +7357,7 @@ func habitFM(h *domain.Habit) map[string]any {
 	return fm
 }
 
-func habitsHandler(svc *service.HabitService, vlt *vault.Vault) http.HandlerFunc {
+func habitsHandler(svc *service.HabitService, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -7168,20 +7366,29 @@ func habitsHandler(svc *service.HabitService, vlt *vault.Vault) http.HandlerFunc
 				errJSON(w, 500, err.Error())
 				return
 			}
+			var workspaceFilter *int64
+			if v := r.URL.Query().Get("workspace_id"); v != "" {
+				if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+					workspaceFilter = &id
+				}
+			}
+			habits = filterByWorkspace(habits, workspaceFilter, func(h *domain.Habit) *int64 { return h.WorkspaceID })
 			writeJSON(w, 200, habits)
 		case http.MethodPost:
 			var body struct {
 				Title       string `json:"title"`
 				Type        string `json:"type"`
 				ReferenceID string `json:"reference_id"`
+				WorkspaceID *int64 `json:"workspace_id"`
 			}
 			if err := readJSON(r, &body); err != nil {
 				errJSON(w, 400, "invalid JSON: "+err.Error())
 				return
 			}
 			h := &domain.Habit{
-				Title: body.Title,
-				Type:  domain.HabitType(body.Type),
+				Title:       body.Title,
+				Type:        domain.HabitType(body.Type),
+				WorkspaceID: body.WorkspaceID,
 			}
 			if body.ReferenceID != "" {
 				h.ReferenceID = &body.ReferenceID
@@ -7192,6 +7399,7 @@ func habitsHandler(svc *service.HabitService, vlt *vault.Vault) http.HandlerFunc
 				return
 			}
 			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				_ = vlt.WriteEntityMD("habit", created.ID, habitFM(created), "")
 			}
 			writeJSON(w, 201, created)
@@ -7202,7 +7410,7 @@ func habitsHandler(svc *service.HabitService, vlt *vault.Vault) http.HandlerFunc
 }
 
 // habitHandler handles GET/PATCH/DELETE /api/habits/:id and sub-resources.
-func habitHandler(svc *service.HabitService, vlt *vault.Vault) http.HandlerFunc {
+func habitHandler(svc *service.HabitService, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
 
@@ -7308,12 +7516,21 @@ func habitHandler(svc *service.HabitService, vlt *vault.Vault) http.HandlerFunc 
 					h.ReferenceID = &s
 				}
 			}
+			if v, ok := body["workspace_id"]; ok {
+				if v == nil {
+					h.WorkspaceID = nil
+				} else if fv, ok := v.(float64); ok {
+					wid := int64(fv)
+					h.WorkspaceID = &wid
+				}
+			}
 			updated, err := svc.Update(h)
 			if err != nil {
 				errJSON(w, 400, err.Error())
 				return
 			}
 			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				_ = vlt.WriteEntityMD("habit", updated.ID, habitFM(updated), "")
 			}
 			writeJSON(w, 200, updated)

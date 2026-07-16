@@ -12,6 +12,7 @@ type Sprint struct {
 	EndDate     *time.Time `json:"end_date"`
 	Status      Status     `json:"status"`
 	StoryPoints *int       `json:"story_points,omitempty"`
+	WorkspaceID *int64     `json:"workspace_id,omitempty"`
 	ContentJSON string     `json:"content_json,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 }

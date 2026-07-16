@@ -32,6 +32,10 @@ type Habit struct {
 	// For Type=="learning" this is a StudyTrack objective ID.
 	ReferenceID *string `json:"reference_id,omitempty"`
 
+	// WorkspaceID assigns this specific record to a workspace; nil means
+	// unassigned (visible only in the "All workspaces" view).
+	WorkspaceID *int64 `json:"workspace_id,omitempty"`
+
 	// CreatedAt is set by the database on insert.
 	CreatedAt time.Time `json:"created_at"`
 

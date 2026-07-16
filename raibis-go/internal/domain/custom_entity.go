@@ -16,11 +16,12 @@ type CustomEntityType struct {
 
 // CustomEntity is a single record of a user-defined entity type.
 type CustomEntity struct {
-	ID        int64             `json:"id"`
-	TypeName  string            `json:"type_name"`
-	Title     string            `json:"title"`
-	Props     map[string]string `json:"props"`
-	Tags      []Tag             `json:"tags,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	ID          int64             `json:"id"`
+	TypeName    string            `json:"type_name"`
+	Title       string            `json:"title"`
+	Props       map[string]string `json:"props"`
+	Tags        []Tag             `json:"tags,omitempty"`
+	WorkspaceID *int64            `json:"workspace_id,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
 }

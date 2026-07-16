@@ -16,6 +16,7 @@ type Goal struct {
 	CurrentValue *float64 `json:"current_value,omitempty"`
 	Target       *float64 `json:"target,omitempty"`
 	CategoryID   *int64   `json:"category_id,omitempty"`
+	WorkspaceID  *int64   `json:"workspace_id,omitempty"`
 	CategoryName string   `json:"category_name,omitempty"`
 	ContentJSON  string   `json:"content_json,omitempty"`
 	Tags         []Tag    `json:"tags,omitempty"`
