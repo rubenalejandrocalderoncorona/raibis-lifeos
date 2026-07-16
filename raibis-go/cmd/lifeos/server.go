@@ -249,6 +249,10 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 	// Custom Entities — /api/custom/{type} and /api/custom/{type}/{id}
 	mux.HandleFunc("/api/custom/", withCORS(customEntitiesHandler(store, v)))
 
+	// Workspaces — group entity types (built-in or custom) under a named container
+	mux.HandleFunc("/api/workspaces", withCORS(workspacesHandler(store)))
+	mux.HandleFunc("/api/workspaces/", withCORS(workspaceHandler(store)))
+
 	// Vault sync (on-demand)
 	mux.HandleFunc("/api/sync", withCORS(vaultSyncHandler(v, dbPath)))
 
@@ -4625,6 +4629,126 @@ func customTypeHandler(store storage.Storage) http.HandlerFunc {
 
 		case http.MethodDelete:
 			if err := store.DeleteCustomEntityType(name); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]bool{"ok": true})
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// ── Workspaces Handler ────────────────────────────────────────────────────────
+
+// workspacesHandler handles GET/POST /api/workspaces
+func workspacesHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			workspaces, err := store.ListWorkspaces()
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			if workspaces == nil {
+				workspaces = []*domain.Workspace{}
+			}
+			writeJSON(w, 200, workspaces)
+
+		case http.MethodPost:
+			var ws domain.Workspace
+			if err := readJSON(r, &ws); err != nil {
+				errJSON(w, 400, "invalid JSON: "+err.Error())
+				return
+			}
+			if ws.Name == "" {
+				errJSON(w, 400, "name is required")
+				return
+			}
+			if ws.Icon == "" {
+				ws.Icon = "🗂️"
+			}
+			id, err := store.CreateWorkspace(&ws)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			ws.ID = id
+			writeJSON(w, 201, ws)
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// workspaceHandler handles PUT/DELETE /api/workspaces/{id} and
+// PUT /api/workspaces/{id}/entity-types
+func workspaceHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.TrimPrefix(r.URL.Path, "/api/workspaces/")
+		rest = strings.TrimRight(rest, "/")
+		pathParts := strings.SplitN(rest, "/", 2)
+		idStr := pathParts[0]
+		if idStr == "" {
+			errJSON(w, 400, "missing workspace id")
+			return
+		}
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			errJSON(w, 400, "invalid workspace id")
+			return
+		}
+
+		// /api/workspaces/{id}/entity-types
+		if len(pathParts) == 2 && pathParts[1] == "entity-types" {
+			if r.Method != http.MethodPut {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			var body struct {
+				EntityTypes []string `json:"entity_types"`
+			}
+			if err := readJSON(r, &body); err != nil {
+				errJSON(w, 400, "invalid JSON: "+err.Error())
+				return
+			}
+			if err := store.SetWorkspaceEntityTypes(id, body.EntityTypes); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			ws, err := store.GetWorkspace(id)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, ws)
+			return
+		}
+
+		switch r.Method {
+		case http.MethodPut:
+			var ws domain.Workspace
+			if err := readJSON(r, &ws); err != nil {
+				errJSON(w, 400, "invalid JSON: "+err.Error())
+				return
+			}
+			ws.ID = id
+			if err := store.UpdateWorkspace(&ws); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			updated, err := store.GetWorkspace(id)
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, updated)
+
+		case http.MethodDelete:
+			if err := store.DeleteWorkspace(id); err != nil {
 				errJSON(w, 500, err.Error())
 				return
 			}

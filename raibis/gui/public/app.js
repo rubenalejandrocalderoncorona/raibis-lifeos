@@ -384,6 +384,14 @@ async function injectListIcons(entityType, ids) {
 
 /* ─── State ──────────────────────────────────────────────────────────── */
 let customEntityTypes = [];
+// Workspaces group entity types (built-in or custom) under a named
+// container. An entity type belongs to at most one workspace; unassigned
+// types are "General" — always visible regardless of the active workspace.
+let workspaces = [];
+let activeWorkspaceId = (() => {
+  const v = localStorage.getItem('activeWorkspaceId');
+  return v ? parseInt(v) : null;
+})();
 let currentView = 'dashboard';
 let _connectedPropTypesCache = null;
 let currentParams = null;
@@ -5683,10 +5691,235 @@ async function loadCustomEntityTypes() {
   renderCustomEntityNav();
 }
 
+/* ─── Workspaces ─────────────────────────────────────────────────────────
+   A workspace groups a set of entity types (built-in or custom) under a
+   named container. Entirely additive/optional: with zero workspaces
+   created, the switcher never appears and every entity type shows exactly
+   as it did before this feature existed. */
+
+// Maps a built-in nav item's data-view value to the entity-type key used
+// for workspace membership. Views with no entry here (dashboard, calendar,
+// pomodoro, automations, categories, tags) are never workspace-scoped.
+const NAV_VIEW_ENTITY_TYPE = {
+  tasks: 'task', projects: 'project', goals: 'goal', notes: 'note',
+  resources: 'resource', sprints: 'sprint', habits: 'habit',
+};
+
+async function loadWorkspaces() {
+  workspaces = await api('GET', '/api/workspaces').catch(() => []) || [];
+  renderWorkspaceSwitcher();
+  applyWorkspaceFilterToNav();
+}
+
+// true if entityTypeKey should show in the sidebar given the current
+// activeWorkspaceId — either no workspace is active (no filtering at all),
+// the type isn't assigned to any workspace ("General", always visible), or
+// it's assigned to the currently-active workspace.
+function isEntityTypeVisibleInActiveWorkspace(entityTypeKey) {
+  if (activeWorkspaceId == null) return true;
+  const owner = workspaces.find(w => (w.entity_types || []).includes(entityTypeKey));
+  if (!owner) return true;
+  return owner.id === activeWorkspaceId;
+}
+
+function applyWorkspaceFilterToNav() {
+  document.querySelectorAll('.sidebar-nav > a.nav-item[data-view]').forEach(a => {
+    const et = NAV_VIEW_ENTITY_TYPE[a.dataset.view];
+    if (!et) return;
+    a.style.display = isEntityTypeVisibleInActiveWorkspace(et) ? '' : 'none';
+  });
+  renderCustomEntityNav();
+}
+
+function renderWorkspaceSwitcher() {
+  const wrap = document.getElementById('workspace-switcher-wrap');
+  if (!wrap) return;
+  if (!workspaces.length) {
+    // No workspaces created yet — a plain discoverable entry point, same
+    // style as "+ Add entity type", rather than an empty switcher.
+    wrap.innerHTML = `<a class="nav-item" id="workspace-add-btn" href="#" style="color:var(--text-muted)">
+      <span class="nav-icon" style="font-size:16px">＋</span>
+      <span>Add workspace</span>
+    </a>`;
+    document.getElementById('workspace-add-btn').onclick = (e) => { e.preventDefault(); showWorkspaceManagerModal(); };
+    return;
+  }
+  const active = workspaces.find(w => w.id === activeWorkspaceId);
+  const label = active ? `${active.icon || '🗂️'} ${escHtml(active.name)}` : '🗂️ All workspaces';
+  wrap.innerHTML = `
+    <div class="col-picker-wrap" style="position:relative;margin-bottom:8px">
+      <button class="btn btn-sm btn-ghost" id="workspace-switcher-btn" style="width:100%;justify-content:space-between;display:flex;align-items:center" title="Switch workspace">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</span><span style="opacity:.6;flex-shrink:0">▾</span>
+      </button>
+      <div class="col-picker-dropdown hidden" id="workspace-switcher-dropdown" style="width:100%">
+        <div class="col-picker-item" data-ws-id="">🗂️ All workspaces</div>
+        ${workspaces.map(w => `<div class="col-picker-item" data-ws-id="${w.id}">${w.icon || '🗂️'} ${escHtml(w.name)}</div>`).join('')}
+        <div class="col-picker-item" id="workspace-manage-btn" style="border-top:1px solid var(--border);color:var(--text-muted)">⚙ Manage workspaces…</div>
+      </div>
+    </div>`;
+  const btn = document.getElementById('workspace-switcher-btn');
+  const drop = document.getElementById('workspace-switcher-dropdown');
+  btn.onclick = (e) => { e.stopPropagation(); drop.classList.toggle('hidden'); };
+  document.addEventListener('click', () => drop.classList.add('hidden'), { once: true });
+  drop.querySelectorAll('[data-ws-id]').forEach(item => {
+    item.onclick = () => {
+      const id = item.dataset.wsId;
+      activeWorkspaceId = id ? parseInt(id) : null;
+      if (activeWorkspaceId == null) localStorage.removeItem('activeWorkspaceId');
+      else localStorage.setItem('activeWorkspaceId', String(activeWorkspaceId));
+      renderWorkspaceSwitcher();
+      applyWorkspaceFilterToNav();
+    };
+  });
+  document.getElementById('workspace-manage-btn').onclick = (e) => { e.stopPropagation(); showWorkspaceManagerModal(); };
+}
+
+function showWorkspaceManagerModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9100;display:flex;align-items:center;justify-content:center';
+
+  const BUILTIN_ENTITY_TYPES = [
+    { key: 'task', label: 'Tasks' }, { key: 'project', label: 'Projects' },
+    { key: 'goal', label: 'Goals' }, { key: 'note', label: 'Notes' },
+    { key: 'resource', label: 'Resources' }, { key: 'sprint', label: 'Sprints' },
+    { key: 'habit', label: 'Habits' },
+  ];
+  const allEntityTypeOptions = () => [
+    ...BUILTIN_ENTITY_TYPES,
+    ...customEntityTypes.map(t => ({ key: `custom_${t.name}`, label: t.display_name || t.name })),
+  ];
+
+  let editingId = null; // null = creating new; else the workspace.id being edited
+  let iconSelected = '🗂️';
+  let nameValue = '';
+  let selectedTypes = [];
+
+  function resetForm() { editingId = null; nameValue = ''; iconSelected = '🗂️'; selectedTypes = []; }
+
+  function ownerHint(typeKey) {
+    const owner = workspaces.find(w => w.id !== editingId && (w.entity_types || []).includes(typeKey));
+    return owner ? ` <span style="color:var(--text-muted)">(in ${escHtml(owner.name)})</span>` : '';
+  }
+
+  function renderBody() {
+    const listHtml = workspaces.length ? workspaces.map(w => `
+      <div style="display:flex;align-items:center;gap:8px;justify-content:space-between;padding:6px 8px;border:1px solid var(--border);border-radius:6px">
+        <span style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;overflow:hidden">
+          <span>${w.icon || '🗂️'}</span>
+          <span style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(w.name)}</span>
+          <span style="font-size:11px;color:var(--text-muted);flex-shrink:0">${(w.entity_types || []).length} type${(w.entity_types || []).length === 1 ? '' : 's'}</span>
+        </span>
+        <span style="display:flex;gap:4px;flex-shrink:0">
+          <button class="btn btn-sm btn-ghost" data-edit-ws="${w.id}">Edit</button>
+          <button class="btn btn-sm btn-ghost" data-del-ws="${w.id}" style="color:var(--color-danger)">Delete</button>
+        </span>
+      </div>`).join('') : `<div style="font-size:12px;color:var(--text-muted);padding:8px 0">No workspaces yet.</div>`;
+
+    overlay.innerHTML = `
+      <div style="background:var(--bg-card);border-radius:12px;padding:28px 32px;width:520px;max-width:95vw;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+          <h2 style="font-size:17px;font-weight:700;margin:0">Workspaces</h2>
+          <button id="_wsm-close" style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--text-muted);line-height:1">×</button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:20px">${listHtml}</div>
+        <div style="border-top:1px solid var(--border);padding-top:16px">
+          <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">${editingId ? 'Edit workspace' : 'New workspace'}</div>
+          <div style="display:flex;gap:12px;align-items:center;margin-bottom:14px">
+            <button id="_wsm-icon-btn" style="width:40px;height:40px;border:1px solid var(--border);border-radius:8px;background:var(--bg-surface);cursor:pointer;font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0">${iconSelected.startsWith('__svg:') ? renderEntityIcon(iconSelected, 20) : iconSelected}</button>
+            <input id="_wsm-name" type="text" placeholder="Workspace name (e.g. Work)" value="${escHtml(nameValue)}" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px;background:var(--bg-surface);color:var(--text-primary)" />
+          </div>
+          <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Entity types</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">
+            ${allEntityTypeOptions().map(t => `<label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border);border-radius:20px;background:var(--bg-surface)">
+              <input type="checkbox" data-type-key="${escHtml(t.key)}" ${selectedTypes.includes(t.key) ? 'checked' : ''} style="accent-color:var(--accent)"> ${escHtml(t.label)}${ownerHint(t.key)}
+            </label>`).join('')}
+          </div>
+          <div style="display:flex;gap:10px;justify-content:flex-end">
+            ${editingId ? `<button id="_wsm-cancel-edit" class="btn btn-ghost">Cancel edit</button>` : ''}
+            <button id="_wsm-save" class="btn btn-primary">${editingId ? 'Save changes' : 'Create workspace'}</button>
+          </div>
+        </div>
+      </div>`;
+    bindBody();
+  }
+
+  function bindBody() {
+    overlay.querySelector('#_wsm-close').onclick = () => overlay.remove();
+    overlay.querySelectorAll('[data-edit-ws]').forEach(btn => {
+      btn.onclick = () => {
+        const w = workspaces.find(x => x.id === parseInt(btn.dataset.editWs));
+        if (!w) return;
+        editingId = w.id; nameValue = w.name; iconSelected = w.icon || '🗂️'; selectedTypes = [...(w.entity_types || [])];
+        renderBody();
+      };
+    });
+    overlay.querySelectorAll('[data-del-ws]').forEach(btn => {
+      btn.onclick = () => {
+        const id = parseInt(btn.dataset.delWs);
+        showConfirmModal('Delete this workspace? Its entity types become unassigned (General) again.', async () => {
+          try {
+            await api('DELETE', `/api/workspaces/${id}`);
+            if (activeWorkspaceId === id) { activeWorkspaceId = null; localStorage.removeItem('activeWorkspaceId'); }
+            if (editingId === id) resetForm();
+            await loadWorkspaces();
+            renderBody();
+            showToast('Workspace deleted');
+          } catch (err) { showToast('Failed: ' + (err.message || err), 'error'); }
+        });
+      };
+    });
+    const iconBtn = overlay.querySelector('#_wsm-icon-btn');
+    iconBtn.onclick = (e) => {
+      e.stopPropagation();
+      showIconPicker(iconBtn, null, null, iconSelected, (icon) => {
+        iconSelected = icon || '🗂️';
+        iconBtn.innerHTML = iconSelected.startsWith('__svg:') ? renderEntityIcon(iconSelected, 20) : iconSelected;
+      });
+    };
+    const nameInp = overlay.querySelector('#_wsm-name');
+    nameInp.oninput = () => { nameValue = nameInp.value; };
+    overlay.querySelectorAll('[data-type-key]').forEach(chk => {
+      chk.onchange = () => {
+        const key = chk.dataset.typeKey;
+        if (chk.checked) { if (!selectedTypes.includes(key)) selectedTypes.push(key); }
+        else { selectedTypes = selectedTypes.filter(k => k !== key); }
+      };
+    });
+    const cancelEditBtn = overlay.querySelector('#_wsm-cancel-edit');
+    if (cancelEditBtn) cancelEditBtn.onclick = () => { resetForm(); renderBody(); };
+    overlay.querySelector('#_wsm-save').onclick = async () => {
+      const name = nameValue.trim();
+      if (!name) { showToast('Name is required', 'error'); return; }
+      try {
+        let wsId = editingId;
+        if (wsId) {
+          await api('PUT', `/api/workspaces/${wsId}`, { name, icon: iconSelected });
+        } else {
+          const created = await api('POST', '/api/workspaces', { name, icon: iconSelected });
+          wsId = created.id;
+        }
+        await api('PUT', `/api/workspaces/${wsId}/entity-types`, { entity_types: selectedTypes });
+        await loadWorkspaces();
+        showToast(editingId ? 'Workspace updated' : 'Workspace created');
+        resetForm();
+        renderBody();
+      } catch (err) { showToast('Failed: ' + (err.message || err), 'error'); }
+    };
+  }
+
+  document.body.appendChild(overlay);
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) overlay.remove(); });
+  renderBody();
+}
+
 function renderCustomEntityNav() {
   const container = document.getElementById('custom-entities-nav');
   if (!container) return;
-  if (!customEntityTypes.length) { container.innerHTML = ''; return; }
+  // Workspace-scoped: only show custom types assigned to the active
+  // workspace, plus any unassigned ("General") ones — see isEntityTypeVisibleInActiveWorkspace.
+  const visibleTypes = customEntityTypes.filter(t => isEntityTypeVisibleInActiveWorkspace(`custom_${t.name}`));
+  if (!visibleTypes.length) { container.innerHTML = ''; return; }
 
   function navIconHtml(t) {
     return t.icon
@@ -5696,7 +5929,7 @@ function renderCustomEntityNav() {
       : `<span class="nav-icon" style="font-size:16px">📁</span>`;
   }
 
-  container.innerHTML = customEntityTypes.map(t =>
+  container.innerHTML = visibleTypes.map(t =>
     `<div class="nav-custom-wrap" data-cet-name="${escHtml(t.name)}">
       <a class="nav-item _cet-nav-link" data-view="custom:${escHtml(t.name)}" href="#" title="Double-click to rename">
         ${navIconHtml(t)}
@@ -19217,6 +19450,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Load custom entity types and render nav
   await loadCustomEntityTypes();
+  await loadWorkspaces();
 
   renderTaxonomyNav();
 
