@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -15,6 +16,15 @@ import (
 // SQLite holds only metadata + file_path; this package owns file I/O.
 type Vault struct {
 	Root string // absolute path, e.g. /Users/alice/LifeOS_Vault
+
+	foldersMu sync.RWMutex
+	// typeFolders maps an entity type (e.g. "task") to the workspace
+	// subfolder its files currently live under (e.g. "Work"), so that
+	// {root}/raibis/{entityType}/ becomes {root}/raibis/{folder}/{entityType}/.
+	// A type absent from this map (or mapped to "") lives at the top level.
+	// Kept in sync with workspace_entity_types by the caller via
+	// SetTypeFolders — the vault package itself has no DB access.
+	typeFolders map[string]string
 }
 
 // New opens (or creates) the vault at root.
@@ -115,10 +125,114 @@ func (v *Vault) DeleteFile(path string) error {
 
 // ── Entity Markdown files ──────────────────────────────────────────────────
 
+// typeFolder returns the workspace subfolder currently assigned to
+// entityType, or "" if it's unassigned (top-level).
+func (v *Vault) typeFolder(entityType string) string {
+	v.foldersMu.RLock()
+	defer v.foldersMu.RUnlock()
+	return v.typeFolders[entityType]
+}
+
+// entityDir returns the directory holding entityType's files, honoring its
+// current workspace-folder assignment (if any).
+func (v *Vault) entityDir(entityType string) string {
+	if folder := v.typeFolder(entityType); folder != "" {
+		return filepath.Join(v.Root, "raibis", folder, entityType)
+	}
+	return filepath.Join(v.Root, "raibis", entityType)
+}
+
+// SetTypeFolders replaces the entity-type → workspace-subfolder map that
+// EntityFilePath/ScanEntityFiles consult. Call MoveEntityFolder for every
+// type whose folder actually changed BEFORE calling this, so in-flight reads
+// never land between the old and new locations.
+func (v *Vault) SetTypeFolders(m map[string]string) {
+	cp := make(map[string]string, len(m))
+	for k, val := range m {
+		cp[k] = val
+	}
+	v.foldersMu.Lock()
+	v.typeFolders = cp
+	v.foldersMu.Unlock()
+}
+
+// TypeFolders returns a copy of the current entity-type → workspace-subfolder
+// map, so a caller can diff against a freshly computed one before swapping.
+func (v *Vault) TypeFolders() map[string]string {
+	v.foldersMu.RLock()
+	defer v.foldersMu.RUnlock()
+	cp := make(map[string]string, len(v.typeFolders))
+	for k, val := range v.typeFolders {
+		cp[k] = val
+	}
+	return cp
+}
+
+// MoveEntityFolder physically relocates every file for entityType from its
+// oldFolder-prefixed directory to newFolder's, creating the destination and
+// removing the now-empty source. A no-op if the two folders are the same.
+func (v *Vault) MoveEntityFolder(entityType, oldFolder, newFolder string) error {
+	if oldFolder == newFolder {
+		return nil
+	}
+	oldDir := filepath.Join(v.Root, "raibis", oldFolder, entityType)
+	if oldFolder == "" {
+		oldDir = filepath.Join(v.Root, "raibis", entityType)
+	}
+	newDir := filepath.Join(v.Root, "raibis", newFolder, entityType)
+	if newFolder == "" {
+		newDir = filepath.Join(v.Root, "raibis", entityType)
+	}
+	entries, err := os.ReadDir(oldDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("vault: move %s: read %q: %w", entityType, oldDir, err)
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		return fmt.Errorf("vault: move %s: mkdir %q: %w", entityType, newDir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if err := os.Rename(filepath.Join(oldDir, e.Name()), filepath.Join(newDir, e.Name())); err != nil {
+			return fmt.Errorf("vault: move %s: rename %q: %w", entityType, e.Name(), err)
+		}
+	}
+	os.Remove(oldDir) //nolint:errcheck — best-effort cleanup of the now-empty dir
+	return nil
+}
+
+// SanitizeFolderName strips filesystem-unsafe characters from a
+// user-provided name (e.g. a workspace name) so it can be used as a vault
+// subfolder. Spaces, case, and emoji are preserved — only characters illegal
+// in file/folder names on common filesystems are removed.
+func SanitizeFolderName(name string) string {
+	name = strings.Map(func(r rune) rune {
+		if strings.ContainsRune(`/\:*?"<>|`, r) {
+			return -1
+		}
+		return r
+	}, name)
+	name = strings.TrimSpace(name)
+	name = strings.Trim(name, ".")
+	if name == "" {
+		name = "workspace"
+	}
+	return name
+}
+
 // EntityFilePath returns the deterministic vault path for a Raibis entity.
-// Format: {root}/raibis/{entityType}/{entityType}-{id}.md
+// Format: {root}/raibis/{entityType}/{entityType}-{id}.md, or
+// {root}/raibis/{workspaceFolder}/{entityType}/{entityType}-{id}.md when
+// entityType is currently assigned to a workspace.
 func (v *Vault) EntityFilePath(entityType string, id int64) string {
-	dir := filepath.Join(v.Root, "raibis", entityType)
+	dir := v.entityDir(entityType)
 	os.MkdirAll(dir, 0o755) //nolint:errcheck
 	return filepath.Join(dir, fmt.Sprintf("%s-%d.md", entityType, id))
 }
@@ -181,7 +295,7 @@ func ParseFrontmatter(content string) (props map[string]string, body string) {
 // ScanEntityFiles returns parsed frontmatter maps from all .md files in
 // {vault}/raibis/{entityType}/. Files without a valid "id" field are skipped.
 func (v *Vault) ScanEntityFiles(entityType string) ([]map[string]string, error) {
-	dir := filepath.Join(v.Root, "raibis", entityType)
+	dir := v.entityDir(entityType)
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil, nil

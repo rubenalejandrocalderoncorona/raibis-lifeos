@@ -258,8 +258,8 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 	mux.HandleFunc("/api/custom/", withCORS(customEntitiesHandler(store, v)))
 
 	// Workspaces — group entity types (built-in or custom) under a named container
-	mux.HandleFunc("/api/workspaces", withCORS(workspacesHandler(store, v)))
-	mux.HandleFunc("/api/workspaces/", withCORS(workspaceHandler(store, v)))
+	mux.HandleFunc("/api/workspaces", withCORS(workspacesHandler(store, v, dbPath)))
+	mux.HandleFunc("/api/workspaces/", withCORS(workspaceHandler(store, v, dbPath)))
 
 	// Vault sync (on-demand)
 	mux.HandleFunc("/api/sync", withCORS(vaultSyncHandler(v, dbPath)))
@@ -4708,6 +4708,91 @@ func vaultSyncResolveHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
 // twoWaySyncVault reconciles goal/project/sprint/task rows against their
 // vault files in both directions, returning the number of entities updated
 // automatically and any per-field conflicts that need user resolution.
+// computeEntityTypeFolders reads workspace_entity_types and returns, for
+// every currently-assigned entity type, the vault subfolder its files should
+// live under (the owning workspace's sanitized name). Custom entity types are
+// stored as "custom_{name}" in workspace_entity_types but as the bare
+// "{name}" in the vault (matching EntityFilePath's convention), so the
+// prefix is stripped here. Two workspaces that sanitize to the same folder
+// name are disambiguated with a numeric suffix, keyed by workspace ID so the
+// same workspace always gets the same folder across calls.
+func computeEntityTypeFolders(db *sql.DB) map[string]string {
+	rows, err := db.Query(`SELECT w.id, w.name, wet.entity_type FROM workspace_entity_types wet JOIN workspaces w ON w.id = wet.workspace_id ORDER BY w.id ASC`)
+	if err != nil {
+		return map[string]string{}
+	}
+	defer rows.Close()
+
+	type assignment struct {
+		workspaceID int64
+		name        string
+		entityType  string
+	}
+	var assignments []assignment
+	for rows.Next() {
+		var a assignment
+		if rows.Scan(&a.workspaceID, &a.name, &a.entityType) != nil {
+			continue
+		}
+		a.entityType = strings.TrimPrefix(a.entityType, "custom_")
+		assignments = append(assignments, a)
+	}
+
+	folderByWorkspace := map[int64]string{}
+	usedNames := map[string]int64{}
+	for _, a := range assignments {
+		if _, ok := folderByWorkspace[a.workspaceID]; ok {
+			continue
+		}
+		base := vault.SanitizeFolderName(a.name)
+		name := base
+		for suffix := 2; ; suffix++ {
+			owner, taken := usedNames[name]
+			if !taken || owner == a.workspaceID {
+				break
+			}
+			name = fmt.Sprintf("%s-%d", base, suffix)
+		}
+		usedNames[name] = a.workspaceID
+		folderByWorkspace[a.workspaceID] = name
+	}
+
+	out := map[string]string{}
+	for _, a := range assignments {
+		out[a.entityType] = folderByWorkspace[a.workspaceID]
+	}
+	return out
+}
+
+// refreshWorkspaceVaultFolders recomputes the entity-type → workspace-folder
+// map from the DB, physically moves every entity type whose folder changed
+// (including back to top-level for types no longer assigned to any
+// workspace), and swaps the vault's resolver over to the new map. Safe to
+// call often — a no-op pass costs one query and a handful of map diffs.
+func refreshWorkspaceVaultFolders(db *sql.DB, v *vault.Vault) {
+	newMap := computeEntityTypeFolders(db)
+	oldMap := v.TypeFolders()
+
+	seen := map[string]bool{}
+	for entityType, newFolder := range newMap {
+		seen[entityType] = true
+		if oldMap[entityType] != newFolder {
+			if err := v.MoveEntityFolder(entityType, oldMap[entityType], newFolder); err != nil {
+				log.Printf("vault: move %s to workspace folder %q: %v", entityType, newFolder, err)
+			}
+		}
+	}
+	for entityType, oldFolder := range oldMap {
+		if seen[entityType] || oldFolder == "" {
+			continue
+		}
+		if err := v.MoveEntityFolder(entityType, oldFolder, ""); err != nil {
+			log.Printf("vault: move %s back to top level: %v", entityType, err)
+		}
+	}
+	v.SetTypeFolders(newMap)
+}
+
 func twoWaySyncVault(v *vault.Vault, dbPath string) (applied int, conflicts []syncConflict) {
 	db, err := openRawDB(dbPath)
 	if err != nil {
@@ -4715,6 +4800,8 @@ func twoWaySyncVault(v *vault.Vault, dbPath string) (applied int, conflicts []sy
 		return 0, nil
 	}
 	defer db.Close()
+
+	refreshWorkspaceVaultFolders(db, v)
 
 	applied += syncGoalsTwoWay(db, v, &conflicts)
 	applied += syncProjectsTwoWay(db, v, &conflicts)
@@ -5780,7 +5867,18 @@ func workspaceLinksBody(ws *domain.Workspace) string {
 	return strings.Join(lines, "\n")
 }
 
-func workspacesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
+// refreshWorkspaceVaultFoldersAt is refreshWorkspaceVaultFolders for callers
+// that only have dbPath, not an already-open *sql.DB (i.e. HTTP handlers).
+func refreshWorkspaceVaultFoldersAt(dbPath string, v *vault.Vault) {
+	db, err := openRawDB(dbPath)
+	if err != nil {
+		return
+	}
+	defer db.Close()
+	refreshWorkspaceVaultFolders(db, v)
+}
+
+func workspacesHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -5826,7 +5924,7 @@ func workspacesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc
 
 // workspaceHandler handles PUT/DELETE /api/workspaces/{id} and
 // PUT /api/workspaces/{id}/entity-types
-func workspaceHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
+func workspaceHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.TrimPrefix(r.URL.Path, "/api/workspaces/")
 		rest = strings.TrimRight(rest, "/")
@@ -5865,6 +5963,7 @@ func workspaceHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc 
 				return
 			}
 			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				_ = vlt.WriteEntityMD("workspace", id, workspaceFM(ws), workspaceLinksBody(ws))
 			}
 			writeJSON(w, 200, ws)
@@ -5889,6 +5988,7 @@ func workspaceHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc 
 				return
 			}
 			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				_ = vlt.WriteEntityMD("workspace", id, workspaceFM(updated), workspaceLinksBody(updated))
 			}
 			writeJSON(w, 200, updated)
@@ -5899,6 +5999,7 @@ func workspaceHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc 
 				return
 			}
 			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				_ = vlt.DeleteEntityMD("workspace", id)
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
