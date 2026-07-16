@@ -1,13 +1,21 @@
-ROOT      := $(shell pwd)
-GO_DIR    := $(ROOT)/raibis-go
-TAURI_DIR := $(ROOT)/raibis-tauri/src-tauri
-PORT      ?= 3344
-VAULT     ?= /Users/racc/Documents/Obsidian Vault
+ROOT       := $(shell pwd)
+GO_DIR     := $(ROOT)/raibis-go
+TAURI_DIR  := $(ROOT)/raibis-tauri/src-tauri
+SVELTE_DIR := $(ROOT)/raibis/gui/svelte-src
+PORT       ?= 3344
+VAULT      ?= /Users/racc/Documents/Obsidian Vault
 
 export PATH         := $(HOME)/.cargo/bin:/usr/local/go/bin:/opt/homebrew/bin:$(PATH)
 export LIFEOS_VAULT := $(VAULT)
 
-.PHONY: web app tui stop restart-web restart-app hard
+.PHONY: web app tui stop restart-web restart-app hard svelte-build
+
+## Rebuild the Svelte component bundle (raibis/gui/svelte-src/ → raibis/gui/public/svelte/).
+## Only needs to re-run after editing files under svelte-src/ — run before web/app/hard
+## picks up the change, since those targets just sync raibis/gui/public/ as-is.
+svelte-build:
+	@echo "→ Building Svelte bundle..."
+	@cd $(SVELTE_DIR) && npm run build --silent
 
 MODE ?= web
 mode ?= $(MODE)
@@ -20,6 +28,7 @@ web:
 	@cd $(GO_DIR) && for f in app.js style.css index.html animations.js design-system.css; do \
 	    cp ../raibis/gui/public/$$f internal/gui/public/$$f && echo "  synced $$f"; \
 	done
+	@mkdir -p $(GO_DIR)/internal/gui/public/svelte && cp -r $(ROOT)/raibis/gui/public/svelte/. $(GO_DIR)/internal/gui/public/svelte/ && echo "  synced svelte/"
 	@echo "→ Starting web UI on http://localhost:$(PORT)  (Ctrl-C to stop)"
 	@sleep 1 && open http://localhost:$(PORT) &
 	@cd $(GO_DIR) && go run ./cmd/lifeos server --port $(PORT)
@@ -42,6 +51,7 @@ app:
 	@cd $(GO_DIR) && for f in app.js style.css index.html animations.js design-system.css; do \
 	    cp ../raibis/gui/public/$$f internal/gui/public/$$f 2>/dev/null || true; \
 	done
+	@mkdir -p $(GO_DIR)/internal/gui/public/svelte && cp -r $(ROOT)/raibis/gui/public/svelte/. $(GO_DIR)/internal/gui/public/svelte/ 2>/dev/null || true
 	@cd $(GO_DIR) && GOOS=darwin GOARCH=arm64 \
 	    go build -o ../raibis-tauri/src-tauri/binaries/lifeos-aarch64-apple-darwin ./cmd/lifeos
 	@echo "→ Building Tauri shell..."
@@ -110,6 +120,7 @@ hard:
 	@cd $(GO_DIR) && for f in app.js style.css index.html animations.js design-system.css; do \
 	    cp ../raibis/gui/public/$$f internal/gui/public/$$f && echo "  synced $$f"; \
 	done
+	@mkdir -p $(GO_DIR)/internal/gui/public/svelte && cp -r $(ROOT)/raibis/gui/public/svelte/. $(GO_DIR)/internal/gui/public/svelte/ && echo "  synced svelte/"
 	@echo "→ Rebuilding Go binary..."
 ifeq ($(or $(mode),$(MODE)),app)
 	@echo "→ Clearing WKWebView cache..."

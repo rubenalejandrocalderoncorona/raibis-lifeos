@@ -32,3 +32,6 @@ raibis-go/lifeos
 raibis-tauri/src-tauri/target/
 raibis-tauri/node_modules/
 raibis-tauri/src-tauri/binaries/
+
+# Svelte component source build tooling (built output in raibis/gui/public/svelte/ IS committed)
+raibis/gui/svelte-src/node_modules/

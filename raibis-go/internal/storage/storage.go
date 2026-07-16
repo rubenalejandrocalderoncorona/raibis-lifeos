@@ -127,6 +127,18 @@ type Storage interface {
 	UpdateCustomEntity(e *domain.CustomEntity) error
 	DeleteCustomEntity(typeName string, id int64) error
 
+	// ── Workspaces ──────────────────────────────────────────────────────────
+	CreateWorkspace(w *domain.Workspace) (int64, error)
+	GetWorkspace(id int64) (*domain.Workspace, error)
+	ListWorkspaces() ([]*domain.Workspace, error)
+	UpdateWorkspace(w *domain.Workspace) error
+	DeleteWorkspace(id int64) error
+	// SetWorkspaceEntityTypes replaces the full set of entity types assigned
+	// to a workspace. Since an entity type belongs to at most one workspace,
+	// assigning a type here steals it from whatever workspace (if any)
+	// currently holds it.
+	SetWorkspaceEntityTypes(workspaceID int64, entityTypes []string) error
+
 	// ── Data management ───────────────────────────────────────────────────
 	// PurgeAll deletes all user data from every entity table.
 	PurgeAll() error

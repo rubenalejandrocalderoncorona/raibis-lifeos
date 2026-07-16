@@ -239,6 +239,23 @@ func applyMigrations(db *sql.DB) error {
 			UNIQUE(habit_id, date)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_habit_completions_habit ON habit_completions(habit_id, date)`,
+
+		// ── workspaces: higher-level grouping of entity types ─────────────────
+		`CREATE TABLE IF NOT EXISTS workspaces (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			name       TEXT NOT NULL,
+			icon       TEXT NOT NULL DEFAULT '🗂️',
+			position   INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		// entity_type is globally UNIQUE — an entity type belongs to at most
+		// one workspace at a time; not present here means "General" (always
+		// visible regardless of the active workspace).
+		`CREATE TABLE IF NOT EXISTS workspace_entity_types (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+			entity_type  TEXT NOT NULL UNIQUE
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -1713,6 +1730,126 @@ func (s *sqliteStorage) DeleteCustomEntityType(name string) error {
 	return err
 }
 
+// ── Workspaces ──────────────────────────────────────────────────────────────────
+
+func (s *sqliteStorage) CreateWorkspace(w *domain.Workspace) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(
+		`INSERT INTO workspaces (name, icon, position) VALUES (?,?,?)`,
+		w.Name, w.Icon, w.Position,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// listWorkspaceEntityTypes must be called with s.mu already held (read or write).
+func (s *sqliteStorage) listWorkspaceEntityTypes(workspaceID int64) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT entity_type FROM workspace_entity_types WHERE workspace_id=? ORDER BY entity_type ASC`,
+		workspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var et string
+		if err := rows.Scan(&et); err != nil {
+			return nil, err
+		}
+		out = append(out, et)
+	}
+	return out, rows.Err()
+}
+
+func (s *sqliteStorage) GetWorkspace(id int64) (*domain.Workspace, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	row := s.db.QueryRow(`SELECT id, name, icon, position, created_at FROM workspaces WHERE id=?`, id)
+	w := &domain.Workspace{}
+	if err := row.Scan(&w.ID, &w.Name, &w.Icon, &w.Position, &w.CreatedAt); err != nil {
+		return nil, err
+	}
+	types, err := s.listWorkspaceEntityTypes(id)
+	if err != nil {
+		return nil, err
+	}
+	w.EntityTypes = types
+	return w, nil
+}
+
+func (s *sqliteStorage) ListWorkspaces() ([]*domain.Workspace, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(`SELECT id, name, icon, position, created_at FROM workspaces ORDER BY position ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.Workspace
+	for rows.Next() {
+		w := &domain.Workspace{}
+		if err := rows.Scan(&w.ID, &w.Name, &w.Icon, &w.Position, &w.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, w := range out {
+		types, err := s.listWorkspaceEntityTypes(w.ID)
+		if err != nil {
+			return nil, err
+		}
+		w.EntityTypes = types
+	}
+	return out, nil
+}
+
+func (s *sqliteStorage) UpdateWorkspace(w *domain.Workspace) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE workspaces SET name=?, icon=? WHERE id=?`, w.Name, w.Icon, w.ID)
+	return err
+}
+
+func (s *sqliteStorage) DeleteWorkspace(id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM workspaces WHERE id=?`, id)
+	return err
+}
+
+// SetWorkspaceEntityTypes replaces the full set of entity types assigned to
+// workspaceID. Since entity_type is globally UNIQUE, assigning a type here
+// steals it from whatever workspace (if any) currently holds it.
+func (s *sqliteStorage) SetWorkspaceEntityTypes(workspaceID int64, entityTypes []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM workspace_entity_types WHERE workspace_id=?`, workspaceID); err != nil {
+		return err
+	}
+	for _, et := range entityTypes {
+		if _, err := tx.Exec(`DELETE FROM workspace_entity_types WHERE entity_type=?`, et); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO workspace_entity_types (workspace_id, entity_type) VALUES (?,?)`, workspaceID, et); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // ── Custom Entities ────────────────────────────────────────────────────────────
 
 func (s *sqliteStorage) CreateCustomEntity(e *domain.CustomEntity) (int64, error) {
@@ -1914,6 +2051,7 @@ func (s *sqliteStorage) PurgeAll() error {
 		"tasks", "sprints", "projects", "goals",
 		"tags", "categories",
 		"custom_entities", "custom_entity_types",
+		"workspace_entity_types", "workspaces",
 	}
 	for _, t := range tables {
 		if _, err := s.db.Exec("DELETE FROM " + t); err != nil { //nolint:gosec — table name is a hardcoded string literal

@@ -76,7 +76,8 @@
         </div>
 
         <nav class="sidebar-nav">
-          <div class="nav-section-label">Workspace</div>
+          <div id="workspace-switcher-wrap"></div>
+          <div class="nav-section-label">Main</div>
 
           <a class="nav-item active" data-view="dashboard" href="#">
             <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
@@ -338,6 +339,10 @@
 
   <!-- GSAP animations utility (loads after GSAP CDN via defer ordering) -->
   <script src="animations.js?v=__VER__"></script>
+  <!-- Svelte component bundle (raibis/gui/svelte-src/ → built here via `npm run build`).
+       Exposes window.RaibisSvelte.* mount functions for app.js to call into.
+       Coexists with the vanilla renderer — see raibis/gui/svelte-src/README.md -->
+  <script src="svelte/bundle.js?v=__VER__"></script>
   <script src="app.js?v=__VER__"></script>
 </body>
 </html>

@@ -384,6 +384,14 @@ async function injectListIcons(entityType, ids) {
 
 /* ─── State ──────────────────────────────────────────────────────────── */
 let customEntityTypes = [];
+// Workspaces group entity types (built-in or custom) under a named
+// container. An entity type belongs to at most one workspace; unassigned
+// types are "General" — always visible regardless of the active workspace.
+let workspaces = [];
+let activeWorkspaceId = (() => {
+  const v = localStorage.getItem('activeWorkspaceId');
+  return v ? parseInt(v) : null;
+})();
 let currentView = 'dashboard';
 let _connectedPropTypesCache = null;
 let currentParams = null;
@@ -4036,42 +4044,41 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
       : (() => {
           const val = customVals[key] ?? '';
           if (custom.type === 'checkbox') {
-            return `<input type="checkbox" class="icp-check" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" ${checkboxTrue(val)?'checked':''}
-              style="cursor:pointer;accent-color:var(--accent)" onclick="event.stopPropagation()">`;
+            // Mounted as a Svelte component post-render (see bindInlinePropPanel
+            // below) — first control ported in the Svelte migration.
+            return `<span class="svelte-checkbox-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-value="${checkboxTrue(val)}" data-description="${escHtml(custom.description||'')}" onclick="event.stopPropagation()"></span>`;
           }
           if (custom.type === 'multi_select') {
             const arr = (() => { try { const a = JSON.parse(val); return Array.isArray(a) ? a : (val ? [val] : []); } catch { return val ? [val] : []; } })();
             const optColors = custom.optionColors || {};
-            const chips = arr.map(v => {
-              const color = optColors[v] || '';
-              const chipClass = color ? `multi-chip color-${color} ms-chip` : `multi-chip ms-chip`;
-              const chipStyle = color ? '' : 'style="background:var(--accent-glow);color:var(--text-primary);font-size:11px;display:inline-flex;align-items:center;gap:3px;cursor:default"';
-              return `<span class="${chipClass}" data-ms-val="${v.replace(/"/g,'&quot;')}" ${chipStyle}>${v}<span class="ms-chip-remove" data-val="${v.replace(/"/g,'&quot;')}" style="cursor:pointer;font-weight:700;opacity:0.6;font-size:12px;line-height:1" title="Remove">×</span></span>`;
-            }).join('');
-            return `<div class="ms-chips-wrap" style="display:flex;flex-wrap:wrap;gap:3px;align-items:center;min-height:20px">${chips}<button class="btn btn-sm btn-ghost ms-add-btn" data-prop-key="${key}" style="font-size:11px;padding:1px 5px;height:20px;line-height:1" title="Add option">+</button></div>`;
+            return `<span class="svelte-multiselect-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-values="${escHtml(JSON.stringify(arr))}" data-colors="${escHtml(JSON.stringify(optColors))}"${arr.length ? '' : ' data-empty="true"'}></span>`;
           }
           if (custom.type === 'rollup') {
             // Always compute fresh so the panel never shows a stale aggregate
             const fresh = evaluateRollup(entity, recordId, custom);
-            return renderRollupValue(fresh !== null ? fresh : val, custom);
+            const rollupHtml = renderRollupValue(fresh !== null ? fresh : val, custom);
+            return `<span class="svelte-rollup-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-html="${escHtml(rollupHtml)}"${rollupHtml.includes('class="empty"') ? ' data-empty="true"' : ''} onclick="event.stopPropagation()"></span>`;
           }
-          if (!val) return `<span class="empty">—</span>`;
-          if (custom.type === 'date') return `<span style="font-size:12px">${fmtDate(val)||val}</span>`;
+          if (custom.type === 'text' || custom.type === 'number' || custom.type === 'email' || custom.type === 'phone' || custom.type === 'url') {
+            // Mounted as a Svelte component post-render (see bindInlinePropPanel
+            // below) — owns its own click-to-edit interaction.
+            return `<span class="svelte-text-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-value="${escHtml(String(val))}" data-type="${custom.type}" onclick="event.stopPropagation()"></span>`;
+          }
+          if (custom.type === 'date') {
+            // Mounted as a Svelte component; the actual date picker is the
+            // shared vanilla global widget, opened via onEditRequest below.
+            return `<span class="svelte-date-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-display="${escHtml(fmtDate(val)||val||'')}" onclick="event.stopPropagation()"></span>`;
+          }
           if (custom.type === 'select' || custom.type === 'status') {
             const color = (custom.optionColors || {})[val] || '';
-            return color
-              ? `<span class="multi-chip color-${color}" style="font-size:11px">${escHtml(val)}</span>`
-              : `<span class="multi-chip" style="background:var(--accent-glow);color:var(--text-primary);font-size:11px">${escHtml(val)}</span>`;
-          }
-          if (custom.type === 'url') {
-            return `<a href="${val}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);text-decoration:underline;font-size:12px" onclick="event.stopPropagation()">${val}</a>`;
+            return `<span class="svelte-select-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-value="${escHtml(val||'')}" data-color="${escHtml(color)}" onclick="event.stopPropagation()"></span>`;
           }
           if (custom.type === 'relation') {
             const relItems = parseRelationValue(val);
-            return relItems.length
-              ? relItems.map(it => relationChipHtml(custom, it)).join('')
-              : '<span class="empty">—</span>';
+            const chipsHtml = relItems.length ? relItems.map(it => relationChipHtml(custom, it)).join('') : '';
+            return `<span class="svelte-relation-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-chips="${escHtml(chipsHtml)}" onclick="event.stopPropagation()"></span>`;
           }
+          if (!val) return `<span class="empty">—</span>`;
           return `<span style="font-size:12px">${String(val).replace(/</g,'&lt;')}</span>`;
         })();
     const isCustom = !!custom && !custom._taxonomy;
@@ -4079,7 +4086,7 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
       <span class="inline-prop-drag-handle" title="Drag to reorder">⠿</span>
       <div class="inline-prop-label">${iconHtml}<span class="inline-prop-label-text">${labelText}</span></div>
       <div class="prop-label-resizer" title="Drag to resize columns"></div>
-      <div class="inline-prop-value${!valHtml || valHtml.includes('class="empty"') ? ' empty' : ''}" data-prop-key="${key}">${valHtml}</div>
+      <div class="inline-prop-value${!valHtml || valHtml.includes('class="empty"') || valHtml.includes('data-value=""') || valHtml.includes('data-display=""') || valHtml.includes('data-chips=""') || valHtml.includes('data-empty="true"') ? ' empty' : ''}" data-prop-key="${key}">${valHtml}</div>
       ${isCustom ? `<button class="prop-del-btn btn btn-sm btn-ghost icp-del-btn" data-entity="${entity}" data-prop-key="${key}" title="Remove property" style="font-size:13px">×</button>` : ''}
     </div>`;
   }).filter(Boolean).join('');
@@ -4093,6 +4100,102 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
   return `<div class="inline-prop-panel" data-entity="${entity}" data-record-id="${recordId || ''}" style="--prop-label-w:${getPropLabelWidth()}px">${rows}${addBtnHtml}</div>`;
 }
 
+// ── openRelationPicker ─────────────────────────────────────────────────────
+// Extracted from bindInlinePropPanel's old relation click-handler so the
+// Svelte RelationProp component (a "dumb display, delegate the click" mount)
+// can trigger the exact same picker + bilateral-sync flow via onEditRequest.
+// anchorEl positions the combo picker; nothing here is Svelte-specific.
+function openRelationPicker(anchorEl, entity, recordId, key, onRerender) {
+  const def = getCustomPropDefs(entity).find(d => d.key === key);
+  if (!def) return;
+  const cur = getCustomPropValues(entity, recordId)[key] ?? '';
+  const relEntity = def.relatedEntity || 'task';
+  const isBuiltin = ['task','goal','project','sprint','note','resource','habit'].includes(relEntity);
+  const relPath = relEntity === 'task' ? '/api/tasks?all=1'
+    : isBuiltin ? `/api/${relEntity}s`
+    : `/api/custom/${relEntity}`;
+  api('GET', relPath).then(async raw => {
+    const list = Array.isArray(raw) ? raw : (raw?.tasks || raw?.goals || raw?.projects || raw?.notes || raw?.resources || raw?.sprints || []);
+    const currentItems = parseRelationValue(cur);
+    const curIds = currentItems.map(x => x.id).filter(Boolean);
+    const relColors = def.relationColors || {};
+    openCombo(
+      anchorEl,
+      list.map(it => ({ value: String(it.id), label: it.title || it.name || String(it.id), color: relColors[String(it.id)] || null })),
+      null,
+      async ({ multiIds }) => {
+        if (!multiIds) return;
+        const newItems = multiIds.map(id => {
+          const it = list.find(x => String(x.id) === String(id));
+          return { id: String(id), label: it ? (it.title || it.name || String(id)) : String(id) };
+        });
+        setCustomPropValue(entity, recordId, key, JSON.stringify(newItems));
+        // Sprint FK + relations table sync
+        if (relEntity === 'sprint' && entity === 'task') {
+          const spId = multiIds.length > 0 ? parseInt(multiIds[0]) : null;
+          api('PATCH', `/api/tasks/${recordId}`, { sprint_id: spId }).catch(() => {});
+          for (const sid of multiIds) api('POST', `/api/relations/sprint/${sid}`, { related_entity_type: 'task', related_entity_id: parseInt(recordId) }).catch(() => {});
+          for (const id of curIds) if (!multiIds.map(String).includes(String(id))) api('DELETE', `/api/relations/sprint/${id}/task/${recordId}`, {}).catch(() => {});
+        }
+        // Bilateral sync
+        if (def.bilateral !== false) {
+          const revKey = def.reverseKey ?? `${entity}_${key}`;
+          let sourceTitle = String(recordId);
+          try {
+            const isBuiltinSrc = ['task','goal','project','sprint','note','resource','habit'].includes(entity);
+            const srcPath = entity === 'task' ? `/api/tasks/${recordId}` : isBuiltinSrc ? `/api/${entity}s/${recordId}` : `/api/custom/${entity}/${recordId}`;
+            const src = await api('GET', srcPath);
+            sourceTitle = src.title || src.name || String(recordId);
+          } catch {}
+          const newIdSet = new Set(multiIds.map(String));
+          const oldIdSet = new Set(curIds.map(String));
+          for (const id of newIdSet) {
+            if (!oldIdSet.has(id)) {
+              let revVals = getCustomPropValues(relEntity, parseInt(id));
+              try {
+                const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
+                revVals = { ...revVals, ...serverProps };
+                localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
+              } catch(e) {}
+              let revArr = parseRelationValue(revVals[revKey] ?? '');
+              if (!revArr.some(x => x.id === String(recordId))) {
+                revArr.push({ id: String(recordId), label: sourceTitle });
+                setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
+              }
+            }
+          }
+          for (const id of oldIdSet) {
+            if (id && !newIdSet.has(id)) {
+              let revVals = getCustomPropValues(relEntity, parseInt(id));
+              try {
+                const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
+                revVals = { ...revVals, ...serverProps };
+                localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
+              } catch(e) {}
+              let revArr = parseRelationValue(revVals[revKey] ?? '');
+              revArr = revArr.filter(x => x.id !== String(recordId));
+              setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
+            }
+          }
+        }
+        onRerender();
+      },
+      {
+        multiSelect: true, selectedIds: curIds, colorAssignable: true,
+        onColorAssign: (id, color) => {
+          const defs = getCustomPropDefs(entity);
+          const d = defs.find(x => x.key === key);
+          if (!d) return;
+          d.relationColors = d.relationColors || {};
+          if (color) d.relationColors[id] = color; else delete d.relationColors[id];
+          setCustomPropDefs(entity, defs);
+          onRerender();
+        },
+      }
+    );
+  }).catch(() => {});
+}
+
 // ── bindInlinePropPanel ───────────────────────────────────────────────────
 // Wires drag-to-reorder, custom prop editing, delete, and the Add button.
 // builtinEditFns: { [key]: (rowEl, valueEl) => void } — called on value click
@@ -4101,13 +4204,102 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
   const panel = (root || document).querySelector(`.inline-prop-panel[data-entity="${entity}"]`);
   if (!panel) return;
 
+  // Mount Svelte components for ported control types. Svelte 5 doesn't
+  // auto-cleanup effects when its DOM is discarded via innerHTML
+  // replacement (only via explicit unmount()) — so instances are tracked
+  // here and torn down in the same "panel left the DOM" check below that
+  // already existed for the propDefsChanged listener.
+  const svelteInstances = [];
+  panel.querySelectorAll('.svelte-checkbox-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, value: mValue, description: mDescription } = mountEl.dataset;
+    svelteInstances.push(window.RaibisSvelte.mountCheckboxProp(mountEl, {
+      value: mValue === 'true',
+      description: mDescription || '',
+      onChange: (next) => setCustomPropValue(mEntity, mRecordId, mPropKey, next),
+    }));
+  });
+  panel.querySelectorAll('.svelte-text-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, value: mValue, type: mType } = mountEl.dataset;
+    svelteInstances.push(window.RaibisSvelte.mountTextProp(mountEl, {
+      value: mValue || '',
+      type: mType || 'text',
+      onChange: (next) => setCustomPropValue(mEntity, mRecordId, mPropKey, next),
+    }));
+  });
+  // date/select/relation stay "dumb display" components — the actual
+  // editing UI is the shared vanilla global pickers, opened here on
+  // onEditRequest with the mount element itself as the anchor.
+  panel.querySelectorAll('.svelte-date-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, display: mDisplay } = mountEl.dataset;
+    svelteInstances.push(window.RaibisSvelte.mountDateProp(mountEl, {
+      display: mDisplay || '',
+      onEditRequest: () => {
+        const cur = getCustomPropValues(mEntity, mRecordId)[mPropKey] ?? '';
+        openSingleDatePickerGlobal(mountEl, cur || null, (val) => {
+          setCustomPropValue(mEntity, mRecordId, mPropKey, val || '');
+          onRerender();
+        });
+      },
+    }));
+  });
+  panel.querySelectorAll('.svelte-select-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, value: mValue, color: mColor } = mountEl.dataset;
+    svelteInstances.push(window.RaibisSvelte.mountSelectProp(mountEl, {
+      value: mValue || '',
+      color: mColor || '',
+      onEditRequest: () => {
+        const def = getCustomPropDefs(mEntity).find(d => d.key === mPropKey);
+        if (def) openSingleSelectPicker(mountEl, def, mEntity, mRecordId, mPropKey, onRerender);
+      },
+    }));
+  });
+  panel.querySelectorAll('.svelte-relation-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, chips: mChips } = mountEl.dataset;
+    svelteInstances.push(window.RaibisSvelte.mountRelationProp(mountEl, {
+      chipsHtml: mChips || '',
+      onEditRequest: () => openRelationPicker(mountEl, mEntity, mRecordId, mPropKey, onRerender),
+    }));
+  });
+  panel.querySelectorAll('.svelte-multiselect-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, values: mValues, colors: mColors } = mountEl.dataset;
+    let values = []; let optionColors = {};
+    try { values = JSON.parse(mValues || '[]'); } catch {}
+    try { optionColors = JSON.parse(mColors || '{}'); } catch {}
+    svelteInstances.push(window.RaibisSvelte.mountMultiSelectProp(mountEl, {
+      values,
+      optionColors,
+      onRemove: (v) => {
+        const cur = getCustomPropValues(mEntity, mRecordId)[mPropKey] ?? '';
+        const arr = (() => { try { const a = JSON.parse(cur); return Array.isArray(a) ? a : []; } catch { return []; } })();
+        setCustomPropValue(mEntity, mRecordId, mPropKey, JSON.stringify(arr.filter(x => x !== v)));
+        onRerender();
+      },
+      onEditRequest: () => {
+        const def = getCustomPropDefs(mEntity).find(d => d.key === mPropKey);
+        if (def) openMultiSelectPicker(mountEl, def, mEntity, mRecordId, mPropKey, onRerender);
+      },
+    }));
+  });
+  panel.querySelectorAll('.svelte-rollup-mount').forEach(mountEl => {
+    const { entity: mEntity, recordId: mRecordId, propKey: mPropKey, html: mHtml } = mountEl.dataset;
+    svelteInstances.push(window.RaibisSvelte.mountRollupProp(mountEl, {
+      html: mHtml || '',
+      onEditRequest: () => {
+        const def = getCustomPropDefs(mEntity).find(d => d.key === mPropKey);
+        if (!def) return;
+        showAddRollupPanel(mountEl, mPropKey, def.label, mEntity, onRerender, def.rollup ? JSON.parse(JSON.stringify(def.rollup)) : {});
+      },
+    }));
+  });
+
   // Auto re-render when a property is added from another panel (same entity type)
   const propDefsHandler = (e) => { if (e.detail.entity === entity) onRerender(); };
   document.addEventListener('propDefsChanged', propDefsHandler);
-  // Clean up listener when panel is removed from DOM
+  // Clean up listener + unmount Svelte children when panel is removed from DOM
   const observer = new MutationObserver(() => {
     if (!document.contains(panel)) {
       document.removeEventListener('propDefsChanged', propDefsHandler);
+      svelteInstances.forEach(inst => { try { window.RaibisSvelte.unmount(inst); } catch (e) {} });
       observer.disconnect();
     }
   });
@@ -4126,146 +4318,13 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
     const defs = getCustomPropDefs(entity);
     const def = defs.find(d => d.key === key);
     if (!def) return;
-    if (def.type === 'checkbox') return; // handled by input directly
-    if (def.type === 'rollup') {
-      // Calculated value — clicking edits the rule, pre-filled with the saved config
-      valEl.style.cursor = 'pointer';
-      valEl.title = 'Click to edit rollup rule';
-      valEl.onclick = (e) => {
-        e.stopPropagation();
-        showAddRollupPanel(valEl, key, def.label, entity, onRerender, def.rollup ? JSON.parse(JSON.stringify(def.rollup)) : {});
-      };
-      return;
-    }
-    valEl.onclick = (e) => {
-      e.stopPropagation();
-      if (valEl.querySelector('input,textarea')) return;
-      const currentVals = getCustomPropValues(entity, recordId);
-      const cur = currentVals[key] ?? '';
-      if (def.type === 'date') {
-        openSingleDatePickerGlobal(valEl, cur || null, (val) => {
-          setCustomPropValue(entity, recordId, key, val || '');
-          onRerender();
-        });
-        return;
-      }
-      if (def.type === 'select' || def.type === 'status') {
-        openSingleSelectPicker(valEl, def, entity, recordId, key, onRerender);
-        return;
-      }
-      if (def.type === 'multi_select') {
-        // Handled by ms-chip-remove and ms-add-btn wired below; skip generic onclick.
-        return;
-      }
-      if (def.type === 'relation') {
-        const relEntity = def.relatedEntity || 'task';
-        const isBuiltin = ['task','goal','project','sprint','note','resource','habit'].includes(relEntity);
-        const relPath = relEntity === 'task' ? '/api/tasks?all=1'
-          : isBuiltin ? `/api/${relEntity}s`
-          : `/api/custom/${relEntity}`;
-        api('GET', relPath).then(async raw => {
-          const list = Array.isArray(raw) ? raw : (raw?.tasks || raw?.goals || raw?.projects || raw?.notes || raw?.resources || raw?.sprints || []);
-          const currentItems = parseRelationValue(cur);
-          const curIds = currentItems.map(x => x.id).filter(Boolean);
-          const relColors = def.relationColors || {};
-          openCombo(
-            valEl,
-            list.map(it => ({ value: String(it.id), label: it.title || it.name || String(it.id), color: relColors[String(it.id)] || null })),
-            null,
-            async ({ multiIds }) => {
-              if (!multiIds) return;
-              const newItems = multiIds.map(id => {
-                const it = list.find(x => String(x.id) === String(id));
-                return { id: String(id), label: it ? (it.title || it.name || String(id)) : String(id) };
-              });
-              setCustomPropValue(entity, recordId, key, JSON.stringify(newItems));
-              // Sprint FK + relations table sync
-              if (relEntity === 'sprint' && entity === 'task') {
-                const spId = multiIds.length > 0 ? parseInt(multiIds[0]) : null;
-                api('PATCH', `/api/tasks/${recordId}`, { sprint_id: spId }).catch(() => {});
-                for (const sid of multiIds) api('POST', `/api/relations/sprint/${sid}`, { related_entity_type: 'task', related_entity_id: parseInt(recordId) }).catch(() => {});
-                for (const id of curIds) if (!multiIds.map(String).includes(String(id))) api('DELETE', `/api/relations/sprint/${id}/task/${recordId}`, {}).catch(() => {});
-              }
-              // Bilateral sync
-              if (def.bilateral !== false) {
-                const revKey = def.reverseKey ?? `${entity}_${key}`;
-                let sourceTitle = String(recordId);
-                try {
-                  const isBuiltinSrc = ['task','goal','project','sprint','note','resource','habit'].includes(entity);
-                  const srcPath = entity === 'task' ? `/api/tasks/${recordId}` : isBuiltinSrc ? `/api/${entity}s/${recordId}` : `/api/custom/${entity}/${recordId}`;
-                  const src = await api('GET', srcPath);
-                  sourceTitle = src.title || src.name || String(recordId);
-                } catch {}
-                const newIdSet = new Set(multiIds.map(String));
-                const oldIdSet = new Set(curIds.map(String));
-                for (const id of newIdSet) {
-                  if (!oldIdSet.has(id)) {
-                    let revVals = getCustomPropValues(relEntity, parseInt(id));
-                    try {
-                      const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
-                      revVals = { ...revVals, ...serverProps };
-                      localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
-                    } catch(e) {}
-                    let revArr = parseRelationValue(revVals[revKey] ?? '');
-                    if (!revArr.some(x => x.id === String(recordId))) {
-                      revArr.push({ id: String(recordId), label: sourceTitle });
-                      setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
-                    }
-                  }
-                }
-                for (const id of oldIdSet) {
-                  if (id && !newIdSet.has(id)) {
-                    let revVals = getCustomPropValues(relEntity, parseInt(id));
-                    try {
-                      const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
-                      revVals = { ...revVals, ...serverProps };
-                      localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
-                    } catch(e) {}
-                    let revArr = parseRelationValue(revVals[revKey] ?? '');
-                    revArr = revArr.filter(x => x.id !== String(recordId));
-                    setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
-                  }
-                }
-              }
-              valEl.innerHTML = newItems.length
-                ? newItems.map(it => relationChipHtml(getCustomPropDefs(entity).find(d => d.key === key), it)).join('')
-                : '<span class="empty">—</span>';
-            },
-            {
-              multiSelect: true, selectedIds: curIds, colorAssignable: true,
-              onColorAssign: (id, color) => {
-                const defs = getCustomPropDefs(entity);
-                const d = defs.find(x => x.key === key);
-                if (!d) return;
-                d.relationColors = d.relationColors || {};
-                if (color) d.relationColors[id] = color; else delete d.relationColors[id];
-                setCustomPropDefs(entity, defs);
-                onRerender();
-              },
-            }
-          );
-        }).catch(() => {});
-        return;
-      }
-      const inp = def.type === 'number'
-        ? Object.assign(document.createElement('input'), { type: 'number', value: cur })
-        : Object.assign(document.createElement('input'), { type: def.type === 'email' ? 'email' : def.type === 'phone' ? 'tel' : 'text', value: cur, placeholder: def.label });
-      inp.style.cssText = 'width:100%;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;font-size:13px;background:var(--bg-card);color:var(--text-primary)';
-      valEl.innerHTML = '';
-      valEl.appendChild(inp);
-      inp.focus();
-      const save = () => {
-        setCustomPropValue(entity, recordId, key, inp.value);
-        onRerender();
-      };
-      inp.onblur = save;
-      inp.onkeydown = (ke) => { if (ke.key === 'Enter') inp.blur(); if (ke.key === 'Escape') { valEl.innerHTML = cur || '<span class="empty">—</span>'; } };
-    };
-  });
-
-  // Wire custom checkbox changes
-  panel.querySelectorAll('.icp-check').forEach(chk => {
-    chk.onchange = () => setCustomPropValue(chk.dataset.entity, chk.dataset.recordId, chk.dataset.propKey, chk.checked);
+    if (def.type === 'checkbox') return; // handled by Svelte CheckboxProp directly
+    if (def.type === 'text' || def.type === 'number' || def.type === 'email' || def.type === 'phone' || def.type === 'url') return; // handled by Svelte TextProp directly
+    if (def.type === 'rollup') return; // handled by Svelte RollupProp directly
+    if (def.type === 'date') return; // handled by Svelte DateProp directly
+    if (def.type === 'select' || def.type === 'status') return; // handled by Svelte SelectProp directly
+    if (def.type === 'relation') return; // handled by Svelte RelationProp directly
+    if (def.type === 'multi_select') return; // handled by Svelte MultiSelectProp directly
   });
 
   // Wire delete buttons (remove custom prop def + values from all records)
@@ -4302,32 +4361,6 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
     };
   });
 
-  // Wire multi_select chip removes (× per chip)
-  panel.querySelectorAll('.ms-chip-remove').forEach(btn => {
-    btn.onclick = (e) => {
-      e.stopPropagation();
-      const key = btn.closest('[data-prop-key]')?.dataset.propKey;
-      if (!key) return;
-      const cur = getCustomPropValues(entity, recordId)[key] ?? '';
-      const arr = (() => { try { const a = JSON.parse(cur); return Array.isArray(a) ? a : []; } catch { return []; } })();
-      const updated = arr.filter(v => v !== btn.dataset.val);
-      setCustomPropValue(entity, recordId, key, JSON.stringify(updated));
-      onRerender();
-    };
-  });
-
-  // Wire multi_select + button — opens full tag-like picker
-  panel.querySelectorAll('.ms-add-btn').forEach(btn => {
-    btn.onclick = (e) => {
-      e.stopPropagation();
-      const key = btn.dataset.propKey || btn.closest('[data-prop-key]')?.dataset.propKey;
-      if (!key) return;
-      const defs = getCustomPropDefs(entity);
-      const def = defs.find(d => d.key === key);
-      if (!def) return;
-      openMultiSelectPicker(btn, def, entity, recordId, key, onRerender);
-    };
-  });
 
   // Wire Add property button
   bindAddPropBtn(entity, onRerender);
@@ -5086,30 +5119,10 @@ function applySortFilter(list, state, fieldMap) {
   return result;
 }
 
-function tagPickerHtml(selectedIds) {
-  if (!allTags.length) return '<span style="font-size:12px;color:var(--text-muted)">No tags available</span>';
-  return allTags.map(t => {
-    const hex = COLOR_HEX[t.color] || t.color || '#378ADD';
-    const sel = (selectedIds || []).includes(t.id) ? 'selected' : '';
-    return `<span class="tag-chip ${sel}" data-tag-id="${t.id}" style="color:${hex}">${t.name}</span>`;
-  }).join('');
-}
-
-function bindTagPicker() {
-  document.querySelectorAll('.modal-body .tag-chip, #form-slideover-body .tag-chip').forEach(chip => {
-    chip.onclick = () => chip.classList.toggle('selected');
-  });
-}
-
-function getSelectedTagIds() {
-  return [...document.querySelectorAll('.modal-body .tag-chip.selected, #form-slideover-body .tag-chip.selected')].map(c => parseInt(c.dataset.tagId));
-}
-
 function taskRowHtml(task, showProject, indent, viewMode) {
   const vm = viewMode || 'list';
   const vis = (key) => propVisible(vm, key);
   const done = task.status === 'done';
-  const titleCls = done ? 'task-title-text done' : 'task-title-text';
   // Read the stored multi-relation prop first, FK title as fallback — a
   // relation assigned moments ago shows even before the FK round-trips.
   const projBadge = showProject && vis('project')
@@ -5138,16 +5151,128 @@ function taskRowHtml(task, showProject, indent, viewMode) {
 
   const excludeCustomDates = vm === 'list';
   const allDates = excludeCustomDates ? [dueBadge, customDatePropsHtml('task', task.id, vm)].filter(Boolean).join(', ') : dueBadge;
+  const metaChipsHtml = `${projBadge}${goalBadge}${catChip}${tagChips}${statusChip}${priorityChip}${storyPts}`;
+  const customChipsHtml = renderCustomPropChips('task', task.id, vm, excludeCustomDates);
+  // Content (title/meta/chips/due) is mounted as a Svelte component
+  // post-render (see mountTaskRowSvelteInstances) — ctx-handle and the
+  // toggle-arrow stay vanilla siblings since their wiring is shared,
+  // unchanged infrastructure (bindCtxHandles, bindTaskListEvents) that
+  // doesn't need to move per-row.
   return `<li class="task-row ${indent ? 'task-row-sub' : ''}" data-task-id="${task.id}" style="${indentStyle}">
     <span class="ctx-handle" data-entity="task" data-id="${task.id}" title="Actions">⠿</span>
     ${toggleArrow}
-    <div class="task-content">
-      <div class="${titleCls}"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${task.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${task.title} <span class="comment-badge" data-comment-for="${task.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div>
-      <div class="task-meta-row">${projBadge}${goalBadge}${catChip}${tagChips}${statusChip}${priorityChip}${storyPts}</div>
-      <div class="task-chips-outer" data-entity="task" data-rid="${task.id}" data-vm="${vm||'list'}">${renderCustomPropChips('task', task.id, vm, excludeCustomDates)}</div>
-    </div>
-    <span class="task-row-due-right">${allDates}</span>
+    <span class="svelte-taskrow-mount" data-task-id="${task.id}" data-title="${escHtml(task.title)}" data-done="${done}" data-vm="${vm}" data-recur="${escHtml(recurBadge)}" data-meta="${escHtml(metaChipsHtml)}" data-chips="${escHtml(customChipsHtml)}" data-due="${escHtml(allDates)}"></span>
   </li>`;
+}
+
+// ── Task row/card Svelte mount registry ───────────────────────────────────
+// taskRowHtml() and the Tasks page's card/kanban builders are called from
+// many places (dashboard widgets, the main task list, entity-detail "Tasks"
+// widgets) that each independently rebuild their own slice of the DOM.
+// Rather than have every caller manage its own mount/unmount lifecycle,
+// this is one shared registry + a single MutationObserver watching for any
+// .svelte-taskrow-mount/.svelte-taskcard-mount that leaves the DOM — call
+// mountTaskRowSvelteInstances(root) after inserting HTML that may contain
+// new placeholders (idempotent: already-mounted elements are skipped) and
+// cleanup happens automatically.
+//
+// Note on ordering: .svelte-taskcard-mount renders its own ctx-handle
+// (unlike the row version, which keeps it as a vanilla sibling — see
+// TaskCardContent.svelte for why), so callers that render cards/kanban
+// must call this BEFORE bindCtxHandles(), or the newly-mounted ctx-handles
+// won't exist yet when bindCtxHandles() runs its querySelectorAll.
+const _taskRowSvelteInstances = new Map(); // mountEl -> Svelte instance
+let _taskRowCleanupObserverStarted = false;
+function mountTaskRowSvelteInstances(root) {
+  if (!_taskRowCleanupObserverStarted) {
+    _taskRowCleanupObserverStarted = true;
+    const observer = new MutationObserver(() => {
+      for (const [el, inst] of _taskRowSvelteInstances) {
+        if (!document.contains(el)) {
+          try { window.RaibisSvelte.unmount(inst); } catch (e) {}
+          _taskRowSvelteInstances.delete(el);
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+  (root || document).querySelectorAll('.svelte-taskrow-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const { taskId, title, done, vm, recur, meta, chips, due } = mountEl.dataset;
+    const inst = window.RaibisSvelte.mountTaskRowContent(mountEl, {
+      taskId, title: title || '', done: done === 'true', viewMode: vm || 'list',
+      recurBadgeHtml: recur || '', metaChipsHtml: meta || '', customChipsHtml: chips || '', dueHtml: due || '',
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
+  (root || document).querySelectorAll('.svelte-taskcard-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const { taskId, title, iconSize, recur, proj, meta, chips, subtree } = mountEl.dataset;
+    const inst = window.RaibisSvelte.mountTaskCardContent(mountEl, {
+      taskId, title: title || '', iconSize: iconSize || 16,
+      recurBadgeHtml: recur || '', projLineHtml: proj || '', metaHtml: meta || '',
+      customChipsHtml: chips || '', subtreeHtml: subtree || '',
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
+  (root || document).querySelectorAll('.svelte-tasktablerow-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const inst = window.RaibisSvelte.mountTaskTableRow(mountEl, {
+      rowCellsHtml: mountEl.dataset.cells || '',
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
+  // buildStandardListRow() — every non-Task entity's list view (Project,
+  // Goal, Sprint, Note, Resource, custom entity types).
+  (root || document).querySelectorAll('.svelte-stdlistrow-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const { entityId, entityKey, title, commentEntity, meta, chips, due } = mountEl.dataset;
+    const inst = window.RaibisSvelte.mountStandardListRowContent(mountEl, {
+      entityId, entityKey, titleHtml: title || '', commentEntity: commentEntity || '',
+      metaChipsHtml: meta || '', customChipsHtml: chips || '', dueHtml: due || '',
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
+  // Card-view body (below the header) for Project/Goal/Note/Resource —
+  // see StandardCardContent.svelte for why the header stays vanilla.
+  (root || document).querySelectorAll('.svelte-stdcard-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const inst = window.RaibisSvelte.mountStandardCardContent(mountEl, {
+      bodyHtml: mountEl.dataset.body || '',
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
+  // Kanban-card header + body for Project/Goal/Note/custom entities — see
+  // StandardKanbanCard.svelte for why ctx-handle is rendered inside this
+  // mount (unlike the card-view mount above). Callers must call this
+  // function before bindCtxHandles() so the freshly-mounted ctx-handle
+  // exists in the DOM when bindCtxHandles() queries for it.
+  (root || document).querySelectorAll('.svelte-stdkanban-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const { entityId, entityKey, title, body } = mountEl.dataset;
+    const inst = window.RaibisSvelte.mountStandardKanbanCard(mountEl, {
+      entityId, entityKey, titleHtml: title || '', bodyHtml: body || '',
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
+  // Day-window timeline/Gantt grid — shared by Calendar's Timeline scope
+  // (buildTimeline) and Pomodoro's Focus Block Timeline
+  // (renderFocusTimeline). Not entity-row related, but reuses this same
+  // mount registry/cleanup-observer infrastructure rather than building a
+  // separate one from scratch.
+  (root || document).querySelectorAll('.svelte-timelinegrid-mount').forEach(mountEl => {
+    if (_taskRowSvelteInstances.has(mountEl)) return;
+    const { daysBefore, daysAfter, monthFormat, wrapClass, emptyHtml, items } = mountEl.dataset;
+    const inst = window.RaibisSvelte.mountTimelineGrid(mountEl, {
+      daysBefore: parseInt(daysBefore) || 30,
+      daysAfter: parseInt(daysAfter) || 60,
+      monthFormat: monthFormat || 'long',
+      wrapClass: wrapClass || '',
+      emptyHtml: emptyHtml || '',
+      items: items ? JSON.parse(items) : [],
+    });
+    _taskRowSvelteInstances.set(mountEl, inst);
+  });
 }
 
 // Shared list-row skeleton — Task's list view (taskRowHtml above) is the
@@ -5174,16 +5299,15 @@ function buildStandardListRow(entityKey, id, opts) {
   // date props) groups together on the right, comma-separated, rather than
   // scattering across the row.
   const allDates = [dueHtml, customDatePropsHtml(entityKey, id, 'list')].filter(Boolean).join(', ');
+  // .task-content + .task-row-due-right are mounted as a Svelte component
+  // post-render (see mountTaskRowSvelteInstances) — ctx-handle, the icon
+  // slot, and afterHandleHtml all stay vanilla siblings exactly as before,
+  // since nothing inside the mount is interactive here.
   return `<div class="task-row ${rowClass}" data-id="${id}" ${rowAttrs} style="cursor:pointer">
     <span class="ctx-handle" data-entity="${entityKey}" data-id="${id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
     ${afterHandleHtml}
     <span class="list-icon-slot" data-icon-entity="${entityKey}" data-icon-id="${id}" data-icon-size="${iconSize}" style="display:none;flex-shrink:0"></span>
-    <div class="task-content">
-      <div class="task-title-text">${titleHtml}<span class="comment-badge" data-comment-for="${id}" data-comment-entity="${commentEntity}" style="display:none"></span></div>
-      ${meta ? `<div class="task-meta-row">${meta}</div>` : ''}
-      ${customChips ? `<div class="task-chips-outer" data-entity="${entityKey}" data-rid="${id}" data-vm="list">${customChips}</div>` : ''}
-    </div>
-    ${allDates ? `<span class="task-row-due-right">${allDates}</span>` : ''}
+    <span class="svelte-stdlistrow-mount" data-entity-id="${id}" data-entity-key="${entityKey}" data-title="${escHtml(titleHtml)}" data-comment-entity="${escHtml(commentEntity)}" data-meta="${escHtml(meta)}" data-chips="${escHtml(customChips)}" data-due="${escHtml(allDates)}"></span>
   </div>`;
 }
 
@@ -5567,10 +5691,235 @@ async function loadCustomEntityTypes() {
   renderCustomEntityNav();
 }
 
+/* ─── Workspaces ─────────────────────────────────────────────────────────
+   A workspace groups a set of entity types (built-in or custom) under a
+   named container. Entirely additive/optional: with zero workspaces
+   created, the switcher never appears and every entity type shows exactly
+   as it did before this feature existed. */
+
+// Maps a built-in nav item's data-view value to the entity-type key used
+// for workspace membership. Views with no entry here (dashboard, calendar,
+// pomodoro, automations, categories, tags) are never workspace-scoped.
+const NAV_VIEW_ENTITY_TYPE = {
+  tasks: 'task', projects: 'project', goals: 'goal', notes: 'note',
+  resources: 'resource', sprints: 'sprint', habits: 'habit',
+};
+
+async function loadWorkspaces() {
+  workspaces = await api('GET', '/api/workspaces').catch(() => []) || [];
+  renderWorkspaceSwitcher();
+  applyWorkspaceFilterToNav();
+}
+
+// true if entityTypeKey should show in the sidebar given the current
+// activeWorkspaceId — either no workspace is active (no filtering at all),
+// the type isn't assigned to any workspace ("General", always visible), or
+// it's assigned to the currently-active workspace.
+function isEntityTypeVisibleInActiveWorkspace(entityTypeKey) {
+  if (activeWorkspaceId == null) return true;
+  const owner = workspaces.find(w => (w.entity_types || []).includes(entityTypeKey));
+  if (!owner) return true;
+  return owner.id === activeWorkspaceId;
+}
+
+function applyWorkspaceFilterToNav() {
+  document.querySelectorAll('.sidebar-nav > a.nav-item[data-view]').forEach(a => {
+    const et = NAV_VIEW_ENTITY_TYPE[a.dataset.view];
+    if (!et) return;
+    a.style.display = isEntityTypeVisibleInActiveWorkspace(et) ? '' : 'none';
+  });
+  renderCustomEntityNav();
+}
+
+function renderWorkspaceSwitcher() {
+  const wrap = document.getElementById('workspace-switcher-wrap');
+  if (!wrap) return;
+  if (!workspaces.length) {
+    // No workspaces created yet — a plain discoverable entry point, same
+    // style as "+ Add entity type", rather than an empty switcher.
+    wrap.innerHTML = `<a class="nav-item" id="workspace-add-btn" href="#" style="color:var(--text-muted)">
+      <span class="nav-icon" style="font-size:16px">＋</span>
+      <span>Add workspace</span>
+    </a>`;
+    document.getElementById('workspace-add-btn').onclick = (e) => { e.preventDefault(); showWorkspaceManagerModal(); };
+    return;
+  }
+  const active = workspaces.find(w => w.id === activeWorkspaceId);
+  const label = active ? `${active.icon || '🗂️'} ${escHtml(active.name)}` : '🗂️ All workspaces';
+  wrap.innerHTML = `
+    <div class="col-picker-wrap" style="position:relative;margin-bottom:8px">
+      <button class="btn btn-sm btn-ghost" id="workspace-switcher-btn" style="width:100%;justify-content:space-between;display:flex;align-items:center" title="Switch workspace">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</span><span style="opacity:.6;flex-shrink:0">▾</span>
+      </button>
+      <div class="col-picker-dropdown hidden" id="workspace-switcher-dropdown" style="width:100%">
+        <div class="col-picker-item" data-ws-id="">🗂️ All workspaces</div>
+        ${workspaces.map(w => `<div class="col-picker-item" data-ws-id="${w.id}">${w.icon || '🗂️'} ${escHtml(w.name)}</div>`).join('')}
+        <div class="col-picker-item" id="workspace-manage-btn" style="border-top:1px solid var(--border);color:var(--text-muted)">⚙ Manage workspaces…</div>
+      </div>
+    </div>`;
+  const btn = document.getElementById('workspace-switcher-btn');
+  const drop = document.getElementById('workspace-switcher-dropdown');
+  btn.onclick = (e) => { e.stopPropagation(); drop.classList.toggle('hidden'); };
+  document.addEventListener('click', () => drop.classList.add('hidden'), { once: true });
+  drop.querySelectorAll('[data-ws-id]').forEach(item => {
+    item.onclick = () => {
+      const id = item.dataset.wsId;
+      activeWorkspaceId = id ? parseInt(id) : null;
+      if (activeWorkspaceId == null) localStorage.removeItem('activeWorkspaceId');
+      else localStorage.setItem('activeWorkspaceId', String(activeWorkspaceId));
+      renderWorkspaceSwitcher();
+      applyWorkspaceFilterToNav();
+    };
+  });
+  document.getElementById('workspace-manage-btn').onclick = (e) => { e.stopPropagation(); showWorkspaceManagerModal(); };
+}
+
+function showWorkspaceManagerModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9100;display:flex;align-items:center;justify-content:center';
+
+  const BUILTIN_ENTITY_TYPES = [
+    { key: 'task', label: 'Tasks' }, { key: 'project', label: 'Projects' },
+    { key: 'goal', label: 'Goals' }, { key: 'note', label: 'Notes' },
+    { key: 'resource', label: 'Resources' }, { key: 'sprint', label: 'Sprints' },
+    { key: 'habit', label: 'Habits' },
+  ];
+  const allEntityTypeOptions = () => [
+    ...BUILTIN_ENTITY_TYPES,
+    ...customEntityTypes.map(t => ({ key: `custom_${t.name}`, label: t.display_name || t.name })),
+  ];
+
+  let editingId = null; // null = creating new; else the workspace.id being edited
+  let iconSelected = '🗂️';
+  let nameValue = '';
+  let selectedTypes = [];
+
+  function resetForm() { editingId = null; nameValue = ''; iconSelected = '🗂️'; selectedTypes = []; }
+
+  function ownerHint(typeKey) {
+    const owner = workspaces.find(w => w.id !== editingId && (w.entity_types || []).includes(typeKey));
+    return owner ? ` <span style="color:var(--text-muted)">(in ${escHtml(owner.name)})</span>` : '';
+  }
+
+  function renderBody() {
+    const listHtml = workspaces.length ? workspaces.map(w => `
+      <div style="display:flex;align-items:center;gap:8px;justify-content:space-between;padding:6px 8px;border:1px solid var(--border);border-radius:6px">
+        <span style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;overflow:hidden">
+          <span>${w.icon || '🗂️'}</span>
+          <span style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(w.name)}</span>
+          <span style="font-size:11px;color:var(--text-muted);flex-shrink:0">${(w.entity_types || []).length} type${(w.entity_types || []).length === 1 ? '' : 's'}</span>
+        </span>
+        <span style="display:flex;gap:4px;flex-shrink:0">
+          <button class="btn btn-sm btn-ghost" data-edit-ws="${w.id}">Edit</button>
+          <button class="btn btn-sm btn-ghost" data-del-ws="${w.id}" style="color:var(--color-danger)">Delete</button>
+        </span>
+      </div>`).join('') : `<div style="font-size:12px;color:var(--text-muted);padding:8px 0">No workspaces yet.</div>`;
+
+    overlay.innerHTML = `
+      <div style="background:var(--bg-card);border-radius:12px;padding:28px 32px;width:520px;max-width:95vw;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+          <h2 style="font-size:17px;font-weight:700;margin:0">Workspaces</h2>
+          <button id="_wsm-close" style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--text-muted);line-height:1">×</button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:20px">${listHtml}</div>
+        <div style="border-top:1px solid var(--border);padding-top:16px">
+          <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">${editingId ? 'Edit workspace' : 'New workspace'}</div>
+          <div style="display:flex;gap:12px;align-items:center;margin-bottom:14px">
+            <button id="_wsm-icon-btn" style="width:40px;height:40px;border:1px solid var(--border);border-radius:8px;background:var(--bg-surface);cursor:pointer;font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0">${iconSelected.startsWith('__svg:') ? renderEntityIcon(iconSelected, 20) : iconSelected}</button>
+            <input id="_wsm-name" type="text" placeholder="Workspace name (e.g. Work)" value="${escHtml(nameValue)}" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px;background:var(--bg-surface);color:var(--text-primary)" />
+          </div>
+          <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Entity types</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">
+            ${allEntityTypeOptions().map(t => `<label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:4px 10px;border:1px solid var(--border);border-radius:20px;background:var(--bg-surface)">
+              <input type="checkbox" data-type-key="${escHtml(t.key)}" ${selectedTypes.includes(t.key) ? 'checked' : ''} style="accent-color:var(--accent)"> ${escHtml(t.label)}${ownerHint(t.key)}
+            </label>`).join('')}
+          </div>
+          <div style="display:flex;gap:10px;justify-content:flex-end">
+            ${editingId ? `<button id="_wsm-cancel-edit" class="btn btn-ghost">Cancel edit</button>` : ''}
+            <button id="_wsm-save" class="btn btn-primary">${editingId ? 'Save changes' : 'Create workspace'}</button>
+          </div>
+        </div>
+      </div>`;
+    bindBody();
+  }
+
+  function bindBody() {
+    overlay.querySelector('#_wsm-close').onclick = () => overlay.remove();
+    overlay.querySelectorAll('[data-edit-ws]').forEach(btn => {
+      btn.onclick = () => {
+        const w = workspaces.find(x => x.id === parseInt(btn.dataset.editWs));
+        if (!w) return;
+        editingId = w.id; nameValue = w.name; iconSelected = w.icon || '🗂️'; selectedTypes = [...(w.entity_types || [])];
+        renderBody();
+      };
+    });
+    overlay.querySelectorAll('[data-del-ws]').forEach(btn => {
+      btn.onclick = () => {
+        const id = parseInt(btn.dataset.delWs);
+        showConfirmModal('Delete this workspace? Its entity types become unassigned (General) again.', async () => {
+          try {
+            await api('DELETE', `/api/workspaces/${id}`);
+            if (activeWorkspaceId === id) { activeWorkspaceId = null; localStorage.removeItem('activeWorkspaceId'); }
+            if (editingId === id) resetForm();
+            await loadWorkspaces();
+            renderBody();
+            showToast('Workspace deleted');
+          } catch (err) { showToast('Failed: ' + (err.message || err), 'error'); }
+        });
+      };
+    });
+    const iconBtn = overlay.querySelector('#_wsm-icon-btn');
+    iconBtn.onclick = (e) => {
+      e.stopPropagation();
+      showIconPicker(iconBtn, null, null, iconSelected, (icon) => {
+        iconSelected = icon || '🗂️';
+        iconBtn.innerHTML = iconSelected.startsWith('__svg:') ? renderEntityIcon(iconSelected, 20) : iconSelected;
+      });
+    };
+    const nameInp = overlay.querySelector('#_wsm-name');
+    nameInp.oninput = () => { nameValue = nameInp.value; };
+    overlay.querySelectorAll('[data-type-key]').forEach(chk => {
+      chk.onchange = () => {
+        const key = chk.dataset.typeKey;
+        if (chk.checked) { if (!selectedTypes.includes(key)) selectedTypes.push(key); }
+        else { selectedTypes = selectedTypes.filter(k => k !== key); }
+      };
+    });
+    const cancelEditBtn = overlay.querySelector('#_wsm-cancel-edit');
+    if (cancelEditBtn) cancelEditBtn.onclick = () => { resetForm(); renderBody(); };
+    overlay.querySelector('#_wsm-save').onclick = async () => {
+      const name = nameValue.trim();
+      if (!name) { showToast('Name is required', 'error'); return; }
+      try {
+        let wsId = editingId;
+        if (wsId) {
+          await api('PUT', `/api/workspaces/${wsId}`, { name, icon: iconSelected });
+        } else {
+          const created = await api('POST', '/api/workspaces', { name, icon: iconSelected });
+          wsId = created.id;
+        }
+        await api('PUT', `/api/workspaces/${wsId}/entity-types`, { entity_types: selectedTypes });
+        await loadWorkspaces();
+        showToast(editingId ? 'Workspace updated' : 'Workspace created');
+        resetForm();
+        renderBody();
+      } catch (err) { showToast('Failed: ' + (err.message || err), 'error'); }
+    };
+  }
+
+  document.body.appendChild(overlay);
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) overlay.remove(); });
+  renderBody();
+}
+
 function renderCustomEntityNav() {
   const container = document.getElementById('custom-entities-nav');
   if (!container) return;
-  if (!customEntityTypes.length) { container.innerHTML = ''; return; }
+  // Workspace-scoped: only show custom types assigned to the active
+  // workspace, plus any unassigned ("General") ones — see isEntityTypeVisibleInActiveWorkspace.
+  const visibleTypes = customEntityTypes.filter(t => isEntityTypeVisibleInActiveWorkspace(`custom_${t.name}`));
+  if (!visibleTypes.length) { container.innerHTML = ''; return; }
 
   function navIconHtml(t) {
     return t.icon
@@ -5580,7 +5929,7 @@ function renderCustomEntityNav() {
       : `<span class="nav-icon" style="font-size:16px">📁</span>`;
   }
 
-  container.innerHTML = customEntityTypes.map(t =>
+  container.innerHTML = visibleTypes.map(t =>
     `<div class="nav-custom-wrap" data-cet-name="${escHtml(t.name)}">
       <a class="nav-item _cet-nav-link" data-view="custom:${escHtml(t.name)}" href="#" title="Double-click to rename">
         ${navIconHtml(t)}
@@ -5826,6 +6175,10 @@ async function renderCustomEntityList(typeName) {
     }
 
     function bindRows() {
+      // Must mount before bindCtxHandles() — the kanban mount renders its
+      // own ctx-handle (see mountTaskRowSvelteInstances' note), so it
+      // needs to exist in the DOM before bindCtxHandles() queries for it.
+      mountTaskRowSvelteInstances(main);
       bindCtxHandles(main);
       injectListIcons(entityKey, list.map(e => e.id));
       main.querySelectorAll('.custom-entity-row[data-id]').forEach(row => {
@@ -6280,12 +6633,11 @@ async function renderCustomEntityList(typeName) {
           const toggleBtn = hasSubs
             ? `<span class="entity-toggle-arrow${isExp ? ' expanded' : ''}" data-eid="${e.id}" data-depth="0" style="flex-shrink:0;margin-right:4px">${_lChev}</span>`
             : '';
-          return `<tr class="custom-entity-row ent-table-row" data-id="${e.id}" style="cursor:pointer">
-            <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span></td>
+          const rowCellsHtml = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${e.id}" title="Actions" onclick="event.stopPropagation()">⠿</span></td>
             <td data-title-cell style="font-weight:500"><div style="display:flex;align-items:center;gap:4px">${toggleBtn}${escHtml(e.title)}</div></td>
             ${visDefs.map(pd => customPropCell(entityKey, e.id, pd)).join('')}
-            ${showTags ? `<td>${e.tags?.length ? e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${escHtml(t.name)}</span>`).join('') : ''}</td>` : ''}
-          </tr>`;
+            ${showTags ? `<td>${e.tags?.length ? e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${escHtml(t.name)}</span>`).join('') : ''}</td>` : ''}`;
+          return `<tr class="custom-entity-row ent-table-row svelte-tasktablerow-mount" data-id="${e.id}" style="cursor:pointer" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
         }).join('')}
         </tbody>
       </table></div>`;
@@ -6343,12 +6695,10 @@ async function renderCustomEntityList(typeName) {
             ? item.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}" style="font-size:10px">${escHtml(t.name)}</span>`).join('')
             : '';
           const allChips = [visProps, tagChips].filter(Boolean).join('');
+          const titleHtml = escHtml(item.title);
+          const bodyHtml = allChips ? `<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:4px">${allChips}</div>` : '';
           return `<div class="kanban-card custom-entity-row" data-id="${item.id}" style="cursor:pointer">
-            <div class="kanban-card-header">
-              <span class="ctx-handle" data-entity="${escHtml(entityKey)}" data-id="${item.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-              <div class="kanban-card-title">${escHtml(item.title)}</div>
-            </div>
-            ${allChips ? `<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:4px">${allChips}</div>` : ''}
+            <span class="svelte-stdkanban-mount" data-entity-key="${escHtml(entityKey)}" data-entity-id="${item.id}" data-title="${escHtml(titleHtml)}" data-body="${escHtml(bodyHtml)}"></span>
           </div>`;
         }).join('');
         const label = colKey || '(None)';
@@ -8882,60 +9232,64 @@ async function initRelationsSection(entityType, entityId) {
 function buildCommentSection(entityType, entityId) {
   return `<div class="comment-section" data-entity-type="${entityType}" data-entity-id="${entityId}">
     <div class="comment-section-header">Comments</div>
-    <div class="comment-list"></div>
-    <div class="comment-input-row">
-      <div class="comment-avatar">M</div>
-      <input class="comment-input" placeholder="Add a comment…" autocomplete="off">
-      <button class="comment-send-btn" title="Send">↑</button>
-    </div>
+    <span class="svelte-comments-mount" data-entity-type="${entityType}" data-entity-id="${entityId}"></span>
   </div>`;
 }
+
+// Pre-formats raw /api/comments rows into the plain {initial, author,
+// relTime, text} shape CommentSection.svelte renders — keeps relativeTime()/
+// author-fallback logic here in app.js rather than inside the component,
+// matching the rest of this migration's "components don't call app.js
+// globals directly" rule.
+function formatCommentsForDisplay(comments) {
+  return (comments || []).map(c => ({
+    initial: (c.author || 'M').charAt(0).toUpperCase(),
+    author: c.author || 'me',
+    relTime: relativeTime(c.created_at),
+    text: c.body,
+  }));
+}
+
+const _commentSectionInstances = new Map(); // mountEl -> Svelte instance
 
 async function bindCommentSection(el) {
   if (!el) return;
   const entityType = el.dataset.entityType;
   const entityId   = el.dataset.entityId;
-  const listEl     = el.querySelector('.comment-list');
-  const inp        = el.querySelector('.comment-input');
-  const sendBtn    = el.querySelector('.comment-send-btn');
+  const mountEl    = el.querySelector('.svelte-comments-mount');
+  if (!mountEl) return;
 
-  async function loadComments() {
-    let comments = [];
-    try { comments = await api('GET', `/api/comments?entity_type=${entityType}&entity_id=${entityId}`); } catch(e) {}
-    if (!comments || !comments.length) {
-      listEl.innerHTML = '<div class="comment-empty">No comments yet.</div>';
-      updateSlideoverCommentIcon(0);
-      return;
-    }
-    listEl.innerHTML = comments.map(c => {
-      const initial = (c.author || 'M').charAt(0).toUpperCase();
-      const relTime = relativeTime(c.created_at);
-      return `<div class="comment-row">
-        <div class="comment-avatar">${initial}</div>
-        <div class="comment-body">
-          <div class="comment-meta"><span class="comment-author">${c.author || 'me'}</span><span class="comment-time">${relTime}</span></div>
-          <div class="comment-text">${escHtml(c.body)}</div>
-        </div>
-      </div>`;
-    }).join('');
-    updateSlideoverCommentIcon(comments.length);
+  let comments = [];
+  try { comments = await api('GET', `/api/comments?entity_type=${entityType}&entity_id=${entityId}`); } catch(e) {}
+  updateSlideoverCommentIcon(comments.length);
+
+  if (_commentSectionInstances.has(mountEl)) {
+    try { window.RaibisSvelte.unmount(_commentSectionInstances.get(mountEl)); } catch(e) {}
+    _commentSectionInstances.delete(mountEl);
   }
-
-  await loadComments();
-
-  async function sendComment() {
-    const body = inp.value.trim();
-    if (!body) return;
-    inp.value = '';
-    try {
-      await api('POST', '/api/comments', { entity_type: entityType, entity_id: parseInt(entityId), body, author: 'me' });
-      await loadComments();
+  const inst = window.RaibisSvelte.mountCommentSection(mountEl, {
+    comments: formatCommentsForDisplay(comments),
+    onSend: async (body) => {
+      try {
+        await api('POST', '/api/comments', { entity_type: entityType, entity_id: parseInt(entityId), body, author: 'me' });
+      } catch(e) {}
+      let fresh = [];
+      try { fresh = await api('GET', `/api/comments?entity_type=${entityType}&entity_id=${entityId}`); } catch(e) {}
       updateCommentBadge(entityType, entityId);
-    } catch(e) {}
-  }
+      updateSlideoverCommentIcon(fresh.length);
+      return formatCommentsForDisplay(fresh);
+    },
+  });
+  _commentSectionInstances.set(mountEl, inst);
 
-  sendBtn.onclick = sendComment;
-  inp.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendComment(); } };
+  const observer = new MutationObserver(() => {
+    if (!document.contains(mountEl)) {
+      try { window.RaibisSvelte.unmount(inst); } catch(e) {}
+      _commentSectionInstances.delete(mountEl);
+      observer.disconnect();
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
 }
 
 function updateCommentBadge(entityType, entityId) {
@@ -9577,16 +9931,14 @@ async function renderTasks() {
       const tags = (t.tags||[]).slice(0,3).map(tg => tagHtml(tg)).join('');
       const storyPts = t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
       const meta = [builtinSelectChip('taskStatuses', t.status), priorityBadge(t.priority), dueLine, tags, storyPts].filter(Boolean);
+      const metaHtml = meta.length ? `<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:6px">${meta.join('')}</div>` : '';
       const subtree = buildSubtree(t.id, 0);
+      const customChipsHtml = renderCustomPropChips('task', t.id, 'cards');
+      // Content is mounted as a Svelte component post-render (see
+      // mountTaskCardSvelteInstances) — the outer div stays vanilla since
+      // the "click to open" wiring operates on it regardless of content.
       return `<div class="task-card-item" data-task-id="${t.id}" style="cursor:pointer">
-        <div class="kanban-card-header">
-          <span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span>
-          <div class="kanban-card-title"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="16" style="display:none;margin-right:4px;vertical-align:middle;font-size:16px"></span>${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div>
-        </div>
-        ${projLine}
-        ${meta.length ? `<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:6px">${meta.join('')}</div>` : ''}
-        ${renderCustomPropChips('task', t.id, 'cards')}
-        ${subtree ? `<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:4px">${subtree}</div>` : ''}
+        <span class="svelte-taskcard-mount" data-task-id="${t.id}" data-title="${escHtml(t.title)}" data-icon-size="16" data-proj="${escHtml(projLine)}" data-meta="${escHtml(metaHtml)}" data-chips="${escHtml(customChipsHtml)}" data-subtree="${escHtml(subtree)}"></span>
       </div>`;
     }).join('');
     return `<div class="task-cards-grid">${cards}</div>`;
@@ -9628,10 +9980,13 @@ async function renderTasks() {
           : `<span class="task-add-sub-btn" data-add-sub-id="${t.id}" title="Add subtask">${chevronSvg}</span>`;
         const titleCell = `<td><div class="task-title-cell" style="padding-left:${depth*20}px">${toggleBtn}<span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-task-id="${t.id}">${t.title}${t.recur_interval>0?` <span class="task-recur-badge">↺</span>`:''}</span><span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span></div></td>`;
         const customCols = getCustomPropDefs('task').filter(d => propVisible('table', d.key)).map(def => customPropCell('task', t.id, def)).join('');
-        html += `<tr class="task-table-row" data-task-id="${t.id}" style="position:relative">
-          <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></td>
-          ${titleCell}${visibleCols.map(c => c.cell(t)).join('')}${customCols}
-        </tr>`;
+        const ctxHandleCell = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span></td>`;
+        const rowCellsHtml = `${ctxHandleCell}${titleCell}${visibleCols.map(c => c.cell(t)).join('')}${customCols}`;
+        // Row is mounted as a Svelte component post-render (see
+        // mountTaskRowSvelteInstances) — every cell here is pre-rendered
+        // HTML from the existing column-def/customPropCell functions
+        // above, passed through unchanged.
+        html += `<tr class="task-table-row svelte-tasktablerow-mount" data-task-id="${t.id}" style="position:relative" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
         if (isExpanded && children.length > 0) {
           html += tableRows(children, depth + 1);
           const colspan = visibleCols.length + 2;
@@ -9725,10 +10080,9 @@ async function renderTasks() {
         const storyPts = kVis('story_points') && t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
         const metaLine = [priorityLine, statusLine, dueLine, tagLine, storyPts].some(Boolean)
           ? `<div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">${priorityLine}${statusLine}${dueLine}${tagLine}${storyPts}</div>` : '';
+        const customChipsHtml = renderCustomPropChips('task', t.id, 'kanban');
         return `<div class="kanban-card" data-task-id="${t.id}" style="cursor:grab">
-          <div class="kanban-card-header"><span class="ctx-handle" data-entity="task" data-id="${t.id}" title="Actions">⠿</span><div class="kanban-card-title"><span class="list-icon-slot" data-icon-entity="task" data-icon-id="${t.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span>${t.title}<span class="comment-badge" data-comment-for="${t.id}" data-comment-entity="task" style="display:none"></span>${recurBadge}</div></div>
-          ${projLine}${metaLine}
-          ${renderCustomPropChips('task', t.id, 'kanban')}
+          <span class="svelte-taskcard-mount" data-task-id="${t.id}" data-title="${escHtml(t.title)}" data-icon-size="15" data-recur="${escHtml(recurBadge)}" data-proj="${escHtml(projLine)}" data-meta="${escHtml(metaLine)}" data-chips="${escHtml(customChipsHtml)}"></span>
         </div>`;
       }).join('');
       const label = colKey.replace(/_/g,' ');
@@ -9799,6 +10153,10 @@ async function renderTasks() {
   _viewPropDefsCallback = (entity) => { if (entity === 'task') render(); };
 
   function bindTasksContentEvents() {
+    // Must mount before bindCtxHandles() — card/kanban mounts render their
+    // own ctx-handle (see mountTaskRowSvelteInstances' note), so it needs
+    // to exist in the DOM before bindCtxHandles() queries for it.
+    mountTaskRowSvelteInstances();
     bindCtxHandles();
     document.querySelectorAll('.task-toggle-arrow').forEach(arrow => {
       arrow.onclick = async (e) => {
@@ -9942,14 +10300,11 @@ async function renderProjects() {
       `<div style="font-size:12px;color:var(--text-muted);padding:2px 0">• ${t}</div>`
     ).join('');
     const tagChips = vis('tags') ? (p.tags || []).map(t => tagHtml(t)).join('') : '';
-    return `<div class="card proj-slideover-card" data-proj-id="${p.id}" style="cursor:pointer">
-      <div class="flex-between gap-8" style="margin-bottom:6px">
-        <div style="display:flex;align-items:center;gap:6px;min-width:0">
-          <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span>
-          <span class="card-title"><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></span>
-        </div>
-      </div>
-      <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
+    // Body (everything below the header) is mounted as a Svelte component
+    // post-render (see mountTaskRowSvelteInstances) — ctx-handle and
+    // card-title stay vanilla siblings, matching StandardListRowContent's
+    // header-stays-outside reasoning.
+    const bodyHtml = `<div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
         ${vis('status') ? builtinSelectChip('projectStatuses', p.status) : ''}
         ${vis('macro') && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
         ${vis('kanban') && p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : ''}
@@ -9963,7 +10318,15 @@ async function renderProjects() {
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>` : ''}
       ${activeTasks ? `<div style="margin-top:8px">${activeTasks}</div>` : ''}
-      ${renderCustomPropChips('project', p.id, 'cards')}
+      ${renderCustomPropChips('project', p.id, 'cards')}`;
+    return `<div class="card proj-slideover-card" data-proj-id="${p.id}" style="cursor:pointer">
+      <div class="flex-between gap-8" style="margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span>
+          <span class="card-title"><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${p.title}<span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></span>
+        </div>
+      </div>
+      <span class="svelte-stdcard-mount" data-body="${escHtml(bodyHtml)}"></span>
     </div>`;
   }
 
@@ -9979,8 +10342,7 @@ async function renderProjects() {
       const prog = p.progress || {};
       const pct = prog.pct || 0;
       const customCols = getCustomPropDefs('project').filter(d => entityPropVisible('project', d.key)).map(def => customPropCell('project', p.id, def)).join('');
-      return `<tr>
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span></td>
+      const rowCellsHtml = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions">⠿</span></td>
         <td><span class="list-icon-slot" data-icon-entity="project" data-icon-id="${p.id}" data-icon-size="15" style="display:none;margin-right:4px;vertical-align:middle;font-size:15px"></span><span class="task-title-link" style="cursor:pointer;color:var(--accent)" data-proj-id="${p.id}">${p.title}</span><span class="comment-badge" data-comment-for="${p.id}" data-comment-entity="project" style="display:none"></span></td>
         ${vis('status')   ? `<td>${builtinSelectChip('projectStatuses', p.status)}</td>` : ''}
         ${vis('goal')     ? `<td>${p.goal_title || '—'}</td>` : ''}
@@ -9990,8 +10352,8 @@ async function renderProjects() {
         ${vis('due')      ? `<td>${datePropBadge(p.due_date, 'Due Date', 'When this project is due. Colored by how soon it is — red once overdue.') || '—'}</td>` : ''}
         ${vis('progress') ? `<td>${pct}% (${prog.done||0}/${prog.total||0})</td>` : ''}
         ${vis('tags')     ? `<td>${(p.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
-        ${customCols}
-      </tr>`;
+        ${customCols}`;
+      return `<tr class="svelte-tasktablerow-mount" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('project').filter(d => entityPropVisible('project', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
@@ -10036,12 +10398,7 @@ async function renderProjects() {
         const prog = p.progress || {};
         const pct = prog.pct || 0;
         const vis = (key) => entityPropVisible('project', key);
-        return `<div class="kanban-card proj-kanban-card" data-proj-id="${p.id}" style="cursor:grab">
-          <div class="kanban-card-header">
-            <span class="ctx-handle" data-entity="project" data-id="${p.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-            <div class="kanban-card-title">${p.title}</div>
-          </div>
-          ${vis('goal') && p.goal_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${p.goal_title}</div>` : ''}
+        const bodyHtml = `${vis('goal') && p.goal_title ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${p.goal_title}</div>` : ''}
           <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
             ${vis('status') && groupBy !== 'status' ? builtinSelectChip('projectStatuses', p.status) : ''}
             ${vis('macro') && groupBy !== 'macro_area' && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
@@ -10051,7 +10408,9 @@ async function renderProjects() {
             <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${pct}% · ${prog.done||0}/${prog.total||0}</div>
           </div>` : ''}
-          ${renderCustomPropChips('project', p.id, 'kanban')}
+          ${renderCustomPropChips('project', p.id, 'kanban')}`;
+        return `<div class="kanban-card proj-kanban-card" data-proj-id="${p.id}" style="cursor:grab">
+          <span class="svelte-stdkanban-mount" data-entity-key="project" data-entity-id="${p.id}" data-title="${escHtml(p.title)}" data-body="${escHtml(bodyHtml)}"></span>
         </div>`;
       }).join('');
       const label = colKey.replace(/_/g,' ');
@@ -10257,6 +10616,10 @@ async function renderProjects() {
   _viewPropDefsCallback = (entity) => { if (entity === 'project') render(); };
 
   function bindProjEvents() {
+    // Must mount before bindCtxHandles() — the kanban mount renders its
+    // own ctx-handle (see mountTaskRowSvelteInstances' note), so it needs
+    // to exist in the DOM before bindCtxHandles() queries for it.
+    mountTaskRowSvelteInstances();
     bindCtxHandles();
     document.querySelectorAll('.proj-slideover-card').forEach(el => {
       el.onclick = (e) => {
@@ -10476,14 +10839,7 @@ async function renderGoals() {
     const vis = (key) => entityPropVisible('goal', key);
     const tagChips = vis('tags') ? (g.tags || []).map(t => tagHtml(t)).join('') : '';
     const catName = (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name;
-    return `<div class="card goal-slideover-card" data-goal-id="${g.id}" style="cursor:pointer">
-      <div class="flex-between gap-8" style="margin-bottom:6px">
-        <div style="display:flex;align-items:center;gap:6px;min-width:0">
-          <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span>
-          <span class="card-title"><span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${g.title}<span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></span>
-        </div>
-      </div>
-      <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
+    const bodyHtml = `<div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
         ${vis('status') ? builtinSelectChip('goalStatuses', g.status) : ''}
         ${vis('type') && g.type ? builtinSelectChip('goal_type', g.type) : ''}
         ${vis('year') && g.year ? builtinSelectChip('goal_year', g.year) : ''}
@@ -10496,7 +10852,15 @@ async function renderGoals() {
         <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0} tasks</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>` : ''}
-      ${renderCustomPropChips('goal', g.id, 'cards')}
+      ${renderCustomPropChips('goal', g.id, 'cards')}`;
+    return `<div class="card goal-slideover-card" data-goal-id="${g.id}" style="cursor:pointer">
+      <div class="flex-between gap-8" style="margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span>
+          <span class="card-title"><span class="list-icon-slot" data-icon-entity="goal" data-icon-id="${g.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${g.title}<span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></span>
+        </div>
+      </div>
+      <span class="svelte-stdcard-mount" data-body="${escHtml(bodyHtml)}"></span>
     </div>`;
   }
 
@@ -10512,8 +10876,7 @@ async function renderGoals() {
       const prog = g.progress || {};
       const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
       const customCols = getCustomPropDefs('goal').filter(d => entityPropVisible('goal', d.key)).map(def => customPropCell('goal', g.id, def)).join('');
-      return `<tr>
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span></td>
+      const rowCellsHtml = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions">⠿</span></td>
         <td><span style="cursor:pointer;color:var(--accent)" class="goal-nav-link" data-goal-id="${g.id}">${g.title}</span><span class="comment-badge" data-comment-for="${g.id}" data-comment-entity="goal" style="display:none"></span></td>
         ${vis('status')   ? `<td>${builtinSelectChip('goalStatuses', g.status)}</td>` : ''}
         ${vis('type')     ? `<td>${g.type ? builtinSelectChip('goal_type', g.type) : '—'}</td>` : ''}
@@ -10522,8 +10885,8 @@ async function renderGoals() {
         ${vis('due')      ? `<td>${datePropBadge(g.due_date, 'Due Date', 'When this goal is due. Colored by how soon it is — red once overdue.') || '—'}</td>` : ''}
         ${vis('progress') ? `<td>${pct}%</td>` : ''}
         ${vis('tags')     ? `<td>${(g.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
-        ${customCols}
-      </tr>`;
+        ${customCols}`;
+      return `<tr class="svelte-tasktablerow-mount" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('goal').filter(d => entityPropVisible('goal', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
@@ -10567,12 +10930,7 @@ async function renderGoals() {
         const prog = g.progress || {};
         const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
         const vis = (key) => entityPropVisible('goal', key);
-        return `<div class="kanban-card goal-kanban-card" data-goal-id="${g.id}" style="cursor:grab">
-          <div class="kanban-card-header">
-            <span class="ctx-handle" data-entity="goal" data-id="${g.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-            <div class="kanban-card-title">${g.title}</div>
-          </div>
-          <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
+        const bodyHtml = `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
             ${vis('status') && groupBy !== 'status' ? builtinSelectChip('goalStatuses', g.status) : ''}
             ${vis('type') && groupBy !== 'type' && g.type ? builtinSelectChip('goal_type', g.type) : ''}
             ${vis('year') && groupBy !== 'year' && g.year ? builtinSelectChip('goal_year', g.year) : ''}
@@ -10581,7 +10939,9 @@ async function renderGoals() {
             <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${pct}% · ${prog.done||0}/${prog.total||0}</div>
           </div>` : ''}
-          ${renderCustomPropChips('goal', g.id, 'kanban')}
+          ${renderCustomPropChips('goal', g.id, 'kanban')}`;
+        return `<div class="kanban-card goal-kanban-card" data-goal-id="${g.id}" style="cursor:grab">
+          <span class="svelte-stdkanban-mount" data-entity-key="goal" data-entity-id="${g.id}" data-title="${escHtml(g.title)}" data-body="${escHtml(bodyHtml)}"></span>
         </div>`;
       }).join('');
       const label = colKey.replace(/_/g,' ');
@@ -10612,6 +10972,10 @@ async function renderGoals() {
   }
 
   function bindGoalEvents() {
+    // Must mount before bindCtxHandles() — the kanban mount renders its
+    // own ctx-handle (see mountTaskRowSvelteInstances' note), so it needs
+    // to exist in the DOM before bindCtxHandles() queries for it.
+    mountTaskRowSvelteInstances();
     bindCtxHandles();
     document.querySelectorAll('.goal-slideover-card').forEach(el => {
       el.onclick = (e) => {
@@ -10752,16 +11116,14 @@ async function renderNotes() {
       const items = grouped[cat] || [];
       const cards = items.map(n => {
         const tagChips = vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : '';
-        return `<div class="kanban-card note-card" data-note-id="${n.id}" style="cursor:pointer">
-          <div class="kanban-card-header">
-            <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions" onclick="event.stopPropagation()">⠿</span>
-            <div class="kanban-card-title">${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
-          </div>
-          <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
+        const titleHtml = `${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span>`;
+        const bodyHtml = `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
             ${vis('date') ? datePropBadge(n.note_date, 'Date', 'The date associated with this note.') : ''}
             ${tagChips}
           </div>
-          ${renderCustomPropChips('note', n.id, 'kanban')}
+          ${renderCustomPropChips('note', n.id, 'kanban')}`;
+        return `<div class="kanban-card note-card" data-note-id="${n.id}" style="cursor:pointer">
+          <span class="svelte-stdkanban-mount" data-entity-key="note" data-entity-id="${n.id}" data-title="${escHtml(titleHtml)}" data-body="${escHtml(bodyHtml)}"></span>
         </div>`;
       }).join('');
       return `<div class="kanban-col" data-col="${cat}">
@@ -10794,14 +11156,7 @@ async function renderNotes() {
   function buildNoteCard(n) {
     const vis = (key) => entityPropVisible('note', key);
     const tagChips = vis('tags') ? (n.tags || []).map(t => tagHtml(t)).join('') : '';
-    return `<div class="note-card" data-note-id="${n.id}">
-      <div class="flex-between gap-8">
-        <div style="display:flex;align-items:center;gap:6px;min-width:0">
-          <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span>
-          <div class="note-title"><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="18" style="display:none;margin-right:5px;vertical-align:middle;font-size:18px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
-        </div>
-      </div>
-      <div class="note-body-preview">${n.body || ''}</div>
+    const bodyHtml = `<div class="note-body-preview">${n.body || ''}</div>
       <div class="note-meta" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
         ${vis('date') ? datePropBadge(n.note_date, 'Date', 'The date associated with this note.') : ''}
         ${vis('category') && n.category_name ? builtinSelectChip('categories', n.category_name) : ''}
@@ -10809,7 +11164,15 @@ async function renderNotes() {
         ${vis('goal') ? (() => { const v = renderMultiRelationValue('note', n.id, 'goal', (_noteGoals.find(g => String(g.id) === String(n.goal_id))?.title)); return v ? `<span class="entity-list-meta">${v}</span>` : ''; })() : ''}
         ${tagChips}
       </div>
-      ${renderCustomPropChips('note', n.id, 'cards')}
+      ${renderCustomPropChips('note', n.id, 'cards')}`;
+    return `<div class="note-card" data-note-id="${n.id}">
+      <div class="flex-between gap-8">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span>
+          <div class="note-title"><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="18" style="display:none;margin-right:5px;vertical-align:middle;font-size:18px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></div>
+        </div>
+      </div>
+      <span class="svelte-stdcard-mount" data-body="${escHtml(bodyHtml)}"></span>
     </div>`;
   }
 
@@ -10818,8 +11181,7 @@ async function renderNotes() {
     const vis = (key) => entityPropVisible('note', key);
     const rows = list.map(n => {
       const customCols = getCustomPropDefs('note').filter(d => entityPropVisible('note', d.key)).map(def => customPropCell('note', n.id, def)).join('');
-      return `<tr class="note-item" data-note-id="${n.id}" style="cursor:pointer">
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span></td>
+      const rowCellsHtml = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="note" data-id="${n.id}" title="Actions">⠿</span></td>
         <td><span class="list-icon-slot" data-icon-entity="note" data-icon-id="${n.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${n.title || 'Untitled'}<span class="comment-badge" data-comment-for="${n.id}" data-comment-entity="note" style="display:none"></span></td>
         ${vis('date')     ? `<td>${datePropBadge(n.note_date, 'Date', 'The date associated with this note.') || '—'}</td>` : ''}
         ${vis('project')  ? `<td>${renderMultiRelationValue('note', n.id, 'project', (_noteProjects.find(p => String(p.id) === String(n.project_id))?.title)) || '—'}</td>` : ''}
@@ -10827,8 +11189,8 @@ async function renderNotes() {
         ${vis('category') ? `<td>${n.category_name ? builtinSelectChip('categories', n.category_name) : '—'}</td>` : ''}
         ${vis('tags')     ? `<td>${(n.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
         ${customCols}
-        <td onclick="event.stopPropagation()"></td>
-      </tr>`;
+        <td onclick="event.stopPropagation()"></td>`;
+      return `<tr class="note-item svelte-tasktablerow-mount" data-note-id="${n.id}" style="cursor:pointer" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('note').filter(d => entityPropVisible('note', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
@@ -10849,6 +11211,10 @@ async function renderNotes() {
   }
 
   function bindNoteEvents() {
+    // Must mount before bindCtxHandles() — the kanban mount renders its
+    // own ctx-handle (see mountTaskRowSvelteInstances' note), so it needs
+    // to exist in the DOM before bindCtxHandles() queries for it.
+    mountTaskRowSvelteInstances();
     bindCtxHandles();
     document.querySelectorAll('.note-card, .note-item').forEach(el => {
       el.onclick = (e) => {
@@ -10873,19 +11239,12 @@ async function renderSprints() {
     const nextLabel = s.status === 'planned' ? 'Start' : s.status === 'active' ? 'Complete' : null;
     const prevStatus = s.status === 'active' ? 'planned' : s.status === 'completed' ? 'active' : null;
     const prevLabel = s.status === 'active' ? '↩ Planned' : s.status === 'completed' ? '↩ Active' : null;
-    return `<div class="card" data-sprint-id="${s.id}" style="cursor:pointer">
-      <div class="flex-between gap-8" style="margin-bottom:6px">
-        <div style="display:flex;align-items:center;gap:6px;min-width:0">
-          <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span>
-          <span class="card-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)"><span class="list-icon-slot" data-icon-entity="sprint" data-icon-id="${s.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${s.title}<span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></span>
-        </div>
-        <div class="flex gap-8">
-          ${prevStatus ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
-          ${nextStatus ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="${nextStatus}">${nextLabel}</button>` : ''}
-          <button class="btn btn-sm btn-ghost sprint-edit-btn" data-sprint-id="${s.id}">Edit</button>
-        </div>
-      </div>
-      <div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
+    // Header (both the ctx-handle/title side AND the status/Edit buttons
+    // side) stays vanilla — the buttons are bound globally via
+    // document.querySelectorAll in bindSprintEvents, so there's no
+    // mount-ordering concern even though they live inside the same
+    // .flex-between row as everything else that stays outside the mount.
+    const bodyHtml = `<div class="flex gap-8" style="flex-wrap:wrap;margin-bottom:8px">
         ${vis('status') ? builtinSelectChip('sprintStatuses', s.status) : ''}
         ${vis('project') && s.project_title ? `<span class="multi-chip" style="font-size:11px">${escHtml(s.project_title)}</span>` : ''}
         ${vis('category') && (allCategories.find(c => String(c.id) === String(s.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(s.category_id)) || {}).name) : ''}
@@ -10906,7 +11265,20 @@ async function renderSprints() {
           <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pctSP}%;background:${color}"></div></div>
         </div>`;
       })() : ''}
-      ${renderCustomPropChips('sprint', s.id, 'cards')}
+      ${renderCustomPropChips('sprint', s.id, 'cards')}`;
+    return `<div class="card" data-sprint-id="${s.id}" style="cursor:pointer">
+      <div class="flex-between gap-8" style="margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span>
+          <span class="card-title sprint-detail-link" data-sprint-id="${s.id}" style="cursor:pointer;color:var(--accent)"><span class="list-icon-slot" data-icon-entity="sprint" data-icon-id="${s.id}" data-icon-size="20" style="display:none;margin-right:6px;vertical-align:middle;font-size:20px"></span>${s.title}<span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></span>
+        </div>
+        <div class="flex gap-8">
+          ${prevStatus ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
+          ${nextStatus ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="${nextStatus}">${nextLabel}</button>` : ''}
+          <button class="btn btn-sm btn-ghost sprint-edit-btn" data-sprint-id="${s.id}">Edit</button>
+        </div>
+      </div>
+      <span class="svelte-stdcard-mount" data-body="${escHtml(bodyHtml)}"></span>
     </div>`;
   }
 
@@ -10917,8 +11289,7 @@ async function renderSprints() {
       const prog = s.progress || {};
       const pct = prog.pct || 0;
       const customCols = getCustomPropDefs('sprint').filter(d => entityPropVisible('sprint', d.key)).map(def => customPropCell('sprint', s.id, def)).join('');
-      return `<tr class="sprint-row" data-sprint-id="${s.id}" style="cursor:pointer">
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span></td>
+      const rowCellsHtml = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="sprint" data-id="${s.id}" title="Actions">⠿</span></td>
         <td><span class="sprint-detail-link" data-sprint-id="${s.id}" style="color:var(--accent);cursor:pointer">${s.title}</span><span class="comment-badge" data-comment-for="${s.id}" data-comment-entity="sprint" style="display:none"></span></td>
         ${vis('status')   ? `<td>${builtinSelectChip('sprintStatuses', s.status)}</td>` : ''}
         ${vis('project')  ? `<td>${s.project_title ? `<span class="multi-chip" style="font-size:11px">${escHtml(s.project_title)}</span>` : '—'}</td>` : ''}
@@ -10932,8 +11303,8 @@ async function renderSprints() {
           ${s.status === 'planned' ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="active">Start</button>` : ''}
           ${s.status === 'active' ? `<button class="btn btn-sm btn-ghost sprint-status-btn" data-sprint-id="${s.id}" data-next="completed">Complete</button>` : ''}
           <button class="btn btn-sm btn-ghost sprint-edit-btn" data-sprint-id="${s.id}">Edit</button>
-        </td>
-      </tr>`;
+        </td>`;
+      return `<tr class="sprint-row svelte-tasktablerow-mount" data-sprint-id="${s.id}" style="cursor:pointer" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('sprint').filter(d => entityPropVisible('sprint', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
@@ -11050,6 +11421,7 @@ async function renderSprints() {
 
   function bindSprintEvents() {
     bindCtxHandles();
+    mountTaskRowSvelteInstances();
     document.querySelectorAll('.sprint-detail-link').forEach(el => {
       el.onclick = (e) => { e.stopPropagation(); renderView('sprint-detail', el.dataset.sprintId); };
     });
@@ -12438,8 +12810,7 @@ async function renderResources() {
         : (r.body ? r.body.slice(0,60) + '…' : '—');
       const customCols = getCustomPropDefs('resource').filter(d => entityPropVisible('resource', d.key)).map(def => customPropCell('resource', r.id, def)).join('');
       const catName = (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name;
-      return `<tr class="res-row" data-res-id="${r.id}" style="cursor:pointer">
-        <td class="ctx-handle-cell"><span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions">⠿</span></td>
+      const rowCellsHtml = `<td class="ctx-handle-cell"><span class="ctx-handle" data-entity="resource" data-id="${r.id}" title="Actions">⠿</span></td>
         <td><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="16" style="display:none;margin-right:5px;vertical-align:middle;font-size:16px"></span>${r.title}<span class="comment-badge" data-comment-for="${r.id}" data-comment-entity="resource" style="display:none"></span></td>
         ${vis('type')     ? `<td>${r.resource_type ? builtinSelectChip('resource_type', r.resource_type) : '—'}</td>` : ''}
         ${vis('project')  ? `<td>${r.project_title || '—'}</td>` : ''}
@@ -12447,8 +12818,8 @@ async function renderResources() {
         ${vis('category') ? `<td>${catName ? builtinSelectChip('categories', catName) : '—'}</td>` : ''}
         ${vis('url')      ? `<td>${link}</td>` : ''}
         ${customCols}
-        <td onclick="event.stopPropagation()"></td>
-      </tr>`;
+        <td onclick="event.stopPropagation()"></td>`;
+      return `<tr class="res-row svelte-tasktablerow-mount" data-res-id="${r.id}" style="cursor:pointer" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
     }).join('');
     const customHeaders = getCustomPropDefs('resource').filter(d => entityPropVisible('resource', d.key)).map(d => `<th>${d.label}</th>`).join('');
     const headers = [
@@ -12475,6 +12846,14 @@ async function renderResources() {
       const rawUrl = r.url || '';
       const linked = r.goal_title || r.project_title || r.task_title;
       const vis = (key) => entityPropVisible('resource', key);
+      const bodyHtml = `${vis('type') && r.resource_type ? builtinSelectChip('resource_type', r.resource_type) : ''}
+        ${vis('category') && (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name) : ''}
+        ${vis('project') && r.project_title ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">→ ${r.project_title}</div>` : ''}
+        ${vis('goal') && r.goal_title ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">→ ${r.goal_title}</div>` : ''}
+        ${vis('url') && rawUrl ? `<div style="margin-top:6px" onclick="event.stopPropagation()"><a href="${rawUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent)">${rawUrl.length > 60 ? rawUrl.slice(0,60)+'…' : rawUrl}</a></div>` : ''}
+        ${r.body ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${r.body.slice(0,120)}${r.body.length>120?'…':''}</div>` : ''}
+        ${vis('tags') ? (r.tags || []).map(t => tagHtml(t)).join('') : ''}
+        ${renderCustomPropChips('resource', r.id, 'cards')}`;
       return `<div class="card res-row" data-res-id="${r.id}" style="cursor:pointer">
         <div class="flex-between gap-8" style="margin-bottom:6px">
           <div style="display:flex;align-items:center;gap:6px;min-width:0">
@@ -12482,20 +12861,14 @@ async function renderResources() {
             <span class="card-title"><span class="list-icon-slot" data-icon-entity="resource" data-icon-id="${r.id}" data-icon-size="18" style="display:none;margin-right:6px;vertical-align:middle;font-size:18px"></span>${r.title}<span class="comment-badge" data-comment-for="${r.id}" data-comment-entity="resource" style="display:none"></span></span>
           </div>
         </div>
-        ${vis('type') && r.resource_type ? builtinSelectChip('resource_type', r.resource_type) : ''}
-        ${vis('category') && (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(r.category_id)) || {}).name) : ''}
-        ${vis('project') && r.project_title ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">→ ${r.project_title}</div>` : ''}
-        ${vis('goal') && r.goal_title ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">→ ${r.goal_title}</div>` : ''}
-        ${vis('url') && rawUrl ? `<div style="margin-top:6px" onclick="event.stopPropagation()"><a href="${rawUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent)">${rawUrl.length > 60 ? rawUrl.slice(0,60)+'…' : rawUrl}</a></div>` : ''}
-        ${r.body ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${r.body.slice(0,120)}${r.body.length>120?'…':''}</div>` : ''}
-        ${vis('tags') ? (r.tags || []).map(t => tagHtml(t)).join('') : ''}
-        ${renderCustomPropChips('resource', r.id, 'cards')}
+        <span class="svelte-stdcard-mount" data-body="${escHtml(bodyHtml)}"></span>
       </div>`;
     }).join('')}</div>`;
   }
 
   function bindResEvents() {
     bindCtxHandles();
+    mountTaskRowSvelteInstances();
     document.querySelectorAll('.res-row').forEach(el => {
       el.onclick = async (e) => {
         if (e.target.closest('.ctx-handle') || e.target.closest('a')) return;
@@ -13614,9 +13987,14 @@ async function showTaskSlideover(taskId) {
 
   // Build interactive nested subtask table. Rows with children carry a
   // chevron to expand/collapse their branch — same interaction as the
-  // sub-entity tree custom types use. Branches start collapsed.
-  const chevSvgSub = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,3 5,7 8,3"/></svg>`;
+  // sub-entity tree custom types use. Branches start collapsed. Row
+  // content is mounted as a Svelte component (SubtaskRow) directly into
+  // each <tr>; the <tr> itself stays vanilla since the existing row-click
+  // (open slideover) and .sub-table-toggle chevron bindings both just
+  // need the elements to exist post-mount — see bindSubtaskTableEvents,
+  // called after mountSubtaskRowInstances below.
   const _expandedSubRows = new Set();
+  let _subtaskRowInstances = [];
   function buildSubtaskTable(items, depth) {
     if (!items.length) return '';
     let rows = '';
@@ -13625,25 +14003,10 @@ async function showTaskSlideover(taskId) {
       const hasKids = children.length > 0;
       const isExp = _expandedSubRows.has(String(st.id));
       const indent = depth * 18;
-      const titleEl = `<span class="task-title-text${st.status==='done'?' done':''}">${st.title}</span>`;
-      const chev = hasKids
-        ? `<span class="task-toggle-arrow sub-table-toggle${isExp ? ' expanded' : ''}" data-toggle-id="${st.id}" title="${isExp ? 'Hide' : 'Show'} subtasks" style="cursor:pointer;flex-shrink:0">${chevSvgSub}</span>`
-        : `<span style="width:14px;flex-shrink:0"></span>`;
-      const countBadge = hasKids && !isExp
-        ? `<span style="font-size:10px;color:var(--text-muted);background:var(--accent-glow);border-radius:8px;padding:0 6px;flex-shrink:0">${children.length}</span>`
-        : '';
-      rows += `<tr class="subtask-table-row" data-st-id="${st.id}" style="cursor:pointer">
-        <td style="padding-left:${8+indent}px">
-          <div style="display:flex;align-items:center;gap:6px">
-            ${chev}
-            ${titleEl}
-            ${countBadge}
-          </div>
-        </td>
-        <td>${builtinSelectChip('taskStatuses', st.status)}</td>
-        <td>${priorityBadge(st.priority)}</td>
-        <td>${datePropBadge(st.due_date, 'Due Date', 'When this task is due. Colored by how soon it is — red once overdue.')||'—'}</td>
-      </tr>`;
+      const statusChipHtml = builtinSelectChip('taskStatuses', st.status);
+      const priorityChipHtml = priorityBadge(st.priority);
+      const dueHtml = datePropBadge(st.due_date, 'Due Date', 'When this task is due. Colored by how soon it is — red once overdue.') || '—';
+      rows += `<tr class="subtask-table-row svelte-subtaskrow-mount" data-st-id="${st.id}" style="cursor:pointer" data-task-id="${st.id}" data-title="${escHtml(st.title)}" data-done="${st.status==='done'}" data-has-kids="${hasKids}" data-expanded="${isExp}" data-child-count="${children.length}" data-indent="${indent}" data-status="${escHtml(statusChipHtml)}" data-priority="${escHtml(priorityChipHtml)}" data-due="${escHtml(dueHtml)}"></tr>`;
       if (hasKids && isExp) rows += buildSubtaskTable(children, depth + 1);
       if (!hasKids || isExp) rows += `<tr class="subtask-quick-add-row" data-add-parent="${st.id}">
         <td colspan="4" style="padding:4px 8px 4px ${8+indent+18}px">
@@ -13654,9 +14017,40 @@ async function showTaskSlideover(taskId) {
     return rows;
   }
 
+  let _subtaskCleanupObserverStarted = false;
+  function mountSubtaskRowInstances(wrap) {
+    // Safety net for when the whole slideover closes without
+    // renderSubtaskTable() running again (the explicit unmount-before-
+    // replace above only covers re-renders, not the panel disappearing).
+    if (!_subtaskCleanupObserverStarted) {
+      _subtaskCleanupObserverStarted = true;
+      const observer = new MutationObserver(() => {
+        if (!document.contains(wrap)) {
+          _subtaskRowInstances.forEach(inst => { try { window.RaibisSvelte.unmount(inst); } catch (e) {} });
+          _subtaskRowInstances = [];
+          observer.disconnect();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+    wrap.querySelectorAll('.svelte-subtaskrow-mount').forEach(mountEl => {
+      const { taskId: stId, title, done, hasKids, expanded, childCount, indent, status, priority, due } = mountEl.dataset;
+      const inst = window.RaibisSvelte.mountSubtaskRow(mountEl, {
+        taskId: stId, title: title || '', done: done === 'true',
+        hasKids: hasKids === 'true', isExpanded: expanded === 'true', childCount: parseInt(childCount) || 0,
+        indent: parseInt(indent) || 0, statusChipHtml: status || '', priorityChipHtml: priority || '', dueHtml: due || '',
+      });
+      _subtaskRowInstances.push(inst);
+    });
+  }
+
   function renderSubtaskTable() {
     const wrap = document.getElementById('subtask-list');
     if (!wrap) return;
+    // Unmount previous instances before their DOM gets discarded below —
+    // Svelte 5 doesn't auto-cleanup effects on innerHTML replacement.
+    _subtaskRowInstances.forEach(inst => { try { window.RaibisSvelte.unmount(inst); } catch (e) {} });
+    _subtaskRowInstances = [];
     const currentSubtasks = allTasksCache.filter(x => String(x.parent_task_id) === String(taskId));
     if (!currentSubtasks.length) {
       wrap.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No subtasks</div>';
@@ -13668,6 +14062,7 @@ async function showTaskSlideover(taskId) {
         <tbody>${buildSubtaskTable(currentSubtasks, 0)}</tbody>
       </table>
     </div>`;
+    mountSubtaskRowInstances(wrap);
     bindSubtaskTableEvents();
   }
 
@@ -14684,74 +15079,28 @@ async function renderCalendarView() {
     </div>`;
   }
 
+  // Day-grid layout (month/day header, today-line/bar tracks) is owned by
+  // TimelineGrid.svelte, shared with Pomodoro's Focus Block Timeline — see
+  // that component for why. This function only derives the normalized
+  // items array from calendar events, which is genuinely different per
+  // caller (event type/color/click-target logic).
   function buildTimeline() {
-    const DAYS_BEFORE = 30, DAYS_AFTER = 60, PX = 38, LABEL_W = 180;
-    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-    const today = new Date(); today.setHours(0,0,0,0);
-    const winStart = dateAdd(today, -DAYS_BEFORE);
-    const total = DAYS_BEFORE + DAYS_AFTER + 1;
-    const totalWidth = total * PX;
-    const todayX = DAYS_BEFORE * PX;
-
-    const dayList = Array.from({length: total}, (_, i) => dateAdd(winStart, i));
-
-    // Month header groups
-    const monthGroups = []; let curKey = null;
-    dayList.forEach((d, i) => {
-      const key = `${d.getFullYear()}-${d.getMonth()}`;
-      if (key !== curKey) {
-        monthGroups.push({ label: `${monthNames[d.getMonth()]} ${d.getFullYear()}`, startI: i, count: 1 });
-        curKey = key;
-      } else {
-        monthGroups[monthGroups.length - 1].count++;
-      }
-    });
-    const monthHdr = monthGroups.map(g =>
-      `<div style="position:absolute;left:${g.startI*PX}px;width:${g.count*PX}px;font-size:11px;font-weight:600;color:var(--text-muted);border-right:1px solid var(--border-light);padding:2px 4px;white-space:nowrap;overflow:hidden">${g.label}</div>`
-    ).join('');
-    const dayHdr = dayList.map((d, i) => {
-      const isT = d.getTime() === today.getTime();
-      const dayNames = ['Su','Mo','Tu','We','Th','Fr','Sa'];
-      return `<div style="position:absolute;left:${i*PX}px;width:${PX}px;text-align:center;font-size:10px;color:${isT?'var(--danger)':'var(--text-muted)'};font-weight:${isT?700:400};line-height:1.3">${d.getDate()}<br><span style="font-size:9px">${dayNames[d.getDay()]}</span></div>`;
-    }).join('');
-
     const allEvs = events.filter(ev => calEventTypes.includes(ev.type.split('-')[0]));
-    if (!allEvs.length) {
-      return `<div style="color:var(--text-muted);padding:32px;font-size:13px">No events with dates. Add start/due dates to tasks, goals, projects, or sprints.</div>`;
-    }
-
-    return `<div class="tl-wrap">
-      <div class="tl-header-row">
-        <div style="min-width:${LABEL_W}px;flex-shrink:0;border-right:1px solid var(--border-light)"></div>
-        <div class="tl-hdr-scroll">
-          <div style="width:${totalWidth}px;height:22px;position:relative;border-bottom:1px solid var(--border-light)">${monthHdr}</div>
-          <div style="width:${totalWidth}px;height:32px;position:relative;border-bottom:2px solid var(--border)">
-            ${dayHdr}
-            <div class="tl-today-dot" style="left:${todayX + PX/2}px"></div>
-          </div>
-        </div>
-      </div>
-      <div class="tl-body-wrap">
-        <div class="tl-labels-col">${allEvs.map(ev => `<div class="tl-label" title="${ev.title}">${ev.title}</div>`).join('')}</div>
-        <div class="tl-tracks-scroll">
-          ${allEvs.map(ev => {
-            const sd = ev.ranged ? ev.start : ev.date;
-            const ed = ev.ranged ? ev.end : ev.date;
-            const startDayOff = Math.round((new Date(sd + 'T00:00:00').getTime() - winStart.getTime()) / 86400000);
-            const endDayOff   = Math.round((new Date(ed + 'T00:00:00').getTime() - winStart.getTime()) / 86400000);
-            const x = Math.max(0, startDayOff * PX);
-            const rawW = (endDayOff - startDayOff + 1) * PX;
-            const w = Math.min(rawW, totalWidth - x);
-            const color = chipColor(ev);
-            const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
-            return `<div class="tl-track-row" style="width:${totalWidth}px">
-              <div class="tl-today-line" style="left:${todayX + PX/2}px"></div>
-              ${w > 0 ? `<div class="tl-bar" ${taskId} style="left:${x}px;width:${w}px;background:${color}" title="${ev.title}: ${sd}${ev.ranged?' → '+ed:''}">${ev.title}</div>` : ''}
-            </div>`;
-          }).join('')}
-        </div>
-      </div>
-    </div>`;
+    const items = allEvs.map(ev => {
+      const sd = ev.ranged ? ev.start : ev.date;
+      const ed = ev.ranged ? ev.end : ev.date;
+      return {
+        key: `${ev.type}-${ev.id}`,
+        title: ev.title,
+        start: sd,
+        end: ed,
+        color: chipColor(ev),
+        taskId: ev.type === 'task' ? ev.id : null,
+        barTitle: `${ev.title}: ${sd}${ev.ranged ? ' → ' + ed : ''}`,
+      };
+    });
+    const emptyHtml = `<div style="color:var(--text-muted);padding:32px;font-size:13px">No events with dates. Add start/due dates to tasks, goals, projects, or sprints.</div>`;
+    return `<span class="svelte-timelinegrid-mount" data-days-before="30" data-days-after="60" data-month-format="long" data-empty-html="${escHtml(emptyHtml)}" data-items="${escHtml(JSON.stringify(items))}"></span>`;
   }
 
   function buildNav() {
@@ -14827,6 +15176,10 @@ async function renderCalendarView() {
   });
 
   function rebind() {
+    // Must mount before the .tl-bar/.tl-label click bindings below, since
+    // Timeline scope's day-grid is rendered by TimelineGrid.svelte —
+    // the elements they query for don't exist until the mount runs.
+    mountTaskRowSvelteInstances();
     document.getElementById('cal-prev')?.addEventListener('click', () => {
       if (calScope === 'timeline') return;
       if (calScope === 'month' || calScope === 'gantt') {
@@ -14993,76 +15346,35 @@ async function renderPomodoro() {
   // Tasks that have pomodoro sessions planned
 
   // Focus block timeline helper — horizontal timeline like calendar Timeline view
+  // Day-grid layout is owned by TimelineGrid.svelte, shared with
+  // Calendar's Timeline scope (buildTimeline) — see that component for
+  // why. This function only derives the normalized items array from
+  // focus-blocked tasks, which is genuinely different per caller
+  // (status-color logic, truncated bar labels, clickable labels).
   function renderFocusTimeline() {
-    const DAYS_BEFORE = 7, DAYS_AFTER = 30, PX = 38, LABEL_W = 180;
-    const today = new Date(); today.setHours(0,0,0,0);
-    function dateAdd(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
-    function dateStr(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
-
     const focusTasks = allTasksCache.filter(t => t.focus_block && t.status !== 'done');
-    if (!focusTasks.length) {
-      return `<div class="pom-timeline-empty">No focus blocks scheduled. Open a task and set a Focus Block date in the properties panel to see it here.</div>`;
-    }
-
-    const winStart = dateAdd(today, -DAYS_BEFORE);
-    const total = DAYS_BEFORE + DAYS_AFTER + 1;
-    const totalWidth = total * PX;
-    const todayX = DAYS_BEFORE * PX;
-    const dayList = Array.from({length: total}, (_, i) => dateAdd(winStart, i));
-
-    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const monthGroups = []; let curKey = null;
-    dayList.forEach((d, i) => {
-      const key = `${d.getFullYear()}-${d.getMonth()}`;
-      if (key !== curKey) {
-        monthGroups.push({ label: `${monthNames[d.getMonth()]} ${d.getFullYear()}`, startI: i, count: 1 });
-        curKey = key;
-      } else {
-        monthGroups[monthGroups.length - 1].count++;
-      }
-    });
-    const monthHdr = monthGroups.map(g =>
-      `<div style="position:absolute;left:${g.startI*PX}px;width:${g.count*PX}px;font-size:11px;font-weight:600;color:var(--color-text-secondary);border-right:1px solid var(--color-border);padding:2px 4px;white-space:nowrap;overflow:hidden">${g.label}</div>`
-    ).join('');
-    const dayNames = ['Su','Mo','Tu','We','Th','Fr','Sa'];
-    const dayHdr = dayList.map((d, i) => {
-      const isT = d.getTime() === today.getTime();
-      return `<div style="position:absolute;left:${i*PX}px;width:${PX}px;text-align:center;font-size:10px;color:${isT?'var(--color-danger)':'var(--color-text-tertiary)'};font-weight:${isT?700:400};line-height:1.3">${d.getDate()}<br><span style="font-size:9px">${dayNames[d.getDay()]}</span></div>`;
-    }).join('');
-
-    const rows = focusTasks.map(t => {
+    const items = focusTasks.map(t => {
       const endDs = stripDate(t.focus_block);
       const startDs = t.focus_block_start ? stripDate(t.focus_block_start) : endDs;
-      const startDayOff = Math.round((new Date(startDs + 'T00:00:00').getTime() - winStart.getTime()) / 86400000);
-      const endDayOff = Math.round((new Date(endDs + 'T00:00:00').getTime() - winStart.getTime()) / 86400000);
-      const spanDays = Math.max(1, endDayOff - startDayOff + 1);
-      const x = Math.max(0, startDayOff * PX);
-      const w = Math.min(spanDays * PX, totalWidth - x);
       const statusColor = { todo:'var(--color-accent)', in_progress:'var(--color-success)', blocked:'var(--color-danger)' }[t.status] || 'var(--color-accent)';
       const barLabel = t.title.length > 14 ? t.title.slice(0, 12) + '…' : t.title;
       const rangeLabel = startDs !== endDs ? `${startDs} → ${endDs}` : endDs;
-      return `<div class="tl-track-row pom-tl-track-row" style="width:${totalWidth}px" data-task-id="${t.id}" title="${t.title}">
-        <div class="tl-today-line" style="left:${todayX + PX/2}px"></div>
-        ${w > 0 ? `<div class="tl-bar" data-task-id="${t.id}" style="left:${x}px;width:${w}px;background:${statusColor};border-radius:3px" title="${t.title}: ${rangeLabel}">${barLabel}</div>` : ''}
-      </div>`;
-    }).join('');
-
-    return `<div class="tl-wrap pom-tl-wrap">
-      <div class="tl-header-row">
-        <div style="min-width:${LABEL_W}px;flex-shrink:0;border-right:1px solid var(--color-border)"></div>
-        <div class="tl-hdr-scroll">
-          <div style="width:${totalWidth}px;height:22px;position:relative;border-bottom:1px solid var(--color-border)">${monthHdr}</div>
-          <div style="width:${totalWidth}px;height:32px;position:relative;border-bottom:2px solid var(--color-border-strong)">
-            ${dayHdr}
-            <div class="tl-today-dot" style="left:${todayX + PX/2}px"></div>
-          </div>
-        </div>
-      </div>
-      <div class="tl-body-wrap">
-        <div class="tl-labels-col" style="min-width:${LABEL_W}px">${focusTasks.map(t => `<div class="tl-label" title="${t.title}" data-task-id="${t.id}" style="cursor:pointer">${t.title}</div>`).join('')}</div>
-        <div class="tl-tracks-scroll">${rows}</div>
-      </div>
-    </div>`;
+      return {
+        key: String(t.id),
+        title: t.title,
+        start: startDs,
+        end: endDs,
+        color: statusColor,
+        taskId: t.id,
+        barLabel,
+        barTitle: `${t.title}: ${rangeLabel}`,
+        trackTitle: t.title,
+        trackClass: 'pom-tl-track-row',
+        barExtraStyle: 'border-radius:3px',
+      };
+    });
+    const emptyHtml = `<div class="pom-timeline-empty">No focus blocks scheduled. Open a task and set a Focus Block date in the properties panel to see it here.</div>`;
+    return `<span class="svelte-timelinegrid-mount" data-days-before="7" data-days-after="30" data-month-format="short" data-wrap-class="pom-tl-wrap" data-empty-html="${escHtml(emptyHtml)}" data-items="${escHtml(JSON.stringify(items))}"></span>`;
   }
   const pomTasks = allTasksCache.filter(t => t.pomodoro);
 
@@ -15323,6 +15635,10 @@ async function renderPomodoro() {
   updateDisplay();
   renderLog();
 
+  // Must mount before the click bindings below — the Focus Block
+  // Timeline's day-grid is rendered by TimelineGrid.svelte, so the
+  // elements they query for don't exist until the mount runs.
+  mountTaskRowSvelteInstances();
   // Focus block timeline — click label or bar to open task
   document.querySelectorAll('.pom-tl-wrap .tl-label[data-task-id], .pom-tl-wrap .tl-bar[data-task-id], .pom-tl-track-row').forEach(el => {
     el.onclick = () => { const id = el.dataset.taskId; if (id) showTaskSlideover(id); };
@@ -15345,6 +15661,7 @@ async function renderPomodoro() {
 
 function bindTaskListEvents() {
   bindCtxHandles();
+  mountTaskRowSvelteInstances();
   document.querySelectorAll('.task-row').forEach(row => {
     row.onclick = (e) => {
       if (e.target.classList.contains('task-toggle-arrow') || e.target.closest('.task-toggle-arrow') ||
@@ -15401,6 +15718,7 @@ function bindTaskListEvents() {
 
 /* ─── Shared detail-view task event binding ──────────────────────────── */
 function bindDetailTaskEvents(onRefresh) {
+  mountTaskRowSvelteInstances();
   document.querySelectorAll('.task-row').forEach(row => {
     row.onclick = (e) => {
       if (e.target.classList.contains('task-toggle-arrow') || e.target.closest('.task-toggle-arrow') ||
@@ -15658,113 +15976,21 @@ async function showEditTaskModal(task) {
 }
 
 /* ─── Goal Modal ─────────────────────────────────────────────────────── */
+// Every call site passes an id-less goal, so this always creates a blank
+// record and opens the (Svelte-driven) property-panel slideover for it —
+// there is no reachable multi-field form here anymore.
 async function showGoalModal(goal, afterSave) {
-  if (!goal || !goal.id) {
-    let newId;
-    try {
-      const presets = goal || {};
-      presets.title = presets.title || 'Untitled';
-      const created = await api('POST', '/api/goals', presets);
-      newId = created.id;
-    } catch (e) {
-      console.error(e);
-      return;
-    }
-    showGoalSlideover({ id: newId }, afterSave);
+  let newId;
+  try {
+    const presets = goal || {};
+    presets.title = presets.title || 'Untitled';
+    const created = await api('POST', '/api/goals', presets);
+    newId = created.id;
+  } catch (e) {
+    console.error(e);
     return;
   }
-  const v = goal || {};
-  const typeOpts = GOAL_TYPES.map(t => `<option value="${t}" ${v.type===t?'selected':''}>${t}</option>`).join('');
-  const yearOpts = GOAL_YEARS.map(y => `<option value="${y}" ${v.year===y?'selected':''}>${y}</option>`).join('');
-  const statusOpts = GOAL_STATUSES.map(s =>
-    `<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
-  const catOpts = categoryOptions(v.category_id, true);
-
-  let existingTagIds = [];
-  if (v.id) {
-    try { existingTagIds = (await api('GET', `/api/goals/${v.id}/tags`) || []).map(t => t.id); } catch(e) {}
-  }
-
-  const body = `
-    <div class="form-group"><label class="form-label">Title *</label>
-      <input type="text" id="g-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
-    <div class="form-group"><label class="form-label">Description</label>
-      <textarea id="g-desc">${v.description||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Type</label><select id="g-type">${typeOpts}</select></div>
-      <div class="form-group"><label class="form-label">Year</label><select id="g-year">${yearOpts}</select></div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Status</label><select id="g-status">${statusOpts}</select></div>
-      <div class="form-group"><label class="form-label">Category</label><select id="g-category">${catOpts}</select></div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Date</label>
-      <div class="date-mode-toggle">
-        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
-        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
-      </div>
-      <div id="g-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        ${singleDateChipHtml('g-due', stripDate(v.due_date))}
-      </div>
-      <div id="g-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        ${rangeDateChipHtml('g-start', stripDate(v.start_date), 'g-due-range', stripDate(v.due_date))}
-      </div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Start Value</label><input type="number" id="g-sv" value="${v.start_value||''}" /></div>
-      <div class="form-group"><label class="form-label">Current Value</label><input type="number" id="g-cv" value="${v.current_value||''}" /></div>
-    </div>
-    <div class="form-group"><label class="form-label">Target Value</label>
-      <input type="number" id="g-target" value="${v.target||''}" /></div>
-    <div class="form-group"><label class="form-label">Tags</label>
-      ${tagPickerHtml(existingTagIds)}</div>
-    <div class="form-actions">
-      ${v.id ? `<button class="btn btn-danger" id="modal-delete-btn">Delete</button>` : ''}
-      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">Save</button>
-    </div>`;
-
-  openFormSlideover(v.id ? 'Edit Goal' : 'New Goal', body);
-  bindModalDateChips();
-  bindTagPicker();
-  bindDateModeToggle('g-date-due-wrap', 'g-date-range-wrap');
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const isRange = document.getElementById('g-date-range-wrap')?.style.display !== 'none';
-    const data = {
-      title: document.getElementById('g-title').value.trim(),
-      description: document.getElementById('g-desc').value,
-      type: document.getElementById('g-type').value,
-      year: document.getElementById('g-year').value,
-      status: document.getElementById('g-status').value,
-      category_id: document.getElementById('g-category').value ? parseInt(document.getElementById('g-category').value) : null,
-      start_date: isRange ? (document.getElementById('g-start')?.value || null) : null,
-      due_date: isRange ? (document.getElementById('g-due-range')?.value || null) : (document.getElementById('g-due')?.value || null),
-      start_value: parseFloat(document.getElementById('g-sv').value) || 0,
-      current_value: parseFloat(document.getElementById('g-cv').value) || 0,
-      target: parseFloat(document.getElementById('g-target').value) || 0,
-    };
-    if (!data.title) { showToast('Title is required', 'error'); return; }
-    let savedId = v.id;
-    if (v.id) await api('PATCH', `/api/goals/${v.id}`, data);
-    else { const r = await api('POST', '/api/goals', data); savedId = r?.id; }
-    if (savedId) {
-      const tagIds = getSelectedTagIds();
-      try { await api('PUT', `/api/goals/${savedId}/tags`, { tag_ids: tagIds }); } catch(e) {}
-    }
-    closeFormSlideover();
-    if (afterSave) afterSave();
-    else renderGoals();
-  };
-  if (v.id) {
-    document.getElementById('modal-delete-btn').onclick = async () => {
-      if (!confirm('Delete this goal?')) return;
-      await api('DELETE', `/api/goals/${v.id}`);
-      closeFormSlideover();
-      renderGoals();
-    };
-  }
+  showGoalSlideover({ id: newId }, afterSave);
 }
 
 /* ─── Project Slideover (auto-save, expand to detail) ───────────────── */
@@ -16246,192 +16472,41 @@ async function showGoalSlideover(goal, afterSave) {
 }
 
 /* ─── Project Modal ──────────────────────────────────────────────────── */
+// Every call site passes an id-less project, so this always creates a
+// blank record and opens the (Svelte-driven) property-panel slideover for
+// it — there is no reachable multi-field form here anymore.
 async function showProjectModal(project, goals, afterSave) {
-  if (!project || !project.id) {
-    let newId;
-    try {
-      const presets = project || {};
-      presets.title = presets.title || 'Untitled';
-      const created = await api('POST', '/api/projects', presets);
-      newId = created.id;
-    } catch (e) {
-      console.error(e);
-      return;
-    }
-    showProjectSlideover({ id: newId }, goals, afterSave);
+  let newId;
+  try {
+    const presets = project || {};
+    presets.title = presets.title || 'Untitled';
+    const created = await api('POST', '/api/projects', presets);
+    newId = created.id;
+  } catch (e) {
+    console.error(e);
     return;
   }
-  const v = project || {};
-  const goalOpts = '<option value="">— none —</option>' + (goals||[]).map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(v.goal_id)?'selected':''}>${g.title}</option>`).join('');
-  const statusOpts = ['active','on_hold','completed','archived'].map(s =>
-    `<option value="${s}" ${v.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('');
-  const macroOpts = '<option value="">— none —</option>' + MACRO_AREAS.map(m =>
-    `<option value="${m}" ${v.macro_area===m?'selected':''}>${m}</option>`).join('');
-  const kanbanOpts = '<option value="">— none —</option>' + KANBAN_COLS.map(k =>
-    `<option value="${k}" ${v.kanban_col===k?'selected':''}>${k}</option>`).join('');
-  const catOpts = categoryOptions(v.category_id, true);
-
-  let existingTagIds = [];
-  if (v.id) {
-    try { existingTagIds = (await api('GET', `/api/projects/${v.id}/tags`) || []).map(t => t.id); } catch(e) {}
-  }
-
-  const body = `
-    <div class="form-group"><label class="form-label">Title *</label>
-      <input type="text" id="p-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
-    <div class="form-group"><label class="form-label">Description</label>
-      <textarea id="p-desc">${v.description||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Goal</label><select id="p-goal">${goalOpts}</select></div>
-      <div class="form-group"><label class="form-label">Status</label><select id="p-status">${statusOpts}</select></div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Macro Area</label><select id="p-macro">${macroOpts}</select></div>
-      <div class="form-group"><label class="form-label">Kanban Column</label><select id="p-kanban">${kanbanOpts}</select></div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Category</label><select id="p-category">${catOpts}</select></div>
-      <div class="form-group"><label class="form-label" style="margin-top:20px;display:flex;align-items:center;gap:8px">
-        <input type="checkbox" id="p-archived" ${v.archived?'checked':''} style="width:auto" /> Archived
-      </label></div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Date</label>
-      <div class="date-mode-toggle">
-        <button type="button" class="date-mode-btn ${!v.start_date ? 'active' : ''}" data-date-mode="due">Due date</button>
-        <button type="button" class="date-mode-btn ${v.start_date ? 'active' : ''}" data-date-mode="range">Date range</button>
-      </div>
-      <div id="p-date-due-wrap" style="${v.start_date ? 'display:none' : ''}">
-        ${singleDateChipHtml('p-due', stripDate(v.due_date))}
-      </div>
-      <div id="p-date-range-wrap" class="date-range-row" style="${!v.start_date ? 'display:none' : 'margin-top:6px'}">
-        ${rangeDateChipHtml('p-start', stripDate(v.start_date), 'p-due-range', stripDate(v.due_date))}
-      </div>
-    </div>
-    <div class="form-group"><label class="form-label">Tags</label>
-      ${tagPickerHtml(existingTagIds)}</div>
-    <div class="form-actions">
-      ${v.id ? `<button class="btn btn-danger" id="modal-delete-btn">Delete</button>` : ''}
-      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">Save</button>
-    </div>`;
-
-  openFormSlideover(v.id ? 'Edit Project' : 'New Project', body);
-  bindModalDateChips();
-  bindTagPicker();
-  bindDateModeToggle('p-date-due-wrap', 'p-date-range-wrap');
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const isRange = document.getElementById('p-date-range-wrap')?.style.display !== 'none';
-    const data = {
-      title: document.getElementById('p-title').value.trim(),
-      description: document.getElementById('p-desc').value,
-      goal_id: document.getElementById('p-goal').value ? parseInt(document.getElementById('p-goal').value) : null,
-      status: document.getElementById('p-status').value,
-      macro_area: document.getElementById('p-macro').value || null,
-      kanban_col: document.getElementById('p-kanban').value || null,
-      category_id: document.getElementById('p-category').value ? parseInt(document.getElementById('p-category').value) : null,
-      archived: document.getElementById('p-archived').checked,
-      start_date: isRange ? (document.getElementById('p-start')?.value || null) : null,
-      due_date: isRange ? (document.getElementById('p-due-range')?.value || null) : (document.getElementById('p-due')?.value || null),
-    };
-    if (!data.title) { showToast('Title is required', 'error'); return; }
-    let savedId = v.id;
-    if (v.id) await api('PATCH', `/api/projects/${v.id}`, data);
-    else { const r = await api('POST', '/api/projects', data); savedId = r?.id; }
-    if (savedId) {
-      const tagIds = getSelectedTagIds();
-      try { await api('PUT', `/api/projects/${savedId}/tags`, { tag_ids: tagIds }); } catch(e) {}
-    }
-    closeFormSlideover();
-    if (afterSave) afterSave();
-    else renderProjects();
-  };
-  if (v.id) {
-    document.getElementById('modal-delete-btn').onclick = async () => {
-      if (!confirm('Delete this project?')) return;
-      await api('DELETE', `/api/projects/${v.id}`);
-      closeFormSlideover();
-      renderProjects();
-    };
-  }
+  showProjectSlideover({ id: newId }, goals, afterSave);
 }
 
 /* ─── Note Modal ─────────────────────────────────────────────────────── */
+// Every call site either passes an id-less note (creates a blank record)
+// or an existing note (redirects straight to the slideover) — either way
+// this always ends at showNoteSlideover, so there is no reachable
+// multi-field form here anymore.
 async function showNoteModal(note, afterSave) {
-  if (!note || !note.id) {
-    let newId;
-    try {
-      const presets = note || {};
-      presets.title = presets.title || 'Untitled';
-      const created = await api('POST', '/api/notes', presets);
-      newId = created.id;
-    } catch (e) {
-      console.error(e);
-      return;
-    }
-    showNoteSlideover(newId, afterSave);
+  if (note && note.id) { showNoteSlideover(note.id, afterSave); return; }
+  let newId;
+  try {
+    const presets = note || {};
+    presets.title = presets.title || 'Untitled';
+    const created = await api('POST', '/api/notes', presets);
+    newId = created.id;
+  } catch (e) {
+    console.error(e);
     return;
   }
-  const v = note || {};
-  if (v.id) { showNoteSlideover(v.id, afterSave); return; }
-
-  let projects = [], tasks = [], goals = [];
-  try { [projects, tasks, goals] = await Promise.all([
-    api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
-  ]); } catch(e) {}
-
-  const catOpts = categoryOptions(v.category_id, true);
-  const goalOpts = '<option value="">— none —</option>' + goals.map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(v.goal_id)?'selected':''}>${g.title}</option>`).join('');
-  const projOpts = '<option value="">— none —</option>' + projects.map(p =>
-    `<option value="${p.id}" ${String(p.id)===String(v.project_id)?'selected':''}>${p.title}</option>`).join('');
-  const taskOpts = '<option value="">— none —</option>' + tasks.map(t =>
-    `<option value="${t.id}" ${String(t.id)===String(v.task_id)?'selected':''}>${t.title}</option>`).join('');
-
-  const body = `
-    <div class="form-group"><label class="form-label">Title *</label>
-      <input type="text" id="n-title" value="${(v.title||'').replace(/"/g,'&quot;')}" /></div>
-    <div class="form-group"><label class="form-label">Body</label>
-      <textarea id="n-body" style="min-height:120px">${v.body||''}</textarea></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Category</label><select id="n-category">${catOpts}</select></div>
-      <div class="form-group"><label class="form-label">Note Date</label>${singleDateChipHtml('n-date', v.note_date||'')}</div>
-    </div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Goal</label><select id="n-goal">${goalOpts}</select></div>
-      <div class="form-group"><label class="form-label">Project</label><select id="n-project">${projOpts}</select></div>
-    </div>
-    <div class="form-group"><label class="form-label">Task</label><select id="n-task">${taskOpts}</select></div>
-    <div class="form-actions">
-      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">Save</button>
-    </div>`;
-
-  openFormSlideover('New Note', body);
-  bindModalDateChips();
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const data = {
-      title: document.getElementById('n-title').value.trim(),
-      body: document.getElementById('n-body').value,
-      category_id: document.getElementById('n-category').value ? parseInt(document.getElementById('n-category').value) : null,
-      note_date: document.getElementById('n-date').value || null,
-      goal_id: document.getElementById('n-goal').value ? parseInt(document.getElementById('n-goal').value) : null,
-      project_id: document.getElementById('n-project').value ? parseInt(document.getElementById('n-project').value) : null,
-      task_id: document.getElementById('n-task').value ? parseInt(document.getElementById('n-task').value) : null,
-      ...(v.task_id && { task_id: parseInt(v.task_id) }),
-      ...(v.project_id && { project_id: parseInt(v.project_id) }),
-      ...(v.goal_id && { goal_id: parseInt(v.goal_id) }),
-    };
-    if (!data.title) { showToast('Title is required', 'error'); return; }
-    try {
-      await api('POST', '/api/notes', data);
-      closeFormSlideover();
-      if (afterSave) afterSave(); else renderNotes();
-    } catch(err) { showToast('Error saving note: ' + (err.message || String(err)), 'error'); }
-  };
+  showNoteSlideover(newId, afterSave);
 }
 
 /* ─── Note Sideview (task-sideview style for existing notes) ─────────── */
@@ -16890,90 +16965,21 @@ async function showSprintSlideover(sprintId, afterSave) {
 }
 
 /* ─── Sprint Modal ───────────────────────────────────────────────────── */
+// Every call site passes an id-less sprint, so this always creates a
+// blank record and opens the (Svelte-driven) property-panel slideover for
+// it — there is no reachable multi-field form here anymore.
 async function showSprintModal(projects, sprint) {
-  if (!sprint || !sprint.id) {
-    let newId;
-    try {
-      const presets = sprint || {};
-      presets.title = presets.title || 'Untitled';
-      const created = await api('POST', '/api/sprints', presets);
-      newId = created.id;
-    } catch (e) {
-      console.error(e);
-      return;
-    }
-    showSprintSlideover(newId);
+  let newId;
+  try {
+    const presets = sprint || {};
+    presets.title = presets.title || 'Untitled';
+    const created = await api('POST', '/api/sprints', presets);
+    newId = created.id;
+  } catch (e) {
+    console.error(e);
     return;
   }
-  const s = sprint || {};
-  const projOpts = '<option value="">— none —</option>' + (projects||[]).map(p =>
-    `<option value="${p.id}" ${String(p.id)===String(s.project_id)?'selected':''}>${p.title}</option>`).join('');
-
-  const body = `
-    <div class="form-group"><label class="form-label">Title *</label>
-      <div style="display:flex;align-items:center;gap:8px">
-        <button type="button" class="entity-icon-btn" id="sprint-icon-btn" title="Set icon"><span id="sprint-icon-display">☐</span></button>
-        <input type="text" id="sp-title" placeholder="Sprint name" value="${(s.title||'').replace(/"/g,'&quot;')}" style="flex:1" />
-      </div>
-    </div>
-    <div class="form-group"><label class="form-label">Project</label>
-      <select id="sp-project">${projOpts}</select></div>
-    <div class="grid-2">
-      <div class="form-group"><label class="form-label">Start Date</label>${singleDateChipHtml('sp-start', s.start_date||'')}</div>
-      <div class="form-group"><label class="form-label">End Date</label>${singleDateChipHtml('sp-end', s.end_date||'')}</div>
-    </div>
-    <div class="form-group"><label class="form-label">Capacity (Story Points)</label>
-      <input type="number" id="sp-story-points" min="0" placeholder="e.g. 40" value="${s.story_points != null ? s.story_points : ''}" style="width:100%" />
-    </div>
-    <div class="form-actions">
-      <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-      <button class="btn btn-primary" id="modal-save-btn">${s.id ? 'Save' : 'Create'}</button>
-    </div>`;
-
-  openFormSlideover(s.id ? 'Edit Sprint' : 'New Sprint', body);
-  bindModalDateChips();
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  // ── Sprint icon picker ────────────────────────────────────────────────
-  const sprintIconBtn = document.getElementById('sprint-icon-btn');
-  const sprintIconDisplay = document.getElementById('sprint-icon-display');
-  if (s.id) {
-    loadEntityIcon('sprint', s.id).then(icon => {
-      if (sprintIconDisplay) { sprintIconDisplay.innerHTML = icon ? renderEntityIcon(icon, 20) : '☐'; sprintIconDisplay.dataset.icon = icon || ''; }
-    });
-  }
-  if (sprintIconBtn) {
-    sprintIconBtn.onclick = (e) => {
-      e.stopPropagation();
-      const cur = sprintIconDisplay ? sprintIconDisplay.dataset.icon || '' : '';
-      showIconPicker(sprintIconBtn, 'sprint', s.id || null, cur, (newIcon) => {
-        if (sprintIconDisplay) { sprintIconDisplay.innerHTML = newIcon ? renderEntityIcon(newIcon, 20) : '☐'; sprintIconDisplay.dataset.icon = newIcon; }
-        if (s.id) {
-          saveEntityIcon('sprint', s.id, newIcon).catch(() => {
-            if (sprintIconDisplay) { sprintIconDisplay.innerHTML = cur ? renderEntityIcon(cur, 20) : '☐'; sprintIconDisplay.dataset.icon = cur; }
-          });
-        }
-      });
-    };
-  }
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const spVal = document.getElementById('sp-story-points').value.trim();
-    const data = {
-      title: document.getElementById('sp-title').value.trim(),
-      project_id: document.getElementById('sp-project').value ? parseInt(document.getElementById('sp-project').value) : null,
-      start_date: document.getElementById('sp-start').value || null,
-      end_date: document.getElementById('sp-end').value || null,
-      story_points: spVal !== '' ? parseInt(spVal, 10) : null,
-    };
-    if (!data.title) { showToast('Title is required', 'error'); return; }
-    if (s.id) {
-      await api('PATCH', `/api/sprints/${s.id}`, data);
-    } else {
-      data.status = 'planned';
-      await api('POST', '/api/sprints', data);
-    }
-    closeFormSlideover();
-    renderSprints();
-  };
+  showSprintSlideover(newId);
 }
 
 /* ─── Resource Slideover (view + auto-save) ──────────────────────────── */
@@ -17244,87 +17250,21 @@ async function showResourceSlideover(resource, afterSave) {
 
 /* ─── Category Modal ─────────────────────────────────────────────────── */
 
+// Every call site passes an id-less presets object, so this always
+// creates a blank record and opens the (Svelte-driven) property-panel
+// slideover for it — there is no reachable multi-field form here anymore.
 async function showResourceModal(presets, afterSave) {
   const p = presets || {};
-  if (!p.id) {
-    let newId;
-    try {
-      p.title = p.title || 'Untitled';
-      const created = await api('POST', '/api/resources', p);
-      newId = created.id;
-    } catch (e) {
-      console.error(e);
-      return;
-    }
-    showResourceSlideover({ id: newId }, afterSave);
+  let newId;
+  try {
+    p.title = p.title || 'Untitled';
+    const created = await api('POST', '/api/resources', p);
+    newId = created.id;
+  } catch (e) {
+    console.error(e);
     return;
   }
-  let projects = [], tasks = [], goals = [];
-  try { [projects, tasks, goals] = await Promise.all([
-    api('GET', '/api/projects'), api('GET', '/api/tasks'), api('GET', '/api/goals')
-  ]); } catch(e) {}
-
-  const goalOpts = '<option value="">— none —</option>' + goals.map(g =>
-    `<option value="${g.id}" ${String(g.id)===String(p.goal_id)?'selected':''}>${g.title}</option>`).join('');
-  const projOpts = '<option value="">— none —</option>' + projects.map(pr =>
-    `<option value="${pr.id}" ${String(pr.id)===String(p.project_id)?'selected':''}>${pr.title}</option>`).join('');
-  const taskOpts = '<option value="">— none —</option>' + tasks.map(t =>
-    `<option value="${t.id}" ${String(t.id)===String(p.task_id)?'selected':''}>${t.title}</option>`).join('');
-
-  const body = `
-    <div style="display:flex;flex-direction:column;gap:12px;padding:4px 0">
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Title *</label>
-        <input type="text" id="rs-title" placeholder="Resource title" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Type</label>
-        <input type="text" id="rs-type" placeholder="e.g. link, book, tool…" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">URL</label>
-        <input type="url" id="rs-url" style="width:100%;box-sizing:border-box" />
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Body / Notes</label>
-        <textarea id="rs-body" style="width:100%;box-sizing:border-box;min-height:80px"></textarea>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        <div class="form-group" style="margin:0"><label class="form-label">Goal</label><select id="rs-goal" style="width:100%">${goalOpts}</select></div>
-        <div class="form-group" style="margin:0"><label class="form-label">Project</label><select id="rs-project" style="width:100%">${projOpts}</select></div>
-      </div>
-      <div class="form-group" style="margin:0">
-        <label class="form-label">Task</label>
-        <select id="rs-task" style="width:100%">${taskOpts}</select>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-ghost" id="modal-cancel-btn">Cancel</button>
-        <button class="btn btn-primary" id="modal-save-btn">Create</button>
-      </div>
-    </div>`;
-
-  openFormSlideover('New Resource', body);
-  document.getElementById('modal-cancel-btn').onclick = closeFormSlideover;
-  document.getElementById('modal-save-btn').onclick = async () => {
-    const title = document.getElementById('rs-title').value.trim();
-    if (!title) { showToast('Title is required', 'error'); return; }
-    const data = {
-      title,
-      resource_type: document.getElementById('rs-type').value || 'note',
-      url: document.getElementById('rs-url').value.trim() || null,
-      body: document.getElementById('rs-body').value,
-      goal_id: document.getElementById('rs-goal').value ? parseInt(document.getElementById('rs-goal').value) : null,
-      project_id: document.getElementById('rs-project').value ? parseInt(document.getElementById('rs-project').value) : null,
-      task_id: document.getElementById('rs-task').value ? parseInt(document.getElementById('rs-task').value) : null,
-    };
-    try {
-      await api('POST', '/api/resources', data);
-      closeFormSlideover();
-      if (afterSave) afterSave();
-    } catch(e) {
-      showToast('Failed to create resource: ' + e.message, 'error');
-    }
-  };
+  showResourceSlideover({ id: newId }, afterSave);
 }
 
 function showCategoryModal(cat) {
@@ -19510,6 +19450,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Load custom entity types and render nav
   await loadCustomEntityTypes();
+  await loadWorkspaces();
 
   renderTaxonomyNav();
 
