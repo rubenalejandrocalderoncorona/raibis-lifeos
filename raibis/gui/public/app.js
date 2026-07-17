@@ -3233,7 +3233,7 @@ function showAddOptionsPanel(anchorBtn, key, name, type, entity, onAdd, descript
 
   renderPanel();
   const rect = anchorBtn.getBoundingClientRect();
-  panel.style.cssText = `position:fixed;z-index:9200;min-width:270px;top:${rect.bottom+4}px;left:${rect.left}px`;
+  panel.style.cssText = `position:fixed;z-index:10050;min-width:270px;top:${rect.bottom+4}px;left:${rect.left}px`;
   document.body.appendChild(panel);
   requestAnimationFrame(() => {
     const cr = panel.getBoundingClientRect();
@@ -3322,7 +3322,7 @@ function showAddRelationPanel(anchorBtn, key, name, entity, onAdd, description) 
 
   renderPanel();
   const rect = anchorBtn.getBoundingClientRect();
-  panel.style.cssText = `position:fixed;z-index:9200;min-width:270px;top:${rect.bottom+4}px;left:${rect.left}px`;
+  panel.style.cssText = `position:fixed;z-index:10050;min-width:270px;top:${rect.bottom+4}px;left:${rect.left}px`;
   document.body.appendChild(panel);
   requestAnimationFrame(() => {
     const cr = panel.getBoundingClientRect();
@@ -3561,7 +3561,7 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
 
   render();
   const rect = anchorBtn.getBoundingClientRect();
-  panel.style.cssText = `position:fixed;z-index:9200;min-width:286px;max-height:70vh;overflow-y:auto;top:${rect.bottom+4}px;left:${rect.left}px`;
+  panel.style.cssText = `position:fixed;z-index:10050;min-width:286px;max-height:70vh;overflow-y:auto;top:${rect.bottom+4}px;left:${rect.left}px`;
   document.body.appendChild(panel);
   requestAnimationFrame(() => {
     const cr = panel.getBoundingClientRect();
@@ -3602,7 +3602,7 @@ function bindAddPropBtn(entity, onAdd) {
 
       // Position fixed from viewport rect — escapes overflow:auto clipping in slideovers
       const bRect = btn.getBoundingClientRect();
-      picker.style.cssText = `position:fixed;z-index:9100;min-width:280px;padding:8px 6px 6px;top:${bRect.bottom+4}px;left:${bRect.left}px`;
+      picker.style.cssText = `position:fixed;z-index:10040;min-width:280px;padding:8px 6px 6px;top:${bRect.bottom+4}px;left:${bRect.left}px`;
       document.body.appendChild(picker);
       requestAnimationFrame(() => {
         const cr = picker.getBoundingClientRect();
@@ -3638,7 +3638,7 @@ function bindAddPropBtn(entity, onAdd) {
               <button id="add-prop-name-confirm" class="btn btn-sm btn-primary" style="white-space:nowrap">Add</button>
             </div>`;
           const bRect2 = btn.getBoundingClientRect();
-          namePicker.style.cssText = `position:fixed;z-index:9200;min-width:260px;top:${bRect2.bottom+4}px;left:${bRect2.left}px`;
+          namePicker.style.cssText = `position:fixed;z-index:10050;min-width:260px;top:${bRect2.bottom+4}px;left:${bRect2.left}px`;
           document.body.appendChild(namePicker);
           const nameInp = document.getElementById('add-prop-name-input');
           const descInp = document.getElementById('add-prop-desc-input');
@@ -3739,14 +3739,9 @@ function renderCustomPropChips(entity, recordId, viewMode, excludeDates) {
     if (def.type === 'rollup') {
       const fresh = evaluateRollup(entity, recordId, def);
       const rv = fresh !== null ? Math.round(fresh * 100) / 100 : val;
-      if (rv === '' || rv === undefined || rv === null) return '';
-      // The bar/ring widget is a Card-view-only representation — everywhere
-      // else (List, Table, Kanban) a rollup stays a plain compact badge so
-      // it doesn't compete for space with the rest of the row/card chips.
-      if (viewMode === 'cards') return renderRollupCardWidget(def, rv);
-      const isPct = def.rollup?.operation === 'percentage_match';
-      const disp = Number.isInteger(rv) ? String(rv) : rv.toFixed(1);
-      return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px"${tipAttrs(def.label, def.description)}>∑ ${disp}${isPct?'%':''}</span>`;
+      // Same bar/ring/text widget in every view — kept consistent across
+      // List/Table/Kanban/Cards by design rather than Card-only.
+      return (rv === '' || rv === undefined || rv === null) ? '' : renderRollupCardWidget(def, rv);
     }
     if (def.type === 'checkbox') {
       return checkboxChipHtml(def.label, val, def.description);
@@ -4339,19 +4334,22 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
     if (fn) valEl.onclick = (e) => { e.stopPropagation(); fn(valEl); };
   });
 
-  // Wire custom prop value clicks (inline edit)
+  // Wire custom prop value clicks (inline edit). The Svelte mounts each own
+  // their real click target (a `role="button"` span/input/button), but that
+  // target is only as big as its own content — a bare "—" for an empty
+  // value is a couple pixels wide. Forward any click on the row's value
+  // cell to that inner control so the whole cell is clickable, not just
+  // the rendered glyph.
   panel.querySelectorAll('.inline-prop-row[data-is-custom="true"] .inline-prop-value').forEach(valEl => {
     const key = valEl.dataset.propKey;
     const defs = getCustomPropDefs(entity);
     const def = defs.find(d => d.key === key);
-    if (!def) return;
-    if (def.type === 'checkbox') return; // handled by Svelte CheckboxProp directly
-    if (def.type === 'text' || def.type === 'number' || def.type === 'email' || def.type === 'phone' || def.type === 'url') return; // handled by Svelte TextProp directly
-    if (def.type === 'rollup') return; // handled by Svelte RollupProp directly
-    if (def.type === 'date') return; // handled by Svelte DateProp directly
-    if (def.type === 'select' || def.type === 'status') return; // handled by Svelte SelectProp directly
-    if (def.type === 'relation') return; // handled by Svelte RelationProp directly
-    if (def.type === 'multi_select') return; // handled by Svelte MultiSelectProp directly
+    if (!def || def.type === 'checkbox') return; // checkbox's own hit target is the expected click point
+    valEl.onclick = (e) => {
+      if (e.target.closest('[role="button"], input, button')) return; // already reached the inner control directly
+      e.stopPropagation();
+      valEl.querySelector('[role="button"], input, button')?.click();
+    };
   });
 
   // Wire delete buttons (remove custom prop def + values from all records)
@@ -11702,7 +11700,12 @@ function openMetricsEditPopover(anchorEl, entity, entityId) {
   document.body.appendChild(panel);
   const rect = anchorEl.getBoundingClientRect();
   panel.style.top = (rect.bottom + 6) + 'px';
-  panel.style.left = Math.max(8, rect.right - 220) + 'px';
+  panel.style.left = rect.left + 'px';
+  requestAnimationFrame(() => {
+    const cr = panel.getBoundingClientRect();
+    if (cr.right > window.innerWidth - 8) panel.style.left = Math.max(8, window.innerWidth - cr.width - 8) + 'px';
+    if (cr.bottom > window.innerHeight - 8) panel.style.top = Math.max(8, rect.top - cr.height - 6) + 'px';
+  });
 
   api('GET', `/api/${entity}s/${entityId}`).then(data => {
     const field = (id, label, value) => `
