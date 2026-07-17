@@ -5807,6 +5807,7 @@ function renderWorkspaceSwitcher() {
       else localStorage.setItem('activeWorkspaceId', String(activeWorkspaceId));
       renderWorkspaceSwitcher();
       applyWorkspaceFilterToNav();
+      renderView(currentView, currentParams); // refetch/refilter whatever's on screen for the new workspace
     };
   });
   document.getElementById('workspace-manage-btn').onclick = (e) => { e.stopPropagation(); showWorkspaceManagerModal(); };
@@ -5901,10 +5902,12 @@ function showWorkspaceManagerModal() {
         showConfirmModal('Delete this workspace? Items tagged with it lose that tag and only show up in "All workspaces" again.', async () => {
           try {
             await api('DELETE', `/api/workspaces/${id}`);
-            if (activeWorkspaceId === id) { activeWorkspaceId = null; localStorage.removeItem('activeWorkspaceId'); }
+            const wasActive = activeWorkspaceId === id;
+            if (wasActive) { activeWorkspaceId = null; localStorage.removeItem('activeWorkspaceId'); }
             if (editingId === id) resetForm();
             await loadWorkspaces();
             renderBody();
+            if (wasActive) renderView(currentView, currentParams);
             showToast('Workspace deleted');
           } catch (err) { showToast('Failed: ' + (err.message || err), 'error'); }
         });
@@ -5945,6 +5948,7 @@ function showWorkspaceManagerModal() {
         showToast(editingId ? 'Workspace updated' : 'Workspace created');
         resetForm();
         renderBody();
+        if (activeWorkspaceId === wsId) renderView(currentView, currentParams);
       } catch (err) { showToast('Failed: ' + (err.message || err), 'error'); }
     };
   }
@@ -9112,14 +9116,20 @@ async function syncBuiltinRelation(ownerType, ownerId, ownerTitle, relEntity, ol
 // Reads stored multi-value for a builtin relation prop; falls back to FK display name
 function renderMultiRelationValue(entity, recordId, propKey, fkTitle) {
   const vals = getCustomPropValues(entity, recordId);
+  const relColors = (getPropOverrides(entity)[propKey] || {}).relationColors || {};
+  const chip = (id, label) => {
+    const name = relColors[String(id)];
+    return name ? `<span class="multi-chip color-${name}" style="font-size:11px">${escHtml(label)}</span>` : `<span class="multi-chip" style="font-size:11px">${escHtml(label)}</span>`;
+  };
   const stored = vals[propKey];
   if (stored) {
     const items = parseRelationValue(stored);
     // Deduplicate by id to guard against stale storage having duplicate entries
     const seen = new Set();
     const unique = items.filter(it => { if (seen.has(it.id)) return false; seen.add(it.id); return true; });
-    if (unique.length) return unique.map(it => `<span class="multi-chip" style="font-size:11px">${escHtml(it.label)}</span>`).join('');
+    if (unique.length) return unique.map(it => chip(it.id, it.label)).join('');
   }
+  // Legacy fallback (no custom-prop array stored yet, just the old single FK title) — no id to color by.
   return fkTitle ? `<span class="multi-chip" style="font-size:11px">${escHtml(fkTitle)}</span>` : '';
 }
 
@@ -9135,7 +9145,8 @@ function openMultiRelationPicker(valEl, entity, recordId, propKey, relEntity, re
     curItems = [{ id: fkId, label: fkItem ? (fkItem.title || fkItem.name || fkId) : fkId }];
   }
   const curIds = curItems.map(x => x.id).filter(Boolean);
-  openCombo(valEl, relList.map(it => ({ value: String(it.id), label: it.title || it.name || String(it.id) })), null,
+  const relColors = (getPropOverrides(entity)[propKey] || {}).relationColors || {};
+  openCombo(valEl, relList.map(it => ({ value: String(it.id), label: it.title || it.name || String(it.id), color: relColors[String(it.id)] || null })), null,
     async ({ multiIds }) => {
       if (!multiIds) return;
       const newItems = multiIds.map(id => {
@@ -9154,7 +9165,17 @@ function openMultiRelationPicker(valEl, entity, recordId, propKey, relEntity, re
       ]);
       rerender();
     },
-    { multiSelect: true, selectedIds: curIds }
+    {
+      multiSelect: true, selectedIds: curIds, colorAssignable: true,
+      onColorAssign: (id, color) => {
+        const overrides = getPropOverrides(entity);
+        overrides[propKey] = overrides[propKey] || {};
+        overrides[propKey].relationColors = overrides[propKey].relationColors || {};
+        if (color) overrides[propKey].relationColors[id] = color; else delete overrides[propKey].relationColors[id];
+        setPropOverrides(entity, overrides);
+        rerender();
+      },
+    }
   );
 }
 
@@ -9432,11 +9453,11 @@ async function renderDashboard() {
   let apiError = null;
   try {
     [data, goals, notes, resources, allTasks] = await Promise.all([
-      api('GET', '/api/dashboard'),
-      api('GET', '/api/goals'),
-      api('GET', '/api/notes'),
-      api('GET', '/api/resources'),
-      api('GET', '/api/tasks?all=1'),
+      api('GET', withWorkspaceFilter('/api/dashboard')),
+      api('GET', withWorkspaceFilter('/api/goals')),
+      api('GET', withWorkspaceFilter('/api/notes')),
+      api('GET', withWorkspaceFilter('/api/resources')),
+      api('GET', withWorkspaceFilter('/api/tasks?all=1')),
     ]);
   } catch(e) { data = {}; apiError = e.message || String(e); }
   if (apiError) {
@@ -11699,13 +11720,19 @@ function openMetricsEditPopover(anchorEl, entity, entityId) {
   panel.style.minWidth = '200px';
   document.body.appendChild(panel);
   const rect = anchorEl.getBoundingClientRect();
-  panel.style.top = (rect.bottom + 6) + 'px';
-  panel.style.left = rect.left + 'px';
-  requestAnimationFrame(() => {
-    const cr = panel.getBoundingClientRect();
-    if (cr.right > window.innerWidth - 8) panel.style.left = Math.max(8, window.innerWidth - cr.width - 8) + 'px';
-    if (cr.bottom > window.innerHeight - 8) panel.style.top = Math.max(8, rect.top - cr.height - 6) + 'px';
-  });
+  // The panel is empty until the GET below resolves, so clamping here measures
+  // a ~0-height div and does nothing useful — re-run once real content (the
+  // three inputs + buttons) is in the DOM and has its real size.
+  const clampToViewport = () => {
+    panel.style.top = (rect.bottom + 6) + 'px';
+    panel.style.left = rect.left + 'px';
+    requestAnimationFrame(() => {
+      const cr = panel.getBoundingClientRect();
+      if (cr.right > window.innerWidth - 8) panel.style.left = Math.max(8, window.innerWidth - cr.width - 8) + 'px';
+      if (cr.bottom > window.innerHeight - 8) panel.style.top = Math.max(8, rect.top - cr.height - 6) + 'px';
+    });
+  };
+  clampToViewport();
 
   api('GET', `/api/${entity}s/${entityId}`).then(data => {
     const field = (id, label, value) => `
@@ -11723,6 +11750,7 @@ function openMetricsEditPopover(anchorEl, entity, entityId) {
         <button id="wm-metrics-cancel" class="btn btn-sm btn-ghost">Cancel</button>
         <button id="wm-metrics-save" class="btn btn-sm btn-primary">Save</button>
       </div>`;
+    clampToViewport();
     document.getElementById('wm-metrics-sv').focus();
     panel.querySelector('#wm-metrics-cancel').onclick = () => panel.remove();
     panel.querySelector('#wm-metrics-save').onclick = async () => {

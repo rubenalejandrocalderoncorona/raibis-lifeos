@@ -2628,9 +2628,19 @@ func dashboardHandler(svc service.TaskService, store storage.Storage, dbPath str
 		}
 		today := time.Now().Format("2006-01-02")
 
+		var workspaceFilter *int64
+		if v := r.URL.Query().Get("workspace_id"); v != "" {
+			if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+				workspaceFilter = &id
+			}
+		}
+
 		tasks, _ := svc.List(domain.TaskFilter{TopLevelOnly: true})
+		tasks = filterByWorkspace(tasks, workspaceFilter, func(t *domain.Task) *int64 { return t.WorkspaceID })
 		goals, _ := svc.Goals()
+		goals = filterByWorkspace(goals, workspaceFilter, func(g *domain.Goal) *int64 { return g.WorkspaceID })
 		projects, _ := svc.Projects()
+		projects = filterByWorkspace(projects, workspaceFilter, func(p *domain.Project) *int64 { return p.WorkspaceID })
 
 		projMap := make(map[int64]string)
 		for _, p := range projects {
@@ -2648,6 +2658,7 @@ func dashboardHandler(svc service.TaskService, store storage.Storage, dbPath str
 		var urgentTasks []dashTask
 
 		allTasks, _ := store.ListTasks(domain.TaskFilter{})
+		allTasks = filterByWorkspace(allTasks, workspaceFilter, func(t *domain.Task) *int64 { return t.WorkspaceID })
 		parentCount := make(map[int64]int)
 		for _, t := range allTasks {
 			if t.ParentTaskID != nil {
@@ -2697,6 +2708,7 @@ func dashboardHandler(svc service.TaskService, store storage.Storage, dbPath str
 		}
 		var activeSprint *sprintWidget
 		sprints := listSprints(store, svc, dbPath, nil)
+		sprints = filterByWorkspace(sprints, workspaceFilter, func(s sprintOut) *int64 { return s.WorkspaceID })
 		for _, s := range sprints {
 			if s.Status == "active" {
 				activeSprint = &sprintWidget{
