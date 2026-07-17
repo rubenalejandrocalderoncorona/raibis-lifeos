@@ -7215,6 +7215,7 @@ async function openCustomEntitySlideover(typeName, id) {
     <div class="prop-chips" id="prop-chips">
       <button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${cesTags.length ? cesTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>
       <button class="prop-chip${cesCatName ? '' : ' chip-empty'}" id="chip-category" data-key="category"><span class="chip-label">Category</span><span class="chip-value" id="chip-category-val">${cesCatName ? builtinSelectChip('categories', cesCatName) : '—'}</span></button>
+      <button class="prop-chip${e.workspace_id ? '' : ' chip-empty'}" id="chip-workspace" data-key="workspace"><span class="chip-label">Workspace</span><span class="chip-value" id="chip-workspace-val">${e.workspace_id ? workspaceChipHtml(e.workspace_id) : '—'}</span></button>
       ${cesHeadingChips}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
@@ -7320,6 +7321,14 @@ async function openCustomEntitySlideover(typeName, id) {
     openCategoryCombo(ev.currentTarget, cesCatId, async (newId) => {
       await api('POST', `/api/properties?entity_type=${typeName}&entity_id=${id}`, { key: '_category_id', value: newId });
       if (e.props) e.props._category_id = newId;
+      openCustomEntitySlideover(typeName, id);
+    });
+  });
+
+  document.getElementById('chip-workspace')?.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    openWorkspaceCombo(ev.currentTarget, e.workspace_id, async (newId) => {
+      await api('PUT', `/api/custom/${typeName}/${id}`, { ...e, workspace_id: newId });
       openCustomEntitySlideover(typeName, id);
     });
   });
@@ -7573,21 +7582,21 @@ function renderCurrentView() {
 // vs the body (vertical inline prop panel). Opened by the ··· button.
 
 const ENTITY_ALL_PROPS = {
-  task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goals'},{key:'project',label:'Projects'},{key:'category',label:'Category'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'},{key:'parent_task',label:'Parent Task'}],
-  goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'due',label:'Due Date'},{key:'metrics',label:'Metrics'}],
-  project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goals'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
-  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'},{key:'category',label:'Category'}],
-  note:     [{key:'date',label:'Date'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'}],
-  resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'}],
+  task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goals'},{key:'project',label:'Projects'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'},{key:'parent_task',label:'Parent Task'}],
+  goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'},{key:'due',label:'Due Date'},{key:'metrics',label:'Metrics'}],
+  project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goals'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
+  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'}],
+  note:     [{key:'date',label:'Date'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'}],
+  resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'}],
 };
 
 const ENTITY_SECTION_DEFAULTS = {
-  task:     { heading:['status','priority','due','focus','tags'],   body:['goal','project','category','points','recur','parent_task'] },
-  goal:     { heading:['status','type','year','tags'],              body:['category','due','metrics'] },
-  project:  { heading:['status','due','goal','tags'],              body:['category','macro','kanban','archived'] },
-  sprint:   { heading:['status','dates','project','tags'],         body:['points','category'] },
-  note:     { heading:['date','project','goal','tags'],            body:['category'] },
-  resource: { heading:['type','url','project','goal'],             body:['tags','category'] },
+  task:     { heading:['status','priority','due','focus','tags'],   body:['goal','project','category','workspace','points','recur','parent_task'] },
+  goal:     { heading:['status','type','year','tags'],              body:['category','workspace','due','metrics'] },
+  project:  { heading:['status','due','goal','tags'],              body:['category','workspace','macro','kanban','archived'] },
+  sprint:   { heading:['status','dates','project','tags'],         body:['points','category','workspace'] },
+  note:     { heading:['date','project','goal','tags'],            body:['category','workspace'] },
+  resource: { heading:['type','url','project','goal'],             body:['tags','category','workspace'] },
 };
 
 function getPropSections(entity) {
@@ -12505,7 +12514,7 @@ async function renderHabits() {
 
       return `<div class="habit-heatmap-row">
         <div class="habit-heatmap-title">
-          <span style="font-weight:600">${_esc(h.title)}</span>
+          <span style="font-weight:600">${escHtml(h.title)}</span>
           ${streakBadge(h)}
           <span onclick="event.stopPropagation()">${checkinBtn(h)}</span>
         </div>
@@ -12650,7 +12659,7 @@ function showHabitModal(habit) {
   const body = `
     <div class="form-group">
       <label class="form-label">Title *</label>
-      <input type="text" id="h-title" value="${isEdit ? _esc(habit.title) : ''}" placeholder="e.g. Morning run, Read 30 min…" autocomplete="off" />
+      <input type="text" id="h-title" value="${isEdit ? escHtml(habit.title) : ''}" placeholder="e.g. Morning run, Read 30 min…" autocomplete="off" />
     </div>
     <div class="form-group">
       <label class="form-label">Type</label>
@@ -12662,7 +12671,14 @@ function showHabitModal(habit) {
     </div>
     <div class="form-group" id="h-ref-group" style="${(isEdit && habit.type === 'learning') || (!isEdit) ? '' : 'display:none'}">
       <label class="form-label">StudyTrack Reference ID <span style="font-weight:400;color:var(--text-muted)">(required for Learning)</span></label>
-      <input type="text" id="h-ref" value="${isEdit && habit.reference_id ? _esc(habit.reference_id) : ''}" placeholder="e.g. gcp-ml-engineer" autocomplete="off" style="font-family:var(--font-mono);font-size:13px" />
+      <input type="text" id="h-ref" value="${isEdit && habit.reference_id ? escHtml(habit.reference_id) : ''}" placeholder="e.g. gcp-ml-engineer" autocomplete="off" style="font-family:var(--font-mono);font-size:13px" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Workspace</label>
+      <select id="h-workspace">
+        <option value="">— None —</option>
+        ${workspaces.map(w => `<option value="${w.id}"${isEdit && habit.workspace_id === w.id ? ' selected' : ''}>${escHtml(w.icon || '')} ${escHtml(w.name)}</option>`).join('')}
+      </select>
     </div>
     <div id="h-error" style="display:none;color:var(--danger,#DC2626);font-size:13px;margin-top:8px;padding:8px 12px;background:var(--danger-bg,#fff1f1);border-radius:6px"></div>
     <div class="form-actions">
@@ -12704,7 +12720,8 @@ function showHabitModal(habit) {
       return;
     }
 
-    const payload = { title: titleVal, type: typeVal };
+    const wsVal = document.getElementById('h-workspace').value;
+    const payload = { title: titleVal, type: typeVal, workspace_id: wsVal ? parseInt(wsVal) : null };
     if (refVal) payload.reference_id = refVal;
 
     const saveBtn = document.getElementById('h-save-btn');
@@ -13140,6 +13157,8 @@ async function renderProjectDetail(projectId) {
       renderValue: () => tags.length ? tags.map(t => tagHtml(t)).join('') : '' },
     { key: 'category', label: 'Category',  icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(p.workspace_id) },
     { key: 'macro',    label: 'Macro Area',icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
       renderValue: () => p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : '' },
     { key: 'kanban',   label: 'Kanban Col',icon: pIco('<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>'),
@@ -13157,6 +13176,7 @@ async function renderProjectDetail(projectId) {
     goal:     (valEl) => openMultiRelationPicker(valEl, 'project', projectId, 'goal', 'goal', pdLocalGoals, p, patchProject, 'goal_id', () => renderProjectDetail(projectId)),
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); renderProjectDetail(projectId); return; } await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); renderProjectDetail(projectId); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, p.category_id, async (newId) => { await patchProject({ category_id: newId ? parseInt(newId) : null }); }); },
+    workspace: (valEl) => openWorkspaceCombo(valEl, p.workspace_id, async (newId) => { await patchProject({ workspace_id: newId }); }),
     macro:    (valEl) => { openEditableValueCombo(valEl, MACRO_AREAS, 'project_macro_area', null, async (val) => { await patchProject({ macro_area: val||null }); }, { allowClear: true }); },
     kanban:   (valEl) => { openEditableValueCombo(valEl, KANBAN_COLS, 'project_kanban_col', null, async (val) => { await patchProject({ kanban_col: val||null }); }, { allowClear: true }); },
     archived: (valEl) => { patchProject({ archived: !p.archived }); },
@@ -13291,6 +13311,8 @@ async function renderGoalDetail(goalId) {
       renderValue: () => tags.length ? tags.map(t => tagHtml(t)).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(g.workspace_id) },
     { key: 'due',      label: 'Due Date', icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => g.due_date ? `<span>${fmtDate(g.due_date)}</span>` : '' },
     { key: 'metrics',  label: 'Metrics',  icon: pIco('<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
@@ -13306,6 +13328,7 @@ async function renderGoalDetail(goalId) {
     year:     (valEl) => { openEditableValueCombo(valEl, GOAL_YEARS, 'goal_year', null, async (val) => { await patchGoal({ year: val||null }); }, { allowClear: true }); },
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); renderGoalDetail(goalId); return; } await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); renderGoalDetail(goalId); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, g.category_id, async (newId) => { await patchGoal({ category_id: newId ? parseInt(newId) : null }); }); },
+    workspace: (valEl) => openWorkspaceCombo(valEl, g.workspace_id, async (newId) => { await patchGoal({ workspace_id: newId }); }),
     due:      (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(g.due_date), async (val) => { await patchGoal({ due_date: val||null }); }); },
     metrics:  (valEl) => {
       valEl.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -13990,6 +14013,22 @@ function openCategoryCombo(anchorEl, currentId, onPick) {
   }, { allowClear: true });
 }
 
+// openWorkspaceCombo: single-select picker for the Workspace property, backed
+// by the real workspaces list (not a freeform/renamable value like category).
+function openWorkspaceCombo(anchorEl, currentId, onPick) {
+  const items = [{ value: '', label: '— None —' }, ...workspaces.map(w => ({ value: w.id, label: `${w.icon || ''} ${w.name}`.trim() }))];
+  openCombo(anchorEl, items, currentId ?? '', ({ value }) => onPick(value ? parseInt(value) : null));
+}
+
+// workspaceChipHtml renders a record's assigned workspace as a small chip,
+// or an em-dash when unassigned. Shared by every entity's Workspace property.
+function workspaceChipHtml(workspaceId) {
+  if (!workspaceId) return '';
+  const w = workspaces.find(x => x.id === workspaceId);
+  if (!w) return '';
+  return `<span class="multi-chip">${w.icon || ''} ${escHtml(w.name)}</span>`;
+}
+
 async function showTaskSlideover(taskId) {
   openSlideover('Task Detail', '<div class="loading">Loading…</div>');
 
@@ -14235,6 +14274,8 @@ async function showTaskSlideover(taskId) {
       renderValue: () => tags.length ? tags.map(t => tagHtml(t)).join('') : '' },
     { key: 'category', label: 'Category',     icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
+    { key: 'workspace', label: 'Workspace',   icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(task.workspace_id) },
     { key: 'goal',     label: 'Goals',        icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
       renderValue: () => renderMultiRelationValue('task', taskId, 'goal', goalName) },
     { key: 'project',  label: 'Projects',     icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
@@ -14421,6 +14462,7 @@ async function showTaskSlideover(taskId) {
         await patchTask({ category_id: newId ? parseInt(newId) : null });
       });
     },
+    workspace: (valEl) => openWorkspaceCombo(valEl, task.workspace_id, async (newId) => { await patchTask({ workspace_id: newId }); showTaskSlideover(taskId); }),
     goal:    (valEl) => openMultiRelationPicker(valEl, 'task', taskId, 'goal', 'goal', allGoals, task, patchTask, 'goal_id', () => showTaskSlideover(taskId)),
     project: (valEl) => openMultiRelationPicker(valEl, 'task', taskId, 'project', 'project', allProjects, task, patchTask, 'project_id', () => showTaskSlideover(taskId)),
     points: (valEl) => {
@@ -16072,6 +16114,8 @@ async function showProjectSlideover(project, goals, afterSave) {
       renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category',  icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(p.workspace_id) },
     { key: 'macro',    label: 'Macro Area',icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
       renderValue: () => p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : '' },
     { key: 'kanban',   label: 'Kanban Col',icon: pIco('<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>'),
@@ -16228,6 +16272,7 @@ async function showProjectSlideover(project, goals, afterSave) {
     goal:     (valEl) => openMultiRelationPicker(valEl, 'project', projectId, 'goal', 'goal', goals||[], p, patchProject, 'goal_id', () => showProjectSlideover({ id: projectId }, goals, afterSave)),
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showProjectSlideover({ id: projectId }, goals, afterSave); return; } await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showProjectSlideover({ id: projectId }, goals, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, p.category_id, async (newId) => { await patchProject({ category_id: newId ? parseInt(newId) : null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    workspace: (valEl) => openWorkspaceCombo(valEl, p.workspace_id, async (newId) => { await patchProject({ workspace_id: newId }); showProjectSlideover({ id: projectId }, goals, afterSave); }),
     macro:    (valEl) => { openEditableValueCombo(valEl, MACRO_AREAS, 'project_macro_area', null, async (val) => { await patchProject({ macro_area: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }, { allowClear: true }); },
     kanban:   (valEl) => { openEditableValueCombo(valEl, KANBAN_COLS, 'project_kanban_col', null, async (val) => { await patchProject({ kanban_col: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }, { allowClear: true }); },
     archived: (valEl) => { patchProject({ archived: !p.archived }).then(() => showProjectSlideover({ id: projectId }, goals, afterSave)); },
@@ -16307,6 +16352,8 @@ async function showGoalSlideover(goal, afterSave) {
       renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(g.workspace_id) },
     { key: 'due',      label: 'Due Date', icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => g.due_date ? `<span>${fmtDate(g.due_date)}</span>` : '' },
     { key: 'metrics',  label: 'Metrics',  icon: pIco('<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
@@ -16451,6 +16498,7 @@ async function showGoalSlideover(goal, afterSave) {
     year:     (valEl) => { openEditableValueCombo(valEl, GOAL_YEARS, 'goal_year', null, async (val) => { await patchGoal({ year: val||null }); showGoalSlideover({ id: goalId }, afterSave); }, { allowClear: true }); },
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showGoalSlideover({ id: goalId }, afterSave); return; } await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showGoalSlideover({ id: goalId }, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, g.category_id, async (newId) => { await patchGoal({ category_id: newId ? parseInt(newId) : null }); showGoalSlideover({ id: goalId }, afterSave); }); },
+    workspace: (valEl) => openWorkspaceCombo(valEl, g.workspace_id, async (newId) => { await patchGoal({ workspace_id: newId }); showGoalSlideover({ id: goalId }, afterSave); }),
     due:      (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(g.due_date), async (val) => { await patchGoal({ due_date: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
     metrics:  (valEl) => {
       valEl.innerHTML = `<div style="display:flex;flex-direction:column;gap:4px">
@@ -16586,6 +16634,8 @@ async function showNoteSlideover(noteId, afterSave) {
       renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(n.workspace_id) },
   ];
   const noteBodyDefs = allNoteBuiltinDefs.filter(d => noteSections.body.includes(d.key));
   await loadEntityCustomProps('note', noteId);
@@ -16698,6 +16748,7 @@ async function showNoteSlideover(noteId, afterSave) {
     goal:     (valEl) => openMultiRelationPicker(valEl, 'note', noteId, 'goal', 'goal', goals, n, patchNote, 'goal_id', () => showNoteSlideover(noteId, afterSave)),
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showNoteSlideover(noteId, afterSave); return; } await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showNoteSlideover(noteId, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, n.category_id, async (newId) => { await patchNote({ category_id: newId ? parseInt(newId) : null }); showNoteSlideover(noteId, afterSave); }); },
+    workspace: (valEl) => openWorkspaceCombo(valEl, n.workspace_id, async (newId) => { await patchNote({ workspace_id: newId }); showNoteSlideover(noteId, afterSave); }),
   };
 
   noteExtraHeadKeys.forEach(k => {
@@ -16775,6 +16826,8 @@ async function showSprintSlideover(sprintId, afterSave) {
       renderValue: () => s.story_points != null ? `<span>${s.story_points}</span>` : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => sprintCatName ? `<span>${sprintCatName}</span>` : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(s.workspace_id) },
   ];
   const sprintBodyDefs = allSprintBuiltinDefs.filter(d => sprintSections.body.includes(d.key));
   const sprintInlinePropPanel = buildInlinePropPanel('sprint', sprintId, sprintBodyDefs);
@@ -16956,6 +17009,7 @@ async function showSprintSlideover(sprintId, afterSave) {
         showSprintSlideover(sprintId, afterSave);
       });
     },
+    workspace: (valEl) => openWorkspaceCombo(valEl, s.workspace_id, async (newId) => { await patchSprint({ workspace_id: newId }); showSprintSlideover(sprintId, afterSave); }),
   };
 
   document.getElementById('chip-category')?.addEventListener('click', (e) => {
@@ -17069,6 +17123,8 @@ async function showResourceSlideover(resource, afterSave) {
       renderValue: () => resTags.length ? resTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => resCatName ? `<span>${resCatName}</span>` : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(r.workspace_id) },
   ];
   const resBodyDefs = allResBuiltinDefs.filter(d => resSections.body.includes(d.key));
   await loadEntityCustomProps('resource', resId);
@@ -17232,6 +17288,7 @@ async function showResourceSlideover(resource, afterSave) {
     goal:    (valEl) => openMultiRelationPicker(valEl, 'resource', resId, 'goal', 'goal', goals, r, patchResource, 'goal_id', () => showResourceSlideover({ id: resId }, afterSave)),
     tags:    (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = resTags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showResourceSlideover({ id: resId }, afterSave); return; } await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showResourceSlideover({ id: resId }, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: (valEl) => { openCategoryCombo(valEl, _resCatId, async (newId) => { await api('POST', `/api/properties?entity_type=resource&entity_id=${resId}`, { key: '_category_id', value: newId }); showResourceSlideover({ id: resId }, afterSave); }); },
+    workspace: (valEl) => openWorkspaceCombo(valEl, r.workspace_id, async (newId) => { await patchResource({ workspace_id: newId }); showResourceSlideover({ id: resId }, afterSave); }),
   };
 
   resExtraHeadKeys.forEach(k => {

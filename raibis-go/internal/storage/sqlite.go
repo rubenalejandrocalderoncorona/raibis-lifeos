@@ -274,6 +274,7 @@ func applyMigrations(db *sql.DB) error {
 		`ALTER TABLE habits ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL`,
 		`ALTER TABLE resources ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL`,
 		`ALTER TABLE custom_entities ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL`,
+		`ALTER TABLE notes ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_workspace ON tasks(workspace_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_goals_workspace ON goals(workspace_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id)`,
@@ -281,6 +282,7 @@ func applyMigrations(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_habits_workspace ON habits(workspace_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_resources_workspace ON resources(workspace_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_custom_entities_workspace ON custom_entities(workspace_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_notes_workspace ON notes(workspace_id)`,
 
 		// ── vault_sync_state: last-reconciled field values per entity, so a
 		// two-way vault sync can tell "changed since last sync" apart from
@@ -418,7 +420,7 @@ func backfillEntityWorkspaceIDs(db *sql.DB) error {
 
 	tableFor := map[string]string{
 		"task": "tasks", "goal": "goals", "project": "projects",
-		"sprint": "sprints", "habit": "habits", "resource": "resources",
+		"sprint": "sprints", "habit": "habits", "resource": "resources", "note": "notes",
 	}
 	for _, a := range assignments {
 		if table, ok := tableFor[a.entityType]; ok {
@@ -940,9 +942,9 @@ func (s *sqliteStorage) CreateNote(n *domain.Note) (int64, error) {
 		archived = 1
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO notes (title, file_path, goal_id, task_id, project_id, category_id, archived, note_date)
-		 VALUES (?,?,?,?,?,?,?,?)`,
-		n.Title, n.FilePath, n.GoalID, n.TaskID, n.ProjectID, n.CategoryID, archived, n.NoteDate,
+		`INSERT INTO notes (title, file_path, goal_id, task_id, project_id, category_id, archived, note_date, workspace_id)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		n.Title, n.FilePath, n.GoalID, n.TaskID, n.ProjectID, n.CategoryID, archived, n.NoteDate, n.WorkspaceID,
 	)
 	if err != nil {
 		return 0, err
@@ -1004,10 +1006,10 @@ func (s *sqliteStorage) UpdateNote(n *domain.Note) error {
 	}
 	_, err := s.db.Exec(
 		`UPDATE notes SET title=?, file_path=?, goal_id=?, task_id=?, project_id=?,
-		  category_id=?, archived=?, note_date=?, content_json=COALESCE(?,content_json),
+		  category_id=?, archived=?, note_date=?, workspace_id=?, content_json=COALESCE(?,content_json),
 		  updated_at=datetime('now')
 		 WHERE id=?`,
-		n.Title, n.FilePath, n.GoalID, n.TaskID, n.ProjectID, n.CategoryID, archived, n.NoteDate,
+		n.Title, n.FilePath, n.GoalID, n.TaskID, n.ProjectID, n.CategoryID, archived, n.NoteDate, n.WorkspaceID,
 		contentJSON, n.ID,
 	)
 	return err
@@ -1023,7 +1025,7 @@ func (s *sqliteStorage) DeleteNote(id int64) error {
 const noteSelectCols = `
 SELECT n.id, COALESCE(n.title,''), n.file_path, n.goal_id, n.task_id, n.project_id, n.created_at, n.updated_at,
        n.category_id, COALESCE(c.name,'') AS category_name,
-       n.archived, n.note_date, COALESCE(n.body,''), COALESCE(n.content_json,'')
+       n.archived, n.note_date, COALESCE(n.body,''), COALESCE(n.content_json,''), n.workspace_id
 FROM notes n
 LEFT JOIN categories c ON n.category_id = c.id`
 
@@ -1410,14 +1412,18 @@ func scanNote(sc scanner) (*domain.Note, error) {
 		categoryID           sql.NullInt64
 		dbBody               string
 		contentJSON          string
+		workspaceID          sql.NullInt64
 	)
 	if err := sc.Scan(
 		&n.ID, &n.Title, &filePath, &goalID, &taskID, &projectID,
 		&createdAt, &updatedAt,
 		&categoryID, &n.CategoryName,
-		&archived, &n.NoteDate, &dbBody, &contentJSON,
+		&archived, &n.NoteDate, &dbBody, &contentJSON, &workspaceID,
 	); err != nil {
 		return nil, err
+	}
+	if workspaceID.Valid {
+		n.WorkspaceID = &workspaceID.Int64
 	}
 	n.CreatedAt, _ = parseTime(createdAt)
 	n.UpdatedAt, _ = parseTime(updatedAt)

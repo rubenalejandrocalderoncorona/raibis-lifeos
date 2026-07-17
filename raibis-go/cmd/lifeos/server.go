@@ -1705,6 +1705,13 @@ func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			var workspaceFilter *int64
+			if wv := q.Get("workspace_id"); wv != "" {
+				if id, err := strconv.ParseInt(wv, 10, 64); err == nil {
+					workspaceFilter = &id
+				}
+			}
+			notes = filterByWorkspace(notes, workspaceFilter, func(n *domain.Note) *int64 { return n.WorkspaceID })
 			for _, n := range notes {
 				n.Tags, _ = store.GetEntityTags("note", n.ID)
 				if n.FilePath != nil {
@@ -1718,13 +1725,14 @@ func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 
 		case http.MethodPost:
 			var body struct {
-				Title      string `json:"title"`
-				Body       string `json:"body"`
-				GoalID     *int64 `json:"goal_id"`
-				TaskID     *int64 `json:"task_id"`
-				ProjectID  *int64 `json:"project_id"`
-				CategoryID *int64 `json:"category_id"`
-				NoteDate   string `json:"note_date"`
+				Title       string `json:"title"`
+				Body        string `json:"body"`
+				GoalID      *int64 `json:"goal_id"`
+				TaskID      *int64 `json:"task_id"`
+				ProjectID   *int64 `json:"project_id"`
+				CategoryID  *int64 `json:"category_id"`
+				WorkspaceID *int64 `json:"workspace_id"`
+				NoteDate    string `json:"note_date"`
 			}
 			if err := readJSON(r, &body); err != nil {
 				errJSON(w, 400, "invalid JSON: "+err.Error())
@@ -1735,11 +1743,12 @@ func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 				return
 			}
 			n := &domain.Note{
-				Title:      body.Title,
-				GoalID:     body.GoalID,
-				TaskID:     body.TaskID,
-				ProjectID:  body.ProjectID,
-				CategoryID: body.CategoryID,
+				Title:       body.Title,
+				GoalID:      body.GoalID,
+				TaskID:      body.TaskID,
+				ProjectID:   body.ProjectID,
+				CategoryID:  body.CategoryID,
+				WorkspaceID: body.WorkspaceID,
 			}
 			if body.NoteDate != "" {
 				n.NoteDate = &body.NoteDate
@@ -1852,6 +1861,14 @@ func noteHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 				} else if fv, ok := val.(float64); ok {
 					pid := int64(fv)
 					n.ProjectID = &pid
+				}
+			}
+			if val, ok := body["workspace_id"]; ok {
+				if val == nil {
+					n.WorkspaceID = nil
+				} else if fv, ok := val.(float64); ok {
+					wid := int64(fv)
+					n.WorkspaceID = &wid
 				}
 			}
 			if bodyStr, ok := body["body"].(string); ok {
