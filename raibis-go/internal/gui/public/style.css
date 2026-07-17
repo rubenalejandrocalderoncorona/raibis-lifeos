@@ -181,22 +181,26 @@ input:focus, select:focus, textarea:focus {
   flex: 1;
 }
 
-/* ── Theme toggle button ──────────────────────────────────────────── */
+/* ── Toolbar icon buttons (theme, refresh, sync, connected apps, collapse) ──
+   Icon-only: no button chrome at rest. Hover reads as a lift on the glyph
+   itself (color shift + soft shadow), not a filled/bordered box. */
 .theme-btn {
   background: none;
-  border: 1px solid var(--color-border);
+  border: none;
   color: var(--color-text-secondary);
   border-radius: var(--radius-sm);
   width: 28px; height: 28px;
   display: inline-flex; align-items: center; justify-content: center;
-  transition: background var(--duration-fast) var(--ease-out),
-              border-color var(--duration-fast) var(--ease-out),
-              color var(--duration-fast) var(--ease-out);
+  transition: color var(--duration-fast) var(--ease-out),
+              filter var(--duration-fast) var(--ease-out);
 }
 .theme-btn:hover {
-  background: var(--color-accent-dim);
-  border-color: var(--color-accent);
   color: var(--color-accent);
+  filter: drop-shadow(0 1px 3px rgb(0 0 0 / 0.2));
+}
+.theme-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
 }
 @keyframes spin-once {
   from { transform: rotate(0deg); }

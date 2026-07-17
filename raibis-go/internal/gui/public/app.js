@@ -3739,7 +3739,14 @@ function renderCustomPropChips(entity, recordId, viewMode, excludeDates) {
     if (def.type === 'rollup') {
       const fresh = evaluateRollup(entity, recordId, def);
       const rv = fresh !== null ? Math.round(fresh * 100) / 100 : val;
-      return (rv === '' || rv === undefined || rv === null) ? '' : renderRollupCardWidget(def, rv);
+      if (rv === '' || rv === undefined || rv === null) return '';
+      // The bar/ring widget is a Card-view-only representation — everywhere
+      // else (List, Table, Kanban) a rollup stays a plain compact badge so
+      // it doesn't compete for space with the rest of the row/card chips.
+      if (viewMode === 'cards') return renderRollupCardWidget(def, rv);
+      const isPct = def.rollup?.operation === 'percentage_match';
+      const disp = Number.isInteger(rv) ? String(rv) : rv.toFixed(1);
+      return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px"${tipAttrs(def.label, def.description)}>∑ ${disp}${isPct?'%':''}</span>`;
     }
     if (def.type === 'checkbox') {
       return checkboxChipHtml(def.label, val, def.description);
@@ -11665,17 +11672,79 @@ function _wProjectsHtml(projects) {
   }).join('');
 }
 
-function _wMetricsHtml(data) {
-  if (!data || data.target == null) return '<div class="empty-state-text" style="padding:12px 0">No metrics configured</div>';
+function _wMetricsHtml(entity, entityId, data) {
+  const editBtn = `<button class="widget-metrics-edit-btn" data-entity="${entity}" data-id="${entityId}" title="Set start/current/target"
+    style="position:absolute;top:0;right:0;background:none;border:none;cursor:pointer;color:var(--text-muted);padding:2px;line-height:0">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+  </button>`;
+  if (!data || data.target == null) {
+    return `<div style="position:relative;padding-right:20px">${editBtn}<div class="empty-state-text" style="padding:12px 0">No metrics set yet — click ✏ to add a start/current/target.</div></div>`;
+  }
   const pct = data.target > 0 ? Math.round((data.current_value || 0) / data.target * 100) : 0;
-  return `<div class="stats-row">
+  return `<div style="position:relative;padding-right:20px">${editBtn}<div class="stats-row">
     ${data.start_value != null ? `<div class="stat-card"><div class="stat-value">${data.start_value}</div><div class="stat-label">Start</div></div>` : ''}
     ${data.current_value != null ? `<div class="stat-card"><div class="stat-value">${data.current_value}</div><div class="stat-label">Current</div></div>` : ''}
     ${data.target != null ? `<div class="stat-card"><div class="stat-value">${data.target}</div><div class="stat-label">Target</div></div>` : ''}
   </div>
   <div class="progress-track" style="margin-top:8px"><div class="progress-fill" style="width:${pct}%"></div></div>
-  <div style="text-align:right;font-size:12px;color:var(--text-muted);margin-top:4px">${pct}%</div>`;
+  <div style="text-align:right;font-size:12px;color:var(--text-muted);margin-top:4px">${pct}%</div></div>`;
 }
+
+// Small popover to set a goal's start/current/target values directly from
+// the Metrics widget — the widget only ever displays wData.entityData, this
+// is the one place that can actually write it.
+function openMetricsEditPopover(anchorEl, entity, entityId) {
+  document.getElementById('metrics-edit-popover')?.remove();
+  const panel = document.createElement('div');
+  panel.id = 'metrics-edit-popover';
+  panel.className = 'combo-popover';
+  panel.style.minWidth = '200px';
+  document.body.appendChild(panel);
+  const rect = anchorEl.getBoundingClientRect();
+  panel.style.top = (rect.bottom + 6) + 'px';
+  panel.style.left = Math.max(8, rect.right - 220) + 'px';
+
+  api('GET', `/api/${entity}s/${entityId}`).then(data => {
+    const field = (id, label, value) => `
+      <label style="display:block;font-size:11px;color:var(--text-muted);margin-bottom:6px">${label}
+        <input type="number" id="${id}" value="${value ?? ''}" style="width:100%;box-sizing:border-box;font-size:12px;padding:4px 6px;margin-top:2px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
+      </label>`;
+    panel.innerHTML = `
+      <div style="padding:8px 10px 4px;font-size:11px;font-weight:600;text-transform:uppercase;color:var(--text-muted)">Set metrics</div>
+      <div style="padding:4px 10px">
+        ${field('wm-metrics-sv', 'Start', data.start_value)}
+        ${field('wm-metrics-cv', 'Current', data.current_value)}
+        ${field('wm-metrics-t', 'Target', data.target)}
+      </div>
+      <div style="padding:8px 10px;display:flex;justify-content:flex-end;gap:6px;border-top:1px solid var(--border);margin-top:4px">
+        <button id="wm-metrics-cancel" class="btn btn-sm btn-ghost">Cancel</button>
+        <button id="wm-metrics-save" class="btn btn-sm btn-primary">Save</button>
+      </div>`;
+    document.getElementById('wm-metrics-sv').focus();
+    panel.querySelector('#wm-metrics-cancel').onclick = () => panel.remove();
+    panel.querySelector('#wm-metrics-save').onclick = async () => {
+      const sv = parseFloat(document.getElementById('wm-metrics-sv').value);
+      const cv = parseFloat(document.getElementById('wm-metrics-cv').value);
+      const t  = parseFloat(document.getElementById('wm-metrics-t').value);
+      await api('PATCH', `/api/${entity}s/${entityId}`, { start_value: isNaN(sv) ? null : sv, current_value: isNaN(cv) ? null : cv, target: isNaN(t) ? null : t });
+      panel.remove();
+      if (entity === 'goal') renderGoalDetail(entityId);
+    };
+  });
+
+  setTimeout(() => {
+    const dismiss = (e) => {
+      if (!panel.contains(e.target) && e.target !== anchorEl) { panel.remove(); document.removeEventListener('mousedown', dismiss); }
+    };
+    document.addEventListener('mousedown', dismiss);
+  }, 10);
+}
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.widget-metrics-edit-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  openMetricsEditPopover(btn, btn.dataset.entity, btn.dataset.id);
+});
 
 function _wCustomHtml(entity, entityId, data, def) {
   if (!def || !def.code) return '<div class="empty-state-text" style="padding:12px 0">No code. Edit via Widgets panel.</div>';
@@ -11706,7 +11775,7 @@ function buildWidgetGrid(entity, entityId, wData) {
       case 'properties': body = wData.propPanelHtml || ''; break;
       case 'editor':     body = `<div id="editorjs-${entity}-${entityId}" class="rich-editor-host"></div>`; break;
       case 'comments':   body = buildCommentSection(entity, entityId); break;
-      case 'metrics':    body = _wMetricsHtml(wData.entityData); break;
+      case 'metrics':    body = _wMetricsHtml(entity, entityId, wData.entityData); break;
       case 'custom': {
         const def = customDefs.find(d => d.id === w.customDefId);
         body = _wCustomHtml(entity, entityId, wData.entityData, def); break;
@@ -11813,7 +11882,10 @@ function openWidgetManager(entity, anchorEl, onClose) {
 
   const existingTypes = new Set(layout.map(w => w.type));
   const addableOpts = Object.entries(WIDGET_TYPE_META)
-    .filter(([t]) => t !== 'custom' && !existingTypes.has(t))
+    // Metrics reads/writes start_value/current_value/target — only Goals
+    // have those columns, so offering it elsewhere would just produce a
+    // widget with no way to ever populate it.
+    .filter(([t]) => t !== 'custom' && !existingTypes.has(t) && (t !== 'metrics' || entity === 'goal'))
     .map(([t, m]) => `<option value="${t}">${m.icon} ${m.label}</option>`).join('');
   const addCustomOpts = customDefs
     .filter(d => !layout.find(w => w.type === 'custom' && w.customDefId === d.id))
@@ -13409,7 +13481,7 @@ async function renderGoalDetail(goalId) {
     </div>
     ${metricsHtml}
     <div id="gd-widget-grid" class="widget-grid">
-      ${buildWidgetGrid('goal', goalId, { tasks, notes, resources, projects, propPanelHtml: goalDetailPropPanel })}
+      ${buildWidgetGrid('goal', goalId, { tasks, notes, resources, projects, propPanelHtml: goalDetailPropPanel, entityData: g })}
     </div>
   </div>`;
 
