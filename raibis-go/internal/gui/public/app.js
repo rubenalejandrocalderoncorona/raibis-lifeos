@@ -6656,6 +6656,7 @@ async function renderCustomEntityList(typeName) {
           ? e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${escHtml(t.name)}</span>`).join('')
           : '';
         const allChips = [visProps, tagChips].filter(Boolean).join('');
+        const metricsChip = metricsCardChipHtml(entityKey, e.id);
         const subtreeHtml = hasSubs ? `<div id="ent-subs-${e.id}" style="margin-top:2px"></div>` : '';
         return `<div class="task-card-item custom-entity-row" data-id="${e.id}" style="cursor:pointer">
           <div class="kanban-card-header">
@@ -6663,6 +6664,7 @@ async function renderCustomEntityList(typeName) {
             <div class="kanban-card-title">${escHtml(e.title)}</div>
           </div>
           ${allChips ? `<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:6px">${allChips}</div>` : ''}
+          ${metricsChip}
           ${subtreeHtml}
         </div>`;
       }).join('')}</div>`;
@@ -10398,6 +10400,7 @@ async function renderProjects() {
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>` : ''}
       ${activeTasks ? `<div style="margin-top:8px">${activeTasks}</div>` : ''}
+      ${metricsCardChipHtml('project', p.id)}
       ${renderCustomPropChips('project', p.id, 'cards')}`;
     return `<div class="card proj-slideover-card" data-proj-id="${p.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
@@ -10932,6 +10935,7 @@ async function renderGoals() {
         <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0} tasks</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>` : ''}
+      ${metricsCardChipHtml('goal', g.id, g)}
       ${renderCustomPropChips('goal', g.id, 'cards')}`;
     return `<div class="card goal-slideover-card" data-goal-id="${g.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
@@ -11345,6 +11349,7 @@ async function renderSprints() {
           <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pctSP}%;background:${color}"></div></div>
         </div>`;
       })() : ''}
+      ${metricsCardChipHtml('sprint', s.id)}
       ${renderCustomPropChips('sprint', s.id, 'cards')}`;
     return `<div class="card" data-sprint-id="${s.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
@@ -11781,6 +11786,39 @@ function rollupTargetPropertyLabel(entity, cfg) {
   return fromCustom ? fromCustom.label : cfg.target_property;
 }
 
+// Compact single-line version of a Metrics widget's value, for Cards view.
+// Shown when a metrics-type widget on this entity has showInCards enabled
+// (toggled per-widget in Manage Widgets — see the wm-cards-btn wiring below).
+// Every entity that can carry a Metrics widget (Project/Goal/Sprint/custom
+// detail types) funnels its Cards template through this one function, so
+// there's a single place that knows how to read either source mode.
+function metricsCardChipHtml(entity, entityId, entityData) {
+  const w = getWidgetLayout(entity).find(x => x.type === 'metrics' && x.visible && x.showInCards);
+  if (!w) return '';
+  let pct = null, label = '';
+  if (_metricsUsesRollup(entity, w)) {
+    const cfg = w.rollupCfg;
+    if (!cfg || !cfg.target_property) return '';
+    const computed = evaluateRollup(entity, entityId, { rollup: cfg });
+    if (computed === null) return '';
+    const rounded = Math.round(computed * 100) / 100;
+    if (cfg.operation === 'percentage_match') {
+      pct = Math.max(0, Math.min(100, rounded));
+      label = `${rounded}%`;
+    } else {
+      label = `${rollupTargetPropertyLabel(entity, cfg) || cfg.target_property}: ${rounded}`;
+    }
+  } else {
+    if (!entityData || entityData.target == null) return '';
+    pct = entityData.target > 0 ? Math.max(0, Math.min(100, Math.round((entityData.current_value || 0) / entityData.target * 100))) : 0;
+    label = `${entityData.current_value ?? 0}/${entityData.target}`;
+  }
+  const bar = pct != null
+    ? `<span class="rollup-bar" style="width:56px"><span class="rollup-bar-fill" style="width:${pct}%"></span></span>`
+    : '';
+  return `<div class="rollup-bar-row" style="margin-top:4px" title="Metrics: ${escHtml(label)}"><span class="rollup-bar-label">Metrics</span>${bar}<span class="rollup-bar-num">${escHtml(label)}</span></div>`;
+}
+
 // Opens the shared rollup config panel (the same one "+Add property > Rollup"
 // uses) to configure a Metrics widget's relation-based source instead of a
 // custom prop def.
@@ -11951,7 +11989,12 @@ function initWidgetGrid(entity, entityId, container, onRerender) {
       animation: 150,
       onEnd: () => {
         const layout = getWidgetLayout(entity);
-        const order = Array.from(container.querySelectorAll('.widget-item[data-widget-id]')).map(el => el.dataset.widgetId);
+        // Bare (unwrapped) widgets have no drag handle so they can never be
+        // the item being dragged, but they're still direct children of the
+        // sortable container and must stay counted here — querying only
+        // .widget-item excluded them, so every drag silently bumped every
+        // bare widget to the end of the saved order.
+        const order = Array.from(container.querySelectorAll('[data-widget-id]')).map(el => el.dataset.widgetId);
         const sorted = order.map(id => layout.find(w => w.id === id)).filter(Boolean);
         const rest = layout.filter(w => !sorted.find(s => s.id === w.id));
         saveWidgetLayout(entity, [...sorted, ...rest]);
@@ -12011,10 +12054,19 @@ function openWidgetManager(entity, anchorEl, onClose) {
   const rowsHtml = layout.map(w => {
     const meta = WIDGET_TYPE_META[w.type] || { icon: '◉' };
     const wrapped = w.wrapped !== false;
+    // Only Metrics has a small-version representation worth showing on a
+    // Cards-view card — every other widget type is either already a chip
+    // (properties) or too big to compress meaningfully (tasks, editor, …).
+    const cardBtn = w.type === 'metrics'
+      ? `<button class="btn btn-ghost btn-sm wm-cards-btn" data-wid="${escHtml(w.id)}"
+          title="${w.showInCards ? 'Shown on cards in Cards view — click to hide' : 'Not shown on cards — click to show in Cards view'}"
+          style="font-size:11px;padding:2px 6px;line-height:1;flex-shrink:0">${w.showInCards ? '▦' : '▤'}</button>`
+      : '';
     return `<div class="wm-row" data-wid="${escHtml(w.id)}">
       <span class="wm-row-handle">${dgh}</span>
       <span class="wm-row-icon">${meta.icon}</span>
       <span class="wm-row-label">${escHtml(w.label)}</span>
+      ${cardBtn}
       <button class="btn btn-ghost btn-sm wm-wrap-btn" data-wid="${escHtml(w.id)}"
         title="${wrapped ? 'Card display — click for static (no card, full width)' : 'Static display — click for card'}"
         style="font-size:11px;padding:2px 6px;line-height:1;flex-shrink:0">${wrapped ? '▢' : '▭'}</button>
@@ -12084,6 +12136,18 @@ function openWidgetManager(entity, anchorEl, onClose) {
     };
   });
 
+  panel.querySelectorAll('.wm-cards-btn').forEach(btn => {
+    btn.onclick = () => {
+      const lay = getWidgetLayout(entity);
+      const w = lay.find(x => x.id === btn.dataset.wid);
+      if (!w) return;
+      w.showInCards = !w.showInCards;
+      saveWidgetLayout(entity, lay);
+      btn.textContent = w.showInCards ? '▦' : '▤';
+      btn.title = w.showInCards ? 'Shown on cards in Cards view — click to hide' : 'Not shown on cards — click to show in Cards view';
+    };
+  });
+
   panel.querySelectorAll('.wm-del-btn').forEach(btn => {
     btn.onclick = () => {
       saveWidgetLayout(entity, getWidgetLayout(entity).filter(w => w.id !== btn.dataset.wid));
@@ -12100,7 +12164,7 @@ function openWidgetManager(entity, anchorEl, onClose) {
       if (def) lay.push({ id: `w-cx-${Date.now()}`, type: 'custom', label: def.name, customDefId: def.id, visible: true });
     } else {
       const meta = WIDGET_TYPE_META[val];
-      if (meta) lay.push({ id: `w-${val}-${Date.now()}`, type: val, label: meta.label, visible: true });
+      if (meta) lay.push({ id: `w-${val}-${Date.now()}`, type: val, label: meta.label, visible: true, ...(val === 'metrics' ? { showInCards: true } : {}) });
     }
     saveWidgetLayout(entity, lay);
     _closeWM(); openWidgetManager(entity, anchorEl, onClose);
