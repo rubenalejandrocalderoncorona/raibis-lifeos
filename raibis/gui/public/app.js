@@ -1295,6 +1295,19 @@ function openPropManager(btnEl, entity) {
       : `<div class="prop-mgr-empty">No custom properties yet</div>`;
 
     const curFmt = getDateFormat();
+    // Metrics-on-cards lives here (view-level settings) rather than in
+    // per-record Manage Widgets, since "does this entity's Cards view show
+    // the metric" is a view concern, not a per-record one — the widget
+    // layout itself is already entity-type-scoped either way.
+    const metricsWidget = getWidgetLayout(entity).find(w => w.type === 'metrics');
+    const metricsSection = metricsWidget ? `
+      <div style="border-top:1px solid var(--border);padding:10px 12px 8px">
+        <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:6px">Metrics on cards</div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="prop-mgr-metrics-cards" ${metricsWidget.showInCards ? 'checked' : ''} style="cursor:pointer;accent-color:var(--accent)">
+          Show on cards in Cards view
+        </label>
+      </div>` : '';
     panel.innerHTML = `
       <div class="prop-mgr-header">
         <span>Properties · ${entity.charAt(0).toUpperCase()+entity.slice(1)}</span>
@@ -1314,7 +1327,8 @@ function openPropManager(btnEl, entity) {
           <option value="eu"${curFmt==='eu'?' selected':''}>22/06/2026 (EU)</option>
           <option value="iso"${curFmt==='iso'?' selected':''}>2026-06-22 (ISO)</option>
         </select>
-      </div>`;
+      </div>
+      ${metricsSection}`;
 
     // Show edit button on hover (CSS already handles del; add same for edit)
     panel.querySelectorAll('.prop-mgr-row').forEach(row => {
@@ -1352,6 +1366,12 @@ function openPropManager(btnEl, entity) {
     bindAddPropBtn(entity, () => { render(); document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } })); });
     const dateFmtSel = document.getElementById('prop-mgr-date-fmt');
     if (dateFmtSel) dateFmtSel.onchange = () => { localStorage.setItem('_globalDateFormat', dateFmtSel.value); renderView(currentView); };
+    const metricsCardsCb = document.getElementById('prop-mgr-metrics-cards');
+    if (metricsCardsCb) metricsCardsCb.onchange = () => {
+      const lay = getWidgetLayout(entity);
+      const mw = lay.find(w => w.type === 'metrics');
+      if (mw) { mw.showInCards = metricsCardsCb.checked; saveWidgetLayout(entity, lay); renderView(currentView); }
+    };
   }
 
   const panel = document.createElement('div');
@@ -2126,7 +2146,10 @@ function collectRollupChildren(parentId, childTypeFilter, parentEntityKey) {
   return out;
 }
 
-// Pure calculation: returns the aggregated number, or null when not computable.
+// Pure calculation: returns the aggregated number, an array of {value,count}
+// breakdown rows (only for 'tally' with no single match_value chosen — text
+// display only, a bar/ring can't represent more than one number), or null
+// when not computable.
 function evaluateRollup(entityKey, entityId, def) {
   const cfg = def && def.rollup;
   if (!cfg || !cfg.target_property || !cfg.operation) return null;
@@ -2136,6 +2159,19 @@ function evaluateRollup(entityKey, entityId, def) {
   switch (cfg.operation) {
     case 'count':
       return children.length;
+    case 'tally': {
+      const match = cfg.condition && cfg.condition.match_value;
+      if (match !== undefined && match !== '') {
+        return raw.filter(v => String(v) === String(match)).length;
+      }
+      // No single value chosen — tally every distinct value that appears
+      // (e.g. status: todo=1, done=10, doing=3) instead of forcing the user
+      // to either pick one value or fall into a meaningless numeric sum of
+      // category strings.
+      const tally = {};
+      raw.forEach(v => { tally[v] = (tally[v] || 0) + 1; });
+      return Object.entries(tally).map(([value, count]) => ({ value, count }));
+    }
     case 'sum':
       return raw.reduce((a, v) => a + (parseFloat(v) || 0), 0);
     case 'average': {
@@ -2165,7 +2201,9 @@ function recalcEntityRollups(entityKey, entityId, visited) {
   visited.add(vkey);
   getCustomPropDefs(entityKey).filter(d => d.type === 'rollup').forEach(def => {
     const computed = evaluateRollup(entityKey, entityId, def);
-    if (computed === null) return;
+    // A tally breakdown (array) is display-only, computed fresh on every
+    // render — there's no single scalar to persist or cascade upward from.
+    if (computed === null || Array.isArray(computed)) return;
     const rounded = Math.round(computed * 100) / 100;
     const cur = parseFloat(getCustomPropValues(entityKey, entityId)[def.key]);
     if (cur === rounded) return; // unchanged — stop the write (and the cascade)
@@ -2180,6 +2218,13 @@ function recalcEntityRollups(entityKey, entityId, visited) {
 // text (∑ n), progress_bar (minimal track+fill), ring (SVG percentage ring).
 function renderRollupCardWidget(def, value) {
   const cfg = (def && def.rollup) || {};
+  const label0 = escHtml(def.label || def.key || '');
+  // A tally breakdown has no single number a bar/ring could represent —
+  // always render it as text, regardless of the rule's display setting.
+  if (Array.isArray(value)) {
+    const text = value.length ? value.map(x => `${escHtml(String(x.value))}: ${x.count}`).join(', ') : '—';
+    return `<div class="rollup-bar-row" title="${label0}: ${text}"><span class="rollup-bar-label">${label0}</span><span class="rollup-bar-num">${text}</span></div>`;
+  }
   const num = parseFloat(value);
   const has = !isNaN(num);
   const isPct = cfg.operation === 'percentage_match';
@@ -2211,6 +2256,10 @@ function renderRollupCardWidget(def, value) {
 // Shared display formatting for a rollup value.
 function renderRollupValue(val, def) {
   const editHint = `<svg class="rollup-edit-hint" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+  if (Array.isArray(val)) {
+    const text = val.length ? val.map(x => `${escHtml(String(x.value))}: ${x.count}`).join(', ') : '—';
+    return `<span style="font-size:12px;color:var(--text-secondary);display:inline-flex;align-items:center;gap:6px" title="Calculated rollup — click to edit">∑ ${text}${editHint}</span>`;
+  }
   const num = parseFloat(val);
   if (val === '' || val === undefined || val === null || isNaN(num)) {
     return `<span class="empty" title="Not yet calculated — click to edit rule" style="display:inline-flex;align-items:center;gap:6px">∑ —${editHint}</span>`;
@@ -3446,11 +3495,13 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
         <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Operation</div>
         <select id="rl-operation" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
           <option value="percentage_match" ${cfg.operation==='percentage_match'?'selected':''}>% Exact Match</option>
+          <option value="tally" ${cfg.operation==='tally'?'selected':''}>Count by value</option>
           <option value="sum" ${cfg.operation==='sum'?'selected':''}>Sum</option>
           <option value="average" ${cfg.operation==='average'?'selected':''}>Average (assign values)</option>
         </select>
       </div>
 
+      ${!(cfg.operation === 'tally' && !cfg.condition?.match_value) ? `
       <div style="padding:4px 10px 2px">
         <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Display as</div>
         <select id="rl-display" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
@@ -3458,19 +3509,20 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
           <option value="progress_bar" ${cfg.display==='progress_bar'?'selected':''}>Progress bar</option>
           <option value="ring" ${cfg.display==='ring'?'selected':''}>Percentage ring</option>
         </select>
-      </div>
+      </div>` : `
+      <div style="padding:4px 10px 2px;font-size:11px;color:var(--text-muted)">Shown as text — a bar/ring can't represent a breakdown of every value.</div>`}
 
-      ${cfg.operation === 'percentage_match' && propOptions.length ? `
+      ${(cfg.operation === 'percentage_match' || cfg.operation === 'tally') && propOptions.length ? `
         <div style="padding:4px 10px 2px">
-          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Match value</div>
+          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Match value${cfg.operation==='tally' ? ' (optional)' : ''}</div>
           <select id="rl-match-val" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
-            <option value="">— select value —</option>
+            <option value="">${cfg.operation==='tally' ? '— all values (breakdown) —' : '— select value —'}</option>
             ${propOptions.map(o => `<option value="${escHtml(o)}" ${(cfg.condition?.match_value||'')=== o?'selected':''}>${escHtml(o)}</option>`).join('')}
           </select>
         </div>
-      ` : cfg.operation === 'percentage_match' && cfg.target_property ? `
+      ` : (cfg.operation === 'percentage_match' || cfg.operation === 'tally') && cfg.target_property ? `
         <div style="padding:4px 10px 2px">
-          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Match value</div>
+          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Match value${cfg.operation==='tally' ? ' (optional — leave blank for a full breakdown)' : ''}</div>
           <input id="rl-match-val-txt" type="text" value="${escHtml(cfg.condition?.match_value||'')}" placeholder="Exact value to match…"
             style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box"/>
         </div>
@@ -3507,14 +3559,14 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
       cfg.value_map = {};
       render();
     };
-    panel.querySelector('#rl-display').onchange = (e) => { cfg.display = e.target.value; };
+    panel.querySelector('#rl-display')?.addEventListener('change', (e) => { cfg.display = e.target.value; });
     panel.querySelector('#rl-operation').onchange = (e) => {
       cfg.operation = e.target.value;
       cfg.condition = { match_value: '' };
       cfg.value_map = {};
       render();
     };
-    panel.querySelector('#rl-match-val')?.addEventListener('change', (e) => { cfg.condition = { match_value: e.target.value }; });
+    panel.querySelector('#rl-match-val')?.addEventListener('change', (e) => { cfg.condition = { match_value: e.target.value }; render(); });
     panel.querySelector('#rl-match-val-txt')?.addEventListener('input', (e) => { cfg.condition = { match_value: e.target.value }; });
     panel.querySelectorAll('.rl-vm-inp').forEach(inp => {
       inp.oninput = () => {
@@ -3536,7 +3588,7 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
       // Build final rollup config (only include non-empty fields)
       const rollupConfig = { target_property: cfg.target_property, operation: cfg.operation };
       if (cfg.child_entity_type) rollupConfig.child_entity_type = cfg.child_entity_type;
-      if (cfg.operation === 'percentage_match') rollupConfig.condition = { match_value: cfg.condition.match_value };
+      if ((cfg.operation === 'percentage_match' || cfg.operation === 'tally') && cfg.condition?.match_value) rollupConfig.condition = { match_value: cfg.condition.match_value };
       if (cfg.operation === 'average' && Object.keys(cfg.value_map || {}).length > 0) rollupConfig.value_map = cfg.value_map;
       if (cfg.display && cfg.display !== 'text') rollupConfig.display = cfg.display;
 
@@ -3747,7 +3799,7 @@ function renderCustomPropChips(entity, recordId, viewMode, excludeDates) {
     if (def.type !== 'rollup' && def.type !== 'checkbox' && !val && val !== false && val !== 0) return '';
     if (def.type === 'rollup') {
       const fresh = evaluateRollup(entity, recordId, def);
-      const rv = fresh !== null ? Math.round(fresh * 100) / 100 : val;
+      const rv = fresh === null ? val : Array.isArray(fresh) ? fresh : Math.round(fresh * 100) / 100;
       // Same bar/ring/text widget in every view — kept consistent across
       // List/Table/Kanban/Cards by design rather than Card-only.
       return (rv === '' || rv === undefined || rv === null) ? '' : renderRollupCardWidget(def, rv);
@@ -6632,8 +6684,8 @@ async function renderCustomEntityList(typeName) {
         const visProps = allCustomDefs.filter(pd => entityPropVisible(entityKey, pd.key)).map(pd => {
           if (pd.type === 'rollup') {
             const fresh = evaluateRollup(entityKey, e.id, pd);
-            const rv = fresh !== null ? Math.round(fresh * 100) / 100
-              : (e.props?.[pd.key] ?? getCustomPropValues(entityKey, e.id)[pd.key] ?? '');
+            const rv = fresh === null ? (e.props?.[pd.key] ?? getCustomPropValues(entityKey, e.id)[pd.key] ?? '')
+              : Array.isArray(fresh) ? fresh : Math.round(fresh * 100) / 100;
             return renderRollupCardWidget(pd, rv);
           }
           const raw = e.props?.[pd.key] || '';
@@ -11744,6 +11796,10 @@ function _wMetricsHtml(entity, entityId, data, w) {
     if (computed === null) {
       return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="empty-state-text" style="padding:12px 0">No matching related records yet.</div></div>`;
     }
+    if (Array.isArray(computed)) {
+      const text = computed.length ? computed.map(x => `${escHtml(String(x.value))}: ${x.count}`).join(', ') : '—';
+      return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div style="font-size:13px;color:var(--text-secondary);padding:4px 0">${text}</div></div>`;
+    }
     const rounded = Math.round(computed * 100) / 100;
     if (cfg.operation !== 'percentage_match') {
       const label = escHtml(rollupTargetPropertyLabel(entity, cfg) || cfg.target_property);
@@ -11788,35 +11844,30 @@ function rollupTargetPropertyLabel(entity, cfg) {
 
 // Compact single-line version of a Metrics widget's value, for Cards view.
 // Shown when a metrics-type widget on this entity has showInCards enabled
-// (toggled per-widget in Manage Widgets — see the wm-cards-btn wiring below).
-// Every entity that can carry a Metrics widget (Project/Goal/Sprint/custom
-// detail types) funnels its Cards template through this one function, so
-// there's a single place that knows how to read either source mode.
+// (toggled from the entity's view settings — the gear icon next to
+// expand/property-visibility in the List/Cards/Table toolbar — see
+// openPropManager's "Metrics on cards" section). Every entity that can carry
+// a Metrics widget (Project/Goal/Sprint/custom detail types) funnels its
+// Cards template through this one function. Rollup-mode values render via
+// renderRollupCardWidget — the exact same text/progress_bar/ring/tally-
+// breakdown renderer a regular Rollup property already uses — so the
+// "Display as" choice made when configuring the widget's source is honored
+// here too, instead of always forcing one fixed bar style.
 function metricsCardChipHtml(entity, entityId, entityData) {
   const w = getWidgetLayout(entity).find(x => x.type === 'metrics' && x.visible && x.showInCards);
   if (!w) return '';
-  let pct = null, label = '';
   if (_metricsUsesRollup(entity, w)) {
     const cfg = w.rollupCfg;
     if (!cfg || !cfg.target_property) return '';
     const computed = evaluateRollup(entity, entityId, { rollup: cfg });
     if (computed === null) return '';
-    const rounded = Math.round(computed * 100) / 100;
-    if (cfg.operation === 'percentage_match') {
-      pct = Math.max(0, Math.min(100, rounded));
-      label = `${rounded}%`;
-    } else {
-      label = `${rollupTargetPropertyLabel(entity, cfg) || cfg.target_property}: ${rounded}`;
-    }
-  } else {
-    if (!entityData || entityData.target == null) return '';
-    pct = entityData.target > 0 ? Math.max(0, Math.min(100, Math.round((entityData.current_value || 0) / entityData.target * 100))) : 0;
-    label = `${entityData.current_value ?? 0}/${entityData.target}`;
+    const value = Array.isArray(computed) ? computed : Math.round(computed * 100) / 100;
+    return `<div style="margin-top:4px">${renderRollupCardWidget({ label: 'Metrics', rollup: cfg }, value)}</div>`;
   }
-  const bar = pct != null
-    ? `<span class="rollup-bar" style="width:56px"><span class="rollup-bar-fill" style="width:${pct}%"></span></span>`
-    : '';
-  return `<div class="rollup-bar-row" style="margin-top:4px" title="Metrics: ${escHtml(label)}"><span class="rollup-bar-label">Metrics</span>${bar}<span class="rollup-bar-num">${escHtml(label)}</span></div>`;
+  if (!entityData || entityData.target == null) return '';
+  const pct = entityData.target > 0 ? Math.max(0, Math.min(100, Math.round((entityData.current_value || 0) / entityData.target * 100))) : 0;
+  const label = `${entityData.current_value ?? 0}/${entityData.target}`;
+  return `<div class="rollup-bar-row" style="margin-top:4px" title="Metrics: ${escHtml(label)}"><span class="rollup-bar-label">Metrics</span><span class="rollup-bar" style="width:56px"><span class="rollup-bar-fill" style="width:${pct}%"></span></span><span class="rollup-bar-num">${escHtml(label)}</span></div>`;
 }
 
 // Opens the shared rollup config panel (the same one "+Add property > Rollup"
@@ -12054,19 +12105,10 @@ function openWidgetManager(entity, anchorEl, onClose) {
   const rowsHtml = layout.map(w => {
     const meta = WIDGET_TYPE_META[w.type] || { icon: '◉' };
     const wrapped = w.wrapped !== false;
-    // Only Metrics has a small-version representation worth showing on a
-    // Cards-view card — every other widget type is either already a chip
-    // (properties) or too big to compress meaningfully (tasks, editor, …).
-    const cardBtn = w.type === 'metrics'
-      ? `<button class="btn btn-ghost btn-sm wm-cards-btn" data-wid="${escHtml(w.id)}"
-          title="${w.showInCards ? 'Shown on cards in Cards view — click to hide' : 'Not shown on cards — click to show in Cards view'}"
-          style="font-size:11px;padding:2px 6px;line-height:1;flex-shrink:0">${w.showInCards ? '▦' : '▤'}</button>`
-      : '';
     return `<div class="wm-row" data-wid="${escHtml(w.id)}">
       <span class="wm-row-handle">${dgh}</span>
       <span class="wm-row-icon">${meta.icon}</span>
       <span class="wm-row-label">${escHtml(w.label)}</span>
-      ${cardBtn}
       <button class="btn btn-ghost btn-sm wm-wrap-btn" data-wid="${escHtml(w.id)}"
         title="${wrapped ? 'Card display — click for static (no card, full width)' : 'Static display — click for card'}"
         style="font-size:11px;padding:2px 6px;line-height:1;flex-shrink:0">${wrapped ? '▢' : '▭'}</button>
@@ -12133,18 +12175,6 @@ function openWidgetManager(entity, anchorEl, onClose) {
       saveWidgetLayout(entity, lay);
       btn.textContent = w.wrapped === false ? '▭' : '▢';
       btn.title = w.wrapped === false ? 'Static display — click for card' : 'Card display — click for static (no card, full width)';
-    };
-  });
-
-  panel.querySelectorAll('.wm-cards-btn').forEach(btn => {
-    btn.onclick = () => {
-      const lay = getWidgetLayout(entity);
-      const w = lay.find(x => x.id === btn.dataset.wid);
-      if (!w) return;
-      w.showInCards = !w.showInCards;
-      saveWidgetLayout(entity, lay);
-      btn.textContent = w.showInCards ? '▦' : '▤';
-      btn.title = w.showInCards ? 'Shown on cards in Cards view — click to hide' : 'Not shown on cards — click to show in Cards view';
     };
   });
 
