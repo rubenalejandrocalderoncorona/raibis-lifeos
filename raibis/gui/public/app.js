@@ -3370,7 +3370,7 @@ function syncPropDefsToServer(entity) {
 // ── showAddRollupPanel ─────────────────────────────────────────────────────
 // Cascading config panel for a Rollup-typed property.
 // Builds: child_entity_type → target_property → operation → conditional UI.
-function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup, description) {
+function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup, description, opts) {
   document.getElementById('add-prop-rollup-picker')?.remove();
   const panel = document.createElement('div');
   panel.id = 'add-prop-rollup-picker';
@@ -3539,6 +3539,15 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
       if (cfg.operation === 'percentage_match') rollupConfig.condition = { match_value: cfg.condition.match_value };
       if (cfg.operation === 'average' && Object.keys(cfg.value_map || {}).length > 0) rollupConfig.value_map = cfg.value_map;
       if (cfg.display && cfg.display !== 'text') rollupConfig.display = cfg.display;
+
+      // Callers outside the custom-property system (e.g. the Metrics widget)
+      // pass opts.onSave to persist the config themselves instead of it being
+      // pushed into this entity's custom prop defs.
+      if (opts && opts.onSave) {
+        panel.remove();
+        opts.onSave(rollupConfig);
+        return;
+      }
 
       // Upsert: editing an existing rollup replaces its rule in place
       const defs = getCustomPropDefs(entity);
@@ -11691,22 +11700,99 @@ function _wProjectsHtml(projects) {
   }).join('');
 }
 
-function _wMetricsHtml(entity, entityId, data) {
-  const editBtn = `<button class="widget-metrics-edit-btn" data-entity="${entity}" data-id="${entityId}" title="Set start/current/target"
-    style="position:absolute;top:0;right:0;background:none;border:none;cursor:pointer;color:var(--text-muted);padding:2px;line-height:0">
+// A Metrics widget shows either manual numbers (Goal's own start_value/
+// current_value/target columns — the only entity with those columns) or a
+// value computed from a relation (any entity: reuses the same rollup engine
+// a "Rollup" custom property uses — child entity type + a property on that
+// child + an aggregation). Manual is the default on Goal for backward compat
+// with widgets saved before rollup mode existed; every other entity has no
+// manual columns to read, so it's rollup-only there.
+function _metricsUsesRollup(entity, w) {
+  return w && (w.metricsSource === 'rollup' || (w.metricsSource == null && entity !== 'goal'));
+}
+
+function _wMetricsHtml(entity, entityId, data, w) {
+  const wid = w ? w.id : '';
+  const useRollup = _metricsUsesRollup(entity, w);
+  const editBtn = `<button class="widget-metrics-edit-btn" data-entity="${entity}" data-id="${entityId}" data-wid="${escHtml(wid)}"
+    title="${useRollup ? 'Configure what this measures' : 'Set start/current/target'}"
+    style="position:absolute;top:0;right:${entity==='goal'?20:0}px;background:none;border:none;cursor:pointer;color:var(--text-muted);padding:2px;line-height:0">
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
   </button>`;
+  // Goal is the only entity that can ever use manual mode, so it's the only
+  // one that gets a switch between the two — everywhere else there's nothing
+  // to switch to.
+  const modeBtn = entity === 'goal'
+    ? `<button class="widget-metrics-mode-btn" data-entity="${entity}" data-id="${entityId}" data-wid="${escHtml(wid)}"
+        title="${useRollup ? 'Use manual values instead' : 'Compute from a relation instead'}"
+        style="position:absolute;top:2px;right:0;background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:11px;padding:2px;line-height:1">⇄</button>`
+    : '';
+  const chrome = editBtn + modeBtn;
+  const padRight = entity === 'goal' ? 36 : 20;
+
+  if (useRollup) {
+    const cfg = w && w.rollupCfg;
+    if (!cfg || !cfg.target_property) {
+      return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="empty-state-text" style="padding:12px 0">Not configured — click ✏ to pick a relation and property to measure.</div></div>`;
+    }
+    const computed = evaluateRollup(entity, entityId, { rollup: cfg });
+    if (computed === null) {
+      return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="empty-state-text" style="padding:12px 0">No matching related records yet.</div></div>`;
+    }
+    const rounded = Math.round(computed * 100) / 100;
+    if (cfg.operation !== 'percentage_match') {
+      const label = escHtml(rollupTargetPropertyLabel(entity, cfg) || cfg.target_property);
+      return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="stats-row">
+        <div class="stat-card"><div class="stat-value">${rounded}</div><div class="stat-label">${label}</div></div>
+      </div></div>`;
+    }
+    const pct = Math.max(0, Math.min(100, rounded));
+    return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="stats-row">
+      <div class="stat-card"><div class="stat-value">0</div><div class="stat-label">Start</div></div>
+      <div class="stat-card"><div class="stat-value">${rounded}%</div><div class="stat-label">Current</div></div>
+      <div class="stat-card"><div class="stat-value">100</div><div class="stat-label">Target</div></div>
+    </div>
+    <div class="progress-track" style="margin-top:8px"><div class="progress-fill" style="width:${pct}%"></div></div>
+    <div style="text-align:right;font-size:12px;color:var(--text-muted);margin-top:4px">${pct}%</div></div>`;
+  }
+
   if (!data || data.target == null) {
-    return `<div style="position:relative;padding-right:20px">${editBtn}<div class="empty-state-text" style="padding:12px 0">No metrics set yet — click ✏ to add a start/current/target.</div></div>`;
+    return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="empty-state-text" style="padding:12px 0">No metrics set yet — click ✏ to add a start/current/target.</div></div>`;
   }
   const pct = data.target > 0 ? Math.round((data.current_value || 0) / data.target * 100) : 0;
-  return `<div style="position:relative;padding-right:20px">${editBtn}<div class="stats-row">
+  return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="stats-row">
     ${data.start_value != null ? `<div class="stat-card"><div class="stat-value">${data.start_value}</div><div class="stat-label">Start</div></div>` : ''}
     ${data.current_value != null ? `<div class="stat-card"><div class="stat-value">${data.current_value}</div><div class="stat-label">Current</div></div>` : ''}
     ${data.target != null ? `<div class="stat-card"><div class="stat-value">${data.target}</div><div class="stat-label">Target</div></div>` : ''}
   </div>
   <div class="progress-track" style="margin-top:8px"><div class="progress-fill" style="width:${pct}%"></div></div>
   <div style="text-align:right;font-size:12px;color:var(--text-muted);margin-top:4px">${pct}%</div></div>`;
+}
+
+// Resolves a rollup target_property key to its human label, looking at the
+// same field-def sources showAddRollupPanel's picker draws from.
+function rollupTargetPropertyLabel(entity, cfg) {
+  const typeName = cfg.child_entity_type || '';
+  if (!typeName) return cfg.target_property;
+  const fromBuiltin = rollupBuiltinFieldDefs(typeName).find(d => d.key === cfg.target_property);
+  if (fromBuiltin) return fromBuiltin.label;
+  const entKey = customEntityTypes.some(t => t.name === typeName) ? `custom_${typeName}` : typeName;
+  const fromCustom = getCustomPropDefs(entKey).find(d => d.key === cfg.target_property);
+  return fromCustom ? fromCustom.label : cfg.target_property;
+}
+
+// Opens the shared rollup config panel (the same one "+Add property > Rollup"
+// uses) to configure a Metrics widget's relation-based source instead of a
+// custom prop def.
+function openMetricsRollupConfigPanel(anchorEl, entity, w, onSaved) {
+  showAddRollupPanel(anchorEl, `widget-${w.id}`, 'Metrics', entity, onSaved, w.rollupCfg || {}, '', {
+    onSave: (rollupConfig) => {
+      const layout = getWidgetLayout(entity);
+      const ww = layout.find(x => x.id === w.id);
+      if (ww) { ww.metricsSource = 'rollup'; ww.rollupCfg = rollupConfig; saveWidgetLayout(entity, layout); }
+      onSaved();
+    },
+  });
 }
 
 // Small popover to set a goal's start/current/target values directly from
@@ -11771,10 +11857,29 @@ function openMetricsEditPopover(anchorEl, entity, entityId) {
   }, 10);
 }
 document.addEventListener('click', (e) => {
+  const modeBtn = e.target.closest('.widget-metrics-mode-btn');
+  if (modeBtn) {
+    e.stopPropagation();
+    const entity = modeBtn.dataset.entity;
+    const layout = getWidgetLayout(entity);
+    const w = layout.find(x => x.id === modeBtn.dataset.wid);
+    if (!w) return;
+    w.metricsSource = _metricsUsesRollup(entity, w) ? 'manual' : 'rollup';
+    saveWidgetLayout(entity, layout);
+    renderView(currentView, currentParams);
+    return;
+  }
   const btn = e.target.closest('.widget-metrics-edit-btn');
   if (!btn) return;
   e.stopPropagation();
-  openMetricsEditPopover(btn, btn.dataset.entity, btn.dataset.id);
+  const entity = btn.dataset.entity;
+  const layout = getWidgetLayout(entity);
+  const w = layout.find(x => x.id === btn.dataset.wid);
+  if (w && _metricsUsesRollup(entity, w)) {
+    openMetricsRollupConfigPanel(btn, entity, w, () => renderView(currentView, currentParams));
+  } else {
+    openMetricsEditPopover(btn, entity, btn.dataset.id);
+  }
 });
 
 function _wCustomHtml(entity, entityId, data, def) {
@@ -11806,12 +11911,18 @@ function buildWidgetGrid(entity, entityId, wData) {
       case 'properties': body = wData.propPanelHtml || ''; break;
       case 'editor':     body = `<div id="editorjs-${entity}-${entityId}" class="rich-editor-host"></div>`; break;
       case 'comments':   body = buildCommentSection(entity, entityId); break;
-      case 'metrics':    body = _wMetricsHtml(entity, entityId, wData.entityData); break;
+      case 'metrics':    body = _wMetricsHtml(entity, entityId, wData.entityData, w); break;
       case 'custom': {
         const def = customDefs.find(d => d.id === w.customDefId);
         body = _wCustomHtml(entity, entityId, wData.entityData, def); break;
       }
       default: body = `<div class="empty-state-text">Unknown widget: ${escHtml(w.type)}</div>`;
+    }
+    // Unwrapped widgets skip the card chrome (border/background/header) entirely
+    // and always span the full grid width — no half-width toggle, since there's
+    // no header for that control to live in once the card is gone.
+    if (w.wrapped === false) {
+      return `<div class="widget-bare" data-widget-id="${escHtml(w.id)}" data-widget-type="${w.type}" style="grid-column:1/-1">${body}</div>`;
     }
     const is2col = w.type === 'tasks' && w.cols === 2;
     const colBtn = w.type === 'tasks'
@@ -11899,10 +12010,14 @@ function openWidgetManager(entity, anchorEl, onClose) {
 
   const rowsHtml = layout.map(w => {
     const meta = WIDGET_TYPE_META[w.type] || { icon: '◉' };
+    const wrapped = w.wrapped !== false;
     return `<div class="wm-row" data-wid="${escHtml(w.id)}">
       <span class="wm-row-handle">${dgh}</span>
       <span class="wm-row-icon">${meta.icon}</span>
       <span class="wm-row-label">${escHtml(w.label)}</span>
+      <button class="btn btn-ghost btn-sm wm-wrap-btn" data-wid="${escHtml(w.id)}"
+        title="${wrapped ? 'Card display — click for static (no card, full width)' : 'Static display — click for card'}"
+        style="font-size:11px;padding:2px 6px;line-height:1;flex-shrink:0">${wrapped ? '▢' : '▭'}</button>
       <label class="wm-toggle-wrap" title="${w.visible ? 'Click to hide' : 'Click to show'}">
         <input type="checkbox" class="wm-vis-cb" ${w.visible ? 'checked' : ''} data-wid="${escHtml(w.id)}">
         <span class="wm-toggle-slider"></span>
@@ -11912,11 +12027,11 @@ function openWidgetManager(entity, anchorEl, onClose) {
   }).join('');
 
   const existingTypes = new Set(layout.map(w => w.type));
+  // Metrics defaults to manual start_value/current_value/target on Goal (the
+  // only entity with those columns) and to a computed relation everywhere
+  // else — see _metricsUsesRollup — so it's addable anywhere now.
   const addableOpts = Object.entries(WIDGET_TYPE_META)
-    // Metrics reads/writes start_value/current_value/target — only Goals
-    // have those columns, so offering it elsewhere would just produce a
-    // widget with no way to ever populate it.
-    .filter(([t]) => t !== 'custom' && !existingTypes.has(t) && (t !== 'metrics' || entity === 'goal'))
+    .filter(([t]) => t !== 'custom' && !existingTypes.has(t))
     .map(([t, m]) => `<option value="${t}">${m.icon} ${m.label}</option>`).join('');
   const addCustomOpts = customDefs
     .filter(d => !layout.find(w => w.type === 'custom' && w.customDefId === d.id))
@@ -11954,6 +12069,18 @@ function openWidgetManager(entity, anchorEl, onClose) {
       const lay = getWidgetLayout(entity);
       const w = lay.find(x => x.id === cb.dataset.wid);
       if (w) { w.visible = cb.checked; saveWidgetLayout(entity, lay); }
+    };
+  });
+
+  panel.querySelectorAll('.wm-wrap-btn').forEach(btn => {
+    btn.onclick = () => {
+      const lay = getWidgetLayout(entity);
+      const w = lay.find(x => x.id === btn.dataset.wid);
+      if (!w) return;
+      w.wrapped = w.wrapped === false ? true : false;
+      saveWidgetLayout(entity, lay);
+      btn.textContent = w.wrapped === false ? '▭' : '▢';
+      btn.title = w.wrapped === false ? 'Static display — click for card' : 'Card display — click for static (no card, full width)';
     };
   });
 
@@ -13474,14 +13601,6 @@ async function renderGoalDetail(goalId) {
     t.sub_task_count = allTasksCache.filter(s => s.parent_task_id === t.id).length;
   });
 
-  // Metrics row
-  const metricsHtml = (g.start_value != null || g.target != null) ? `
-    <div class="stats-row" style="margin-bottom:16px">
-      ${g.start_value != null ? `<div class="stat-card"><div class="stat-value">${g.start_value}</div><div class="stat-label">Start</div></div>` : ''}
-      ${g.current_value != null ? `<div class="stat-card"><div class="stat-value">${g.current_value}</div><div class="stat-label">Current</div></div>` : ''}
-      ${g.target != null ? `<div class="stat-card"><div class="stat-value">${g.target}</div><div class="stat-label">Target</div></div>` : ''}
-    </div>` : '';
-
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="entity-view-cover" id="goal-cover-row"></div>
     <div class="entity-view-action" id="goal-action-row">
@@ -13510,7 +13629,6 @@ async function renderGoalDetail(goalId) {
         <button class="btn btn-ghost" id="gd-add-res-btn">+ Resource</button>
       </div>
     </div>
-    ${metricsHtml}
     <div id="gd-widget-grid" class="widget-grid">
       ${buildWidgetGrid('goal', goalId, { tasks, notes, resources, projects, propPanelHtml: goalDetailPropPanel, entityData: g })}
     </div>
