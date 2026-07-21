@@ -1844,6 +1844,7 @@ const CUSTOM_PROP_TYPES = [
   { type: 'multi_select', label: 'Multi-select', icon: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3" cy="6" r="2"/><circle cx="3" cy="12" r="2"/><circle cx="3" cy="18" r="2"/>' },
   { type: 'status',       label: 'Status',       icon: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>' },
   { type: 'date',         label: 'Date',         icon: '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>' },
+  { type: 'schedule',     label: 'Schedule',     icon: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>' },
   { type: 'checkbox',     label: 'Checkbox',     icon: '<polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>' },
   { type: 'url',          label: 'URL',          icon: '<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>' },
   { type: 'phone',        label: 'Phone',        icon: '<path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 8.81 19.79 19.79 0 01.02 2.18 2 2 0 012 0h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L6.09 7.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/>' },
@@ -3826,6 +3827,11 @@ function renderCustomPropChips(entity, recordId, viewMode, excludeDates) {
       // text (overdue/today/soon), not a labeled pill like other props.
       return `<span class="task-due" style="font-size:10px;color:${dueDateColor(val)}"${tipAttrs(def.label, def.description)}>${fmtDate(val)}</span>`;
     }
+    if (def.type === 'schedule') {
+      const sv = parseScheduleValue(val);
+      if (!sv) return '';
+      return `<span class="task-due" style="font-size:10px;color:${dueDateColor(sv.date)}"${tipAttrs(def.label, def.description)}>${fmtScheduleValue(val)}</span>`;
+    }
     const display = String(val);
     if (!display) return '';
     return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;background:var(--accent-glow);border-radius:3px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"${tipAttrs(def.label, def.description)}><span style="color:var(--text-muted)">${def.label}:</span> ${escHtml(display)}</span>`;
@@ -4152,6 +4158,12 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
             // shared vanilla global widget, opened via onEditRequest below.
             return `<span class="svelte-date-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-display="${escHtml(fmtDate(val)||val||'')}" onclick="event.stopPropagation()"></span>`;
           }
+          if (custom.type === 'schedule') {
+            // Same dumb-display DateProp mount as 'date' — bindInlinePropPanel
+            // tells them apart by looking up the def's type and opens the
+            // schedule picker (date + time) instead of the plain date one.
+            return `<span class="svelte-date-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-display="${escHtml(fmtScheduleValue(val))}" onclick="event.stopPropagation()"></span>`;
+          }
           if (custom.type === 'select' || custom.type === 'status') {
             const color = (custom.optionColors || {})[val] || '';
             return `<span class="svelte-select-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-value="${escHtml(val||'')}" data-color="${escHtml(color)}" onclick="event.stopPropagation()"></span>`;
@@ -4317,8 +4329,10 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
     svelteInstances.push(window.RaibisSvelte.mountDateProp(mountEl, {
       display: mDisplay || '',
       onEditRequest: () => {
+        const def = getCustomPropDefs(mEntity).find(d => d.key === mPropKey);
         const cur = getCustomPropValues(mEntity, mRecordId)[mPropKey] ?? '';
-        openSingleDatePickerGlobal(mountEl, cur || null, (val) => {
+        const openPicker = def && def.type === 'schedule' ? openSchedulePickerGlobal : openSingleDatePickerGlobal;
+        openPicker(mountEl, cur || null, (val) => {
           setCustomPropValue(mEntity, mRecordId, mPropKey, val || '');
           onRerender();
         });
@@ -4591,6 +4605,27 @@ function fmtDateShort(dateStr) {
   const s = stripDate(dateStr);
   const [y, m, day] = s.split('-');
   return `${day}/${m}/${y}`;
+}
+
+// Schedule-type custom prop value: {date:'YYYY-MM-DD', time:'HH:MM'|null},
+// stored JSON-encoded in the same flat customPropVals string store every
+// other custom prop type uses (relation/multi_select already store JSON
+// there the same way).
+function parseScheduleValue(val) {
+  if (!val) return null;
+  try { const o = JSON.parse(val); return o && o.date ? o : null; } catch { return null; }
+}
+function fmtTime12h(hhmm) {
+  if (!hhmm) return '';
+  const [h, m] = hhmm.split(':').map(Number);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return `${h12}:${String(m).padStart(2,'0')} ${ampm}`;
+}
+function fmtScheduleValue(val) {
+  const o = parseScheduleValue(val);
+  if (!o) return '';
+  return o.time ? `${fmtDate(o.date)}, ${fmtTime12h(o.time)}` : fmtDate(o.date);
 }
 
 function isOverdue(dateStr) {
@@ -13988,6 +14023,98 @@ function openSingleDatePickerGlobal(anchorEl, currentVal, onChange) {
   openDateRangePickerGlobal(anchorEl, currentVal, null, (start) => onChange(start || null), true);
 }
 
+// Schedule picker: a single-date month calendar (same grid as the range
+// picker, single-select only) plus a native time input and Schedule/
+// Unschedule/Cancel actions. currentVal is a schedule value string (see
+// parseScheduleValue); onChange receives the new value string or null.
+function openSchedulePickerGlobal(anchorEl, currentVal, onChange) {
+  closeDatePicker();
+  const today = new Date(); today.setHours(0,0,0,0);
+  const cur = parseScheduleValue(currentVal);
+  let selDate = cur ? new Date(cur.date + 'T00:00:00') : today;
+  let selTime = cur ? (cur.time || '') : '';
+
+  const seed = selDate || today;
+  let viewYear = seed.getFullYear();
+  let viewMonth = seed.getMonth();
+
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+  function toISO(d) { return d ? d.toISOString().split('T')[0] : null; }
+
+  _dpEl = document.createElement('div');
+  _dpEl.className = 'datepicker-popover';
+
+  function renderPicker() {
+    const firstDay = new Date(viewYear, viewMonth, 1);
+    let startDow = firstDay.getDay();
+    startDow = startDow === 0 ? 6 : startDow - 1;
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+    let dayGrid = '';
+    let dayNum = 1 - startDow;
+    for (let r = 0; r < 6; r++) {
+      for (let c = 0; c < 7; c++, dayNum++) {
+        if (dayNum < 1 || dayNum > daysInMonth) {
+          dayGrid += `<div class="dp-day other-month"></div>`;
+        } else {
+          const d = new Date(viewYear, viewMonth, dayNum); d.setHours(0,0,0,0);
+          let cls = 'dp-day';
+          if (d.getTime() === today.getTime()) cls += ' today';
+          if (selDate && d.getTime() === selDate.getTime()) cls += ' selected';
+          dayGrid += `<div class="${cls}" data-iso="${toISO(d)}">${dayNum}</div>`;
+        }
+      }
+    }
+    _dpEl.innerHTML = `
+      <div class="dp-header">
+        <button class="dp-nav-btn" id="dp-prev">‹</button>
+        <span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span>
+        <button class="dp-nav-btn" id="dp-next">›</button>
+      </div>
+      <div class="dp-grid">
+        ${DAYS.map(d => `<div class="dp-day-head">${d}</div>`).join('')}
+        ${dayGrid}
+      </div>
+      <div style="padding:8px 10px;border-top:1px solid var(--border)">
+        <label style="display:block;font-size:11px;color:var(--text-muted);margin-bottom:3px">Time</label>
+        <input type="time" id="sp-time" value="${escHtml(selTime)}" style="width:100%;font-size:13px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box">
+      </div>
+      <div style="padding:8px 10px;display:flex;gap:6px">
+        <button class="btn btn-sm btn-ghost" id="sp-unschedule" style="flex:1;color:var(--danger)">Unschedule</button>
+        <button class="btn btn-sm btn-primary" id="sp-schedule" style="flex:1">Schedule</button>
+      </div>
+      <div style="text-align:center;padding-bottom:8px">
+        <button class="btn btn-sm btn-ghost" id="sp-cancel" style="font-size:12px;color:var(--text-muted)">Cancel</button>
+      </div>`;
+
+    _dpEl.querySelector('#dp-prev').onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderPicker(); };
+    _dpEl.querySelector('#dp-next').onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderPicker(); };
+    _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => {
+      el.onclick = () => { selDate = new Date(el.dataset.iso + 'T00:00:00'); renderPicker(); };
+    });
+    _dpEl.querySelector('#sp-time').oninput = (e) => { selTime = e.target.value; };
+    _dpEl.querySelector('#sp-unschedule').onclick = () => { onChange(null); closeDatePicker(); };
+    _dpEl.querySelector('#sp-cancel').onclick = () => closeDatePicker();
+    _dpEl.querySelector('#sp-schedule').onclick = () => {
+      onChange(JSON.stringify({ date: toISO(selDate), time: selTime || null }));
+      closeDatePicker();
+    };
+  }
+
+  renderPicker();
+  const rect = anchorEl.getBoundingClientRect();
+  _dpEl.style.top = (rect.bottom + 4) + 'px';
+  _dpEl.style.left = rect.left + 'px';
+  document.body.appendChild(_dpEl);
+  requestAnimationFrame(() => {
+    if (!_dpEl) return;
+    const cr = _dpEl.getBoundingClientRect();
+    if (cr.right > window.innerWidth - 8) _dpEl.style.left = (window.innerWidth - cr.width - 8) + 'px';
+    if (cr.bottom > window.innerHeight - 8) _dpEl.style.top = (rect.top - cr.height - 4) + 'px';
+  });
+  setTimeout(() => document.addEventListener('mousedown', _dpOutside), 0);
+}
+
 /* ─── Combo Popover (global) ─────────────────────────────────────────── */
 let _comboEl = null;
 function closeCombo() {
@@ -15116,8 +15243,31 @@ function buildCalendar(tasks, year, month, showNav) {
 }
 
 /* ─── Calendar View (sidebar nav) ───────────────────────────────────── */
+// Opens whatever slideover/modal a given entity type normally uses to view
+// a single record — built-ins each have their own (differently-shaped)
+// opener, custom types share one. Used by the hour-timeline's markers,
+// which can point at any entity type.
+async function openScheduledItemSlideover(entityKey, id) {
+  if (entityKey === 'task') { showTaskSlideover(id); return; }
+  if (entityKey === 'sprint') { showSprintSlideover(id); return; }
+  if (entityKey.startsWith('custom_')) { openCustomEntitySlideover(entityKey.slice(7), id); return; }
+  const pathMap = { goal: 'goals', project: 'projects', note: 'notes', resource: 'resources', habit: 'habits' };
+  const path = pathMap[entityKey];
+  if (!path) return;
+  try {
+    const rec = await api('GET', `/api/${path}/${id}`);
+    if (entityKey === 'goal') showGoalSlideover(rec, () => renderCalendarView());
+    else if (entityKey === 'project') {
+      const goals = await api('GET', '/api/goals').catch(() => []);
+      showProjectSlideover(rec, goals, () => renderCalendarView());
+    } else if (entityKey === 'note') showNoteModal(rec, () => renderCalendarView());
+    else if (entityKey === 'resource') showResourceModal(rec, () => renderCalendarView());
+    else if (entityKey === 'habit') showHabitModal(rec);
+  } catch(e) {}
+}
+
 async function renderCalendarView() {
-  let tasks = [], goals = [], projects = [], sprints = [];
+  let tasks = [], goals = [], projects = [], sprints = [], notes = [], resources = [], habits = [];
   try {
     [tasks, goals, projects, sprints] = await Promise.all([
       api('GET', '/api/tasks?all=1'),
@@ -15127,6 +15277,46 @@ async function renderCalendarView() {
     ]);
     allTasksCache = tasks;
   } catch(e) {}
+
+  // Extra fetches for the hour-timeline's schedule scan only (month/week/day-
+  // bucket/gantt/timeline views above don't use these) — kept out of the
+  // main Promise.all since those views render fine without them and a
+  // failure here shouldn't block the rest of the calendar.
+  const scheduleEntitySources = [
+    ['task', tasks], ['goal', goals], ['project', projects], ['sprint', sprints],
+  ];
+  try {
+    [notes, resources, habits] = await Promise.all([
+      api('GET', '/api/notes'), api('GET', '/api/resources'), api('GET', '/api/habits'),
+    ]);
+  } catch(e) {}
+  scheduleEntitySources.push(['note', notes], ['resource', resources], ['habit', habits]);
+  try {
+    const customLists = await Promise.all((customEntityTypes || []).map(ct =>
+      api('GET', `/api/custom/${ct.name}`).catch(() => [])));
+    customEntityTypes.forEach((ct, i) => scheduleEntitySources.push([`custom_${ct.name}`, customLists[i] || []]));
+  } catch(e) {}
+
+  // Any entity of any type (built-in or custom) that has a 'schedule'-type
+  // custom prop set to dateISO — this is what generalizes "add hours" to
+  // every entity, not just tasks with native due dates.
+  function collectScheduledItemsForDate(dateISO) {
+    const items = [];
+    scheduleEntitySources.forEach(([entityKey, records]) => {
+      const scheduleDefs = getCustomPropDefs(entityKey).filter(d => d.type === 'schedule');
+      if (!scheduleDefs.length || !records || !records.length) return;
+      records.forEach(r => {
+        const vals = getCustomPropValues(entityKey, r.id);
+        scheduleDefs.forEach(def => {
+          const sv = parseScheduleValue(vals[def.key]);
+          if (sv && sv.date === dateISO) {
+            items.push({ entityKey, id: r.id, title: r.title || r.name || `#${r.id}`, time: sv.time, propLabel: def.label });
+          }
+        });
+      });
+    });
+    return items.sort((a, b) => (a.time || '99:99').localeCompare(b.time || '99:99'));
+  }
 
   // Build sprint date ranges for background shading
   const sprintRanges = sprints
@@ -15401,6 +15591,80 @@ async function renderCalendarView() {
     return `<div class="cal-day-headers-row" style="${gridCols}">${headers}</div>${barsSection}<div class="cal-week-row"><div class="cal-week-cells" style="${gridCols}">${cells}</div></div>`;
   }
 
+  // Hour-by-hour single-day timeline — the generalized version of "add
+  // hours to a task" for every entity type. Anything (task, goal, project,
+  // sprint, note, resource, habit, or a custom entity type) with a
+  // 'schedule'-type custom prop set to this day shows as a time marker,
+  // positioned by its time-of-day rather than bucketed into the whole day
+  // the way every other calendar scope here does.
+  function buildHourTimeline() {
+    const ds = dateStr(calAnchorDate);
+    const todayD = new Date(); todayD.setHours(0,0,0,0);
+    const isToday = calAnchorDate.getTime() === todayD.getTime();
+    const allDay = eventsOnDate(ds);
+    const scheduled = collectScheduledItemsForDate(ds);
+    const rowH = 56;
+    const hourLabel = (h) => { const ap = h >= 12 ? 'PM' : 'AM'; const h12 = h % 12 || 12; return `${h12}:00 ${ap}`; };
+
+    const allDayHtml = allDay.length ? `<div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:4px">
+      ${allDay.map(ev => {
+        const color = chipColor(ev);
+        const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
+        return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${escHtml(ev.title)}">${escHtml(ev.title)}</div>`;
+      }).join('')}
+    </div>` : '';
+
+    const markers = scheduled.filter(it => it.time).map(item => {
+      const [h, m] = item.time.split(':').map(Number);
+      const top = (h + m / 60) * rowH;
+      const color = item.entityKey === 'task' ? 'var(--color-accent)' : 'var(--color-warning)';
+      return `<div class="hour-tl-marker" data-entity="${escHtml(item.entityKey)}" data-id="${item.id}" title="${escHtml(item.title)} · ${fmtTime12h(item.time)}"
+        style="position:absolute;left:74px;right:8px;top:${top}px;height:2px;background:${color};cursor:pointer">
+        <span style="position:absolute;left:-5px;top:-4px;width:9px;height:9px;border-radius:50%;background:${color}"></span>
+        <span style="position:absolute;left:12px;top:-9px;font-size:11px;background:var(--bg-surface);padding:0 4px;white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis">${escHtml(item.title)} · ${fmtTime12h(item.time)}</span>
+      </div>`;
+    }).join('');
+
+    let nowLine = '';
+    if (isToday) {
+      const now = new Date();
+      const top = (now.getHours() + now.getMinutes() / 60) * rowH;
+      nowLine = `<div style="position:absolute;left:74px;right:8px;top:${top}px;height:2px;background:var(--danger)"><span style="position:absolute;left:-5px;top:-4px;width:9px;height:9px;border-radius:50%;background:var(--danger)"></span></div>`;
+    }
+
+    const hourRows = Array.from({ length: 24 }, (_, h) => `
+      <div style="height:${rowH}px;border-top:1px solid var(--border);display:flex">
+        <div style="width:74px;flex-shrink:0;font-size:11px;color:var(--text-muted);padding:2px 8px 0 0;text-align:right">${hourLabel(h)}</div>
+        <div class="hour-tl-slot" data-hour="${h}" style="flex:1;cursor:pointer"></div>
+      </div>`).join('');
+
+    return `<div class="hour-timeline">
+      ${allDayHtml}
+      <div style="position:relative">
+        ${hourRows}
+        <div style="position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none">
+          <div style="pointer-events:auto">${markers}</div>${nowLine}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // Ensures the entity type has a schedule-type custom prop def to write
+  // into — a fresh task created by clicking an empty timeline slot has
+  // nowhere to store a time until one exists.
+  function ensureScheduleDef(entityKey) {
+    const defs = getCustomPropDefs(entityKey);
+    let def = defs.find(d => d.type === 'schedule');
+    if (!def) {
+      def = { key: 'scheduled', label: 'Scheduled', type: 'schedule' };
+      defs.push(def);
+      setCustomPropDefs(entityKey, defs);
+      const v = getEntityVisProps(entityKey);
+      if (!v.includes('scheduled')) setEntityVisProps(entityKey, [...v, 'scheduled']);
+    }
+    return def;
+  }
+
   // Gantt / timeline view for ranged tasks
   function buildGantt() {
     // Show current month as the timeline window
@@ -15501,7 +15765,8 @@ async function renderCalendarView() {
     let label = '';
     const scopes = [
       { id:'month', label:'Month' }, { id:'week', label:'Week' },
-      { id:'3day', label:'3 Days' }, { id:'day', label:'Day' }, { id:'gantt', label:'Gantt' }, { id:'timeline', label:'Timeline' }
+      { id:'3day', label:'3 Days' }, { id:'day', label:'Day' }, { id:'schedule', label:'Schedule' },
+      { id:'gantt', label:'Gantt' }, { id:'timeline', label:'Timeline' }
     ];
     const scopeBtns = scopes.map(s =>
       `<button class="btn btn-sm ${calScope===s.id?'btn-primary':'btn-ghost'} cal-scope-btn" data-scope="${s.id}">${s.label}</button>`
@@ -15530,6 +15795,7 @@ async function renderCalendarView() {
     if (calScope === 'week') return buildScopedCal(7);
     if (calScope === '3day') return buildScopedCal(3);
     if (calScope === 'day') return buildScopedCal(1);
+    if (calScope === 'schedule') return buildHourTimeline();
     if (calScope === 'gantt') return buildGantt();
     if (calScope === 'timeline') return buildTimeline();
     return buildMonthCal();
@@ -15616,6 +15882,21 @@ async function renderCalendarView() {
     });
     document.querySelectorAll('.cal-span-bar[data-task-id]').forEach(bar => {
       bar.onclick = (e) => { e.stopPropagation(); showTaskSlideover(bar.dataset.taskId); };
+    });
+    document.querySelectorAll('.hour-tl-marker[data-id]').forEach(marker => {
+      marker.onclick = (e) => { e.stopPropagation(); openScheduledItemSlideover(marker.dataset.entity, marker.dataset.id); };
+    });
+    document.querySelectorAll('.hour-tl-slot[data-hour]').forEach(slot => {
+      slot.onclick = async (e) => {
+        e.stopPropagation();
+        const hh = parseInt(slot.dataset.hour, 10);
+        const ds = dateStr(calAnchorDate);
+        const def = ensureScheduleDef('task');
+        const task = await api('POST', '/api/tasks', withActiveWorkspace({ title: 'Untitled' })).catch(() => null);
+        if (!task) return;
+        setCustomPropValue('task', task.id, def.key, JSON.stringify({ date: ds, time: `${String(hh).padStart(2,'0')}:00` }));
+        showTaskSlideover(task.id);
+      };
     });
     document.querySelectorAll('.gantt-bar.cal-event-task').forEach(bar => {
       bar.onclick = (e) => { e.stopPropagation(); showTaskSlideover(bar.dataset.taskId); };
