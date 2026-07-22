@@ -416,6 +416,20 @@ let currentView = 'dashboard';
 let _connectedPropTypesCache = null;
 let currentParams = null;
 let navHistory = []; // [{view, params, label}]
+
+// ── App tabs ─────────────────────────────────────────────────────────────
+// Each top-level nav destination gets at most one tab (deduped by `view`) —
+// navigating there always switches to/creates that tab rather than
+// replacing whatever the currently active tab shows. Detail sub-views
+// (project-detail, etc.) render inside the active tab without their own tab.
+let openTabs = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem('openTabs') || 'null');
+    if (Array.isArray(saved) && saved.length) return saved;
+  } catch(e) {}
+  return [{ id: 'tab-dashboard', view: 'dashboard', label: 'Dashboard' }];
+})();
+let activeTabId = localStorage.getItem('activeTabId') || openTabs[0].id;
 let allTags = [];
 let allCategories = [];
 // Single slot for the active view's propDefsChanged callback — replaced on each view mount
@@ -5604,14 +5618,21 @@ function closeSlideover() {
    add/remove calls used to leave stale offsets (FABs floating mid-screen). */
 function syncFabPanelClasses() {
   const fab = document.getElementById('fab-group');
-  if (!fab) return;
   const fsOpen = document.body.classList.contains('fullscreen-open');
   const formOpen = !fsOpen && document.getElementById('form-slideover')?.classList.contains('open');
   const mainOpen = !fsOpen && !formOpen && document.getElementById('slideover')?.classList.contains('open');
   const aiOpen = !fsOpen && !formOpen && !mainOpen && document.getElementById('ai-panel')?.classList.contains('open');
-  fab.classList.toggle('panel-open-form', !!formOpen);
-  fab.classList.toggle('panel-open-main', !!mainOpen);
-  fab.classList.toggle('panel-open-ai', !!aiOpen);
+  if (fab) {
+    fab.classList.toggle('panel-open-form', !!formOpen);
+    fab.classList.toggle('panel-open-main', !!mainOpen);
+    fab.classList.toggle('panel-open-ai', !!aiOpen);
+  }
+  // The schedule dock/toggle hides outright (rather than shifting alongside,
+  // like the FAB group does) whenever an editing slideover is open.
+  const sdToggle = document.getElementById('schedule-dock-toggle');
+  const sdDock = document.getElementById('schedule-dock');
+  if (sdToggle) { sdToggle.classList.toggle('panel-open-form', !!formOpen); sdToggle.classList.toggle('panel-open-main', !!mainOpen); }
+  if (sdDock) { sdDock.classList.toggle('panel-open-form', !!formOpen); sdDock.classList.toggle('panel-open-main', !!mainOpen); }
 }
 
 /* ─── Form Slideover (for create/edit forms) ─────────────────────────── */
@@ -5686,7 +5707,94 @@ function updateBreadcrumb(view, params, detailLabel, ancestorCrumbs = []) {
   });
 }
 
+// Detail sub-views (project-detail, goal-detail, sprint-detail, custom-
+// detail) render inside whichever tab is already active instead of getting
+// their own tab — every other view reachable from the sidebar does.
+function isTabbableView(view) {
+  return !!view && !view.endsWith('-detail');
+}
+
+function tabLabelFor(view) {
+  if (view.startsWith('custom:')) {
+    const t = (customEntityTypes || []).find(t => t.name === view.slice(7));
+    return t ? (t.display_name || t.name) : view.slice(7);
+  }
+  if (view.startsWith('taxonomy:')) {
+    const key = view.slice(9);
+    const tp = getGlobalTaxonomyProps().find(t => t.key === key);
+    return tp ? tp.label : key;
+  }
+  const link = document.querySelector(`.sidebar-nav [data-view="${view}"] span:not(.nav-icon)`);
+  if (link && link.textContent.trim()) return link.textContent.trim();
+  return view.charAt(0).toUpperCase() + view.slice(1);
+}
+
+function saveTabs() {
+  localStorage.setItem('openTabs', JSON.stringify(openTabs));
+  localStorage.setItem('activeTabId', activeTabId);
+}
+
+// Switches to the tab already showing `view`, creating one if none exists.
+// Called from renderView itself so every existing nav-click site (sidebar,
+// taxonomy nav, custom-entity nav, tab bar clicks) gets tabs for free.
+function openOrFocusTab(view) {
+  let tab = openTabs.find(t => t.view === view);
+  if (!tab) {
+    tab = { id: `tab-${nanoid()}`, view, label: tabLabelFor(view) };
+    openTabs.push(tab);
+  }
+  activeTabId = tab.id;
+  saveTabs();
+  renderTabBar();
+}
+
+function closeTab(tabId) {
+  const idx = openTabs.findIndex(t => t.id === tabId);
+  if (idx === -1) return;
+  const wasActive = activeTabId === tabId;
+  openTabs.splice(idx, 1);
+  if (!openTabs.length) openTabs.push({ id: 'tab-dashboard', view: 'dashboard', label: 'Dashboard' });
+  if (wasActive) {
+    const next = openTabs[Math.max(0, idx - 1)];
+    activeTabId = next.id;
+    saveTabs();
+    renderTabBar();
+    renderView(next.view, next.params);
+    return;
+  }
+  saveTabs();
+  renderTabBar();
+}
+
+function renderTabBar() {
+  const bar = document.getElementById('tab-bar');
+  if (!bar) return;
+  bar.innerHTML = openTabs.map(t => `
+    <div class="app-tab${t.id === activeTabId ? ' active' : ''}" data-tab-id="${escHtml(t.id)}" title="${escHtml(t.label)}">
+      <span class="app-tab-label">${escHtml(t.label)}</span>
+      ${openTabs.length > 1 ? `<button class="app-tab-close" data-tab-id="${escHtml(t.id)}" title="Close tab">×</button>` : ''}
+    </div>`).join('');
+  bar.querySelectorAll('.app-tab').forEach(el => {
+    el.onclick = (e) => {
+      if (e.target.closest('.app-tab-close')) return;
+      const tab = openTabs.find(t => t.id === el.dataset.tabId);
+      if (tab) renderView(tab.view, tab.params);
+    };
+  });
+  bar.querySelectorAll('.app-tab-close').forEach(btn => {
+    btn.onclick = (e) => { e.stopPropagation(); closeTab(btn.dataset.tabId); };
+  });
+}
+
 function renderView(view, params) {
+  // Tab bookkeeping: only for a genuine top-level navigation (no params —
+  // detail sub-views stay inside the active tab) that's actually switching
+  // views (not a same-view refresh like renderView(currentView) after a
+  // save). Idempotent — clicking a tab that's already open/active just
+  // re-finds it, no duplicate ever gets created.
+  if (!params && view !== currentView && isTabbableView(view)) {
+    openOrFocusTab(view);
+  }
   currentView = view;
   currentParams = params || null;
   closeSlideover();
@@ -15243,11 +15351,28 @@ function buildCalendar(tasks, year, month, showNav) {
 }
 
 /* ─── Calendar View (sidebar nav) ───────────────────────────────────── */
+// Ensures the entity type has a schedule-type custom prop def to write
+// into — a fresh task created by clicking an empty timeline slot has
+// nowhere to store a time until one exists.
+function ensureScheduleDef(entityKey) {
+  const defs = getCustomPropDefs(entityKey);
+  let def = defs.find(d => d.type === 'schedule');
+  if (!def) {
+    def = { key: 'scheduled', label: 'Scheduled', type: 'schedule' };
+    defs.push(def);
+    setCustomPropDefs(entityKey, defs);
+    const v = getEntityVisProps(entityKey);
+    if (!v.includes('scheduled')) setEntityVisProps(entityKey, [...v, 'scheduled']);
+  }
+  return def;
+}
+
 // Opens whatever slideover/modal a given entity type normally uses to view
 // a single record — built-ins each have their own (differently-shaped)
 // opener, custom types share one. Used by the hour-timeline's markers,
 // which can point at any entity type.
-async function openScheduledItemSlideover(entityKey, id) {
+async function openScheduledItemSlideover(entityKey, id, onSaved) {
+  onSaved = onSaved || (() => {});
   if (entityKey === 'task') { showTaskSlideover(id); return; }
   if (entityKey === 'sprint') { showSprintSlideover(id); return; }
   if (entityKey.startsWith('custom_')) { openCustomEntitySlideover(entityKey.slice(7), id); return; }
@@ -15256,18 +15381,163 @@ async function openScheduledItemSlideover(entityKey, id) {
   if (!path) return;
   try {
     const rec = await api('GET', `/api/${path}/${id}`);
-    if (entityKey === 'goal') showGoalSlideover(rec, () => renderCalendarView());
+    if (entityKey === 'goal') showGoalSlideover(rec, onSaved);
     else if (entityKey === 'project') {
       const goals = await api('GET', '/api/goals').catch(() => []);
-      showProjectSlideover(rec, goals, () => renderCalendarView());
-    } else if (entityKey === 'note') showNoteModal(rec, () => renderCalendarView());
-    else if (entityKey === 'resource') showResourceModal(rec, () => renderCalendarView());
+      showProjectSlideover(rec, goals, onSaved);
+    } else if (entityKey === 'note') showNoteModal(rec, onSaved);
+    else if (entityKey === 'resource') showResourceModal(rec, onSaved);
     else if (entityKey === 'habit') showHabitModal(rec);
   } catch(e) {}
 }
 
+// Fetches every entity source relevant to schedule-type custom props, once.
+// Standalone (not a renderCalendarView closure) so both the Calendar page's
+// own Schedule scope and the persistent schedule dock (openable from any
+// view) can reuse the exact same collection logic.
+async function fetchScheduleEntitySources() {
+  const sources = [];
+  try {
+    const [tasks, goals, projects, sprints, notes, resources, habits] = await Promise.all([
+      api('GET', '/api/tasks?all=1'), api('GET', '/api/goals'), api('GET', '/api/projects'),
+      api('GET', '/api/sprints'), api('GET', '/api/notes'), api('GET', '/api/resources'), api('GET', '/api/habits'),
+    ]);
+    sources.push(['task', tasks], ['goal', goals], ['project', projects], ['sprint', sprints],
+                 ['note', notes], ['resource', resources], ['habit', habits]);
+  } catch(e) {}
+  try {
+    const customLists = await Promise.all((customEntityTypes || []).map(ct =>
+      api('GET', `/api/custom/${ct.name}`).catch(() => [])));
+    (customEntityTypes || []).forEach((ct, i) => sources.push([`custom_${ct.name}`, customLists[i] || []]));
+  } catch(e) {}
+  return sources;
+}
+
+// Any entity of any type (built-in or custom) that has a 'schedule'-type
+// custom prop set to dateISO — this is what generalizes "add hours" to
+// every entity, not just tasks with native due dates. Pure/sync filter over
+// already-fetched sources, so a caller paging through many dates (Calendar's
+// own Schedule scope) only fetches once.
+function scheduledItemsForDateFrom(sources, dateISO) {
+  const items = [];
+  sources.forEach(([entityKey, records]) => {
+    const scheduleDefs = getCustomPropDefs(entityKey).filter(d => d.type === 'schedule');
+    if (!scheduleDefs.length || !records || !records.length) return;
+    records.forEach(r => {
+      const vals = getCustomPropValues(entityKey, r.id);
+      scheduleDefs.forEach(def => {
+        const sv = parseScheduleValue(vals[def.key]);
+        if (sv && sv.date === dateISO) {
+          items.push({ entityKey, id: r.id, title: r.title || r.name || `#${r.id}`, time: sv.time, propLabel: def.label });
+        }
+      });
+    });
+  });
+  return items.sort((a, b) => (a.time || '99:99').localeCompare(b.time || '99:99'));
+}
+
+// One-shot convenience for callers (the persistent schedule dock) that only
+// need a single date and don't already have sources fetched.
+async function collectScheduledItemsForDate(dateISO) {
+  const sources = await fetchScheduleEntitySources();
+  return scheduledItemsForDateFrom(sources, dateISO);
+}
+
+/* ─── Persistent schedule dock ────────────────────────────────────────
+   A static, always-on-top toggle (top-right, every view) opening a
+   right-docked hour-timeline panel — the same generalized "add hours to
+   any entity" view as Calendar's own Schedule scope, but reachable without
+   leaving whatever page you're on. Hides outright while an editing
+   slideover is open (see syncFabPanelClasses). */
+let scheduleDockOpen = localStorage.getItem('scheduleDockOpen') === '1';
+let scheduleDockDate = new Date();
+
+function scheduleDockDateISO() {
+  const d = scheduleDockDate;
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function toggleScheduleDock() {
+  scheduleDockOpen = !scheduleDockOpen;
+  localStorage.setItem('scheduleDockOpen', scheduleDockOpen ? '1' : '0');
+  document.getElementById('schedule-dock-toggle')?.classList.toggle('active', scheduleDockOpen);
+  document.getElementById('schedule-dock')?.classList.toggle('open', scheduleDockOpen);
+  if (scheduleDockOpen) renderScheduleDock();
+}
+
+async function renderScheduleDock() {
+  const body = document.getElementById('schedule-dock-body');
+  const label = document.getElementById('sd-dock-date-label');
+  if (!body || !label) return;
+  const ds = scheduleDockDateISO();
+  const today = new Date(); today.setHours(0,0,0,0);
+  const d = new Date(scheduleDockDate); d.setHours(0,0,0,0);
+  label.textContent = d.getTime() === today.getTime() ? 'Today' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  body.innerHTML = '<div class="loading">Loading…</div>';
+  const items = await collectScheduledItemsForDate(ds);
+  if (!scheduleDockOpen) return; // closed while the fetch was in flight
+  const rowH = 48;
+  const hourLabel = (h) => { const ap = h >= 12 ? 'PM' : 'AM'; const h12 = h % 12 || 12; return `${h12}${ap}`; };
+  const isToday = d.getTime() === today.getTime();
+  const markers = items.filter(it => it.time).map(item => {
+    const [h, m] = item.time.split(':').map(Number);
+    const top = (h + m / 60) * rowH;
+    const color = item.entityKey === 'task' ? 'var(--color-accent)' : 'var(--color-warning)';
+    return `<div class="hour-tl-marker" data-entity="${escHtml(item.entityKey)}" data-id="${item.id}" title="${escHtml(item.title)} · ${fmtTime12h(item.time)}"
+      style="position:absolute;left:40px;right:8px;top:${top}px;height:2px;background:${color};cursor:pointer">
+      <span style="position:absolute;left:-4px;top:-3px;width:7px;height:7px;border-radius:50%;background:${color}"></span>
+      <span style="position:absolute;left:9px;top:-8px;font-size:10.5px;background:var(--bg-surface);padding:0 3px;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis">${escHtml(item.title)}</span>
+    </div>`;
+  }).join('');
+  let nowLine = '';
+  if (isToday) {
+    const now = new Date();
+    const top = (now.getHours() + now.getMinutes() / 60) * rowH;
+    nowLine = `<div style="position:absolute;left:40px;right:8px;top:${top}px;height:2px;background:var(--danger)"><span style="position:absolute;left:-4px;top:-3px;width:7px;height:7px;border-radius:50%;background:var(--danger)"></span></div>`;
+  }
+  const hourRows = Array.from({ length: 24 }, (_, h) => `
+    <div style="height:${rowH}px;border-top:1px solid var(--border);display:flex">
+      <div style="width:40px;flex-shrink:0;font-size:10px;color:var(--text-muted);padding:1px 5px 0 0;text-align:right">${hourLabel(h)}</div>
+      <div class="hour-tl-slot" data-hour="${h}" style="flex:1;cursor:pointer"></div>
+    </div>`).join('');
+  body.innerHTML = `<div style="position:relative">${hourRows}<div style="position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none"><div style="pointer-events:auto">${markers}</div>${nowLine}</div></div>`;
+  body.querySelectorAll('.hour-tl-marker[data-id]').forEach(marker => {
+    marker.onclick = (e) => { e.stopPropagation(); openScheduledItemSlideover(marker.dataset.entity, marker.dataset.id, () => renderScheduleDock()); };
+  });
+  body.querySelectorAll('.hour-tl-slot[data-hour]').forEach(slot => {
+    slot.onclick = async (e) => {
+      e.stopPropagation();
+      const hh = parseInt(slot.dataset.hour, 10);
+      const def = ensureScheduleDef('task');
+      const task = await api('POST', '/api/tasks', withActiveWorkspace({ title: 'Untitled' })).catch(() => null);
+      if (!task) return;
+      setCustomPropValue('task', task.id, def.key, JSON.stringify({ date: ds, time: `${String(hh).padStart(2,'0')}:00` }));
+      showTaskSlideover(task.id);
+      renderScheduleDock();
+    };
+  });
+}
+
+function initScheduleDock() {
+  const toggle = document.getElementById('schedule-dock-toggle');
+  if (!toggle) return;
+  toggle.classList.toggle('active', scheduleDockOpen);
+  document.getElementById('schedule-dock')?.classList.toggle('open', scheduleDockOpen);
+  toggle.onclick = () => toggleScheduleDock();
+  document.getElementById('sd-dock-close').onclick = () => toggleScheduleDock();
+  document.getElementById('sd-dock-prev').onclick = () => {
+    scheduleDockDate = new Date(scheduleDockDate); scheduleDockDate.setDate(scheduleDockDate.getDate() - 1);
+    renderScheduleDock();
+  };
+  document.getElementById('sd-dock-next').onclick = () => {
+    scheduleDockDate = new Date(scheduleDockDate); scheduleDockDate.setDate(scheduleDockDate.getDate() + 1);
+    renderScheduleDock();
+  };
+  if (scheduleDockOpen) renderScheduleDock();
+}
+
 async function renderCalendarView() {
-  let tasks = [], goals = [], projects = [], sprints = [], notes = [], resources = [], habits = [];
+  let tasks = [], goals = [], projects = [], sprints = [];
   try {
     [tasks, goals, projects, sprints] = await Promise.all([
       api('GET', '/api/tasks?all=1'),
@@ -15278,45 +15548,10 @@ async function renderCalendarView() {
     allTasksCache = tasks;
   } catch(e) {}
 
-  // Extra fetches for the hour-timeline's schedule scan only (month/week/day-
-  // bucket/gantt/timeline views above don't use these) — kept out of the
-  // main Promise.all since those views render fine without them and a
-  // failure here shouldn't block the rest of the calendar.
-  const scheduleEntitySources = [
-    ['task', tasks], ['goal', goals], ['project', projects], ['sprint', sprints],
-  ];
-  try {
-    [notes, resources, habits] = await Promise.all([
-      api('GET', '/api/notes'), api('GET', '/api/resources'), api('GET', '/api/habits'),
-    ]);
-  } catch(e) {}
-  scheduleEntitySources.push(['note', notes], ['resource', resources], ['habit', habits]);
-  try {
-    const customLists = await Promise.all((customEntityTypes || []).map(ct =>
-      api('GET', `/api/custom/${ct.name}`).catch(() => [])));
-    customEntityTypes.forEach((ct, i) => scheduleEntitySources.push([`custom_${ct.name}`, customLists[i] || []]));
-  } catch(e) {}
-
-  // Any entity of any type (built-in or custom) that has a 'schedule'-type
-  // custom prop set to dateISO — this is what generalizes "add hours" to
-  // every entity, not just tasks with native due dates.
-  function collectScheduledItemsForDate(dateISO) {
-    const items = [];
-    scheduleEntitySources.forEach(([entityKey, records]) => {
-      const scheduleDefs = getCustomPropDefs(entityKey).filter(d => d.type === 'schedule');
-      if (!scheduleDefs.length || !records || !records.length) return;
-      records.forEach(r => {
-        const vals = getCustomPropValues(entityKey, r.id);
-        scheduleDefs.forEach(def => {
-          const sv = parseScheduleValue(vals[def.key]);
-          if (sv && sv.date === dateISO) {
-            items.push({ entityKey, id: r.id, title: r.title || r.name || `#${r.id}`, time: sv.time, propLabel: def.label });
-          }
-        });
-      });
-    });
-    return items.sort((a, b) => (a.time || '99:99').localeCompare(b.time || '99:99'));
-  }
+  // Schedule scope's data — fetched once up front like everything else this
+  // view renders synchronously from after this point.
+  const scheduleEntitySources = await fetchScheduleEntitySources();
+  const scheduledItemsOnDate = (dateISO) => scheduledItemsForDateFrom(scheduleEntitySources, dateISO);
 
   // Build sprint date ranges for background shading
   const sprintRanges = sprints
@@ -15602,7 +15837,7 @@ async function renderCalendarView() {
     const todayD = new Date(); todayD.setHours(0,0,0,0);
     const isToday = calAnchorDate.getTime() === todayD.getTime();
     const allDay = eventsOnDate(ds);
-    const scheduled = collectScheduledItemsForDate(ds);
+    const scheduled = scheduledItemsOnDate(ds);
     const rowH = 56;
     const hourLabel = (h) => { const ap = h >= 12 ? 'PM' : 'AM'; const h12 = h % 12 || 12; return `${h12}:00 ${ap}`; };
 
@@ -15647,22 +15882,6 @@ async function renderCalendarView() {
         </div>
       </div>
     </div>`;
-  }
-
-  // Ensures the entity type has a schedule-type custom prop def to write
-  // into — a fresh task created by clicking an empty timeline slot has
-  // nowhere to store a time until one exists.
-  function ensureScheduleDef(entityKey) {
-    const defs = getCustomPropDefs(entityKey);
-    let def = defs.find(d => d.type === 'schedule');
-    if (!def) {
-      def = { key: 'scheduled', label: 'Scheduled', type: 'schedule' };
-      defs.push(def);
-      setCustomPropDefs(entityKey, defs);
-      const v = getEntityVisProps(entityKey);
-      if (!v.includes('scheduled')) setEntityVisProps(entityKey, [...v, 'scheduled']);
-    }
-    return def;
   }
 
   // Gantt / timeline view for ranged tasks
@@ -15884,7 +16103,7 @@ async function renderCalendarView() {
       bar.onclick = (e) => { e.stopPropagation(); showTaskSlideover(bar.dataset.taskId); };
     });
     document.querySelectorAll('.hour-tl-marker[data-id]').forEach(marker => {
-      marker.onclick = (e) => { e.stopPropagation(); openScheduledItemSlideover(marker.dataset.entity, marker.dataset.id); };
+      marker.onclick = (e) => { e.stopPropagation(); openScheduledItemSlideover(marker.dataset.entity, marker.dataset.id, () => renderCalendarView()); };
     });
     document.querySelectorAll('.hour-tl-slot[data-hour]').forEach(slot => {
       slot.onclick = async (e) => {
@@ -20260,8 +20479,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   } catch(e) {}
 
-  renderView('dashboard');
+  // Restore whichever tab was active last session (defaults to the single
+  // seeded Dashboard tab on first run) — renderTabBar() first so the strip
+  // shows even if the active view happens to equal the initial currentView
+  // default and renderView's own tab bookkeeping is a no-op for it.
+  renderTabBar();
+  const activeTab = openTabs.find(t => t.id === activeTabId) || openTabs[0];
+  renderView(activeTab.view, activeTab.params);
   initAiPanel();
+  initScheduleDock();
 
   // Quick note FAB
   const quickNoteFab = document.getElementById('quick-note-fab');
