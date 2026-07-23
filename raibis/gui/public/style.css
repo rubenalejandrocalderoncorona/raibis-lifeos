@@ -314,12 +314,17 @@ input:focus, select:focus, textarea:focus {
 }
 
 /* ─── Tab bar ─────────────────────────────────────────────────────── */
+.tab-row {
+  display: flex;
+  align-items: center;
+}
 .tab-bar {
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 8px 12px 4px;
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
   overflow-x: auto;
   background: var(--color-bg);
 }
@@ -390,6 +395,78 @@ input:focus, select:focus, textarea:focus {
   margin-left: 2px;
 }
 .app-tab-add:hover { background: var(--color-surface-hover); color: var(--color-text); }
+
+/* ─── Tab search palette ("+" → open in new tab) ─────────────────────── */
+.tab-search-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9700;
+  display: flex;
+  justify-content: center;
+  padding-top: 12vh;
+  background: rgba(0, 0, 0, 0.32);
+}
+.tab-search-modal {
+  width: 480px;
+  max-width: calc(100vw - 32px);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg, 10px);
+  box-shadow: var(--shadow-lg, 0 12px 32px rgb(0 0 0 / 0.24));
+  overflow: hidden;
+}
+.tab-search-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+.tab-search-input-wrap input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: none;
+  font-size: 14px;
+  color: var(--color-text);
+}
+.tab-search-list {
+  overflow-y: auto;
+  padding: 6px;
+}
+.tab-search-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  color: var(--color-text);
+  cursor: pointer;
+}
+.tab-search-item.active,
+.tab-search-item:hover { background: var(--color-surface-hover); }
+.tab-search-item-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+.tab-search-item-icon svg { width: 15px; height: 15px; }
+.tab-search-empty {
+  padding: 14px 9px;
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+  text-align: center;
+}
 
 /* ─── Breadcrumb ──────────────────────────────────────────────────── */
 .breadcrumb {
@@ -5912,23 +5989,22 @@ body.zen-mode-active .entity-fs-topbar {
 .entity-fs-content .entity-fs-editor-wrap { margin-top: var(--space-7, 28px); padding-top: var(--space-4); border-top: 1px solid var(--color-border); }
 
 /* ─── Sidebar open/close buttons (Notion-style) ──────────────────────── */
+/* Sits inline at the start of the tab row (not floating over content) —
+   only takes up space, and only exists, while the sidebar is collapsed. */
 #sidebar-open-btn {
-  position: fixed;
-  top: 10px;
-  left: 10px;
-  z-index: 900;
   display: none;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md, 6px);
-  background: var(--color-surface);
+  width: 28px;
+  height: 28px;
+  margin: 6px 2px 2px 12px;
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  border-radius: var(--radius-sm);
   color: var(--color-text-secondary, var(--text-muted));
   cursor: pointer;
-  box-shadow: var(--shadow, 0 1px 3px rgba(0,0,0,.08));
-  transition: background 0.15s, color 0.15s, opacity 0.3s var(--ease-out, ease);
+  transition: color 0.15s, background 0.15s;
 }
 #sidebar-open-btn:hover { background: var(--hover, var(--accent-glow)); color: var(--color-text); }
 body.sidebar-collapsed #sidebar-open-btn { display: inline-flex; }
@@ -5948,12 +6024,6 @@ body.editor-wide .entity-fullscreen-inner { max-width: none; padding: 0 64px; }
   gap: 4px;
   margin-left: auto;
   flex-shrink: 0;
-}
-
-/* Clear the floating sidebar-open button so it never overlaps the
-   breadcrumb / entity title while the sidebar is collapsed */
-@media (min-width: 701px) {
-  body.sidebar-collapsed .breadcrumb { padding-left: 50px; }
 }
 
 /* ════════════════════════════════════════════════════════════════════

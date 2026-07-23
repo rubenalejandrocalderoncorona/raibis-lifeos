@@ -5746,17 +5746,95 @@ function saveTabs() {
   localStorage.setItem('activeTabId', activeTabId);
 }
 
-// A new, explicit tab (the "+" button) — starts at Dashboard; the user
-// navigates it wherever they want from there. Nav clicks never spawn a tab
-// on their own; they just update whichever tab is currently active (see
-// renderView) so opening N tabs is always a deliberate "+" action.
+// A new, explicit tab (the "+" button) — opens a search palette so the user
+// picks what the new tab shows, rather than always landing on Dashboard.
+// Nav clicks never spawn a tab on their own; they just update whichever tab
+// is currently active (see renderView) so opening N tabs is always a
+// deliberate "+" action.
 function addNewTab() {
-  const tab = { id: `tab-${nanoid()}`, view: 'dashboard', label: 'Dashboard' };
-  openTabs.push(tab);
-  activeTabId = tab.id;
-  saveTabs();
-  renderTabBar();
-  renderView('dashboard', null);
+  openTabSearchPalette();
+}
+
+// Reuses whatever the sidebar nav already renders (built-in views, custom
+// entity types, taxonomy props) as the searchable destination list instead
+// of maintaining a second copy of it.
+function openTabSearchPalette() {
+  closeTabSearchPalette();
+  const items = Array.from(document.querySelectorAll('.sidebar-nav a.nav-item[data-view]')).map(a => ({
+    view: a.dataset.view,
+    label: a.querySelector('span:not(.nav-icon)')?.textContent.trim() || a.dataset.view,
+    icon: a.querySelector('.nav-icon')?.outerHTML || '',
+  }));
+  let filtered = items;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'tab-search-overlay';
+  overlay.id = 'tab-search-overlay';
+  overlay.innerHTML = `
+    <div class="tab-search-modal">
+      <div class="tab-search-input-wrap">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="tab-search-input" placeholder="Open in new tab…" autocomplete="off" />
+      </div>
+      <div class="tab-search-list" id="tab-search-list"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  function selectItem(item) {
+    if (!item) return;
+    const tab = { id: `tab-${nanoid()}`, view: item.view, label: item.label, icon: item.icon };
+    openTabs.push(tab);
+    activeTabId = tab.id;
+    saveTabs();
+    renderTabBar();
+    renderView(item.view, null);
+    closeTabSearchPalette();
+  }
+
+  function renderList() {
+    const list = document.getElementById('tab-search-list');
+    if (!list) return;
+    list.innerHTML = filtered.map((it, idx) => `
+      <div class="tab-search-item${idx === 0 ? ' active' : ''}" data-idx="${idx}">
+        <span class="tab-search-item-icon">${it.icon}</span>
+        <span class="tab-search-item-label">${escHtml(it.label)}</span>
+      </div>`).join('') || `<div class="tab-search-empty">No matches</div>`;
+    list.querySelectorAll('.tab-search-item').forEach(el => {
+      el.onclick = () => selectItem(filtered[+el.dataset.idx]);
+    });
+  }
+
+  const input = overlay.querySelector('#tab-search-input');
+  input.oninput = () => {
+    const f = input.value.trim().toLowerCase();
+    filtered = f ? items.filter(i => i.label.toLowerCase().includes(f)) : items;
+    renderList();
+  };
+  input.onkeydown = (e) => {
+    const list = document.getElementById('tab-search-list');
+    const els = Array.from(list.querySelectorAll('.tab-search-item'));
+    let idx = els.findIndex(el => el.classList.contains('active'));
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      idx = e.key === 'ArrowDown' ? Math.min(idx + 1, els.length - 1) : Math.max(idx - 1, 0);
+      els.forEach(el => el.classList.remove('active'));
+      els[idx]?.classList.add('active');
+      els[idx]?.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const el = els[idx];
+      if (el) selectItem(filtered[+el.dataset.idx]);
+    } else if (e.key === 'Escape') {
+      closeTabSearchPalette();
+    }
+  };
+  overlay.onclick = (e) => { if (e.target === overlay) closeTabSearchPalette(); };
+  renderList();
+  setTimeout(() => input.focus(), 30);
+}
+
+function closeTabSearchPalette() {
+  document.getElementById('tab-search-overlay')?.remove();
 }
 
 function closeTab(tabId) {
@@ -5790,7 +5868,10 @@ function renderTabBar() {
     el.onclick = (e) => {
       if (e.target.closest('.app-tab-close')) return;
       const tab = openTabs.find(t => t.id === el.dataset.tabId);
-      if (tab) renderView(tab.view, tab.params);
+      // Must flip activeTabId *before* renderView — otherwise renderView's
+      // own "sync active tab" hook looks up the tab we're leaving, not the
+      // one we clicked, and overwrites its state instead of switching to it.
+      if (tab) { activeTabId = tab.id; renderView(tab.view, tab.params); }
     };
   });
   bar.querySelectorAll('.app-tab-close').forEach(btn => {
