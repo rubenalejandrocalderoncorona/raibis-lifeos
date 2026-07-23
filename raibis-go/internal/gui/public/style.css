@@ -317,35 +317,45 @@ input:focus, select:focus, textarea:focus {
 .tab-bar {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 6px 8px 0;
+  gap: 4px;
+  padding: 8px 12px 4px;
   flex-shrink: 0;
   overflow-x: auto;
+  background: var(--color-bg);
 }
 .tab-bar:empty { display: none; }
 .app-tab {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 5px;
+  padding: 5px 8px 5px 9px;
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: var(--color-text-tertiary);
   background: transparent;
   border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border-radius: var(--radius-md);
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
-  max-width: 160px;
+  max-width: 170px;
 }
-.app-tab:hover { background: var(--color-surface-hover); }
+.app-tab:hover { background: var(--color-surface-hover); color: var(--color-text-secondary); }
 .app-tab.active {
   background: var(--color-surface);
   border-color: var(--color-border);
   color: var(--color-text);
   font-weight: var(--weight-medium);
+  box-shadow: var(--shadow-xs, 0 1px 2px rgb(0 0 0 / 0.04));
 }
+.app-tab-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+}
+.app-tab-icon svg { width: 13px; height: 13px; }
 .app-tab-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -360,8 +370,26 @@ input:focus, select:focus, textarea:focus {
   cursor: pointer;
   padding: 0 0 0 2px;
   flex-shrink: 0;
+  border-radius: 3px;
 }
-.app-tab-close:hover { color: var(--color-text); }
+.app-tab-close:hover { color: var(--color-text); background: var(--color-surface-hover); }
+.app-tab-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-md);
+  color: var(--color-text-tertiary);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  margin-left: 2px;
+}
+.app-tab-add:hover { background: var(--color-surface-hover); color: var(--color-text); }
 
 /* ─── Breadcrumb ──────────────────────────────────────────────────── */
 .breadcrumb {

@@ -5729,23 +5729,34 @@ function tabLabelFor(view) {
   return view.charAt(0).toUpperCase() + view.slice(1);
 }
 
+// Small icon shown before a tab's label — reuses whatever icon the sidebar
+// nav already renders for that view rather than inventing a second set.
+function tabIconFor(view) {
+  if (view.startsWith('custom:')) {
+    const t = (customEntityTypes || []).find(t => t.name === view.slice(7));
+    if (t?.icon) return t.icon.startsWith('__svg:') ? renderEntityIcon(t.icon, 13) : `<span style="font-size:12px">${t.icon}</span>`;
+    return '';
+  }
+  const iconEl = document.querySelector(`.sidebar-nav [data-view="${view}"] .nav-icon`);
+  return iconEl ? iconEl.outerHTML : '';
+}
+
 function saveTabs() {
   localStorage.setItem('openTabs', JSON.stringify(openTabs));
   localStorage.setItem('activeTabId', activeTabId);
 }
 
-// Switches to the tab already showing `view`, creating one if none exists.
-// Called from renderView itself so every existing nav-click site (sidebar,
-// taxonomy nav, custom-entity nav, tab bar clicks) gets tabs for free.
-function openOrFocusTab(view) {
-  let tab = openTabs.find(t => t.view === view);
-  if (!tab) {
-    tab = { id: `tab-${nanoid()}`, view, label: tabLabelFor(view) };
-    openTabs.push(tab);
-  }
+// A new, explicit tab (the "+" button) — starts at Dashboard; the user
+// navigates it wherever they want from there. Nav clicks never spawn a tab
+// on their own; they just update whichever tab is currently active (see
+// renderView) so opening N tabs is always a deliberate "+" action.
+function addNewTab() {
+  const tab = { id: `tab-${nanoid()}`, view: 'dashboard', label: 'Dashboard' };
+  openTabs.push(tab);
   activeTabId = tab.id;
   saveTabs();
   renderTabBar();
+  renderView('dashboard', null);
 }
 
 function closeTab(tabId) {
@@ -5771,9 +5782,10 @@ function renderTabBar() {
   if (!bar) return;
   bar.innerHTML = openTabs.map(t => `
     <div class="app-tab${t.id === activeTabId ? ' active' : ''}" data-tab-id="${escHtml(t.id)}" title="${escHtml(t.label)}">
+      <span class="app-tab-icon">${t.icon || ''}</span>
       <span class="app-tab-label">${escHtml(t.label)}</span>
       ${openTabs.length > 1 ? `<button class="app-tab-close" data-tab-id="${escHtml(t.id)}" title="Close tab">×</button>` : ''}
-    </div>`).join('');
+    </div>`).join('') + `<button class="app-tab-add" id="app-tab-add" title="New tab">+</button>`;
   bar.querySelectorAll('.app-tab').forEach(el => {
     el.onclick = (e) => {
       if (e.target.closest('.app-tab-close')) return;
@@ -5784,16 +5796,28 @@ function renderTabBar() {
   bar.querySelectorAll('.app-tab-close').forEach(btn => {
     btn.onclick = (e) => { e.stopPropagation(); closeTab(btn.dataset.tabId); };
   });
+  document.getElementById('app-tab-add').onclick = () => addNewTab();
 }
 
 function renderView(view, params) {
-  // Tab bookkeeping: only for a genuine top-level navigation (no params —
-  // detail sub-views stay inside the active tab) that's actually switching
-  // views (not a same-view refresh like renderView(currentView) after a
-  // save). Idempotent — clicking a tab that's already open/active just
-  // re-finds it, no duplicate ever gets created.
-  if (!params && view !== currentView && isTabbableView(view)) {
-    openOrFocusTab(view);
+  // Keep the active tab's own remembered state (view/params/label/icon) in
+  // sync with wherever we've navigated — including detail sub-views, so
+  // switching away and back restores exactly where this tab was left.
+  // Nav clicks never create a new tab on their own (only the "+" button
+  // does) — they just update whichever tab is currently active.
+  const activeTab = openTabs.find(t => t.id === activeTabId);
+  if (activeTab) {
+    activeTab.view = view;
+    activeTab.params = params || null;
+    // Detail sub-views (project-detail, etc.) keep the parent's label/icon
+    // (e.g. "Projects") rather than relabeling the tab to something detail-
+    // specific — only a genuine top-level nav destination updates these.
+    if (isTabbableView(view)) {
+      activeTab.label = tabLabelFor(view);
+      activeTab.icon = tabIconFor(view);
+    }
+    saveTabs();
+    renderTabBar();
   }
   currentView = view;
   currentParams = params || null;
@@ -11900,15 +11924,16 @@ function _wProjectsHtml(projects) {
   }).join('');
 }
 
-// A Metrics widget shows either manual numbers (Goal's own start_value/
-// current_value/target columns — the only entity with those columns) or a
-// value computed from a relation (any entity: reuses the same rollup engine
-// a "Rollup" custom property uses — child entity type + a property on that
-// child + an aggregation). Manual is the default on Goal for backward compat
-// with widgets saved before rollup mode existed; every other entity has no
-// manual columns to read, so it's rollup-only there.
+// A Metrics widget shows either a value computed from a relation (any
+// entity: reuses the same rollup engine a "Rollup" custom property uses —
+// child entity type + a property on that child + an aggregation) or, on
+// Goal only, manual numbers (Goal's own start_value/current_value/target
+// columns — the only entity with those columns). Rollup is the standard,
+// default experience everywhere, including Goal — manual is opt-in via the
+// ⇄ switch, not a Goal-specific default, so editing a Goal's Metrics widget
+// isn't a different (older) flow than every other entity gets.
 function _metricsUsesRollup(entity, w) {
-  return w && (w.metricsSource === 'rollup' || (w.metricsSource == null && entity !== 'goal'));
+  return !!w && w.metricsSource !== 'manual';
 }
 
 function _wMetricsHtml(entity, entityId, data, w) {
