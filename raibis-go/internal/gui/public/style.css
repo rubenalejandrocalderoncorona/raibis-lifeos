@@ -461,6 +461,18 @@ input:focus, select:focus, textarea:focus {
   color: var(--color-text-tertiary);
 }
 .tab-search-item-icon svg { width: 15px; height: 15px; }
+.tab-search-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab-search-item-type {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
 .tab-search-empty {
   padding: 14px 9px;
   font-size: 13px;
@@ -1644,6 +1656,12 @@ body.kanban-dragging-active * {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--color-text-secondary);
+}
+.widget-title-icon {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
 }
 .widget-action {
   font-size: var(--text-xs);

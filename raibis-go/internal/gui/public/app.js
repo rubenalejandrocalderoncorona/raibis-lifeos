@@ -5757,14 +5757,21 @@ function addNewTab() {
 
 // Reuses whatever the sidebar nav already renders (built-in views, custom
 // entity types, taxonomy props) as the searchable destination list instead
-// of maintaining a second copy of it.
+// of maintaining a second copy of it. Typing also searches individual
+// records of every entity type (via the same fetch the schedule feature
+// uses); picking one opens a new tab redirected to that item's full window.
 function openTabSearchPalette() {
   closeTabSearchPalette();
   const items = Array.from(document.querySelectorAll('.sidebar-nav a.nav-item[data-view]')).map(a => ({
+    kind: 'view',
     view: a.dataset.view,
     label: a.querySelector('span:not(.nav-icon)')?.textContent.trim() || a.dataset.view,
     icon: a.querySelector('.nav-icon')?.outerHTML || '',
   }));
+  // entityKey → the sidebar view whose icon/list this record type belongs to
+  const RECORD_VIEW = { task: 'tasks', goal: 'goals', project: 'projects', sprint: 'sprints', note: 'notes', resource: 'resources', habit: 'habits' };
+  let records = null;          // lazily fetched on first keystroke
+  let recordsLoading = false;
   let filtered = items;
 
   const overlay = document.createElement('div');
@@ -5780,15 +5787,66 @@ function openTabSearchPalette() {
     </div>`;
   document.body.appendChild(overlay);
 
+  async function loadRecords() {
+    if (records || recordsLoading) return;
+    recordsLoading = true;
+    try {
+      const sources = await fetchScheduleEntitySources();
+      records = [];
+      sources.forEach(([entityKey, recs]) => {
+        const listView = entityKey.startsWith('custom_') ? `custom:${entityKey.slice(7)}` : RECORD_VIEW[entityKey];
+        if (!listView) return;
+        const typeLabel = tabLabelFor(listView);
+        const icon = tabIconFor(listView);
+        (recs || []).forEach(r => {
+          const title = r.title || r.name || '';
+          if (title) records.push({ kind: 'record', entityKey, id: r.id, label: title, icon, typeLabel });
+        });
+      });
+    } catch(e) { records = []; }
+    recordsLoading = false;
+    applyFilter();
+  }
+
+  function applyFilter() {
+    const f = document.getElementById('tab-search-input')?.value.trim().toLowerCase() || '';
+    if (!f) { filtered = items; renderList(); return; }
+    const views = items.filter(i => i.label.toLowerCase().includes(f));
+    const recs = (records || []).filter(r => r.label.toLowerCase().includes(f)).slice(0, 20);
+    filtered = [...views, ...recs];
+    renderList();
+  }
+
   function selectItem(item) {
     if (!item) return;
-    const tab = { id: `tab-${nanoid()}`, view: item.view, label: item.label, icon: item.icon };
+    const tab = { id: `tab-${nanoid()}`, view: item.view || 'dashboard', label: item.label, icon: item.icon };
     openTabs.push(tab);
     activeTabId = tab.id;
     saveTabs();
     renderTabBar();
-    renderView(item.view, null);
     closeTabSearchPalette();
+    if (item.kind === 'record') {
+      const k = item.entityKey;
+      const id = String(item.id);
+      if (k === 'goal' || k === 'project' || k === 'sprint') {
+        renderView(`${k}-detail`, id);
+      } else if (k.startsWith('custom_')) {
+        renderView('custom-detail', `${k.slice(7)}/${id}`);
+      } else {
+        // No dedicated detail view for this type — its list view plus the
+        // item's slideover is the fullest window it has. renderView's own
+        // "relabel tabbable views" hook fires for the list view (it isn't a
+        // '-detail' view) and stomps this tab's label back to e.g. "Tasks" —
+        // re-stamp the record's own title/icon right after so the tab still
+        // reads "Task1", not the generic list name.
+        renderView(RECORD_VIEW[k] || 'dashboard', null);
+        const t = openTabs.find(x => x.id === tab.id);
+        if (t) { t.label = item.label; t.icon = item.icon; saveTabs(); renderTabBar(); }
+        openScheduledItemSlideover(k, item.id, () => renderView(currentView, currentParams));
+      }
+      return;
+    }
+    renderView(item.view, null);
   }
 
   function renderList() {
@@ -5798,7 +5856,8 @@ function openTabSearchPalette() {
       <div class="tab-search-item${idx === 0 ? ' active' : ''}" data-idx="${idx}">
         <span class="tab-search-item-icon">${it.icon}</span>
         <span class="tab-search-item-label">${escHtml(it.label)}</span>
-      </div>`).join('') || `<div class="tab-search-empty">No matches</div>`;
+        ${it.typeLabel ? `<span class="tab-search-item-type">${escHtml(it.typeLabel)}</span>` : ''}
+      </div>`).join('') || `<div class="tab-search-empty">${recordsLoading ? 'Searching…' : 'No matches'}</div>`;
     list.querySelectorAll('.tab-search-item').forEach(el => {
       el.onclick = () => selectItem(filtered[+el.dataset.idx]);
     });
@@ -5806,9 +5865,8 @@ function openTabSearchPalette() {
 
   const input = overlay.querySelector('#tab-search-input');
   input.oninput = () => {
-    const f = input.value.trim().toLowerCase();
-    filtered = f ? items.filter(i => i.label.toLowerCase().includes(f)) : items;
-    renderList();
+    if (input.value.trim()) loadRecords();
+    applyFilter();
   };
   input.onkeydown = (e) => {
     const list = document.getElementById('tab-search-list');
@@ -7173,7 +7231,7 @@ async function renderCustomEntityDetail(typeName, entityId) {
     await loadEntityCustomProps(entityKey, parseInt(entityId));
     const propPanel = buildInlinePropPanel(entityKey, parseInt(entityId), []);
     const relDefs = getCustomPropDefs(entityKey).filter(d => d.type === 'relation');
-    const wData = { propPanelHtml: propPanel, tasks: [], notes: [], resources: [], projects: [] };
+    const wData = { propPanelHtml: propPanel, tasks: [], notes: [], resources: [], projects: [], entityData: e };
     for (const def of relDefs) {
       let ids = e.props[def.key];
       if (!ids) continue;
@@ -12046,8 +12104,15 @@ function _wMetricsHtml(entity, entityId, data, w) {
       return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="empty-state-text" style="padding:12px 0">No matching related records yet.</div></div>`;
     }
     if (Array.isArray(computed)) {
-      const text = computed.length ? computed.map(x => `${escHtml(String(x.value))}: ${x.count}`).join(', ') : '—';
-      return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div style="font-size:13px;color:var(--text-secondary);padding:4px 0">${text}</div></div>`;
+      // Tally breakdown renders as the same pastel stat tiles the dashboard
+      // and the scalar branches below use — one tile per distinct value —
+      // instead of a flat "todo: 1, done: 3" text line.
+      if (!computed.length) {
+        return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="empty-state-text" style="padding:12px 0">No matching related records yet.</div></div>`;
+      }
+      const tiles = computed.map(x =>
+        `<div class="stat-card"><div class="stat-value">${x.count}</div><div class="stat-label">${escHtml(String(x.value))}</div></div>`).join('');
+      return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="stats-row" style="margin-bottom:0">${tiles}</div></div>`;
     }
     const rounded = Math.round(computed * 100) / 100;
     if (cfg.operation !== 'percentage_match') {
@@ -12270,9 +12335,13 @@ function buildWidgetGrid(entity, entityId, wData) {
     const expandBtn = w.type === 'editor'
       ? `<button class="widget-col-btn widget-expand-btn" data-cf-expand="${escHtml(w.id)}" title="Content fullscreen">⤡</button>`
       : '';
+    // Same type icon the Manage Widgets rows show — the card and its row in
+    // the settings panel should read as the same thing.
+    const typeIcon = (WIDGET_TYPE_META[w.type] || { icon: '◉' }).icon;
     return `<div class="widget widget-item${w.half?' widget-half':''}" data-widget-id="${escHtml(w.id)}" data-widget-type="${w.type}">
       <div class="widget-header">
         ${dgh}
+        <span class="widget-title-icon">${typeIcon}</span>
         <span class="widget-title">${escHtml(w.label)}</span>
         <div class="widget-header-actions">${halfBtn}${colBtn}${expandBtn}</div>
       </div>
@@ -12661,7 +12730,7 @@ async function renderSprintDetail(sprintId) {
         <button class="btn btn-ghost" id="sd-back-btn">← Back</button>
         ${prevStatus ? `<button class="btn btn-ghost" id="sd-prev-status-btn" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
         ${nextStatus ? `<button class="btn btn-ghost" id="sd-status-btn" data-next="${nextStatus}">${nextLabel}</button>` : ''}
-        <button class="btn btn-ghost" id="sd-json-btn">Show JSON</button>
+        <button class="btn btn-ghost" id="sd-json-btn">Export JSON</button>
         <button class="btn btn-primary" id="sd-add-task-btn">+ Task</button>
       </div>
     </div>
@@ -13808,14 +13877,20 @@ async function renderProjectDetail(projectId) {
         <button class="btn btn-ghost btn-sm" id="pd-manage-btn">Widgets ⚙</button>
         <button class="btn btn-ghost" id="pd-export-btn">Export JSON</button>
         <button class="btn btn-ghost" id="pd-back-btn">← Back</button>
+        <button class="btn btn-primary" id="pd-add-task-btn">+ Task</button>
+        <button class="btn btn-ghost" id="pd-add-note-btn">+ Note</button>
+        <button class="btn btn-ghost" id="pd-add-res-btn">+ Resource</button>
       </div>
     </div>
     <div id="pd-widget-grid" class="widget-grid">
-      ${buildWidgetGrid('project', projectId, { tasks, notes, resources, propPanelHtml: projDetailPropPanel })}
+      ${buildWidgetGrid('project', projectId, { tasks, notes, resources, propPanelHtml: projDetailPropPanel, entityData: p })}
     </div>
   </div>`;
 
   document.getElementById('pd-back-btn').onclick = () => renderView('projects');
+  document.getElementById('pd-add-task-btn').onclick = () => showNewTaskModal({ project_id: parseInt(projectId) }, () => renderProjectDetail(projectId));
+  document.getElementById('pd-add-note-btn').onclick = () => showNoteModal({ project_id: parseInt(projectId) }, () => renderProjectDetail(projectId));
+  document.getElementById('pd-add-res-btn').onclick = () => showResourceModal({ project_id: parseInt(projectId) }, () => renderProjectDetail(projectId));
   document.getElementById('pd-export-btn').onclick = () =>
     showJSONModal(`/api/export/project/${projectId}`, `project-${p.title}.json`);
   document.getElementById('pd-manage-btn').onclick = (e) => openWidgetManager('project', e.currentTarget, () => renderProjectDetail(projectId));
