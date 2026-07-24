@@ -7271,9 +7271,10 @@ async function renderCustomEntityDetail(typeName, entityId) {
           <h1 class="view-title" id="ced-title">${escHtml(e.title)}</h1>
         </div>
         <div class="flex gap-8">
-          <button class="btn btn-ghost btn-sm" id="ced-manage-btn">Widgets ⚙</button>
+          ${quickAddButtonsHtml(entityKey)}
           <button class="btn btn-ghost" id="ced-back-btn">← Back</button>
           <button class="btn btn-primary btn-sm" id="ced-edit-btn">Edit</button>
+          <button class="entity-settings-btn" id="ced-manage-btn" title="Settings">${TB_ICONS.settings}</button>
         </div>
       </div>
       <div id="ced-widget-grid" class="widget-grid">
@@ -7310,7 +7311,8 @@ async function renderCustomEntityDetail(typeName, entityId) {
         typeName, parseInt(entityId), displayName, entityKey, e.title, _cdAnc
       );
     }
-    document.getElementById('ced-manage-btn').onclick = (ev) => openWidgetManager(entityKey, ev.currentTarget, () => renderCustomEntityDetail(typeName, entityId));
+    document.getElementById('ced-manage-btn').onclick = (ev) => openEntitySettingsPanel(entityKey, ev.currentTarget, () => renderCustomEntityDetail(typeName, entityId));
+    bindQuickAddButtons(main, entityKey, parseInt(entityId), e.title, () => renderCustomEntityDetail(typeName, entityId));
 
     const container = document.getElementById('ced-widget-grid');
     initWidgetGrid(entityKey, parseInt(entityId), container, () => renderCustomEntityDetail(typeName, entityId));
@@ -12006,6 +12008,137 @@ function resetWidgetLayout(entity) { localStorage.removeItem(`widget_layout_${en
 function getCustomWidgetDefs() { try { return JSON.parse(localStorage.getItem('widget_custom_defs') || '[]'); } catch(e) { return []; } }
 function saveCustomWidgetDefs(defs) { localStorage.setItem('widget_custom_defs', JSON.stringify(defs)); }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   QUICK-ADD BUTTONS — configurable per-entity header buttons ("+ Task",
+   "+ Note", ...) that create a new related record and immediately open it.
+   A class property, not a per-entity-type feature: the same config store,
+   renderer, and click handler serve every built-in AND custom entity type,
+   so a brand-new custom entity type gets this for free.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+// Only Goal/Project/Sprint ever had hardcoded "+X" buttons before this was
+// made configurable — seed their saved config with exactly what they used
+// to hardcode, so upgrading doesn't remove buttons that were already there.
+// Every other entity (including every custom type) starts with none, same
+// as before.
+const QUICK_ADD_DEFAULTS = {
+  goal: [
+    { id: 'qa-task', label: 'Task', targetEntity: 'task' },
+    { id: 'qa-note', label: 'Note', targetEntity: 'note' },
+    { id: 'qa-resource', label: 'Resource', targetEntity: 'resource' },
+  ],
+  project: [
+    { id: 'qa-task', label: 'Task', targetEntity: 'task' },
+    { id: 'qa-note', label: 'Note', targetEntity: 'note' },
+    { id: 'qa-resource', label: 'Resource', targetEntity: 'resource' },
+  ],
+  sprint: [
+    { id: 'qa-task', label: 'Task', targetEntity: 'task' },
+  ],
+};
+
+// Native FK column to stamp when creating `target` from `source`, for the
+// (source, target) pairs the schema actually has a column for — keeps a
+// quick-added task/note/etc. showing up in that entity's existing native
+// Tasks/Notes/Resources widgets exactly like it always did. Any pair NOT
+// listed here (including every custom entity type, both as source and as
+// target) falls back to the generic `_parent` relation link below — the
+// same mechanism custom entities, rollups, and the schedule feature already
+// use, so it's a real fallback, not a dead end.
+const QUICK_ADD_FK = {
+  goal:    { task: 'goal_id', note: 'goal_id', resource: 'goal_id' },
+  project: { task: 'project_id', note: 'project_id', resource: 'project_id', sprint: 'project_id' },
+  sprint:  { task: 'sprint_id' },
+  task:    { note: 'task_id', resource: 'task_id' },
+};
+
+// api path segment + how to open the freshly-created record. Goal/Project/
+// Sprint always have a dedicated full detail view everywhere else in the
+// app, so quick-add opens that instead of a slideover, for consistency.
+const QUICK_ADD_ENTITY_META = {
+  task:     { api: 'tasks',     open: (id) => showTaskSlideover(id) },
+  note:     { api: 'notes',     open: (id, cb) => showNoteSlideover(id, cb) },
+  resource: { api: 'resources', open: (id, cb) => showResourceSlideover({ id }, cb) },
+  habit:    { api: 'habits',    open: (id) => api('GET', `/api/habits/${id}`).then(h => showHabitModal(h)) },
+  goal:     { api: 'goals',     open: (id) => renderView('goal-detail', String(id)) },
+  project:  { api: 'projects',  open: (id) => renderView('project-detail', String(id)) },
+  sprint:   { api: 'sprints',   open: (id) => renderView('sprint-detail', String(id)) },
+};
+
+function getQuickAddButtons(entity) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(`quickAddButtons_${entity}`) || 'null');
+    if (Array.isArray(saved)) return saved;
+  } catch(e) {}
+  return (QUICK_ADD_DEFAULTS[entity] || []).map(b => ({ ...b }));
+}
+function saveQuickAddButtons(entity, list) { localStorage.setItem(`quickAddButtons_${entity}`, JSON.stringify(list)); }
+
+// Every target a quick-add button could point at: every built-in record
+// type plus every currently-defined custom entity type — so a newly
+// created custom type is immediately choosable too.
+function quickAddTargetOptions() {
+  const builtins = [
+    { value: 'task', label: 'Task' }, { value: 'note', label: 'Note' },
+    { value: 'resource', label: 'Resource' }, { value: 'goal', label: 'Goal' },
+    { value: 'project', label: 'Project' }, { value: 'sprint', label: 'Sprint' },
+    { value: 'habit', label: 'Habit' },
+  ];
+  const customs = (customEntityTypes || []).map(t => ({ value: `custom_${t.name}`, label: t.display_name || t.name }));
+  return [...builtins, ...customs];
+}
+function quickAddTargetLabel(target) {
+  if (target.startsWith('custom_')) {
+    const t = (customEntityTypes || []).find(t => t.name === target.slice(7));
+    return t ? (t.display_name || t.name) : target.slice(7);
+  }
+  return (quickAddTargetOptions().find(o => o.value === target) || {}).label || target;
+}
+
+// Creates a new `btnCfg.targetEntity` record related to (entity, entityId),
+// then opens it immediately — the entire point of a quick-add button.
+async function runQuickAddButton(entity, entityId, entityTitle, btnCfg, onSaved) {
+  const target = btnCfg.targetEntity;
+  const fk = (QUICK_ADD_FK[entity] || {})[target];
+  const linkGeneric = async (targetKey, newId) => {
+    if (fk) return; // native FK already establishes the link
+    setCustomPropValue(targetKey, newId, '_parent', JSON.stringify([{ id: entityId, label: entityTitle || '' }]));
+    recalcEntityRollups(targetKey, newId);
+  };
+  try {
+    if (target.startsWith('custom_')) {
+      const typeName = target.slice(7);
+      const rec = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title: 'Untitled', props: {} }));
+      await linkGeneric(target, rec.id);
+      openCustomEntitySlideover(typeName, rec.id);
+      return;
+    }
+    const meta = QUICK_ADD_ENTITY_META[target];
+    if (!meta) return;
+    const presets = { title: 'Untitled' };
+    if (fk) presets[fk] = parseInt(entityId);
+    const rec = await api('POST', `/api/${meta.api}`, withActiveWorkspace(presets));
+    await linkGeneric(target, rec.id);
+    meta.open(rec.id, onSaved);
+  } catch(e) { showToast('Failed to create', 'error'); }
+}
+
+// Header buttons for a detail view — replaces what used to be hardcoded
+// per entity (Goal/Project's "+Task"/"+Note"/"+Resource", Sprint's
+// "+Task"). Config comes from getQuickAddButtons, editable via the entity
+// settings panel (openEntitySettingsPanel).
+function quickAddButtonsHtml(entity) {
+  return getQuickAddButtons(entity).map(b =>
+    `<button class="btn btn-ghost qa-btn" data-qa-id="${escHtml(b.id)}">+ ${escHtml(b.label)}</button>`).join('');
+}
+function bindQuickAddButtons(root, entity, entityId, entityTitle, onSaved) {
+  root.querySelectorAll('.qa-btn').forEach(btn => {
+    const cfg = getQuickAddButtons(entity).find(b => b.id === btn.dataset.qaId);
+    if (!cfg) return;
+    btn.onclick = () => runQuickAddButton(entity, entityId, entityTitle, cfg, onSaved);
+  });
+}
+
 // ── Widget content builders ───────────────────────────────────────────────────
 
 function _wTasksHtml(tasks) {
@@ -12414,27 +12547,45 @@ function initWidgetGrid(entity, entityId, container, onRerender) {
 
 // ── Widget manager panel ──────────────────────────────────────────────────────
 
-function openWidgetManager(entity, anchorEl, onClose) {
-  document.getElementById('widget-mgr')?.remove();
+// entityKey a quick-add target resolves to for icon lookup purposes —
+// reuses whatever icon the sidebar nav (or custom entity type) already has,
+// same trick tabIconFor uses for tabs.
+function quickAddTargetView(target) {
+  if (target.startsWith('custom_')) return `custom:${target.slice(7)}`;
+  const map = { task: 'tasks', note: 'notes', resource: 'resources', goal: 'goals', project: 'projects', sprint: 'sprints', habit: 'habits' };
+  return map[target] || target;
+}
+
+// One merged panel — Quick-add buttons + Widgets — replacing the old plain
+// "Manage Widgets" popup. Both sections configure per-ENTITY-TYPE layout
+// (shared by every record of that type), so this needs only the type key,
+// not a specific record id — same as the old openWidgetManager signature.
+function openEntitySettingsPanel(entity, anchorEl, onClose) {
+  document.getElementById('entity-settings-panel')?.remove();
   const layout = getWidgetLayout(entity);
   const customDefs = getCustomWidgetDefs();
+  const qaButtons = getQuickAddButtons(entity);
   const dgh = `<svg width="10" height="16" viewBox="0 0 10 16" fill="var(--text-muted)" style="cursor:grab;flex-shrink:0"><circle cx="3" cy="2" r="1.5"/><circle cx="7" cy="2" r="1.5"/><circle cx="3" cy="6" r="1.5"/><circle cx="7" cy="6" r="1.5"/><circle cx="3" cy="10" r="1.5"/><circle cx="7" cy="10" r="1.5"/><circle cx="3" cy="14" r="1.5"/><circle cx="7" cy="14" r="1.5"/></svg>`;
 
-  const rowsHtml = layout.map(w => {
+  const qaRowsHtml = qaButtons.map(b => `<div class="es-row" data-qaid="${escHtml(b.id)}">
+      <span class="es-row-handle">${dgh}</span>
+      <span class="es-row-icon">${tabIconFor(quickAddTargetView(b.targetEntity)) || '◈'}</span>
+      <span class="es-row-label">${escHtml(b.label)}</span>
+      <button class="es-row-remove es-qa-del-btn" data-qaid="${escHtml(b.id)}" title="Remove">✕</button>
+    </div>`).join('');
+  const targetOpts = quickAddTargetOptions().map(o => `<option value="${o.value}">${escHtml(o.label)}</option>`).join('');
+
+  const wgRowsHtml = layout.map(w => {
     const meta = WIDGET_TYPE_META[w.type] || { icon: '◉' };
-    const wrapped = w.wrapped !== false;
-    return `<div class="wm-row" data-wid="${escHtml(w.id)}">
-      <span class="wm-row-handle">${dgh}</span>
-      <span class="wm-row-icon">${meta.icon}</span>
-      <span class="wm-row-label">${escHtml(w.label)}</span>
-      <button class="btn btn-ghost btn-sm wm-wrap-btn" data-wid="${escHtml(w.id)}"
-        title="${wrapped ? 'Card display — click for static (no card, full width)' : 'Static display — click for card'}"
-        style="font-size:11px;padding:2px 6px;line-height:1;flex-shrink:0">${wrapped ? '▢' : '▭'}</button>
-      <label class="wm-toggle-wrap" title="${w.visible ? 'Click to hide' : 'Click to show'}">
-        <input type="checkbox" class="wm-vis-cb" ${w.visible ? 'checked' : ''} data-wid="${escHtml(w.id)}">
-        <span class="wm-toggle-slider"></span>
+    return `<div class="es-row" data-wid="${escHtml(w.id)}">
+      <span class="es-row-handle">${dgh}</span>
+      <span class="es-row-icon">${meta.icon}</span>
+      <span class="es-row-label">${escHtml(w.label)}</span>
+      <label class="es-toggle" title="${w.visible ? 'Click to hide' : 'Click to show'}">
+        <input type="checkbox" class="es-wg-vis-cb" ${w.visible ? 'checked' : ''} data-wid="${escHtml(w.id)}">
+        <span class="es-toggle-slider"></span>
       </label>
-      ${w.type === 'custom' ? `<button class="btn btn-ghost btn-sm wm-del-btn" data-wid="${escHtml(w.id)}" style="color:var(--danger);padding:2px 5px;line-height:1;flex-shrink:0">✕</button>` : '<span style="width:24px;flex-shrink:0"></span>'}
+      ${w.type === 'custom' ? `<button class="es-row-remove es-wg-del-btn" data-wid="${escHtml(w.id)}" title="Remove">✕</button>` : ''}
     </div>`;
   }).join('');
 
@@ -12450,18 +12601,30 @@ function openWidgetManager(entity, anchorEl, onClose) {
     .map(d => `<option value="cx:${d.id}">◈ ${escHtml(d.name)}</option>`).join('');
 
   const panel = document.createElement('div');
-  panel.id = 'widget-mgr';
-  panel.className = 'widget-mgr';
+  panel.id = 'entity-settings-panel';
+  panel.className = 'es-panel';
   panel.innerHTML = `
-    <div class="wm-hd"><span class="wm-title">Manage Widgets</span><button class="btn btn-ghost btn-sm" id="wm-x">✕</button></div>
-    <div class="wm-body">
-      <div class="wm-list" id="wm-list">${rowsHtml || '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No widgets configured</div>'}</div>
-      <div class="wm-add">
-        <select id="wm-sel" class="form-input" style="flex:1;font-size:12px;min-width:0"><option value="">Add widget…</option>${addableOpts}${addCustomOpts}</select>
-        <button class="btn btn-sm btn-primary" id="wm-add">Add</button>
+    <div class="es-hd"><span class="es-title">Settings</span><button class="es-close" id="es-x">✕</button></div>
+    <div class="es-body">
+      <div class="es-section">
+        <span class="es-section-title">Quick-add buttons</span>
+        <div class="es-qa-list" id="es-qa-list">${qaRowsHtml || '<div class="es-empty">No quick-add buttons yet</div>'}</div>
+        <div class="es-add-row">
+          <select id="es-qa-sel" class="es-select"><option value="">Add button…</option>${targetOpts}</select>
+          <button class="es-add-btn" id="es-qa-add" title="Add">+</button>
+        </div>
       </div>
-      <button class="btn btn-sm btn-ghost" id="wm-new-cust" style="width:100%;margin-top:6px;font-size:12px">+ New Custom Widget</button>
-      <button class="btn btn-sm btn-ghost" id="wm-reset" style="width:100%;margin-top:4px;font-size:11px;color:var(--text-muted)">Reset to defaults</button>
+      <div class="es-divider"></div>
+      <div class="es-section">
+        <span class="es-section-title">Widgets</span>
+        <div class="es-wg-list" id="es-wg-list">${wgRowsHtml || '<div class="es-empty">No widgets configured</div>'}</div>
+        <div class="es-add-row">
+          <select id="es-wg-sel" class="es-select"><option value="">Add widget…</option>${addableOpts}${addCustomOpts}</select>
+          <button class="es-add-btn" id="es-wg-add" title="Add">+</button>
+        </div>
+        <button class="es-link-btn" id="es-new-cust">+ New custom widget</button>
+        <button class="es-link-btn es-muted" id="es-reset">Reset widgets to defaults</button>
+      </div>
     </div>`;
 
   document.body.appendChild(panel);
@@ -12470,13 +12633,18 @@ function openWidgetManager(entity, anchorEl, onClose) {
     const r = anchorEl.getBoundingClientRect();
     panel.style.top = (r.bottom + 8) + 'px';
     panel.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+    requestAnimationFrame(() => {
+      const pr = panel.getBoundingClientRect();
+      if (pr.bottom > window.innerHeight - 8) panel.style.maxHeight = Math.max(200, window.innerHeight - pr.top - 8) + 'px';
+    });
   }
 
   if (window.Sortable) {
-    new Sortable(document.getElementById('wm-list'), { handle: '.wm-row-handle', animation: 120 });
+    new Sortable(document.getElementById('es-wg-list'), { handle: '.es-row-handle', animation: 120 });
+    new Sortable(document.getElementById('es-qa-list'), { handle: '.es-row-handle', animation: 120 });
   }
 
-  panel.querySelectorAll('.wm-vis-cb').forEach(cb => {
+  panel.querySelectorAll('.es-wg-vis-cb').forEach(cb => {
     cb.onchange = () => {
       const lay = getWidgetLayout(entity);
       const w = lay.find(x => x.id === cb.dataset.wid);
@@ -12484,27 +12652,22 @@ function openWidgetManager(entity, anchorEl, onClose) {
     };
   });
 
-  panel.querySelectorAll('.wm-wrap-btn').forEach(btn => {
-    btn.onclick = () => {
-      const lay = getWidgetLayout(entity);
-      const w = lay.find(x => x.id === btn.dataset.wid);
-      if (!w) return;
-      w.wrapped = w.wrapped === false ? true : false;
-      saveWidgetLayout(entity, lay);
-      btn.textContent = w.wrapped === false ? '▭' : '▢';
-      btn.title = w.wrapped === false ? 'Static display — click for card' : 'Card display — click for static (no card, full width)';
-    };
-  });
-
-  panel.querySelectorAll('.wm-del-btn').forEach(btn => {
+  panel.querySelectorAll('.es-wg-del-btn').forEach(btn => {
     btn.onclick = () => {
       saveWidgetLayout(entity, getWidgetLayout(entity).filter(w => w.id !== btn.dataset.wid));
-      btn.closest('.wm-row').remove();
+      btn.closest('.es-row').remove();
     };
   });
 
-  document.getElementById('wm-add').onclick = () => {
-    const val = document.getElementById('wm-sel').value;
+  panel.querySelectorAll('.es-qa-del-btn').forEach(btn => {
+    btn.onclick = () => {
+      saveQuickAddButtons(entity, getQuickAddButtons(entity).filter(b => b.id !== btn.dataset.qaid));
+      btn.closest('.es-row').remove();
+    };
+  });
+
+  document.getElementById('es-wg-add').onclick = () => {
+    const val = document.getElementById('es-wg-sel').value;
     if (!val) return;
     const lay = getWidgetLayout(entity);
     if (val.startsWith('cx:')) {
@@ -12515,41 +12678,59 @@ function openWidgetManager(entity, anchorEl, onClose) {
       if (meta) lay.push({ id: `w-${val}-${Date.now()}`, type: val, label: meta.label, visible: true, ...(val === 'metrics' ? { showInCards: true } : {}) });
     }
     saveWidgetLayout(entity, lay);
-    _closeWM(); openWidgetManager(entity, anchorEl, onClose);
+    _closeES(); openEntitySettingsPanel(entity, anchorEl, onClose);
   };
 
-  document.getElementById('wm-new-cust').onclick = () => {
-    _closeWM(); openCustomWidgetEditor(null, () => openWidgetManager(entity, anchorEl, onClose));
+  document.getElementById('es-qa-add').onclick = () => {
+    const val = document.getElementById('es-qa-sel').value;
+    if (!val) return;
+    const list = getQuickAddButtons(entity);
+    list.push({ id: `qa-${Date.now()}`, label: quickAddTargetLabel(val), targetEntity: val });
+    saveQuickAddButtons(entity, list);
+    _closeES(); openEntitySettingsPanel(entity, anchorEl, onClose);
   };
 
-  document.getElementById('wm-reset').onclick = () => {
+  document.getElementById('es-new-cust').onclick = () => {
+    _closeES(); openCustomWidgetEditor(null, () => openEntitySettingsPanel(entity, anchorEl, onClose));
+  };
+
+  document.getElementById('es-reset').onclick = () => {
     if (!confirm('Reset widget layout to defaults?')) return;
-    resetWidgetLayout(entity); _closeWM(); openWidgetManager(entity, anchorEl, onClose);
+    resetWidgetLayout(entity); _closeES(); openEntitySettingsPanel(entity, anchorEl, onClose);
   };
 
   const saveOrder = () => {
-    const listEl = document.getElementById('wm-list');
-    if (!listEl) return;
-    const lay = getWidgetLayout(entity);
-    const order = Array.from(listEl.querySelectorAll('.wm-row[data-wid]')).map(r => r.dataset.wid);
-    const sorted = order.map(id => lay.find(w => w.id === id)).filter(Boolean);
-    const rest = lay.filter(w => !sorted.find(s => s.id === w.id));
-    saveWidgetLayout(entity, [...sorted, ...rest]);
+    const wgList = document.getElementById('es-wg-list');
+    if (wgList) {
+      const lay = getWidgetLayout(entity);
+      const order = Array.from(wgList.querySelectorAll('.es-row[data-wid]')).map(r => r.dataset.wid);
+      const sorted = order.map(id => lay.find(w => w.id === id)).filter(Boolean);
+      const rest = lay.filter(w => !sorted.find(s => s.id === w.id));
+      saveWidgetLayout(entity, [...sorted, ...rest]);
+    }
+    const qaList = document.getElementById('es-qa-list');
+    if (qaList) {
+      const list = getQuickAddButtons(entity);
+      const order = Array.from(qaList.querySelectorAll('.es-row[data-qaid]')).map(r => r.dataset.qaid);
+      const sorted = order.map(id => list.find(b => b.id === id)).filter(Boolean);
+      const rest = list.filter(b => !sorted.find(s => s.id === b.id));
+      saveQuickAddButtons(entity, [...sorted, ...rest]);
+    }
   };
 
-  document.getElementById('wm-x').onclick = () => { saveOrder(); _closeWM(); if (onClose) onClose(); };
+  document.getElementById('es-x').onclick = () => { saveOrder(); _closeES(); if (onClose) onClose(); };
 
   setTimeout(() => {
     const handler = (e) => {
-      if (!document.getElementById('widget-mgr')?.contains(e.target)) {
-        saveOrder(); _closeWM(); document.removeEventListener('click', handler); if (onClose) onClose();
+      if (!document.getElementById('entity-settings-panel')?.contains(e.target)) {
+        saveOrder(); _closeES(); document.removeEventListener('click', handler); if (onClose) onClose();
       }
     };
     document.addEventListener('click', handler);
   }, 120);
 }
 
-function _closeWM() { document.getElementById('widget-mgr')?.remove(); }
+function _closeES() { document.getElementById('entity-settings-panel')?.remove(); }
 
 // ── Custom widget code editor ─────────────────────────────────────────────────
 
@@ -12726,12 +12907,12 @@ async function renderSprintDetail(sprintId) {
         </div>
       </div>
       <div class="flex gap-8">
-        <button class="btn btn-ghost btn-sm" id="sd-manage-btn">Widgets ⚙</button>
-        <button class="btn btn-ghost" id="sd-back-btn">← Back</button>
+        ${quickAddButtonsHtml('sprint')}
         ${prevStatus ? `<button class="btn btn-ghost" id="sd-prev-status-btn" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
         ${nextStatus ? `<button class="btn btn-ghost" id="sd-status-btn" data-next="${nextStatus}">${nextLabel}</button>` : ''}
         <button class="btn btn-ghost" id="sd-json-btn">Export JSON</button>
-        <button class="btn btn-primary" id="sd-add-task-btn">+ Task</button>
+        <button class="btn btn-ghost" id="sd-back-btn">← Back</button>
+        <button class="entity-settings-btn" id="sd-manage-btn" title="Settings">${TB_ICONS.settings}</button>
       </div>
     </div>
     <div class="widget" style="margin-bottom:16px">
@@ -12769,13 +12950,12 @@ async function renderSprintDetail(sprintId) {
     </div>
   </div>`;
 
-  document.getElementById('sd-manage-btn').onclick = (e) => openWidgetManager('sprint', e.currentTarget, () => renderSprintDetail(sprintId));
+  document.getElementById('sd-manage-btn').onclick = (e) => openEntitySettingsPanel('sprint', e.currentTarget, () => renderSprintDetail(sprintId));
+  bindQuickAddButtons(document.getElementById('main-content'), 'sprint', parseInt(sprintId), sprint.title, () => renderSprintDetail(sprintId));
   document.getElementById('sd-back-btn').onclick = () => renderView('sprints');
   bindDetailTitleDblClickEdit(document.getElementById('sd-title'), sprint.title, (val) => patchSprint({ title: val }));
   document.getElementById('sd-json-btn').onclick = () =>
     showJSONModal(`/api/export/sprint/${sprintId}`, `sprint-${sprint.title.replace(/\s+/g,'-')}.json`);
-  document.getElementById('sd-add-task-btn').onclick = () =>
-    showNewTaskModal({ sprint_id: parseInt(sprintId) }, () => renderSprintDetail(sprintId));
   document.getElementById('sd-prev-status-btn')?.addEventListener('click', async (e) => {
     const prev = e.currentTarget.dataset.prev;
     if (!confirm(`Revert sprint to "${prev}"?`)) return;
@@ -13874,12 +14054,10 @@ async function renderProjectDetail(projectId) {
         </div>
       </div>
       <div class="flex gap-8">
-        <button class="btn btn-ghost btn-sm" id="pd-manage-btn">Widgets ⚙</button>
+        ${quickAddButtonsHtml('project')}
         <button class="btn btn-ghost" id="pd-export-btn">Export JSON</button>
         <button class="btn btn-ghost" id="pd-back-btn">← Back</button>
-        <button class="btn btn-primary" id="pd-add-task-btn">+ Task</button>
-        <button class="btn btn-ghost" id="pd-add-note-btn">+ Note</button>
-        <button class="btn btn-ghost" id="pd-add-res-btn">+ Resource</button>
+        <button class="entity-settings-btn" id="pd-manage-btn" title="Settings">${TB_ICONS.settings}</button>
       </div>
     </div>
     <div id="pd-widget-grid" class="widget-grid">
@@ -13888,12 +14066,10 @@ async function renderProjectDetail(projectId) {
   </div>`;
 
   document.getElementById('pd-back-btn').onclick = () => renderView('projects');
-  document.getElementById('pd-add-task-btn').onclick = () => showNewTaskModal({ project_id: parseInt(projectId) }, () => renderProjectDetail(projectId));
-  document.getElementById('pd-add-note-btn').onclick = () => showNoteModal({ project_id: parseInt(projectId) }, () => renderProjectDetail(projectId));
-  document.getElementById('pd-add-res-btn').onclick = () => showResourceModal({ project_id: parseInt(projectId) }, () => renderProjectDetail(projectId));
+  bindQuickAddButtons(document.getElementById('main-content'), 'project', parseInt(projectId), p.title, () => renderProjectDetail(projectId));
   document.getElementById('pd-export-btn').onclick = () =>
     showJSONModal(`/api/export/project/${projectId}`, `project-${p.title}.json`);
-  document.getElementById('pd-manage-btn').onclick = (e) => openWidgetManager('project', e.currentTarget, () => renderProjectDetail(projectId));
+  document.getElementById('pd-manage-btn').onclick = (e) => openEntitySettingsPanel('project', e.currentTarget, () => renderProjectDetail(projectId));
   bindDetailTitleDblClickEdit(document.getElementById('pd-title'), p.title, (val) => patchProject({ title: val }));
   // ── Project icon + cover ─────────────────────────────────────────────
   const projIconBtn = document.getElementById('proj-icon-btn');
@@ -14039,12 +14215,10 @@ async function renderGoalDetail(goalId) {
         </div>
       </div>
       <div class="flex gap-8">
-        <button class="btn btn-ghost btn-sm" id="gd-manage-btn">Widgets ⚙</button>
+        ${quickAddButtonsHtml('goal')}
         <button class="btn btn-ghost" id="gd-export-btn">Export JSON</button>
         <button class="btn btn-ghost" id="gd-back-btn">← Back</button>
-        <button class="btn btn-primary" id="gd-add-task-btn">+ Task</button>
-        <button class="btn btn-ghost" id="gd-add-note-btn">+ Note</button>
-        <button class="btn btn-ghost" id="gd-add-res-btn">+ Resource</button>
+        <button class="entity-settings-btn" id="gd-manage-btn" title="Settings">${TB_ICONS.settings}</button>
       </div>
     </div>
     <div id="gd-widget-grid" class="widget-grid">
@@ -14055,10 +14229,8 @@ async function renderGoalDetail(goalId) {
   document.getElementById('gd-back-btn').onclick = () => renderView('goals');
   document.getElementById('gd-export-btn').onclick = () =>
     showJSONModal(`/api/export/goal/${goalId}`, `goal-${g.title}.json`);
-  document.getElementById('gd-add-task-btn').onclick = () => showNewTaskModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
-  document.getElementById('gd-add-note-btn').onclick = () => showNoteModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
-  document.getElementById('gd-add-res-btn').onclick = () => showResourceModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
-  document.getElementById('gd-manage-btn').onclick = (e) => openWidgetManager('goal', e.currentTarget, () => renderGoalDetail(goalId));
+  bindQuickAddButtons(document.getElementById('main-content'), 'goal', parseInt(goalId), g.title, () => renderGoalDetail(goalId));
+  document.getElementById('gd-manage-btn').onclick = (e) => openEntitySettingsPanel('goal', e.currentTarget, () => renderGoalDetail(goalId));
   bindDetailTitleDblClickEdit(document.getElementById('gd-title'), g.title, (val) => patchGoal({ title: val }));
   // ── Goal icon + cover ─────────────────────────────────────────────────
   const goalIconBtn = document.getElementById('goal-icon-btn');
