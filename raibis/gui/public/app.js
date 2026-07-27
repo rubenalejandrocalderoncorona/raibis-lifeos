@@ -7230,27 +7230,23 @@ async function renderCustomEntityDetail(typeName, entityId) {
     updateBreadcrumb('custom-detail', `${typeName}/${entityId}`, e.title, _cdAnc);
     await loadEntityCustomProps(entityKey, parseInt(entityId));
     const propPanel = buildInlinePropPanel(entityKey, parseInt(entityId), []);
-    const relDefs = getCustomPropDefs(entityKey).filter(d => d.type === 'relation');
-    const wData = { propPanelHtml: propPanel, tasks: [], notes: [], resources: [], projects: [], entityData: e };
+    // Was reading def.target_entity, a field no relation def has ever set
+    // (the field is always relatedEntity — see _ensureRelProp et al.), and
+    // e.props directly instead of the actual property-value store, so this
+    // never populated anything for any custom entity. Fixed to match the
+    // rest of the app's relation convention, and to cover 'sprint' too.
+    const relDefs = getCustomPropDefs(entityKey).filter(d => d.type === 'relation' && d.key !== '_parent');
+    const wData = { propPanelHtml: propPanel, tasks: [], notes: [], resources: [], projects: [], sprints: [], entityData: e };
+    const RELATION_WIDGET_ENDPOINT = { task: 'tasks', note: 'notes', resource: 'resources', project: 'projects', sprint: 'sprints' };
+    const relVals = getCustomPropValues(entityKey, entityId);
     for (const def of relDefs) {
-      let ids = e.props[def.key];
-      if (!ids) continue;
-      if (!Array.isArray(ids)) ids = [ids];
-      const validIds = ids.map(id => parseInt(id)).filter(id => !isNaN(id));
-      if (!validIds.length) continue;
-      
-      let endpoint = '';
-      let targetArray = null;
-      if (def.target_entity === 'task') { endpoint = 'tasks'; targetArray = wData.tasks; }
-      else if (def.target_entity === 'note') { endpoint = 'notes'; targetArray = wData.notes; }
-      else if (def.target_entity === 'resource') { endpoint = 'resources'; targetArray = wData.resources; }
-      else if (def.target_entity === 'project') { endpoint = 'projects'; targetArray = wData.projects; }
-      // other targets like custom entities can also be handled if widgets support them
-      
-      if (endpoint && targetArray) {
-        const fetched = await Promise.all(validIds.map(id => api('GET', `/api/${endpoint}/${id}`).catch(() => null)));
-        targetArray.push(...fetched.filter(Boolean));
-      }
+      const endpoint = RELATION_WIDGET_ENDPOINT[def.relatedEntity];
+      const targetArray = endpoint && wData[endpoint];
+      if (!endpoint || !targetArray) continue;
+      const items = parseRelationValue(relVals[def.key] ?? '');
+      if (!items.length) continue;
+      const fetched = await Promise.all(items.map(it => api('GET', `/api/${endpoint}/${it.id}`).catch(() => null)));
+      targetArray.push(...fetched.filter(Boolean));
     }
     let _cdCrumbHtml = `<span class="bc-link" id="ced-bc-root" style="cursor:pointer">${escHtml(displayName)}</span>`;
     _cdAnc.forEach(anc => {
@@ -9429,7 +9425,13 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
 // When a link is added via ev-add-btn, ensure the child entity has a custom
 // prop showing which parent entities reference it (and vice versa).
 async function _ensureRelProp(ownerType, ownerId, targetType, targetId, targetTitle) {
-  const propKey = `${targetType}s`;
+  // targetType/ownerType may be a 'custom_<name>' entity key — strip the
+  // prefix before pluralizing or labeling, else a custom target ends up
+  // with a mangled "custom_bugss"-style key and a raw "custom_bugs" label
+  // instead of a clean "Bugs" relation property.
+  const bareTarget = targetType.replace(/^custom_/, '');
+  const bareOwner = ownerType.replace(/^custom_/, '');
+  const propKey = targetType.startsWith('custom_') ? bareTarget : `${targetType}s`;
   // If a built-in FK prop already covers this relation (e.g. note.project for targetType='project'),
   // use its singular key instead of creating a duplicate plural custom prop def.
   const builtinProps = ENTITY_ALL_PROPS[ownerType] || [];
@@ -9437,11 +9439,13 @@ async function _ensureRelProp(ownerType, ownerId, targetType, targetId, targetTi
   const effectiveKey = builtinMatch ? targetType : propKey;
 
   if (!builtinMatch) {
-    const propLabel = EV_LABELS[targetType] || targetType;
+    const propLabel = targetType.startsWith('custom_')
+      ? ((customEntityTypes || []).find(t => t.name === bareTarget)?.display_name || bareTarget)
+      : (EV_LABELS[targetType] || targetType);
     const defs = getCustomPropDefs(ownerType);
     if (!defs.some(d => d.key === propKey)) {
-      const reverseKey = `${ownerType}s`;
-      defs.push({ key: propKey, label: propLabel, type: 'relation', relatedEntity: targetType, bilateral: true, reverseKey });
+      const reverseKey = `${bareOwner}s`;
+      defs.push({ key: propKey, label: propLabel, type: 'relation', relatedEntity: bareTarget, bilateral: true, reverseKey });
       setCustomPropDefs(ownerType, defs);
       const vp = getEntityVisProps(ownerType);
       if (!vp.includes(propKey)) setEntityVisProps(ownerType, [...vp, propKey]);
@@ -9455,10 +9459,29 @@ async function _ensureRelProp(ownerType, ownerId, targetType, targetId, targetTi
   } catch(e) {}
   const vals = getCustomPropValues(ownerType, ownerId);
   let arr = parseRelationValue(vals[effectiveKey] ?? '');
+  // A builtin field's display (renderMultiRelationValue) falls back to the
+  // record's own legacy scalar FK (e.g. sprint.project_id) ONLY while this
+  // array is still empty — the very first write here would otherwise wipe
+  // that existing link from view, since a non-empty array stops the
+  // fallback from ever being consulted again. Seed the legacy FK's target
+  // into the array once, before adding the new one, so nothing already
+  // linked silently disappears.
+  if (builtinMatch && !arr.length) {
+    try {
+      const isBuiltinOwner = ['task', 'goal', 'project', 'sprint', 'note', 'resource', 'habit'].includes(ownerType);
+      const ownerPath = ownerType === 'task' ? `/api/tasks/${ownerId}` : isBuiltinOwner ? `/api/${ownerType}s/${ownerId}` : null;
+      const legacyId = ownerPath ? (await api('GET', ownerPath))[`${effectiveKey}_id`] : null;
+      if (legacyId && String(legacyId) !== String(targetId)) {
+        const legacyList = await api('GET', `/api/${bareTarget}s`).catch(() => []);
+        const legacyRec = (legacyList || []).find(r => String(r.id) === String(legacyId));
+        arr.push({ id: String(legacyId), label: legacyRec ? (legacyRec.title || legacyRec.name || String(legacyId)) : String(legacyId) });
+      }
+    } catch(e) {}
+  }
   if (!arr.some(x => x.id === String(targetId))) {
     arr.push({ id: String(targetId), label: targetTitle });
-    setCustomPropValue(ownerType, ownerId, effectiveKey, JSON.stringify(arr));
   }
+  setCustomPropValue(ownerType, ownerId, effectiveKey, JSON.stringify(arr));
 }
 
 async function _removeRelProp(ownerType, ownerId, targetType, targetId) {
@@ -12077,11 +12100,16 @@ function saveQuickAddButtons(entity, list) { localStorage.setItem(`quickAddButto
 // Every target a quick-add button could point at: every built-in record
 // type plus every currently-defined custom entity type — so a newly
 // created custom type is immediately choosable too.
-function quickAddTargetOptions() {
+// `sourceEntity` filters out targets that can't actually be created from
+// this source — a Sprint requires a project_id at creation (backend 400s
+// without one), and only a Project can supply that natively, so offering
+// "Sprint" as a quick-add target anywhere else would just fail on click.
+function quickAddTargetOptions(sourceEntity) {
   const builtins = [
     { value: 'task', label: 'Task' }, { value: 'note', label: 'Note' },
     { value: 'resource', label: 'Resource' }, { value: 'goal', label: 'Goal' },
-    { value: 'project', label: 'Project' }, { value: 'sprint', label: 'Sprint' },
+    { value: 'project', label: 'Project' },
+    ...(sourceEntity === 'project' ? [{ value: 'sprint', label: 'Sprint' }] : []),
     { value: 'habit', label: 'Habit' },
   ];
   const customs = (customEntityTypes || []).map(t => ({ value: `custom_${t.name}`, label: t.display_name || t.name }));
@@ -12092,7 +12120,26 @@ function quickAddTargetLabel(target) {
     const t = (customEntityTypes || []).find(t => t.name === target.slice(7));
     return t ? (t.display_name || t.name) : target.slice(7);
   }
-  return (quickAddTargetOptions().find(o => o.value === target) || {}).label || target;
+  const all = [{ value: 'sprint', label: 'Sprint' }, ...quickAddTargetOptions()];
+  return (all.find(o => o.value === target) || {}).label || target;
+}
+
+// Full records of `targetType` related to (entity, entityId), for feeding a
+// Projects/Sprints/etc. widget — reads the SAME relation-prop key
+// _ensureRelProp/openMultiRelationPicker already read and write (the
+// entity's own builtin field when it has one, e.g. sprint.project, else the
+// auto-created plural key), resolved against an already-fetched list of
+// full target records so no extra API call is needed. `fallbackId` covers
+// a record that only ever had the legacy single FK set (never touched the
+// relation prop) — matches openMultiRelationPicker's own fallback.
+function relatedRecordsFromProp(entity, entityId, targetType, targetList, fallbackId) {
+  const builtinProps = ENTITY_ALL_PROPS[entity] || [];
+  const builtinMatch = builtinProps.find(p => p.key === targetType);
+  const propKey = builtinMatch ? targetType : `${targetType}s`;
+  const vals = getCustomPropValues(entity, entityId);
+  let items = parseRelationValue(vals[propKey] ?? '');
+  if (!items.length && fallbackId) items = [{ id: String(fallbackId) }];
+  return items.map(it => (targetList || []).find(t => String(t.id) === String(it.id))).filter(Boolean);
 }
 
 // Creates a new `btnCfg.targetEntity` record related to (entity, entityId),
@@ -12100,16 +12147,21 @@ function quickAddTargetLabel(target) {
 async function runQuickAddButton(entity, entityId, entityTitle, btnCfg, onSaved) {
   const target = btnCfg.targetEntity;
   const fk = (QUICK_ADD_FK[entity] || {})[target];
-  const linkGeneric = async (targetKey, newId) => {
-    if (fk) return; // native FK already establishes the link
-    setCustomPropValue(targetKey, newId, '_parent', JSON.stringify([{ id: entityId, label: entityTitle || '' }]));
-    recalcEntityRollups(targetKey, newId);
-  };
+  // Always establishes a real, labeled, bidirectional relation property on
+  // BOTH records via the same ensureEVBilateral/_ensureRelProp mechanism the
+  // rest of the app already uses for entity-to-entity relations — reusing
+  // an existing builtin field (e.g. Sprint's own "Projects" picker) when one
+  // covers this pair, or auto-creating a matching pair of relation props
+  // when it doesn't. When a native FK also exists for this pair (e.g.
+  // project_id on a task), it's set too, so native FK-based widgets/lists
+  // keep working exactly as before — the relation property is in addition
+  // to that, not instead of it.
   try {
+    let rec;
     if (target.startsWith('custom_')) {
       const typeName = target.slice(7);
-      const rec = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title: 'Untitled', props: {} }));
-      await linkGeneric(target, rec.id);
+      rec = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title: 'Untitled', props: {} }));
+      await ensureEVBilateral(entity, entityId, entityTitle || '', target, rec.id, 'Untitled');
       openCustomEntitySlideover(typeName, rec.id);
       return;
     }
@@ -12117,8 +12169,8 @@ async function runQuickAddButton(entity, entityId, entityTitle, btnCfg, onSaved)
     if (!meta) return;
     const presets = { title: 'Untitled' };
     if (fk) presets[fk] = parseInt(entityId);
-    const rec = await api('POST', `/api/${meta.api}`, withActiveWorkspace(presets));
-    await linkGeneric(target, rec.id);
+    rec = await api('POST', `/api/${meta.api}`, withActiveWorkspace(presets));
+    await ensureEVBilateral(entity, entityId, entityTitle || '', target, rec.id, 'Untitled');
     meta.open(rec.id, onSaved);
   } catch(e) { showToast('Failed to create', 'error'); }
 }
@@ -12189,6 +12241,20 @@ function _wProjectsHtml(projects) {
     const prog = p.progress || {}, pct = prog.pct || 0;
     return `<div class="card detail-nav" data-proj-id="${p.id}" style="cursor:pointer;margin-bottom:8px">
       <div class="flex-between gap-8"><span class="card-title">${escHtml(p.title)}</span>${builtinSelectChip('projectStatuses', p.status)}</div>
+      <div class="progress-wrap" style="margin-top:8px">
+        <div class="progress-label"><span>${pct}%</span><span>${prog.done||0}/${prog.total||0}</span></div>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+      </div></div>`;
+  }).join('');
+}
+
+function _wSprintsHtml(sprints) {
+  if (!sprints || !sprints.length)
+    return '<div class="empty-state" style="padding:20px"><div class="empty-state-text">No sprints</div></div>';
+  return sprints.map(s => {
+    const prog = s.progress || {}, pct = prog.pct || 0;
+    return `<div class="card detail-nav" data-sprint-id="${s.id}" style="cursor:pointer;margin-bottom:8px">
+      <div class="flex-between gap-8"><span class="card-title">${escHtml(s.title)}</span>${builtinSelectChip('sprintStatuses', s.status)}</div>
       <div class="progress-wrap" style="margin-top:8px">
         <div class="progress-label"><span>${pct}%</span><span>${prog.done||0}/${prog.total||0}</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
@@ -12444,6 +12510,7 @@ function buildWidgetGrid(entity, entityId, wData) {
       case 'notes':      body = _wNotesHtml(wData.notes); break;
       case 'resources':  body = _wResourcesHtml(wData.resources); break;
       case 'projects':   body = _wProjectsHtml(wData.projects); break;
+      case 'sprints':    body = _wSprintsHtml(wData.sprints); break;
       case 'properties': body = wData.propPanelHtml || ''; break;
       case 'editor':     body = `<div id="editorjs-${entity}-${entityId}" class="rich-editor-host"></div>`; break;
       case 'comments':   body = buildCommentSection(entity, entityId); break;
@@ -12537,7 +12604,15 @@ function initWidgetGrid(entity, entityId, container, onRerender) {
       const view = cfBtn.closest('.view');
       const title = view?.querySelector('.view-title')?.textContent || '';
       openContentFullscreen(entity, entityId, title);
+      return;
     }
+    // Cards inside a Projects/Sprints widget (any entity that has one, not
+    // just the ones that originally hardcoded it) navigate to that record's
+    // own detail view.
+    const projCard = e.target.closest('.detail-nav[data-proj-id]');
+    if (projCard) { renderView('project-detail', projCard.dataset.projId); return; }
+    const sprintCard = e.target.closest('.detail-nav[data-sprint-id]');
+    if (sprintCard) { renderView('sprint-detail', sprintCard.dataset.sprintId); return; }
   });
   const editorHost = container.querySelector('.rich-editor-host[id]');
   if (editorHost) initRichEditor(editorHost.id, entity, entityId, false);
@@ -12573,7 +12648,7 @@ function openEntitySettingsPanel(entity, anchorEl, onClose) {
       <span class="es-row-label">${escHtml(b.label)}</span>
       <button class="es-row-remove es-qa-del-btn" data-qaid="${escHtml(b.id)}" title="Remove">✕</button>
     </div>`).join('');
-  const targetOpts = quickAddTargetOptions().map(o => `<option value="${o.value}">${escHtml(o.label)}</option>`).join('');
+  const targetOpts = quickAddTargetOptions(entity).map(o => `<option value="${o.value}">${escHtml(o.label)}</option>`).join('');
 
   const wgRowsHtml = layout.map(w => {
     const meta = WIDGET_TYPE_META[w.type] || { icon: '◉' };
@@ -12946,7 +13021,8 @@ async function renderSprintDetail(sprintId) {
       </div>
     </div>
     <div id="sd-widget-grid" class="widget-grid" style="margin-top:12px">
-      ${buildWidgetGrid('sprint', sprintId, { tasks, propPanelHtml: sprintDetailPropPanel, entityData: sprint })}
+      ${buildWidgetGrid('sprint', sprintId, { tasks, propPanelHtml: sprintDetailPropPanel, entityData: sprint,
+        projects: relatedRecordsFromProp('sprint', sprintId, 'project', sdLocalProjects, sprint.project_id) })}
     </div>
   </div>`;
 
@@ -13968,6 +14044,11 @@ async function renderProjectDetail(projectId) {
   let pdLocalGoals = [];
   try { pdLocalGoals = await api('GET', '/api/goals'); } catch(e) {}
   const goalName = pdLocalGoals.find(g => String(g.id) === String(p.goal_id))?.title || null;
+  // A sprint belongs to its project via sprint.project_id (the reverse of
+  // goal_id/project_id on tasks/notes/resources) — same reverse-FK relation
+  // Tasks/Notes/Resources widgets already read, just on the other table.
+  let pdSprints = [];
+  try { pdSprints = await api('GET', `/api/sprints?project_id=${projectId}`); } catch(e) {}
   const allProjDetailBuiltinDefs = [
     { key: 'status',   label: 'Status',    icon: pIco('<circle cx="12" cy="12" r="10"/>'),
       renderValue: () => builtinSelectChip('projectStatuses', p.status||'active', { badge: true }) },
@@ -14061,7 +14142,7 @@ async function renderProjectDetail(projectId) {
       </div>
     </div>
     <div id="pd-widget-grid" class="widget-grid">
-      ${buildWidgetGrid('project', projectId, { tasks, notes, resources, propPanelHtml: projDetailPropPanel, entityData: p })}
+      ${buildWidgetGrid('project', projectId, { tasks, notes, resources, sprints: pdSprints, propPanelHtml: projDetailPropPanel, entityData: p })}
     </div>
   </div>`;
 
@@ -14182,6 +14263,11 @@ async function renderGoalDetail(goalId) {
   const tasks = g.tasks || [];
   const notes = g.notes || [];
   const resources = g.resources || [];
+  // Sprints have no goal_id — a Goal can only reach them via the generic
+  // relation prop (manually linked, or bilaterally set by a "+Sprint"
+  // quick-add button pointing here), not a reverse-FK lookup.
+  let gdSprints = [];
+  try { gdSprints = relatedRecordsFromProp('goal', goalId, 'sprint', await api('GET', '/api/sprints'), null); } catch(e) {}
 
   // Load all tasks so toggle reveals subtasks that don't carry goal_id
   try {
@@ -14222,7 +14308,7 @@ async function renderGoalDetail(goalId) {
       </div>
     </div>
     <div id="gd-widget-grid" class="widget-grid">
-      ${buildWidgetGrid('goal', goalId, { tasks, notes, resources, projects, propPanelHtml: goalDetailPropPanel, entityData: g })}
+      ${buildWidgetGrid('goal', goalId, { tasks, notes, resources, projects, sprints: gdSprints, propPanelHtml: goalDetailPropPanel, entityData: g })}
     </div>
   </div>`;
 
@@ -14254,9 +14340,6 @@ async function renderGoalDetail(goalId) {
     };
   }
   initDetailViewCover('goal', goalId, 'goal-cover-row', 'goal-action-row');
-  document.querySelectorAll('.detail-nav[data-proj-id]').forEach(el => {
-    el.onclick = () => renderView('project-detail', el.dataset.projId);
-  });
   document.querySelectorAll('.clickable-note').forEach(el => {
     el.onclick = () => {
       const n = notes.find(x => String(x.id) === el.dataset.noteId);
