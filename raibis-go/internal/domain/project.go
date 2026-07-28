@@ -13,6 +13,7 @@ type Project struct {
 	KanbanCol    string     `json:"kanban_col,omitempty"` // Backlog | Maintenance | Sprint
 	Archived     bool       `json:"archived"`
 	CategoryID   *int64     `json:"category_id,omitempty"`
+	WorkspaceID  *int64     `json:"workspace_id,omitempty"`
 	CategoryName string     `json:"category_name,omitempty"`
 	ContentJSON  string     `json:"content_json,omitempty"`
 	Tags         []Tag      `json:"tags,omitempty"`

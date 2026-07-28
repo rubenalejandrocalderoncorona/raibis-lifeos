@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -15,6 +16,21 @@ import (
 // SQLite holds only metadata + file_path; this package owns file I/O.
 type Vault struct {
 	Root string // absolute path, e.g. /Users/alice/LifeOS_Vault
+
+	foldersMu sync.RWMutex
+	// recordFolders maps a single record (key "{entityType}:{id}") to the
+	// workspace subfolder its file currently lives under (e.g. "Work"), so
+	// {root}/raibis/{entityType}/ becomes {root}/raibis/{folder}/{entityType}/
+	// for that one record. A record can only ever belong to one workspace at
+	// a time, but different records of the SAME entity type can be scattered
+	// across different workspace folders (or the top level) — kept in sync
+	// with each record's own workspace_id column by the caller via
+	// SetRecordFolders; the vault package itself has no DB access.
+	recordFolders map[string]string
+	// knownFolders lists every workspace subfolder currently in use, so
+	// ScanEntityFiles knows which subdirectories (beyond the top-level one)
+	// might hold files of a given entity type.
+	knownFolders []string
 }
 
 // New opens (or creates) the vault at root.
@@ -115,10 +131,113 @@ func (v *Vault) DeleteFile(path string) error {
 
 // ── Entity Markdown files ──────────────────────────────────────────────────
 
+// recordKey builds the recordFolders map key for one entity record.
+func recordKey(entityType string, id int64) string {
+	return fmt.Sprintf("%s:%d", entityType, id)
+}
+
+// recordFolder returns the workspace subfolder currently assigned to one
+// specific record, or "" if it's unassigned (top-level).
+func (v *Vault) recordFolder(entityType string, id int64) string {
+	v.foldersMu.RLock()
+	defer v.foldersMu.RUnlock()
+	return v.recordFolders[recordKey(entityType, id)]
+}
+
+// entityDir returns the directory holding one record's file, honoring its
+// current workspace-folder assignment (if any).
+func (v *Vault) entityDir(entityType string, id int64) string {
+	if folder := v.recordFolder(entityType, id); folder != "" {
+		return filepath.Join(v.Root, "raibis", folder, entityType)
+	}
+	return filepath.Join(v.Root, "raibis", entityType)
+}
+
+// SetRecordFolders replaces the record → workspace-subfolder map that
+// EntityFilePath/ScanEntityFiles consult, plus the full list of currently
+// known workspace folder names (so ScanEntityFiles knows where else to look
+// besides the top level). Call MoveEntityFile for every record whose folder
+// actually changed BEFORE calling this, so in-flight reads never land
+// between the old and new locations.
+func (v *Vault) SetRecordFolders(records map[string]string, knownFolders []string) {
+	cp := make(map[string]string, len(records))
+	for k, val := range records {
+		cp[k] = val
+	}
+	folders := make([]string, len(knownFolders))
+	copy(folders, knownFolders)
+	v.foldersMu.Lock()
+	v.recordFolders = cp
+	v.knownFolders = folders
+	v.foldersMu.Unlock()
+}
+
+// RecordFolders returns a copy of the current record → workspace-subfolder
+// map, so a caller can diff against a freshly computed one before swapping.
+func (v *Vault) RecordFolders() map[string]string {
+	v.foldersMu.RLock()
+	defer v.foldersMu.RUnlock()
+	cp := make(map[string]string, len(v.recordFolders))
+	for k, val := range v.recordFolders {
+		cp[k] = val
+	}
+	return cp
+}
+
+// MoveEntityFile physically relocates a single record's file from its
+// oldFolder-prefixed path to newFolder's, creating the destination directory
+// as needed. A no-op if the two folders are the same or no file exists yet.
+func (v *Vault) MoveEntityFile(entityType string, id int64, oldFolder, newFolder string) error {
+	if oldFolder == newFolder {
+		return nil
+	}
+	name := fmt.Sprintf("%s-%d.md", entityType, id)
+	oldDir := filepath.Join(v.Root, "raibis", oldFolder, entityType)
+	if oldFolder == "" {
+		oldDir = filepath.Join(v.Root, "raibis", entityType)
+	}
+	newDir := filepath.Join(v.Root, "raibis", newFolder, entityType)
+	if newFolder == "" {
+		newDir = filepath.Join(v.Root, "raibis", entityType)
+	}
+	oldPath := filepath.Join(oldDir, name)
+	if _, err := os.Stat(oldPath); os.IsNotExist(err) {
+		return nil
+	}
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		return fmt.Errorf("vault: move %s: mkdir %q: %w", name, newDir, err)
+	}
+	if err := os.Rename(oldPath, filepath.Join(newDir, name)); err != nil {
+		return fmt.Errorf("vault: move %s: rename: %w", name, err)
+	}
+	return nil
+}
+
+// SanitizeFolderName strips filesystem-unsafe characters from a
+// user-provided name (e.g. a workspace name) so it can be used as a vault
+// subfolder. Spaces, case, and emoji are preserved — only characters illegal
+// in file/folder names on common filesystems are removed.
+func SanitizeFolderName(name string) string {
+	name = strings.Map(func(r rune) rune {
+		if strings.ContainsRune(`/\:*?"<>|`, r) {
+			return -1
+		}
+		return r
+	}, name)
+	name = strings.TrimSpace(name)
+	name = strings.Trim(name, ".")
+	if name == "" {
+		name = "workspace"
+	}
+	return name
+}
+
 // EntityFilePath returns the deterministic vault path for a Raibis entity.
-// Format: {root}/raibis/{entityType}/{entityType}-{id}.md
+// Format: {root}/raibis/{entityType}/{entityType}-{id}.md, or
+// {root}/raibis/{workspaceFolder}/{entityType}/{entityType}-{id}.md when this
+// specific record is currently assigned to a workspace.
 func (v *Vault) EntityFilePath(entityType string, id int64) string {
-	dir := filepath.Join(v.Root, "raibis", entityType)
+	dir := v.entityDir(entityType, id)
 	os.MkdirAll(dir, 0o755) //nolint:errcheck
 	return filepath.Join(dir, fmt.Sprintf("%s-%d.md", entityType, id))
 }
@@ -178,29 +297,44 @@ func ParseFrontmatter(content string) (props map[string]string, body string) {
 	return props, body
 }
 
-// ScanEntityFiles returns parsed frontmatter maps from all .md files in
-// {vault}/raibis/{entityType}/. Files without a valid "id" field are skipped.
+// ScanEntityFiles returns parsed frontmatter maps from every .md file for
+// entityType, across the top-level {vault}/raibis/{entityType}/ directory
+// AND every known workspace subfolder's {vault}/raibis/{folder}/{entityType}/
+// — since different records of the same type can be scattered across
+// different workspaces (or none). Files without a valid "id" field are
+// skipped.
 func (v *Vault) ScanEntityFiles(entityType string) ([]map[string]string, error) {
-	dir := filepath.Join(v.Root, "raibis", entityType)
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("vault: scan %s: %w", entityType, err)
-	}
+	v.foldersMu.RLock()
+	folders := make([]string, len(v.knownFolders))
+	copy(folders, v.knownFolders)
+	v.foldersMu.RUnlock()
+
 	var results []map[string]string
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+	dirs := append([]string{""}, folders...)
+	for _, folder := range dirs {
+		dir := filepath.Join(v.Root, "raibis", entityType)
+		if folder != "" {
+			dir = filepath.Join(v.Root, "raibis", folder, entityType)
+		}
+		entries, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("vault: scan %s: %w", entityType, err)
 		}
-		props, _ := ParseFrontmatter(string(b))
-		if props != nil && props["id"] != "" {
-			results = append(results, props)
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			props, _ := ParseFrontmatter(string(b))
+			if props != nil && props["id"] != "" {
+				results = append(results, props)
+			}
 		}
 	}
 	return results, nil

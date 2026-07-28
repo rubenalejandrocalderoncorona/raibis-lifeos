@@ -9,6 +9,7 @@ type Task struct {
 	ProjectID          *int64     `json:"project_id,omitempty"`
 	SprintID           *int64     `json:"sprint_id,omitempty"`
 	ParentTaskID       *int64     `json:"parent_task_id,omitempty"`
+	WorkspaceID        *int64     `json:"workspace_id,omitempty"`
 	Title              string     `json:"title"`
 	Description        string     `json:"description"`
 	Status             Status     `json:"status"`

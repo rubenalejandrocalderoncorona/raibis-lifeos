@@ -75,11 +75,19 @@ func serve(cfg serverConfig) {
 	}
 	log.Printf("vault at %s", v.Root)
 
-	// Rebuild SQLite from vault — imports any entities missing from the index.
-	// Safe to run on every start: upsert means existing rows are only overwritten when vault is newer.
-	ins, upd := syncVaultToSQLite(v, cfg.dbPath)
-	if ins+upd > 0 {
-		log.Printf("vault sync on start: %d inserted, %d updated", ins, upd)
+	// Reconcile SQLite with vault — imports any entities missing from the
+	// index and pulls in any hand-edits made in Obsidian since the app was
+	// last open. Safe to run on every start: per-field conflict detection
+	// means this never silently overwrites a change on one side with a
+	// stale value from the other. Conflicts (both sides changed the same
+	// field since last sync) are just logged here — no UI to show a merge
+	// prompt at boot time — and stay pending until the user clicks Sync.
+	applied, startupConflicts := twoWaySyncVault(v, cfg.dbPath)
+	if applied > 0 {
+		log.Printf("vault sync on start: %d entities reconciled", applied)
+	}
+	if len(startupConflicts) > 0 {
+		log.Printf("vault sync on start: %d entities have pending conflicts — resolve via the Sync button", len(startupConflicts))
 	}
 
 	// One-time per boot: feed the entity-agnostic rollup graph from rows that
@@ -159,20 +167,20 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 	mux := http.NewServeMux()
 
 	// Tasks
-	mux.HandleFunc("/api/tasks", withCORS(tasksHandler(svc, store, v)))
+	mux.HandleFunc("/api/tasks", withCORS(tasksHandler(svc, store, v, dbPath)))
 	mux.HandleFunc("/api/tasks/", withCORS(taskHandler(svc, store, dbPath, v)))
 
 	// Goals
-	mux.HandleFunc("/api/goals", withCORS(goalsHandler(svc, store, v)))
+	mux.HandleFunc("/api/goals", withCORS(goalsHandler(svc, store, v, dbPath)))
 	mux.HandleFunc("/api/goals/", withCORS(goalHandler(store, dbPath, v)))
 
 	// Projects
-	mux.HandleFunc("/api/projects", withCORS(projectsHandler(svc, store, v)))
+	mux.HandleFunc("/api/projects", withCORS(projectsHandler(svc, store, v, dbPath)))
 	mux.HandleFunc("/api/projects/", withCORS(projectHandler(store, dbPath, v)))
 
 	// Sprints
 	mux.HandleFunc("/api/sprints", withCORS(sprintsHandler(svc, store, dbPath, v)))
-	mux.HandleFunc("/api/sprints/", withCORS(sprintHandler(store, v)))
+	mux.HandleFunc("/api/sprints/", withCORS(sprintHandler(store, v, dbPath)))
 
 	// Notes — vault-backed file-only
 	mux.HandleFunc("/api/notes", withCORS(notesHandler(store, v)))
@@ -187,13 +195,13 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 	mux.HandleFunc("/api/tags/", withCORS(tagHandler(store)))
 
 	// Habits
-	mux.HandleFunc("/api/habits", withCORS(habitsHandler(habitSvc)))
-	mux.HandleFunc("/api/habits/", withCORS(habitHandler(habitSvc)))
+	mux.HandleFunc("/api/habits", withCORS(habitsHandler(habitSvc, v, dbPath)))
+	mux.HandleFunc("/api/habits/", withCORS(habitHandler(habitSvc, v, dbPath)))
 
 	// Kanban, Resources, Pomodoro, misc
 	mux.HandleFunc("/api/kanban", withCORS(kanbanHandler(svc, store)))
-	mux.HandleFunc("/api/resources", withCORS(resourcesHandler(store, dbPath)))
-	mux.HandleFunc("/api/resources/", withCORS(resourceHandler(store, dbPath)))
+	mux.HandleFunc("/api/resources", withCORS(resourcesHandler(store, dbPath, v)))
+	mux.HandleFunc("/api/resources/", withCORS(resourceHandler(store, dbPath, v)))
 	mux.HandleFunc("/api/resource-upload/", withCORS(resourceUploadHandler(dbPath)))
 	mux.HandleFunc("/api/resource-file/", withCORS(resourceFileServeHandler(dbPath)))
 	mux.HandleFunc("/api/pomodoro", withCORS(pomodoroHandler(store, dbPath)))
@@ -247,14 +255,15 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 	mux.HandleFunc("/api/custom-types/", withCORS(customTypeHandler(store)))
 
 	// Custom Entities — /api/custom/{type} and /api/custom/{type}/{id}
-	mux.HandleFunc("/api/custom/", withCORS(customEntitiesHandler(store, v)))
+	mux.HandleFunc("/api/custom/", withCORS(customEntitiesHandler(store, v, dbPath)))
 
 	// Workspaces — group entity types (built-in or custom) under a named container
-	mux.HandleFunc("/api/workspaces", withCORS(workspacesHandler(store)))
-	mux.HandleFunc("/api/workspaces/", withCORS(workspaceHandler(store)))
+	mux.HandleFunc("/api/workspaces", withCORS(workspacesHandler(store, v, dbPath)))
+	mux.HandleFunc("/api/workspaces/", withCORS(workspaceHandler(store, v, dbPath)))
 
 	// Vault sync (on-demand)
 	mux.HandleFunc("/api/sync", withCORS(vaultSyncHandler(v, dbPath)))
+	mux.HandleFunc("/api/sync/resolve", withCORS(vaultSyncResolveHandler(v, dbPath)))
 
 	// Server config (vault path, db path)
 	mux.HandleFunc("/api/config", withCORS(configHandler(v, dbPath)))
@@ -465,7 +474,7 @@ func taskIntrinsics(t *domain.Task) map[string]string {
 	return m
 }
 
-func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
+func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -488,11 +497,18 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 			if q.Get("all") == "1" {
 				f.TopLevelOnly = false
 			}
+			var workspaceFilter *int64
+			if v := q.Get("workspace_id"); v != "" {
+				if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+					workspaceFilter = &id
+				}
+			}
 			tasks, err := svc.List(f)
 			if err != nil {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			tasks = filterByWorkspace(tasks, workspaceFilter, func(t *domain.Task) *int64 { return t.WorkspaceID })
 			projects, _ := svc.Projects()
 			projMap := make(map[int64]string)
 			for _, p := range projects {
@@ -543,6 +559,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				ProjectID         *int64 `json:"project_id"`
 				SprintID          *int64 `json:"sprint_id"`
 				ParentTaskID      *int64 `json:"parent_task_id"`
+				WorkspaceID       *int64 `json:"workspace_id"`
 				CategoryID        *int64 `json:"category_id"`
 				Category          string `json:"category"`
 				RecurInterval     *int   `json:"recur_interval"`
@@ -569,6 +586,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				ProjectID:         body.ProjectID,
 				SprintID:          body.SprintID,
 				ParentTaskID:      body.ParentTaskID,
+				WorkspaceID:       body.WorkspaceID,
 				CategoryID:        body.CategoryID,
 				Category:          body.Category,
 				RecurUnit:         body.RecurUnit,
@@ -606,6 +624,7 @@ func tasksHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				resyncTaskParentsVault(store, vlt, created)
 			}()
 			go func() {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("task", created.ID, mergeFMWithProps(taskFM(created), store, "task", created.ID), taskLinksBody(created, store)+relationsLinksBody("task", created.ID, store)); err != nil {
 					log.Printf("vault: write task %d: %v", created.ID, err)
 				}
@@ -826,6 +845,14 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 				}
 			}
 			_ = oldParentTaskID // used in goroutine below
+			if v, ok := body["workspace_id"]; ok {
+				if v == nil {
+					t.WorkspaceID = nil
+				} else if fv, ok := v.(float64); ok {
+					wid := int64(fv)
+					t.WorkspaceID = &wid
+				}
+			}
 			if v, ok := body["category_id"]; ok {
 				if v == nil {
 					t.CategoryID = nil
@@ -872,6 +899,7 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 				resyncTaskParentsVault(store, vlt, updated)
 			}()
 			go func(oldPID *int64) {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("task", updated.ID, mergeFMWithProps(taskFM(updated), store, "task", updated.ID), taskLinksBody(updated, store)+relationsLinksBody("task", updated.ID, store)); err != nil {
 					log.Printf("vault: update task %d: %v", updated.ID, err)
 				}
@@ -918,7 +946,7 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 
 // ── Goals ─────────────────────────────────────────────────────────────────────
 
-func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
+func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -930,6 +958,13 @@ func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				errJSON(w, 500, err.Error())
 				return
 			}
+			var workspaceFilter *int64
+			if v := r.URL.Query().Get("workspace_id"); v != "" {
+				if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+					workspaceFilter = &id
+				}
+			}
+			goals = filterByWorkspace(goals, workspaceFilter, func(g *domain.Goal) *int64 { return g.WorkspaceID })
 			tasks, _ := svc.List(domain.TaskFilter{})
 			projects, _ := store.ListProjects("")
 			out := enrichGoals(goals, projects, tasks)
@@ -950,6 +985,7 @@ func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				CurrentValue *float64 `json:"current_value"`
 				Target       *float64 `json:"target"`
 				CategoryID   *int64   `json:"category_id"`
+				WorkspaceID  *int64   `json:"workspace_id"`
 			}
 			if err := readJSON(r, &body); err != nil || body.Title == "" {
 				errJSON(w, 400, "title is required")
@@ -965,6 +1001,7 @@ func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 				CurrentValue: body.CurrentValue,
 				Target:       body.Target,
 				CategoryID:   body.CategoryID,
+				WorkspaceID:  body.WorkspaceID,
 			}
 			if body.StartDate != "" {
 				g.StartDate = &body.StartDate
@@ -980,6 +1017,7 @@ func goalsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vau
 			created, _ := store.GetGoal(id)
 			go mirrorIntrinsicsAndPropagate(store, "goal", id, map[string]string{"status": string(created.Status)})
 			go func() {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("goal", created.ID, mergeFMWithProps(goalFM(created), store, "goal", created.ID), childrenLinksBody("goal", created.ID, store)+commentsSection("goal", created.ID, store)); err != nil {
 					log.Printf("vault: write goal %d: %v", created.ID, err)
 				}
@@ -1122,6 +1160,14 @@ func goalHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.Ha
 					g.CategoryID = &cid
 				}
 			}
+			if v, ok := body["workspace_id"]; ok {
+				if v == nil {
+					g.WorkspaceID = nil
+				} else if fv, ok := v.(float64); ok {
+					wid := int64(fv)
+					g.WorkspaceID = &wid
+				}
+			}
 			if err := store.UpdateGoal(g); err != nil {
 				errJSON(w, 500, err.Error())
 				return
@@ -1130,6 +1176,7 @@ func goalHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.Ha
 			updated.Tags, _ = store.GetEntityTags("goal", id)
 			go mirrorIntrinsicsAndPropagate(store, "goal", id, map[string]string{"status": string(updated.Status)})
 			go func() {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("goal", updated.ID, mergeFMWithProps(goalFM(updated), store, "goal", updated.ID), childrenLinksBody("goal", updated.ID, store)+commentsSection("goal", updated.ID, store)); err != nil {
 					log.Printf("vault: update goal %d: %v", updated.ID, err)
 				}
@@ -1156,7 +1203,7 @@ func goalHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.Ha
 
 // ── Projects ──────────────────────────────────────────────────────────────────
 
-func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
+func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -1168,6 +1215,13 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 				errJSON(w, 500, err.Error())
 				return
 			}
+			var workspaceFilter *int64
+			if v := r.URL.Query().Get("workspace_id"); v != "" {
+				if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+					workspaceFilter = &id
+				}
+			}
+			projects = filterByWorkspace(projects, workspaceFilter, func(p *domain.Project) *int64 { return p.WorkspaceID })
 			tasks, _ := svc.List(domain.TaskFilter{})
 			out := enrichProjects(projects, tasks)
 			for i := range out {
@@ -1183,6 +1237,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 				MacroArea   string `json:"macro_area"`
 				KanbanCol   string `json:"kanban_col"`
 				CategoryID  *int64 `json:"category_id"`
+				WorkspaceID *int64 `json:"workspace_id"`
 			}
 			if err := readJSON(r, &body); err != nil || body.Title == "" {
 				errJSON(w, 400, "title is required")
@@ -1196,6 +1251,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 				MacroArea:   body.MacroArea,
 				KanbanCol:   body.KanbanCol,
 				CategoryID:  body.CategoryID,
+				WorkspaceID: body.WorkspaceID,
 			}
 			id, err := store.CreateProject(p)
 			if err != nil {
@@ -1205,6 +1261,7 @@ func projectsHandler(svc service.TaskService, store storage.Storage, vlt *vault.
 			created, _ := store.GetProject(id)
 			go mirrorIntrinsicsAndPropagate(store, "project", id, map[string]string{"status": string(created.Status)})
 			go func() {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("project", created.ID, mergeFMWithProps(projectFM(created), store, "project", created.ID), projectLinksBody(created, store)+childrenLinksBody("project", created.ID, store)+commentsSection("project", created.ID, store)); err != nil {
 					log.Printf("vault: write project %d: %v", created.ID, err)
 				}
@@ -1327,6 +1384,14 @@ func projectHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http
 					p.CategoryID = &cid
 				}
 			}
+			if v, ok := body["workspace_id"]; ok {
+				if v == nil {
+					p.WorkspaceID = nil
+				} else if fv, ok := v.(float64); ok {
+					wid := int64(fv)
+					p.WorkspaceID = &wid
+				}
+			}
 			if v, ok := body["start_date"]; ok {
 				if v == nil {
 					p.StartDate = nil
@@ -1357,6 +1422,7 @@ func projectHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http
 			updated.Tags, _ = store.GetEntityTags("project", id)
 			go mirrorIntrinsicsAndPropagate(store, "project", id, map[string]string{"status": string(updated.Status)})
 			go func() {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("project", updated.ID, mergeFMWithProps(projectFM(updated), store, "project", updated.ID), projectLinksBody(updated, store)+childrenLinksBody("project", updated.ID, store)+commentsSection("project", updated.ID, store)); err != nil {
 					log.Printf("vault: update project %d: %v", updated.ID, err)
 				}
@@ -1393,7 +1459,15 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 					projectID = &id
 				}
 			}
-			writeJSON(w, 200, listSprints(store, svc, dbPath, projectID))
+			sprints := listSprints(store, svc, dbPath, projectID)
+			var workspaceFilter *int64
+			if v := r.URL.Query().Get("workspace_id"); v != "" {
+				if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+					workspaceFilter = &id
+				}
+			}
+			sprints = filterByWorkspace(sprints, workspaceFilter, func(s sprintOut) *int64 { return s.WorkspaceID })
+			writeJSON(w, 200, sprints)
 
 		case http.MethodPost:
 			var body struct {
@@ -1402,6 +1476,7 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 				StartDate   string `json:"start_date"`
 				EndDate     string `json:"end_date"`
 				StoryPoints *int   `json:"story_points"`
+				WorkspaceID *int64 `json:"workspace_id"`
 			}
 			if err := readJSON(r, &body); err != nil || body.Title == "" {
 				errJSON(w, 400, "title is required")
@@ -1412,6 +1487,7 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 				Title:       body.Title,
 				Status:      domain.Status("planned"),
 				StoryPoints: body.StoryPoints,
+				WorkspaceID: body.WorkspaceID,
 			}
 			if body.StartDate != "" {
 				if t, err := time.Parse("2006-01-02", body.StartDate); err == nil {
@@ -1431,6 +1507,7 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 			sp.ID = id
 			go mirrorIntrinsicsAndPropagate(store, "sprint", id, map[string]string{"status": string(sp.Status)})
 			go func() {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				if err := vlt.WriteEntityMD("sprint", sp.ID, mergeFMWithProps(sprintFM(sp), store, "sprint", sp.ID), sprintLinksBody(sp, store)); err != nil {
 					log.Printf("vault: write sprint %d: %v", sp.ID, err)
 				}
@@ -1443,7 +1520,7 @@ func sprintsHandler(svc service.TaskService, store storage.Storage, dbPath strin
 	}
 }
 
-func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
+func sprintHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
 		if strings.HasSuffix(path, "/tags") {
@@ -1502,6 +1579,7 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 				"start_date":    startDate,
 				"end_date":      endDate,
 				"story_points":  sp.StoryPoints,
+				"workspace_id":  sp.WorkspaceID,
 				"tasks":         tasks,
 				"progress": map[string]any{
 					"total": len(tasks),
@@ -1560,6 +1638,14 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 					sp.StoryPoints = &p
 				}
 			}
+			if v, ok := body["workspace_id"]; ok {
+				if v == nil {
+					sp.WorkspaceID = nil
+				} else if fv, ok := v.(float64); ok {
+					wid := int64(fv)
+					sp.WorkspaceID = &wid
+				}
+			}
 			if err := store.UpdateSprint(sp); err != nil {
 				errJSON(w, 500, err.Error())
 				return
@@ -1567,6 +1653,7 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
 			if sp, err := store.GetSprint(id); err == nil {
 				go mirrorIntrinsicsAndPropagate(store, "sprint", id, map[string]string{"status": string(sp.Status)})
 				go func() {
+					refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 					if err := vlt.WriteEntityMD("sprint", sp.ID, mergeFMWithProps(sprintFM(sp), store, "sprint", sp.ID), sprintLinksBody(sp, store)); err != nil {
 						log.Printf("vault: update sprint %d: %v", sp.ID, err)
 					}
@@ -1618,6 +1705,13 @@ func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			var workspaceFilter *int64
+			if wv := q.Get("workspace_id"); wv != "" {
+				if id, err := strconv.ParseInt(wv, 10, 64); err == nil {
+					workspaceFilter = &id
+				}
+			}
+			notes = filterByWorkspace(notes, workspaceFilter, func(n *domain.Note) *int64 { return n.WorkspaceID })
 			for _, n := range notes {
 				n.Tags, _ = store.GetEntityTags("note", n.ID)
 				if n.FilePath != nil {
@@ -1631,13 +1725,14 @@ func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 
 		case http.MethodPost:
 			var body struct {
-				Title      string `json:"title"`
-				Body       string `json:"body"`
-				GoalID     *int64 `json:"goal_id"`
-				TaskID     *int64 `json:"task_id"`
-				ProjectID  *int64 `json:"project_id"`
-				CategoryID *int64 `json:"category_id"`
-				NoteDate   string `json:"note_date"`
+				Title       string `json:"title"`
+				Body        string `json:"body"`
+				GoalID      *int64 `json:"goal_id"`
+				TaskID      *int64 `json:"task_id"`
+				ProjectID   *int64 `json:"project_id"`
+				CategoryID  *int64 `json:"category_id"`
+				WorkspaceID *int64 `json:"workspace_id"`
+				NoteDate    string `json:"note_date"`
 			}
 			if err := readJSON(r, &body); err != nil {
 				errJSON(w, 400, "invalid JSON: "+err.Error())
@@ -1648,11 +1743,12 @@ func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 				return
 			}
 			n := &domain.Note{
-				Title:      body.Title,
-				GoalID:     body.GoalID,
-				TaskID:     body.TaskID,
-				ProjectID:  body.ProjectID,
-				CategoryID: body.CategoryID,
+				Title:       body.Title,
+				GoalID:      body.GoalID,
+				TaskID:      body.TaskID,
+				ProjectID:   body.ProjectID,
+				CategoryID:  body.CategoryID,
+				WorkspaceID: body.WorkspaceID,
 			}
 			if body.NoteDate != "" {
 				n.NoteDate = &body.NoteDate
@@ -1765,6 +1861,14 @@ func noteHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 				} else if fv, ok := val.(float64); ok {
 					pid := int64(fv)
 					n.ProjectID = &pid
+				}
+			}
+			if val, ok := body["workspace_id"]; ok {
+				if val == nil {
+					n.WorkspaceID = nil
+				} else if fv, ok := val.(float64); ok {
+					wid := int64(fv)
+					n.WorkspaceID = &wid
 				}
 			}
 			if bodyStr, ok := body["body"].(string); ok {
@@ -2069,7 +2173,33 @@ func kanbanHandler(svc service.TaskService, store storage.Storage) http.HandlerF
 
 // ── Resources ─────────────────────────────────────────────────────────────────
 
-func resourcesHandler(store storage.Storage, dbPath string) http.HandlerFunc {
+// resourceFM builds the vault frontmatter for a Resource.
+func resourceFM(id int64, title, url, resourceType, body string, goalID, projectID, taskID *int64) map[string]any {
+	fm := map[string]any{
+		"id":            id,
+		"title":         title,
+		"aliases":       []string{title},
+		"resource_type": resourceType,
+	}
+	if url != "" {
+		fm["url"] = url
+	}
+	if body != "" {
+		fm["body"] = body
+	}
+	if goalID != nil {
+		fm["goal_id"] = *goalID
+	}
+	if projectID != nil {
+		fm["project_id"] = *projectID
+	}
+	if taskID != nil {
+		fm["task_id"] = *taskID
+	}
+	return fm
+}
+
+func resourcesHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.HandlerFunc {
 	db, err := openRawDB(dbPath)
 	if err != nil {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -2098,11 +2228,15 @@ func resourcesHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				where += " AND r.task_id=?"
 				args = append(args, v)
 			}
+			if v := q.Get("workspace_id"); v != "" {
+				where += " AND r.workspace_id=?"
+				args = append(args, v)
+			}
 			rows, err := db.Query(fmt.Sprintf(`
 				SELECT r.id, r.title, COALESCE(r.url,''), COALESCE(r.file_path,''),
 				       r.resource_type, COALESCE(r.body,''),
 				       COALESCE(t.title,''), COALESCE(p.title,''), COALESCE(g.title,''),
-				       r.created_at
+				       r.created_at, r.workspace_id
 				FROM resources r
 				LEFT JOIN tasks    t ON r.task_id = t.id
 				LEFT JOIN projects p ON r.project_id = p.id
@@ -2124,16 +2258,21 @@ func resourcesHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				ProjectTitle string `json:"project_title,omitempty"`
 				GoalTitle    string `json:"goal_title,omitempty"`
 				CreatedAt    string `json:"created_at"`
+				WorkspaceID  *int64 `json:"workspace_id,omitempty"`
 			}
 			var out []resOut
 			for rows.Next() {
 				var res resOut
+				var workspaceID sql.NullInt64
 				if err := rows.Scan(&res.ID, &res.Title, &res.URL, &res.FilePath,
 					&res.ResourceType, &res.Body,
 					&res.TaskTitle, &res.ProjectTitle, &res.GoalTitle,
-					&res.CreatedAt); err != nil {
+					&res.CreatedAt, &workspaceID); err != nil {
 					errJSON(w, 500, err.Error())
 					return
+				}
+				if workspaceID.Valid {
+					res.WorkspaceID = &workspaceID.Int64
 				}
 				out = append(out, res)
 			}
@@ -2151,6 +2290,7 @@ func resourcesHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				GoalID       *int64 `json:"goal_id"`
 				ProjectID    *int64 `json:"project_id"`
 				TaskID       *int64 `json:"task_id"`
+				WorkspaceID  *int64 `json:"workspace_id"`
 			}
 			if err := readJSON(r, &body); err != nil || body.Title == "" {
 				errJSON(w, 400, "title is required")
@@ -2160,16 +2300,20 @@ func resourcesHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				body.ResourceType = "note"
 			}
 			res, err := db.Exec(
-				`INSERT INTO resources (title, url, resource_type, body, goal_id, project_id, task_id)
-				 VALUES (?,?,?,?,?,?,?)`,
+				`INSERT INTO resources (title, url, resource_type, body, goal_id, project_id, task_id, workspace_id)
+				 VALUES (?,?,?,?,?,?,?,?)`,
 				body.Title, nullStr(body.URL), body.ResourceType, nullStr(body.Body),
-				body.GoalID, body.ProjectID, body.TaskID,
+				body.GoalID, body.ProjectID, body.TaskID, body.WorkspaceID,
 			)
 			if err != nil {
 				errJSON(w, 500, err.Error())
 				return
 			}
 			id, _ := res.LastInsertId()
+			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
+				_ = vlt.WriteEntityMD("resource", id, resourceFM(id, body.Title, body.URL, body.ResourceType, body.Body, body.GoalID, body.ProjectID, body.TaskID), "")
+			}
 			writeJSON(w, 201, map[string]any{"id": id, "title": body.Title})
 
 		default:
@@ -2178,7 +2322,7 @@ func resourcesHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 	}
 }
 
-func resourceHandler(store storage.Storage, dbPath string) http.HandlerFunc {
+func resourceHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.HandlerFunc {
 	db, _ := openRawDB(dbPath)
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
@@ -2209,18 +2353,20 @@ func resourceHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				GoalID       *int64  `json:"goal_id"`
 				ProjectID    *int64  `json:"project_id"`
 				TaskID       *int64  `json:"task_id"`
+				WorkspaceID  *int64  `json:"workspace_id"`
 			}
-			var goalID, projectID, taskID sql.NullInt64
+			var goalID, projectID, taskID, workspaceID sql.NullInt64
 			row := db.QueryRow(`SELECT id, title, COALESCE(url,''), COALESCE(body,''), resource_type,
-				goal_id, project_id, task_id FROM resources WHERE id=?`, id)
+				goal_id, project_id, task_id, workspace_id FROM resources WHERE id=?`, id)
 			if err := row.Scan(&res.ID, &res.Title, &res.URL, &res.Body, &res.ResourceType,
-				&goalID, &projectID, &taskID); err != nil {
+				&goalID, &projectID, &taskID, &workspaceID); err != nil {
 				errJSON(w, 404, "resource not found")
 				return
 			}
 			if goalID.Valid    { res.GoalID    = &goalID.Int64 }
 			if projectID.Valid { res.ProjectID = &projectID.Int64 }
 			if taskID.Valid    { res.TaskID    = &taskID.Int64 }
+			if workspaceID.Valid { res.WorkspaceID = &workspaceID.Int64 }
 			writeJSON(w, 200, res)
 		case http.MethodPatch:
 			var bodyMap map[string]any
@@ -2237,11 +2383,12 @@ func resourceHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 				goalID       sql.NullInt64
 				projectID    sql.NullInt64
 				taskID       sql.NullInt64
+				workspaceID  sql.NullInt64
 			}
 			row := db.QueryRow(`SELECT title, COALESCE(url,''), COALESCE(body,''), resource_type,
-				goal_id, project_id, task_id FROM resources WHERE id=?`, id)
+				goal_id, project_id, task_id, workspace_id FROM resources WHERE id=?`, id)
 			if err := row.Scan(&cur.title, &cur.url, &cur.body, &cur.resourceType,
-				&cur.goalID, &cur.projectID, &cur.taskID); err != nil {
+				&cur.goalID, &cur.projectID, &cur.taskID, &cur.workspaceID); err != nil {
 				errJSON(w, 404, "resource not found")
 				return
 			}
@@ -2282,21 +2429,46 @@ func resourceHandler(store storage.Storage, dbPath string) http.HandlerFunc {
 					taskID = sql.NullInt64{Int64: int64(fv), Valid: true}
 				}
 			}
+			workspaceID := cur.workspaceID
+			if val, ok := bodyMap["workspace_id"]; ok {
+				if val == nil {
+					workspaceID = sql.NullInt64{}
+				} else if fv, ok := val.(float64); ok {
+					workspaceID = sql.NullInt64{Int64: int64(fv), Valid: true}
+				}
+			}
 			if _, err := db.Exec(
 				`UPDATE resources SET title=?, url=?, body=?, resource_type=?,
-				 goal_id=?, project_id=?, task_id=?, updated_at=datetime('now')
+				 goal_id=?, project_id=?, task_id=?, workspace_id=?, updated_at=datetime('now')
 				 WHERE id=?`,
 				nullStr(cur.title), nullStr(cur.url), nullStr(cur.body), cur.resourceType,
-				nullInt(goalID), nullInt(projectID), nullInt(taskID), id,
+				nullInt(goalID), nullInt(projectID), nullInt(taskID), nullInt(workspaceID), id,
 			); err != nil {
 				errJSON(w, 500, err.Error())
 				return
+			}
+			if vlt != nil {
+				var goalIDPtr, projectIDPtr, taskIDPtr *int64
+				if goalID.Valid {
+					goalIDPtr = &goalID.Int64
+				}
+				if projectID.Valid {
+					projectIDPtr = &projectID.Int64
+				}
+				if taskID.Valid {
+					taskIDPtr = &taskID.Int64
+				}
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
+				_ = vlt.WriteEntityMD("resource", id, resourceFM(id, cur.title, cur.url, cur.resourceType, cur.body, goalIDPtr, projectIDPtr, taskIDPtr), "")
 			}
 			writeJSON(w, 200, map[string]any{"id": id, "ok": true})
 		case http.MethodDelete:
 			if _, err := db.Exec(`DELETE FROM resources WHERE id=?`, id); err != nil {
 				errJSON(w, 500, err.Error())
 				return
+			}
+			if vlt != nil {
+				_ = vlt.DeleteEntityMD("resource", id)
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
 		default:
@@ -2456,9 +2628,19 @@ func dashboardHandler(svc service.TaskService, store storage.Storage, dbPath str
 		}
 		today := time.Now().Format("2006-01-02")
 
+		var workspaceFilter *int64
+		if v := r.URL.Query().Get("workspace_id"); v != "" {
+			if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+				workspaceFilter = &id
+			}
+		}
+
 		tasks, _ := svc.List(domain.TaskFilter{TopLevelOnly: true})
+		tasks = filterByWorkspace(tasks, workspaceFilter, func(t *domain.Task) *int64 { return t.WorkspaceID })
 		goals, _ := svc.Goals()
+		goals = filterByWorkspace(goals, workspaceFilter, func(g *domain.Goal) *int64 { return g.WorkspaceID })
 		projects, _ := svc.Projects()
+		projects = filterByWorkspace(projects, workspaceFilter, func(p *domain.Project) *int64 { return p.WorkspaceID })
 
 		projMap := make(map[int64]string)
 		for _, p := range projects {
@@ -2476,6 +2658,7 @@ func dashboardHandler(svc service.TaskService, store storage.Storage, dbPath str
 		var urgentTasks []dashTask
 
 		allTasks, _ := store.ListTasks(domain.TaskFilter{})
+		allTasks = filterByWorkspace(allTasks, workspaceFilter, func(t *domain.Task) *int64 { return t.WorkspaceID })
 		parentCount := make(map[int64]int)
 		for _, t := range allTasks {
 			if t.ParentTaskID != nil {
@@ -2525,6 +2708,7 @@ func dashboardHandler(svc service.TaskService, store storage.Storage, dbPath str
 		}
 		var activeSprint *sprintWidget
 		sprints := listSprints(store, svc, dbPath, nil)
+		sprints = filterByWorkspace(sprints, workspaceFilter, func(s sprintOut) *int64 { return s.WorkspaceID })
 		for _, s := range sprints {
 			if s.Status == "active" {
 				activeSprint = &sprintWidget{
@@ -2934,6 +3118,7 @@ type sprintOut struct {
 	Status       string `json:"status"`
 	StartDate    string `json:"start_date,omitempty"`
 	EndDate      string `json:"end_date,omitempty"`
+	WorkspaceID  *int64 `json:"workspace_id,omitempty"`
 	Progress     struct {
 		Done  int `json:"done"`
 		Total int `json:"total"`
@@ -2950,7 +3135,7 @@ func listSprints(store storage.Storage, svc service.TaskService, dbPath string, 
 
 	q := `SELECT s.id, s.project_id, s.title, s.status,
 	             COALESCE(s.start_date,''), COALESCE(s.end_date,''),
-	             COALESCE(p.title,'')
+	             COALESCE(p.title,''), s.workspace_id
 	      FROM sprints s LEFT JOIN projects p ON s.project_id = p.id
 	      WHERE 1=1`
 	args := []any{}
@@ -2969,13 +3154,16 @@ func listSprints(store storage.Storage, svc service.TaskService, dbPath string, 
 	var out []sprintOut
 	for rows.Next() {
 		var so sprintOut
-		var projID sql.NullInt64
+		var projID, workspaceID sql.NullInt64
 		if err := rows.Scan(&so.ID, &projID, &so.Title, &so.Status,
-			&so.StartDate, &so.EndDate, &so.ProjectTitle); err != nil {
+			&so.StartDate, &so.EndDate, &so.ProjectTitle, &workspaceID); err != nil {
 			continue
 		}
 		if projID.Valid {
 			so.ProjectID = projID.Int64
+		}
+		if workspaceID.Valid {
+			so.WorkspaceID = &workspaceID.Int64
 		}
 		tasks, _ := svc.List(domain.TaskFilter{SprintID: &so.ID})
 		for _, t := range tasks {
@@ -4331,211 +4519,1420 @@ func integrationsProbeHandler() http.HandlerFunc {
 	}
 }
 
-// ── Vault → SQLite startup sync ───────────────────────────────────────────────
+// ── Two-way vault sync (with per-field conflict detection) ──────────────────
+//
+// Goal/Project/Sprint/Task are the only types covered — they're what the
+// prior one-way vault→DB sync already handled. Notes/Resources use a
+// different filename convention (title-slug, not raibis/{type}/{type}-{id}.md)
+// and custom entities/workspaces have no existing reverse-sync path; both are
+// out of scope here rather than new ground.
+//
+// Conflict detection: vault_sync_state stores the last-reconciled value of
+// each tracked field per entity. A field only counts as "conflicting" when
+// BOTH the current DB value and the current vault value differ from that
+// stored baseline AND from each other — a single-sided change (only DB, or
+// only vault, changed since last sync) is applied automatically, same as the
+// old one-way sync did. On the very first sync for an entity (no baseline
+// yet), a field whose DB and vault values already agree (the common case,
+// since the app write-throughs to vault on every change) is treated as
+// already in sync, not a conflict — only genuine, pre-existing divergence
+// surfaces as a conflict on that first pass.
 
-// syncVaultToSQLite scans vault entity dirs and upserts entities into SQLite.
-// For entities with updated_at (tasks), only overwrites when vault is newer.
-// Returns (inserted, updated) counts.
-// Dependency order: goals → projects → sprints → tasks.
-func syncVaultToSQLite(v *vault.Vault, dbPath string) (inserted int, updated int) {
+type syncFieldConflict struct {
+	Key           string `json:"key"`
+	Label         string `json:"label"`
+	AppValue      string `json:"app_value"`
+	ObsidianValue string `json:"obsidian_value"`
+}
+
+type syncConflict struct {
+	EntityType string              `json:"entity_type"`
+	EntityID   int64               `json:"entity_id"`
+	Title      string              `json:"title"`
+	Fields     []syncFieldConflict `json:"fields"`
+}
+
+var syncFieldLabels = map[string]string{
+	"title": "Title", "description": "Description", "status": "Status",
+	"priority": "Priority", "due_date": "Due Date", "start_date": "Start Date",
+	"end_date": "End Date", "story_points": "Story Points", "type": "Type",
+	"year": "Year", "target": "Target", "current_value": "Current Value",
+	"start_value": "Start Value", "macro_area": "Macro Area", "goal": "Goal",
+	"goal_id": "Goal", "project_id": "Project", "sprint_id": "Sprint",
+	"parent_task_id": "Parent Task",
+	"reference_id": "Reference ID", "url": "URL", "resource_type": "Resource Type",
+	"body": "Body", "task_id": "Task", "icon": "Icon",
+}
+
+func syncFieldLabel(key string) string {
+	if l, ok := syncFieldLabels[key]; ok {
+		return l
+	}
+	return key
+}
+
+func getVaultSyncFields(db *sql.DB, entityType string, entityID int64) map[string]string {
+	var raw string
+	if err := db.QueryRow(
+		`SELECT fields_json FROM vault_sync_state WHERE entity_type=? AND entity_id=?`,
+		entityType, entityID,
+	).Scan(&raw); err != nil {
+		return map[string]string{}
+	}
+	var m map[string]string
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return map[string]string{}
+	}
+	return m
+}
+
+func setVaultSyncFields(db *sql.DB, entityType string, entityID int64, fields map[string]string) {
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return
+	}
+	_, _ = db.Exec(
+		`INSERT INTO vault_sync_state (entity_type, entity_id, fields_json, synced_at)
+		 VALUES (?,?,?,CURRENT_TIMESTAMP)
+		 ON CONFLICT(entity_type, entity_id) DO UPDATE SET fields_json=excluded.fields_json, synced_at=CURRENT_TIMESTAMP`,
+		entityType, entityID, string(raw),
+	)
+}
+
+// diffEntityFields compares current DB/vault field values against the last-
+// synced baseline. resolved holds the field set to apply going forward
+// (vault's value wins where only vault changed; DB's value is kept — and
+// flagged as a conflict — where both sides changed to different values).
+// vaultEntityBody returns the current body text (everything after the closing
+// frontmatter fence) of an entity's vault file, or "" if the file doesn't
+// exist yet. The two-way sync writes only ever touch frontmatter fields, so
+// this is read back and passed through on every write to avoid clobbering
+// hand-written body content (links sections, comments, notes) with a blank
+// body.
+func vaultEntityBody(v *vault.Vault, entityType string, id int64) string {
+	content, err := v.ReadFile(v.EntityFilePath(entityType, id))
+	if err != nil {
+		return ""
+	}
+	_, body := vault.ParseFrontmatter(content)
+	return body
+}
+
+// fieldsEqual reports whether a and b agree on every key in keys — used to
+// detect when a resolved value already matches one side, so that side can be
+// left untouched instead of being rewritten (and re-timestamped) every sync.
+func fieldsEqual(a, b map[string]string, keys []string) bool {
+	for _, k := range keys {
+		if a[k] != b[k] {
+			return false
+		}
+	}
+	return true
+}
+
+func diffEntityFields(dbFields, vaultFields, synced map[string]string, keys []string) (resolved map[string]string, conflicts []syncFieldConflict) {
+	resolved = map[string]string{}
+	for _, k := range keys {
+		dbVal, vaultVal, syncedVal := dbFields[k], vaultFields[k], synced[k]
+		dbChanged := dbVal != syncedVal
+		vaultChanged := vaultVal != syncedVal
+		switch {
+		case dbChanged && vaultChanged && dbVal != vaultVal:
+			conflicts = append(conflicts, syncFieldConflict{Key: k, Label: syncFieldLabel(k), AppValue: dbVal, ObsidianValue: vaultVal})
+			resolved[k] = dbVal // left as-is until the user resolves it
+		case vaultChanged:
+			resolved[k] = vaultVal
+		default:
+			resolved[k] = dbVal
+		}
+	}
+	return resolved, conflicts
+}
+
+// readOneEntityFields reads the current DB and vault field values for a
+// single entity — used by the resolve handler to know what "keep app" /
+// "keep obsidian" actually mean for the fields being resolved, without
+// re-scanning every row of that entity type.
+func readOneEntityFields(db *sql.DB, v *vault.Vault, entityType string, entityID int64) (dbFields, vaultFields map[string]string) {
+	dbFields = map[string]string{}
+	switch entityType {
+	case "goal":
+		var title, desc, status, typ, year, startDate, dueDate string
+		var startVal, curVal, target sql.NullFloat64
+		row := db.QueryRow(`SELECT title, COALESCE(description,''), status, COALESCE(type,''), COALESCE(year,''),
+			COALESCE(start_date,''), COALESCE(due_date,''), start_value, current_value, target FROM goals WHERE id=?`, entityID)
+		if row.Scan(&title, &desc, &status, &typ, &year, &startDate, &dueDate, &startVal, &curVal, &target) == nil {
+			dbFields = map[string]string{"title": title, "description": desc, "status": status, "type": typ, "year": year, "start_date": startDate, "due_date": dueDate}
+			if startVal.Valid {
+				dbFields["start_value"] = fmt.Sprintf("%g", startVal.Float64)
+			}
+			if curVal.Valid {
+				dbFields["current_value"] = fmt.Sprintf("%g", curVal.Float64)
+			}
+			if target.Valid {
+				dbFields["target"] = fmt.Sprintf("%g", target.Float64)
+			}
+		}
+	case "project":
+		var title, desc, status, macro, startDate, dueDate string
+		var goalID sql.NullInt64
+		row := db.QueryRow(`SELECT title, COALESCE(description,''), status, COALESCE(macro_area,''), goal_id,
+			COALESCE(start_date,''), COALESCE(due_date,'') FROM projects WHERE id=?`, entityID)
+		if row.Scan(&title, &desc, &status, &macro, &goalID, &startDate, &dueDate) == nil {
+			dbFields = map[string]string{"title": title, "description": desc, "status": status, "macro_area": macro, "start_date": startDate, "due_date": dueDate}
+			if goalID.Valid {
+				dbFields["goal_id"] = strconv.FormatInt(goalID.Int64, 10)
+			}
+		}
+	case "sprint":
+		var title, goal, startDate, endDate, status string
+		var projID int64
+		var storyPts sql.NullInt64
+		row := db.QueryRow(`SELECT project_id, title, COALESCE(goal,''), COALESCE(start_date,''), COALESCE(end_date,''), status, story_points FROM sprints WHERE id=?`, entityID)
+		if row.Scan(&projID, &title, &goal, &startDate, &endDate, &status, &storyPts) == nil {
+			dbFields = map[string]string{"title": title, "goal": goal, "start_date": startDate, "end_date": endDate, "status": status, "project_id": strconv.FormatInt(projID, 10)}
+			if storyPts.Valid {
+				dbFields["story_points"] = strconv.FormatInt(storyPts.Int64, 10)
+			}
+		}
+	case "task":
+		var title, desc, status, priority, dueDate, startDate string
+		var storyPts, goalID, projID, sprintID, parentID sql.NullInt64
+		row := db.QueryRow(`SELECT title, COALESCE(description,''), status, priority, COALESCE(due_date,''), COALESCE(start_date,''),
+			story_points, goal_id, project_id, sprint_id, parent_task_id FROM tasks WHERE id=?`, entityID)
+		if row.Scan(&title, &desc, &status, &priority, &dueDate, &startDate, &storyPts, &goalID, &projID, &sprintID, &parentID) == nil {
+			dbFields = map[string]string{"title": title, "description": desc, "status": status, "priority": priority, "due_date": dueDate, "start_date": startDate}
+			if storyPts.Valid {
+				dbFields["story_points"] = strconv.FormatInt(storyPts.Int64, 10)
+			}
+			if goalID.Valid {
+				dbFields["goal_id"] = strconv.FormatInt(goalID.Int64, 10)
+			}
+			if projID.Valid {
+				dbFields["project_id"] = strconv.FormatInt(projID.Int64, 10)
+			}
+			if sprintID.Valid {
+				dbFields["sprint_id"] = strconv.FormatInt(sprintID.Int64, 10)
+			}
+			if parentID.Valid {
+				dbFields["parent_task_id"] = strconv.FormatInt(parentID.Int64, 10)
+			}
+		}
+	case "habit":
+		var title, typ string
+		var refID sql.NullString
+		row := db.QueryRow(`SELECT title, type, reference_id FROM habits WHERE id=?`, entityID)
+		if row.Scan(&title, &typ, &refID) == nil {
+			dbFields = map[string]string{"title": title, "type": typ}
+			if refID.Valid {
+				dbFields["reference_id"] = refID.String
+			}
+		}
+	case "resource":
+		var title, resType string
+		var url, body sql.NullString
+		var goalID, projID, taskID sql.NullInt64
+		row := db.QueryRow(`SELECT title, COALESCE(url,''), resource_type, COALESCE(body,''), goal_id, project_id, task_id FROM resources WHERE id=?`, entityID)
+		if row.Scan(&title, &url, &resType, &body, &goalID, &projID, &taskID) == nil {
+			dbFields = map[string]string{"title": title, "url": url.String, "resource_type": resType, "body": body.String}
+			if goalID.Valid {
+				dbFields["goal_id"] = strconv.FormatInt(goalID.Int64, 10)
+			}
+			if projID.Valid {
+				dbFields["project_id"] = strconv.FormatInt(projID.Int64, 10)
+			}
+			if taskID.Valid {
+				dbFields["task_id"] = strconv.FormatInt(taskID.Int64, 10)
+			}
+		}
+	case "workspace":
+		var name, icon string
+		row := db.QueryRow(`SELECT name, icon FROM workspaces WHERE id=?`, entityID)
+		if row.Scan(&name, &icon) == nil {
+			dbFields = map[string]string{"title": name, "icon": icon}
+		}
+	default:
+		// Custom entity type: title column + dynamic props (entity_properties).
+		var title string
+		row := db.QueryRow(`SELECT title FROM custom_entities WHERE type_name=? AND id=?`, entityType, entityID)
+		if row.Scan(&title) == nil {
+			dbFields = map[string]string{"title": title}
+			rows, err := db.Query(`SELECT key, value FROM entity_properties WHERE entity_type=? AND entity_id=?`, entityType, entityID)
+			if err == nil {
+				for rows.Next() {
+					var k, val string
+					if rows.Scan(&k, &val) == nil {
+						dbFields[k] = val
+					}
+				}
+				rows.Close()
+			}
+		}
+	}
+	content, _ := v.ReadFile(v.EntityFilePath(entityType, entityID))
+	vaultFields, _ = vault.ParseFrontmatter(content)
+	if vaultFields == nil {
+		vaultFields = map[string]string{}
+	}
+	return dbFields, vaultFields
+}
+
+// syncResolution is one field-level conflict resolution choice from the
+// frontend's merge-conflict modal.
+type syncResolution struct {
+	EntityType string `json:"entity_type"`
+	EntityID   int64  `json:"entity_id"`
+	Field      string `json:"field"`
+	Keep       string `json:"keep"` // "app" | "obsidian"
+}
+
+// vaultSyncResolveHandler applies the user's per-field conflict choices, then
+// re-runs the full two-way sync so the now-unblocked entities (and anything
+// else already resolvable) get applied in the same pass.
+//
+// The trick: rather than duplicating twoWaySyncVault's apply logic, resolving
+// a field just means seeding vault_sync_state's baseline for that field to
+// whichever side was NOT chosen — that makes the chosen side look like "the
+// only thing that changed since last sync" to diffEntityFields, so the next
+// sync pass applies it automatically instead of flagging a conflict again.
+func vaultSyncResolveHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var resolutions []syncResolution
+		if err := readJSON(r, &resolutions); err != nil {
+			errJSON(w, 400, "invalid JSON: "+err.Error())
+			return
+		}
+		db, err := openRawDB(dbPath)
+		if err != nil {
+			errJSON(w, 500, err.Error())
+			return
+		}
+		type entityKey struct {
+			entityType string
+			entityID   int64
+		}
+		grouped := map[entityKey][]syncResolution{}
+		for _, res := range resolutions {
+			k := entityKey{res.EntityType, res.EntityID}
+			grouped[k] = append(grouped[k], res)
+		}
+		for k, fieldResolutions := range grouped {
+			dbFields, vaultFields := readOneEntityFields(db, v, k.entityType, k.entityID)
+			baseline := getVaultSyncFields(db, k.entityType, k.entityID)
+			for _, res := range fieldResolutions {
+				if res.Keep == "app" {
+					baseline[res.Field] = vaultFields[res.Field]
+				} else {
+					baseline[res.Field] = dbFields[res.Field]
+				}
+			}
+			setVaultSyncFields(db, k.entityType, k.entityID, baseline)
+		}
+		db.Close()
+
+		applied, remaining := twoWaySyncVault(v, dbPath)
+		writeJSON(w, 200, map[string]any{"applied": applied, "conflicts": remaining})
+	}
+}
+
+// twoWaySyncVault reconciles goal/project/sprint/task rows against their
+// vault files in both directions, returning the number of entities updated
+// automatically and any per-field conflicts that need user resolution.
+// workspaceFolderNames returns every workspace's sanitized, deduped vault
+// folder name, keyed by workspace ID — the single source of truth for "what
+// folder does workspace X's stuff live under" used by both the per-record
+// folder computation below and anything else that needs a workspace's
+// on-disk name. Two workspaces that sanitize to the same name are
+// disambiguated with a numeric suffix, keyed by ID so a given workspace's
+// folder name is stable across calls regardless of iteration order.
+func workspaceFolderNames(db *sql.DB) map[int64]string {
+	rows, err := db.Query(`SELECT id, name FROM workspaces ORDER BY id ASC`)
+	if err != nil {
+		return map[int64]string{}
+	}
+	defer rows.Close()
+
+	type ws struct {
+		id   int64
+		name string
+	}
+	var all []ws
+	for rows.Next() {
+		var w ws
+		if rows.Scan(&w.id, &w.name) == nil {
+			all = append(all, w)
+		}
+	}
+
+	folderByWorkspace := map[int64]string{}
+	usedNames := map[string]int64{}
+	for _, w := range all {
+		base := vault.SanitizeFolderName(w.name)
+		name := base
+		for suffix := 2; ; suffix++ {
+			owner, taken := usedNames[name]
+			if !taken || owner == w.id {
+				break
+			}
+			name = fmt.Sprintf("%s-%d", base, suffix)
+		}
+		usedNames[name] = w.id
+		folderByWorkspace[w.id] = name
+	}
+	return folderByWorkspace
+}
+
+// computeRecordFolders reads every entity table's workspace_id column and
+// returns the record → workspace-folder map the vault needs (keyed
+// "{entityType}:{id}"), plus the full list of folder names currently in use.
+// A record with workspace_id NULL is simply absent from the map — the vault
+// treats an absent key as top-level.
+func computeRecordFolders(db *sql.DB) (records map[string]string, folders []string) {
+	folderByWorkspace := workspaceFolderNames(db)
+	records = map[string]string{}
+
+	tableFor := map[string]string{
+		"task": "tasks", "goal": "goals", "project": "projects",
+		"sprint": "sprints", "habit": "habits", "resource": "resources",
+	}
+	for entityType, table := range tableFor {
+		rows, err := db.Query(fmt.Sprintf(`SELECT id, workspace_id FROM %s WHERE workspace_id IS NOT NULL`, table))
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var id, wsID int64
+			if rows.Scan(&id, &wsID) == nil {
+				if folder, ok := folderByWorkspace[wsID]; ok {
+					records[recordFolderKey(entityType, id)] = folder
+				}
+			}
+		}
+		rows.Close()
+	}
+
+	rows, err := db.Query(`SELECT id, type_name, workspace_id FROM custom_entities WHERE workspace_id IS NOT NULL`)
+	if err == nil {
+		for rows.Next() {
+			var id, wsID int64
+			var typeName string
+			if rows.Scan(&id, &typeName, &wsID) == nil {
+				if folder, ok := folderByWorkspace[wsID]; ok {
+					records[recordFolderKey(typeName, id)] = folder
+				}
+			}
+		}
+		rows.Close()
+	}
+
+	seen := map[string]bool{}
+	for _, folder := range folderByWorkspace {
+		if !seen[folder] {
+			seen[folder] = true
+			folders = append(folders, folder)
+		}
+	}
+	return records, folders
+}
+
+// recordFolderKey matches vault.recordKey's format (unexported there, so
+// duplicated here — must stay in sync with how SetRecordFolders' keys read).
+func recordFolderKey(entityType string, id int64) string {
+	return fmt.Sprintf("%s:%d", entityType, id)
+}
+
+// refreshWorkspaceVaultFolders recomputes the record → workspace-folder map
+// from the DB, physically moves every record whose folder changed (including
+// back to top-level for records no longer assigned to any workspace), and
+// swaps the vault's resolver over to the new map. Safe to call often — a
+// no-op pass costs a handful of queries and map diffs.
+func refreshWorkspaceVaultFolders(db *sql.DB, v *vault.Vault) {
+	newRecords, folders := computeRecordFolders(db)
+	oldRecords := v.RecordFolders()
+
+	seen := map[string]bool{}
+	for key, newFolder := range newRecords {
+		seen[key] = true
+		if oldRecords[key] != newFolder {
+			entityType, id := splitRecordFolderKey(key)
+			if entityType == "" {
+				continue
+			}
+			if err := v.MoveEntityFile(entityType, id, oldRecords[key], newFolder); err != nil {
+				log.Printf("vault: move %s to workspace folder %q: %v", key, newFolder, err)
+			}
+		}
+	}
+	for key, oldFolder := range oldRecords {
+		if seen[key] || oldFolder == "" {
+			continue
+		}
+		entityType, id := splitRecordFolderKey(key)
+		if entityType == "" {
+			continue
+		}
+		if err := v.MoveEntityFile(entityType, id, oldFolder, ""); err != nil {
+			log.Printf("vault: move %s back to top level: %v", key, err)
+		}
+	}
+	v.SetRecordFolders(newRecords, folders)
+}
+
+// splitRecordFolderKey parses a "{entityType}:{id}" key back into its parts.
+func splitRecordFolderKey(key string) (entityType string, id int64) {
+	idx := strings.LastIndex(key, ":")
+	if idx < 0 {
+		return "", 0
+	}
+	n, err := strconv.ParseInt(key[idx+1:], 10, 64)
+	if err != nil {
+		return "", 0
+	}
+	return key[:idx], n
+}
+
+func twoWaySyncVault(v *vault.Vault, dbPath string) (applied int, conflicts []syncConflict) {
 	db, err := openRawDB(dbPath)
 	if err != nil {
 		log.Printf("vault sync: open db: %v", err)
-		return
+		return 0, nil
 	}
 	defer db.Close()
 
-	// Known core fields per entity type (anything else becomes an entity_property).
-	goalCoreFields := map[string]bool{
-		"id": true, "title": true, "description": true, "status": true,
-		"type": true, "year": true, "start_date": true, "due_date": true,
-		"start_value": true, "current_value": true, "target": true,
-		"created_at": true, "aliases": true,
-	}
-	projectCoreFields := map[string]bool{
-		"id": true, "title": true, "description": true, "status": true,
-		"macro_area": true, "goal_id": true, "created_at": true, "aliases": true,
-	}
-	sprintCoreFields := map[string]bool{
-		"id": true, "title": true, "goal": true, "start_date": true,
-		"end_date": true, "status": true, "project_id": true, "created_at": true, "aliases": true,
-	}
-	taskCoreFields := map[string]bool{
-		"id": true, "title": true, "description": true, "status": true,
-		"priority": true, "due_date": true, "start_date": true, "story_points": true,
-		"goal_id": true, "project_id": true, "sprint_id": true, "parent_task_id": true,
-		"created_at": true, "updated_at": true, "aliases": true,
-	}
+	refreshWorkspaceVaultFolders(db, v)
 
-	// saveExtraProps stores any non-core frontmatter keys as entity_properties.
-	saveExtraProps := func(entityType string, entityID int64, fm map[string]string, coreFields map[string]bool) {
-		for k, v := range fm {
-			if coreFields[k] || v == "" {
+	applied += syncGoalsTwoWay(db, v, &conflicts)
+	applied += syncProjectsTwoWay(db, v, &conflicts)
+	applied += syncSprintsTwoWay(db, v, &conflicts)
+	applied += syncTasksTwoWay(db, v, &conflicts)
+	applied += syncHabitsTwoWay(db, v, &conflicts)
+	applied += syncResourcesTwoWay(db, v, &conflicts)
+	applied += syncWorkspacesTwoWay(db, v, &conflicts)
+
+	typeRows, err := db.Query(`SELECT name, prop_defs FROM custom_entity_types`)
+	if err == nil {
+		var types []struct{ name, propDefs string }
+		for typeRows.Next() {
+			var t struct{ name, propDefs string }
+			if typeRows.Scan(&t.name, &t.propDefs) == nil {
+				types = append(types, t)
+			}
+		}
+		typeRows.Close()
+		for _, t := range types {
+			applied += syncCustomEntityTypeTwoWay(db, v, &conflicts, t.name, customTypePropKeys(t.propDefs))
+		}
+	}
+	return applied, conflicts
+}
+
+// customTypePropKeys extracts the scalar (non-relation) prop keys from a
+// custom entity type's prop_defs JSON — relation-typed props are stored as
+// wiki-link JSON blobs that don't round-trip through plain frontmatter
+// diffing the way scalar values do, so they're excluded from two-way sync.
+func customTypePropKeys(propDefsJSON string) []string {
+	var defs []struct {
+		Key  string `json:"key"`
+		Type string `json:"type"`
+	}
+	if propDefsJSON == "" || json.Unmarshal([]byte(propDefsJSON), &defs) != nil {
+		return nil
+	}
+	var keys []string
+	for _, d := range defs {
+		if d.Key != "" && d.Type != "relation" && !strings.HasPrefix(d.Key, "_") {
+			keys = append(keys, d.Key)
+		}
+	}
+	return keys
+}
+
+var goalSyncKeys = []string{"title", "description", "status", "type", "year", "start_date", "due_date", "start_value", "current_value", "target"}
+
+func syncGoalsTwoWay(db *sql.DB, v *vault.Vault, conflicts *[]syncConflict) int {
+	applied := 0
+	dbRows := map[int64]map[string]string{}
+	createdAts := map[int64]string{}
+	rows, err := db.Query(`SELECT id, title, COALESCE(description,''), status, COALESCE(type,''), COALESCE(year,''),
+		COALESCE(start_date,''), COALESCE(due_date,''), start_value, current_value, target, created_at FROM goals`)
+	if err == nil {
+		for rows.Next() {
+			var id int64
+			var title, desc, status, typ, year, startDate, dueDate, createdAt string
+			var startVal, curVal, target sql.NullFloat64
+			if rows.Scan(&id, &title, &desc, &status, &typ, &year, &startDate, &dueDate, &startVal, &curVal, &target, &createdAt) != nil {
 				continue
 			}
-			_, _ = db.Exec(
-				`INSERT INTO entity_properties (entity_type, entity_id, key, value)
-				 VALUES (?,?,?,?)
-				 ON CONFLICT(entity_type, entity_id, key) DO UPDATE SET value=excluded.value`,
-				entityType, entityID, k, v,
-			)
+			f := map[string]string{"title": title, "description": desc, "status": status, "type": typ, "year": year, "start_date": startDate, "due_date": dueDate}
+			if startVal.Valid {
+				f["start_value"] = fmt.Sprintf("%g", startVal.Float64)
+			}
+			if curVal.Valid {
+				f["current_value"] = fmt.Sprintf("%g", curVal.Float64)
+			}
+			if target.Valid {
+				f["target"] = fmt.Sprintf("%g", target.Float64)
+			}
+			dbRows[id] = f
+			createdAts[id] = createdAt
+		}
+		rows.Close()
+	}
+
+	vaultFiles, _ := v.ScanEntityFiles("goal")
+	vaultRows := map[int64]map[string]string{}
+	for _, fm := range vaultFiles {
+		id, _ := strconv.ParseInt(fm["id"], 10, 64)
+		if id > 0 {
+			vaultRows[id] = fm
 		}
 	}
 
-	// preExists returns true if a row with the given id already exists in the table.
-	preExists := func(table string, id int64) bool {
-		var cnt int
-		_ = db.QueryRow("SELECT COUNT(*) FROM "+table+" WHERE id=?", id).Scan(&cnt) //nolint:gosec
-		return cnt > 0
+	ids := map[int64]bool{}
+	for id := range dbRows {
+		ids[id] = true
+	}
+	for id := range vaultRows {
+		ids[id] = true
 	}
 
-	// Goals
-	if files, _ := v.ScanEntityFiles("goal"); len(files) > 0 {
-		for _, fm := range files {
-			id, _ := strconv.ParseInt(fm["id"], 10, 64)
-			if id == 0 {
-				continue
+	for id := range ids {
+		dbFields, hadDB := dbRows[id]
+		vaultFields, hadVault := vaultRows[id]
+		if dbFields == nil {
+			dbFields = map[string]string{}
+		}
+		if vaultFields == nil {
+			vaultFields = map[string]string{}
+		}
+		synced := getVaultSyncFields(db, "goal", id)
+		resolved, fieldConflicts := diffEntityFields(dbFields, vaultFields, synced, goalSyncKeys)
+
+		if len(fieldConflicts) > 0 {
+			title := resolved["title"]
+			if title == "" {
+				title = fmt.Sprintf("goal-%d", id)
 			}
-			wasNew := !preExists("goals", id)
-			_, err := db.Exec(`INSERT INTO goals
-				(id,title,description,status,type,year,start_date,due_date,
-				 start_value,current_value,target,created_at)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-				ON CONFLICT(id) DO UPDATE SET
-				  title=excluded.title, description=excluded.description,
-				  status=excluded.status, type=excluded.type, year=excluded.year,
-				  start_date=excluded.start_date, due_date=excluded.due_date,
-				  start_value=excluded.start_value, current_value=excluded.current_value,
-				  target=excluded.target
-				WHERE 1=1`,
-				id, fm["title"], nullStr(fm["description"]),
-				fmDefault(fm["status"], "active"),
-				nullStr(fm["type"]), nullStr(fm["year"]),
-				nullStr(fm["start_date"]), nullStr(fm["due_date"]),
-				fmFloat64(fm["start_value"]), fmFloat64(fm["current_value"]),
-				fmFloat64(fm["target"]),
-				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
-			)
-			if err == nil {
-				if wasNew {
-					inserted++
+			*conflicts = append(*conflicts, syncConflict{EntityType: "goal", EntityID: id, Title: title, Fields: fieldConflicts})
+			continue
+		}
+
+		dbMatches := hadDB && fieldsEqual(resolved, dbFields, goalSyncKeys)
+		vaultMatches := hadVault && fieldsEqual(resolved, vaultFields, goalSyncKeys)
+		dbErr := error(nil)
+		if !dbMatches || !vaultMatches {
+			createdAt := createdAts[id]
+			if createdAt == "" {
+				createdAt = fmDefault(vaultFields["created_at"], time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+			}
+			if !dbMatches {
+				if !hadDB {
+					_, dbErr = db.Exec(`INSERT INTO goals (id,title,description,status,type,year,start_date,due_date,start_value,current_value,target,created_at)
+						VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+						id, resolved["title"], nullStr(resolved["description"]), fmDefault(resolved["status"], "active"),
+						nullStr(resolved["type"]), nullStr(resolved["year"]), nullStr(resolved["start_date"]), nullStr(resolved["due_date"]),
+						fmFloat64(resolved["start_value"]), fmFloat64(resolved["current_value"]), fmFloat64(resolved["target"]), createdAt)
 				} else {
-					updated++
+					_, dbErr = db.Exec(`UPDATE goals SET title=?, description=?, status=?, type=?, year=?, start_date=?, due_date=?, start_value=?, current_value=?, target=? WHERE id=?`,
+						resolved["title"], nullStr(resolved["description"]), fmDefault(resolved["status"], "active"),
+						nullStr(resolved["type"]), nullStr(resolved["year"]), nullStr(resolved["start_date"]), nullStr(resolved["due_date"]),
+						fmFloat64(resolved["start_value"]), fmFloat64(resolved["current_value"]), fmFloat64(resolved["target"]), id)
 				}
-				saveExtraProps("goal", id, fm, goalCoreFields)
+			}
+			if dbErr == nil {
+				applied++
+				if !vaultMatches {
+					fm := map[string]any{"id": id, "title": resolved["title"], "aliases": []string{resolved["title"]}, "status": resolved["status"], "created_at": createdAt}
+					if resolved["description"] != "" {
+						fm["description"] = resolved["description"]
+					}
+					if resolved["type"] != "" {
+						fm["type"] = resolved["type"]
+					}
+					if resolved["year"] != "" {
+						fm["year"] = resolved["year"]
+					}
+					if resolved["due_date"] != "" {
+						fm["due_date"] = resolved["due_date"]
+					}
+					if resolved["start_date"] != "" {
+						fm["start_date"] = resolved["start_date"]
+					}
+					if resolved["target"] != "" {
+						fm["target"] = fmFloat64(resolved["target"])
+					}
+					if resolved["current_value"] != "" {
+						fm["current_value"] = fmFloat64(resolved["current_value"])
+					}
+					_ = v.WriteEntityMD("goal", id, fm, vaultEntityBody(v, "goal", id))
+				}
 			}
 		}
+		if dbErr == nil {
+			setVaultSyncFields(db, "goal", id, resolved)
+		}
 	}
+	return applied
+}
 
-	// Projects
-	if files, _ := v.ScanEntityFiles("project"); len(files) > 0 {
-		for _, fm := range files {
-			id, _ := strconv.ParseInt(fm["id"], 10, 64)
-			if id == 0 {
+var projectSyncKeys = []string{"title", "description", "status", "macro_area", "goal_id", "start_date", "due_date"}
+
+func syncProjectsTwoWay(db *sql.DB, v *vault.Vault, conflicts *[]syncConflict) int {
+	applied := 0
+	dbRows := map[int64]map[string]string{}
+	createdAts := map[int64]string{}
+	rows, err := db.Query(`SELECT id, title, COALESCE(description,''), status, COALESCE(macro_area,''), goal_id,
+		COALESCE(start_date,''), COALESCE(due_date,''), created_at FROM projects`)
+	if err == nil {
+		for rows.Next() {
+			var id int64
+			var title, desc, status, macro, startDate, dueDate, createdAt string
+			var goalID sql.NullInt64
+			if rows.Scan(&id, &title, &desc, &status, &macro, &goalID, &startDate, &dueDate, &createdAt) != nil {
 				continue
 			}
-			wasNew := !preExists("projects", id)
-			_, err := db.Exec(`INSERT INTO projects
-				(id,goal_id,title,description,status,macro_area,created_at)
-				VALUES (?,?,?,?,?,?,?)
-				ON CONFLICT(id) DO UPDATE SET
-				  title=excluded.title, description=excluded.description,
-				  status=excluded.status, macro_area=excluded.macro_area,
-				  goal_id=excluded.goal_id
-				WHERE 1=1`,
-				id, fmInt64(fm["goal_id"]), fm["title"],
-				nullStr(fm["description"]),
-				fmDefault(fm["status"], "active"),
-				nullStr(fm["macro_area"]),
-				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
-			)
-			if err == nil {
-				if wasNew {
-					inserted++
-				} else {
-					updated++
-				}
-				saveExtraProps("project", id, fm, projectCoreFields)
+			f := map[string]string{"title": title, "description": desc, "status": status, "macro_area": macro, "start_date": startDate, "due_date": dueDate}
+			if goalID.Valid {
+				f["goal_id"] = strconv.FormatInt(goalID.Int64, 10)
 			}
+			dbRows[id] = f
+			createdAts[id] = createdAt
+		}
+		rows.Close()
+	}
+
+	vaultFiles, _ := v.ScanEntityFiles("project")
+	vaultRows := map[int64]map[string]string{}
+	for _, fm := range vaultFiles {
+		id, _ := strconv.ParseInt(fm["id"], 10, 64)
+		if id > 0 {
+			vaultRows[id] = fm
 		}
 	}
 
-	// Sprints (need project to exist first)
-	if files, _ := v.ScanEntityFiles("sprint"); len(files) > 0 {
-		for _, fm := range files {
-			id, _ := strconv.ParseInt(fm["id"], 10, 64)
-			projID, _ := strconv.ParseInt(fm["project_id"], 10, 64)
-			if id == 0 || projID == 0 {
+	ids := map[int64]bool{}
+	for id := range dbRows {
+		ids[id] = true
+	}
+	for id := range vaultRows {
+		ids[id] = true
+	}
+
+	for id := range ids {
+		dbFields, hadDB := dbRows[id]
+		vaultFields, hadVault := vaultRows[id]
+		if dbFields == nil {
+			dbFields = map[string]string{}
+		}
+		if vaultFields == nil {
+			vaultFields = map[string]string{}
+		}
+		synced := getVaultSyncFields(db, "project", id)
+		resolved, fieldConflicts := diffEntityFields(dbFields, vaultFields, synced, projectSyncKeys)
+
+		if len(fieldConflicts) > 0 {
+			title := resolved["title"]
+			if title == "" {
+				title = fmt.Sprintf("project-%d", id)
+			}
+			*conflicts = append(*conflicts, syncConflict{EntityType: "project", EntityID: id, Title: title, Fields: fieldConflicts})
+			continue
+		}
+
+		dbMatches := hadDB && fieldsEqual(resolved, dbFields, projectSyncKeys)
+		vaultMatches := hadVault && fieldsEqual(resolved, vaultFields, projectSyncKeys)
+		dbErr := error(nil)
+		if !dbMatches || !vaultMatches {
+			createdAt := createdAts[id]
+			if createdAt == "" {
+				createdAt = fmDefault(vaultFields["created_at"], time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+			}
+			if !dbMatches {
+				if !hadDB {
+					_, dbErr = db.Exec(`INSERT INTO projects (id,goal_id,title,description,status,macro_area,start_date,due_date,created_at)
+						VALUES (?,?,?,?,?,?,?,?,?)`,
+						id, fmInt64(resolved["goal_id"]), resolved["title"], nullStr(resolved["description"]),
+						fmDefault(resolved["status"], "active"), nullStr(resolved["macro_area"]),
+						nullStr(resolved["start_date"]), nullStr(resolved["due_date"]), createdAt)
+				} else {
+					_, dbErr = db.Exec(`UPDATE projects SET title=?, description=?, status=?, macro_area=?, goal_id=?, start_date=?, due_date=? WHERE id=?`,
+						resolved["title"], nullStr(resolved["description"]), fmDefault(resolved["status"], "active"),
+						nullStr(resolved["macro_area"]), fmInt64(resolved["goal_id"]),
+						nullStr(resolved["start_date"]), nullStr(resolved["due_date"]), id)
+				}
+			}
+			if dbErr == nil {
+				applied++
+				if !vaultMatches {
+					fm := map[string]any{"id": id, "title": resolved["title"], "aliases": []string{resolved["title"]}, "status": resolved["status"], "created_at": createdAt}
+					if resolved["description"] != "" {
+						fm["description"] = resolved["description"]
+					}
+					if resolved["goal_id"] != "" {
+						fm["goal_id"] = fmInt64(resolved["goal_id"])
+					}
+					if resolved["macro_area"] != "" {
+						fm["macro_area"] = resolved["macro_area"]
+					}
+					if resolved["due_date"] != "" {
+						fm["due_date"] = resolved["due_date"]
+					}
+					if resolved["start_date"] != "" {
+						fm["start_date"] = resolved["start_date"]
+					}
+					_ = v.WriteEntityMD("project", id, fm, vaultEntityBody(v, "project", id))
+				}
+			}
+		}
+		if dbErr == nil {
+			setVaultSyncFields(db, "project", id, resolved)
+		}
+	}
+	return applied
+}
+
+var sprintSyncKeys = []string{"title", "goal", "start_date", "end_date", "status", "project_id", "story_points"}
+
+func syncSprintsTwoWay(db *sql.DB, v *vault.Vault, conflicts *[]syncConflict) int {
+	applied := 0
+	dbRows := map[int64]map[string]string{}
+	createdAts := map[int64]string{}
+	rows, err := db.Query(`SELECT id, project_id, title, COALESCE(goal,''), COALESCE(start_date,''), COALESCE(end_date,''), status, story_points, created_at FROM sprints`)
+	if err == nil {
+		for rows.Next() {
+			var id, projID int64
+			var title, goal, startDate, endDate, status, createdAt string
+			var storyPts sql.NullInt64
+			if rows.Scan(&id, &projID, &title, &goal, &startDate, &endDate, &status, &storyPts, &createdAt) != nil {
 				continue
 			}
-			wasNew := !preExists("sprints", id)
-			_, err := db.Exec(`INSERT INTO sprints
-				(id,project_id,title,goal,start_date,end_date,status,created_at)
-				VALUES (?,?,?,?,?,?,?,?)
-				ON CONFLICT(id) DO UPDATE SET
-				  title=excluded.title, goal=excluded.goal,
-				  start_date=excluded.start_date, end_date=excluded.end_date,
-				  status=excluded.status, project_id=excluded.project_id
-				WHERE 1=1`,
-				id, projID, fm["title"], nullStr(fm["goal"]),
-				nullStr(fm["start_date"]), nullStr(fm["end_date"]),
-				fmDefault(fm["status"], "planned"),
-				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
-			)
-			if err == nil {
-				if wasNew {
-					inserted++
-				} else {
-					updated++
-				}
-				saveExtraProps("sprint", id, fm, sprintCoreFields)
+			f := map[string]string{"title": title, "goal": goal, "start_date": startDate, "end_date": endDate, "status": status, "project_id": strconv.FormatInt(projID, 10)}
+			if storyPts.Valid {
+				f["story_points"] = strconv.FormatInt(storyPts.Int64, 10)
 			}
+			dbRows[id] = f
+			createdAts[id] = createdAt
+		}
+		rows.Close()
+	}
+
+	vaultFiles, _ := v.ScanEntityFiles("sprint")
+	vaultRows := map[int64]map[string]string{}
+	for _, fm := range vaultFiles {
+		id, _ := strconv.ParseInt(fm["id"], 10, 64)
+		if id > 0 {
+			vaultRows[id] = fm
 		}
 	}
 
-	// Tasks (need project/sprint/goal to exist first)
-	if files, _ := v.ScanEntityFiles("task"); len(files) > 0 {
-		for _, fm := range files {
-			id, _ := strconv.ParseInt(fm["id"], 10, 64)
-			if id == 0 {
+	ids := map[int64]bool{}
+	for id := range dbRows {
+		ids[id] = true
+	}
+	for id := range vaultRows {
+		ids[id] = true
+	}
+
+	for id := range ids {
+		dbFields, hadDB := dbRows[id]
+		vaultFields, hadVault := vaultRows[id]
+		if dbFields == nil {
+			dbFields = map[string]string{}
+		}
+		if vaultFields == nil {
+			vaultFields = map[string]string{}
+		}
+		// A sprint needs a project to attach to — skip vault-only files with no resolvable project_id.
+		projID := fmInt64(dbFields["project_id"])
+		if projID == nil {
+			projID = fmInt64(vaultFields["project_id"])
+		}
+		if projID == nil {
+			continue
+		}
+		synced := getVaultSyncFields(db, "sprint", id)
+		resolved, fieldConflicts := diffEntityFields(dbFields, vaultFields, synced, sprintSyncKeys)
+
+		if len(fieldConflicts) > 0 {
+			title := resolved["title"]
+			if title == "" {
+				title = fmt.Sprintf("sprint-%d", id)
+			}
+			*conflicts = append(*conflicts, syncConflict{EntityType: "sprint", EntityID: id, Title: title, Fields: fieldConflicts})
+			continue
+		}
+
+		dbMatches := hadDB && fieldsEqual(resolved, dbFields, sprintSyncKeys)
+		vaultMatches := hadVault && fieldsEqual(resolved, vaultFields, sprintSyncKeys)
+		dbErr := error(nil)
+		if !dbMatches || !vaultMatches {
+			createdAt := createdAts[id]
+			if createdAt == "" {
+				createdAt = fmDefault(vaultFields["created_at"], time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+			}
+			if !dbMatches {
+				if !hadDB {
+					_, dbErr = db.Exec(`INSERT INTO sprints (id,project_id,title,goal,start_date,end_date,status,story_points,created_at)
+						VALUES (?,?,?,?,?,?,?,?,?)`,
+						id, projID, resolved["title"], nullStr(resolved["goal"]),
+						nullStr(resolved["start_date"]), nullStr(resolved["end_date"]),
+						fmDefault(resolved["status"], "planned"), fmInt64(resolved["story_points"]), createdAt)
+				} else {
+					_, dbErr = db.Exec(`UPDATE sprints SET title=?, goal=?, start_date=?, end_date=?, status=?, project_id=?, story_points=? WHERE id=?`,
+						resolved["title"], nullStr(resolved["goal"]), nullStr(resolved["start_date"]), nullStr(resolved["end_date"]),
+						fmDefault(resolved["status"], "planned"), projID, fmInt64(resolved["story_points"]), id)
+				}
+			}
+			if dbErr == nil {
+				applied++
+				if !vaultMatches {
+					fm := map[string]any{"id": id, "title": resolved["title"], "aliases": []string{resolved["title"]}, "project_id": projID, "status": resolved["status"], "created_at": createdAt}
+					if resolved["goal"] != "" {
+						fm["goal"] = resolved["goal"]
+					}
+					if resolved["start_date"] != "" {
+						fm["start_date"] = resolved["start_date"]
+					}
+					if resolved["end_date"] != "" {
+						fm["end_date"] = resolved["end_date"]
+					}
+					if resolved["story_points"] != "" {
+						fm["story_points"] = fmInt64(resolved["story_points"])
+					}
+					_ = v.WriteEntityMD("sprint", id, fm, vaultEntityBody(v, "sprint", id))
+				}
+			}
+		}
+		if dbErr == nil {
+			setVaultSyncFields(db, "sprint", id, resolved)
+		}
+	}
+	return applied
+}
+
+var taskSyncKeys = []string{"title", "description", "status", "priority", "due_date", "start_date", "story_points", "goal_id", "project_id", "sprint_id", "parent_task_id"}
+
+func syncTasksTwoWay(db *sql.DB, v *vault.Vault, conflicts *[]syncConflict) int {
+	applied := 0
+	dbRows := map[int64]map[string]string{}
+	createdAts := map[int64]string{}
+	updatedAts := map[int64]string{}
+	rows, err := db.Query(`SELECT id, title, COALESCE(description,''), status, priority, COALESCE(due_date,''), COALESCE(start_date,''),
+		story_points, goal_id, project_id, sprint_id, parent_task_id, created_at, updated_at FROM tasks`)
+	if err == nil {
+		for rows.Next() {
+			var id int64
+			var title, desc, status, priority, dueDate, startDate, createdAt, updatedAt string
+			var storyPts, goalID, projID, sprintID, parentID sql.NullInt64
+			if rows.Scan(&id, &title, &desc, &status, &priority, &dueDate, &startDate, &storyPts, &goalID, &projID, &sprintID, &parentID, &createdAt, &updatedAt) != nil {
 				continue
 			}
-			wasNew := !preExists("tasks", id)
-			_, err := db.Exec(`INSERT INTO tasks
-				(id,goal_id,project_id,sprint_id,title,description,
-				 status,priority,due_date,start_date,story_points,
-				 created_at,updated_at)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-				ON CONFLICT(id) DO UPDATE SET
-				  title=excluded.title, description=excluded.description,
-				  status=excluded.status, priority=excluded.priority,
-				  due_date=excluded.due_date, start_date=excluded.start_date,
-				  story_points=excluded.story_points, goal_id=excluded.goal_id,
-				  project_id=excluded.project_id, sprint_id=excluded.sprint_id,
-				  updated_at=excluded.updated_at
-				WHERE excluded.updated_at >= tasks.updated_at`,
-				id,
-				fmInt64(fm["goal_id"]), fmInt64(fm["project_id"]), fmInt64(fm["sprint_id"]),
-				fm["title"], nullStr(fm["description"]),
-				fmDefault(fm["status"], "todo"),
-				fmDefault(fm["priority"], "medium"),
-				nullStr(fm["due_date"]), nullStr(fm["start_date"]),
-				fmInt64(fm["story_points"]),
-				fmDefault(fm["created_at"], time.Now().Format(time.RFC3339)),
-				fmDefault(fm["updated_at"], time.Now().Format(time.RFC3339)),
-			)
-			if err == nil {
-				if wasNew {
-					inserted++
-				} else {
-					updated++
-				}
-				saveExtraProps("task", id, fm, taskCoreFields)
+			f := map[string]string{"title": title, "description": desc, "status": status, "priority": priority, "due_date": dueDate, "start_date": startDate}
+			if storyPts.Valid {
+				f["story_points"] = strconv.FormatInt(storyPts.Int64, 10)
 			}
+			if goalID.Valid {
+				f["goal_id"] = strconv.FormatInt(goalID.Int64, 10)
+			}
+			if projID.Valid {
+				f["project_id"] = strconv.FormatInt(projID.Int64, 10)
+			}
+			if sprintID.Valid {
+				f["sprint_id"] = strconv.FormatInt(sprintID.Int64, 10)
+			}
+			if parentID.Valid {
+				f["parent_task_id"] = strconv.FormatInt(parentID.Int64, 10)
+			}
+			dbRows[id] = f
+			createdAts[id] = createdAt
+			updatedAts[id] = updatedAt
+		}
+		rows.Close()
+	}
+
+	vaultFiles, _ := v.ScanEntityFiles("task")
+	vaultRows := map[int64]map[string]string{}
+	for _, fm := range vaultFiles {
+		id, _ := strconv.ParseInt(fm["id"], 10, 64)
+		if id > 0 {
+			vaultRows[id] = fm
 		}
 	}
 
-	return inserted, updated
+	ids := map[int64]bool{}
+	for id := range dbRows {
+		ids[id] = true
+	}
+	for id := range vaultRows {
+		ids[id] = true
+	}
+
+	for id := range ids {
+		dbFields, hadDB := dbRows[id]
+		vaultFields, hadVault := vaultRows[id]
+		if dbFields == nil {
+			dbFields = map[string]string{}
+		}
+		if vaultFields == nil {
+			vaultFields = map[string]string{}
+		}
+		synced := getVaultSyncFields(db, "task", id)
+		resolved, fieldConflicts := diffEntityFields(dbFields, vaultFields, synced, taskSyncKeys)
+
+		if len(fieldConflicts) > 0 {
+			title := resolved["title"]
+			if title == "" {
+				title = fmt.Sprintf("task-%d", id)
+			}
+			*conflicts = append(*conflicts, syncConflict{EntityType: "task", EntityID: id, Title: title, Fields: fieldConflicts})
+			continue
+		}
+
+		dbMatches := hadDB && fieldsEqual(resolved, dbFields, taskSyncKeys)
+		vaultMatches := hadVault && fieldsEqual(resolved, vaultFields, taskSyncKeys)
+		dbErr := error(nil)
+		if !dbMatches || !vaultMatches {
+			createdAt := createdAts[id]
+			if createdAt == "" {
+				createdAt = fmDefault(vaultFields["created_at"], time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+			}
+			updatedAt := updatedAts[id]
+			if !dbMatches {
+				updatedAt = time.Now().UTC().Format("2006-01-02T15:04:05Z")
+				if !hadDB {
+					_, dbErr = db.Exec(`INSERT INTO tasks (id,goal_id,project_id,sprint_id,parent_task_id,title,description,status,priority,due_date,start_date,story_points,created_at,updated_at)
+						VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+						id, fmInt64(resolved["goal_id"]), fmInt64(resolved["project_id"]), fmInt64(resolved["sprint_id"]), fmInt64(resolved["parent_task_id"]),
+						resolved["title"], nullStr(resolved["description"]), fmDefault(resolved["status"], "todo"), fmDefault(resolved["priority"], "medium"),
+						nullStr(resolved["due_date"]), nullStr(resolved["start_date"]), fmInt64(resolved["story_points"]), createdAt, updatedAt)
+				} else {
+					_, dbErr = db.Exec(`UPDATE tasks SET title=?, description=?, status=?, priority=?, due_date=?, start_date=?, story_points=?, goal_id=?, project_id=?, sprint_id=?, parent_task_id=?, updated_at=? WHERE id=?`,
+						resolved["title"], nullStr(resolved["description"]), fmDefault(resolved["status"], "todo"), fmDefault(resolved["priority"], "medium"),
+						nullStr(resolved["due_date"]), nullStr(resolved["start_date"]), fmInt64(resolved["story_points"]),
+						fmInt64(resolved["goal_id"]), fmInt64(resolved["project_id"]), fmInt64(resolved["sprint_id"]), fmInt64(resolved["parent_task_id"]), updatedAt, id)
+				}
+			}
+			if dbErr == nil {
+				applied++
+				if updatedAt == "" {
+					updatedAt = createdAt
+				}
+				if !vaultMatches {
+					fm := map[string]any{"id": id, "title": resolved["title"], "aliases": []string{resolved["title"]}, "status": resolved["status"], "priority": resolved["priority"], "created_at": createdAt, "updated_at": updatedAt}
+					if resolved["description"] != "" {
+						fm["description"] = resolved["description"]
+					}
+					if resolved["goal_id"] != "" {
+						fm["goal_id"] = fmInt64(resolved["goal_id"])
+					}
+					if resolved["project_id"] != "" {
+						fm["project_id"] = fmInt64(resolved["project_id"])
+					}
+					if resolved["sprint_id"] != "" {
+						fm["sprint_id"] = fmInt64(resolved["sprint_id"])
+					}
+					if resolved["parent_task_id"] != "" {
+						fm["parent_task_id"] = fmInt64(resolved["parent_task_id"])
+					}
+					if resolved["due_date"] != "" {
+						fm["due_date"] = resolved["due_date"]
+					}
+					if resolved["start_date"] != "" {
+						fm["start_date"] = resolved["start_date"]
+					}
+					if resolved["story_points"] != "" {
+						fm["story_points"] = fmInt64(resolved["story_points"])
+					}
+					_ = v.WriteEntityMD("task", id, fm, vaultEntityBody(v, "task", id))
+				}
+			}
+		}
+		if dbErr == nil {
+			setVaultSyncFields(db, "task", id, resolved)
+		}
+	}
+	return applied
+}
+
+
+var habitSyncKeys = []string{"title", "type", "reference_id"}
+
+func syncHabitsTwoWay(db *sql.DB, v *vault.Vault, conflicts *[]syncConflict) int {
+	applied := 0
+	dbRows := map[int64]map[string]string{}
+	rows, err := db.Query(`SELECT id, title, type, reference_id FROM habits`)
+	if err == nil {
+		for rows.Next() {
+			var id int64
+			var title, typ string
+			var refID sql.NullString
+			if rows.Scan(&id, &title, &typ, &refID) != nil {
+				continue
+			}
+			f := map[string]string{"title": title, "type": typ}
+			if refID.Valid {
+				f["reference_id"] = refID.String
+			}
+			dbRows[id] = f
+		}
+		rows.Close()
+	}
+
+	vaultFiles, _ := v.ScanEntityFiles("habit")
+	vaultRows := map[int64]map[string]string{}
+	for _, fm := range vaultFiles {
+		id, _ := strconv.ParseInt(fm["id"], 10, 64)
+		if id > 0 {
+			vaultRows[id] = fm
+		}
+	}
+
+	ids := map[int64]bool{}
+	for id := range dbRows {
+		ids[id] = true
+	}
+	for id := range vaultRows {
+		ids[id] = true
+	}
+
+	for id := range ids {
+		dbFields, hadDB := dbRows[id]
+		vaultFields, hadVault := vaultRows[id]
+		if dbFields == nil {
+			dbFields = map[string]string{}
+		}
+		if vaultFields == nil {
+			vaultFields = map[string]string{}
+		}
+		synced := getVaultSyncFields(db, "habit", id)
+		resolved, fieldConflicts := diffEntityFields(dbFields, vaultFields, synced, habitSyncKeys)
+
+		if len(fieldConflicts) > 0 {
+			title := resolved["title"]
+			if title == "" {
+				title = fmt.Sprintf("habit-%d", id)
+			}
+			*conflicts = append(*conflicts, syncConflict{EntityType: "habit", EntityID: id, Title: title, Fields: fieldConflicts})
+			continue
+		}
+
+		dbMatches := hadDB && fieldsEqual(resolved, dbFields, habitSyncKeys)
+		vaultMatches := hadVault && fieldsEqual(resolved, vaultFields, habitSyncKeys)
+		dbErr := error(nil)
+		if !dbMatches || !vaultMatches {
+			if !dbMatches {
+				if !hadDB {
+					_, dbErr = db.Exec(`INSERT INTO habits (id, title, type, reference_id) VALUES (?,?,?,?)`,
+						id, resolved["title"], fmDefault(resolved["type"], "general"), nullStr(resolved["reference_id"]))
+				} else {
+					_, dbErr = db.Exec(`UPDATE habits SET title=?, type=?, reference_id=? WHERE id=?`,
+						resolved["title"], fmDefault(resolved["type"], "general"), nullStr(resolved["reference_id"]), id)
+				}
+			}
+			if dbErr == nil {
+				applied++
+				if !vaultMatches {
+					h := &domain.Habit{ID: id, Title: resolved["title"], Type: domain.HabitType(fmDefault(resolved["type"], "general")), ReferenceID: strPtrOrNil(resolved["reference_id"])}
+					_ = v.WriteEntityMD("habit", id, habitFM(h), vaultEntityBody(v, "habit", id))
+				}
+			}
+		}
+		if dbErr == nil {
+			setVaultSyncFields(db, "habit", id, resolved)
+		}
+	}
+	return applied
+}
+
+var resourceSyncKeys = []string{"title", "url", "resource_type", "body", "goal_id", "project_id", "task_id"}
+
+func syncResourcesTwoWay(db *sql.DB, v *vault.Vault, conflicts *[]syncConflict) int {
+	applied := 0
+	dbRows := map[int64]map[string]string{}
+	rows, err := db.Query(`SELECT id, title, COALESCE(url,''), resource_type, COALESCE(body,''), goal_id, project_id, task_id FROM resources`)
+	if err == nil {
+		for rows.Next() {
+			var id int64
+			var title, url, resType, body string
+			var goalID, projID, taskID sql.NullInt64
+			if rows.Scan(&id, &title, &url, &resType, &body, &goalID, &projID, &taskID) != nil {
+				continue
+			}
+			f := map[string]string{"title": title, "url": url, "resource_type": resType, "body": body}
+			if goalID.Valid {
+				f["goal_id"] = strconv.FormatInt(goalID.Int64, 10)
+			}
+			if projID.Valid {
+				f["project_id"] = strconv.FormatInt(projID.Int64, 10)
+			}
+			if taskID.Valid {
+				f["task_id"] = strconv.FormatInt(taskID.Int64, 10)
+			}
+			dbRows[id] = f
+		}
+		rows.Close()
+	}
+
+	vaultFiles, _ := v.ScanEntityFiles("resource")
+	vaultRows := map[int64]map[string]string{}
+	for _, fm := range vaultFiles {
+		id, _ := strconv.ParseInt(fm["id"], 10, 64)
+		if id > 0 {
+			vaultRows[id] = fm
+		}
+	}
+
+	ids := map[int64]bool{}
+	for id := range dbRows {
+		ids[id] = true
+	}
+	for id := range vaultRows {
+		ids[id] = true
+	}
+
+	for id := range ids {
+		dbFields, hadDB := dbRows[id]
+		vaultFields, hadVault := vaultRows[id]
+		if dbFields == nil {
+			dbFields = map[string]string{}
+		}
+		if vaultFields == nil {
+			vaultFields = map[string]string{}
+		}
+		synced := getVaultSyncFields(db, "resource", id)
+		resolved, fieldConflicts := diffEntityFields(dbFields, vaultFields, synced, resourceSyncKeys)
+
+		if len(fieldConflicts) > 0 {
+			title := resolved["title"]
+			if title == "" {
+				title = fmt.Sprintf("resource-%d", id)
+			}
+			*conflicts = append(*conflicts, syncConflict{EntityType: "resource", EntityID: id, Title: title, Fields: fieldConflicts})
+			continue
+		}
+
+		dbMatches := hadDB && fieldsEqual(resolved, dbFields, resourceSyncKeys)
+		vaultMatches := hadVault && fieldsEqual(resolved, vaultFields, resourceSyncKeys)
+		dbErr := error(nil)
+		if !dbMatches || !vaultMatches {
+			if !dbMatches {
+				if !hadDB {
+					_, dbErr = db.Exec(`INSERT INTO resources (id, title, url, resource_type, body, goal_id, project_id, task_id) VALUES (?,?,?,?,?,?,?,?)`,
+						id, resolved["title"], nullStr(resolved["url"]), fmDefault(resolved["resource_type"], "link"), nullStr(resolved["body"]),
+						fmInt64(resolved["goal_id"]), fmInt64(resolved["project_id"]), fmInt64(resolved["task_id"]))
+				} else {
+					_, dbErr = db.Exec(`UPDATE resources SET title=?, url=?, resource_type=?, body=?, goal_id=?, project_id=?, task_id=? WHERE id=?`,
+						resolved["title"], nullStr(resolved["url"]), fmDefault(resolved["resource_type"], "link"), nullStr(resolved["body"]),
+						fmInt64(resolved["goal_id"]), fmInt64(resolved["project_id"]), fmInt64(resolved["task_id"]), id)
+				}
+			}
+			if dbErr == nil {
+				applied++
+				if !vaultMatches {
+					_ = v.WriteEntityMD("resource", id, resourceFM(id, resolved["title"], resolved["url"], resolved["resource_type"], resolved["body"],
+						fmInt64Ptr(resolved["goal_id"]), fmInt64Ptr(resolved["project_id"]), fmInt64Ptr(resolved["task_id"])), vaultEntityBody(v, "resource", id))
+				}
+			}
+		}
+		if dbErr == nil {
+			setVaultSyncFields(db, "resource", id, resolved)
+		}
+	}
+	return applied
+}
+
+var workspaceSyncKeys = []string{"title", "icon"}
+
+// syncWorkspacesTwoWay reconciles workspace name/icon in both directions.
+// Entity-type assignment (SetWorkspaceEntityTypes) has no frontmatter
+// representation — it's listed as a body bullet list, not YAML fields — so it
+// isn't diffed here; a workspace also can't be newly created from a
+// hand-written vault file alone, since it has no entity-type assignment to
+// seed. Both stay app-managed; only name/icon round-trip from Obsidian edits.
+func syncWorkspacesTwoWay(db *sql.DB, v *vault.Vault, conflicts *[]syncConflict) int {
+	applied := 0
+	dbRows := map[int64]map[string]string{}
+	rows, err := db.Query(`SELECT id, name, icon FROM workspaces`)
+	if err == nil {
+		for rows.Next() {
+			var id int64
+			var name, icon string
+			if rows.Scan(&id, &name, &icon) != nil {
+				continue
+			}
+			dbRows[id] = map[string]string{"title": name, "icon": icon}
+		}
+		rows.Close()
+	}
+
+	vaultFiles, _ := v.ScanEntityFiles("workspace")
+	vaultRows := map[int64]map[string]string{}
+	for _, fm := range vaultFiles {
+		id, _ := strconv.ParseInt(fm["id"], 10, 64)
+		if id > 0 {
+			vaultRows[id] = fm
+		}
+	}
+
+	for id, dbFields := range dbRows {
+		vaultFields, hadVault := vaultRows[id]
+		if vaultFields == nil {
+			vaultFields = map[string]string{}
+		}
+		synced := getVaultSyncFields(db, "workspace", id)
+		resolved, fieldConflicts := diffEntityFields(dbFields, vaultFields, synced, workspaceSyncKeys)
+
+		if len(fieldConflicts) > 0 {
+			title := resolved["title"]
+			if title == "" {
+				title = fmt.Sprintf("workspace-%d", id)
+			}
+			*conflicts = append(*conflicts, syncConflict{EntityType: "workspace", EntityID: id, Title: title, Fields: fieldConflicts})
+			continue
+		}
+
+		dbMatches := fieldsEqual(resolved, dbFields, workspaceSyncKeys)
+		vaultMatches := hadVault && fieldsEqual(resolved, vaultFields, workspaceSyncKeys)
+		dbErr := error(nil)
+		if !dbMatches || !vaultMatches {
+			if !dbMatches {
+				_, dbErr = db.Exec(`UPDATE workspaces SET name=?, icon=? WHERE id=?`, resolved["title"], resolved["icon"], id)
+			}
+			if dbErr == nil {
+				applied++
+				if !vaultMatches {
+					var entityTypes []string
+					etRows, err := db.Query(`SELECT entity_type FROM workspace_entity_types WHERE workspace_id=? ORDER BY entity_type ASC`, id)
+					if err == nil {
+						for etRows.Next() {
+							var et string
+							if etRows.Scan(&et) == nil {
+								entityTypes = append(entityTypes, et)
+							}
+						}
+						etRows.Close()
+					}
+					ws := &domain.Workspace{ID: id, Name: resolved["title"], Icon: resolved["icon"], EntityTypes: entityTypes}
+					_ = v.WriteEntityMD("workspace", id, workspaceFM(ws), workspaceLinksBody(ws))
+				}
+			}
+		}
+		if dbErr == nil {
+			setVaultSyncFields(db, "workspace", id, resolved)
+		}
+	}
+	return applied
+}
+
+// syncCustomEntityTypeTwoWay reconciles one custom entity type's records —
+// title plus its scalar (non-relation) prop keys — in both directions.
+func syncCustomEntityTypeTwoWay(db *sql.DB, v *vault.Vault, conflicts *[]syncConflict, typeName string, propKeys []string) int {
+	applied := 0
+	syncKeys := append([]string{"title"}, propKeys...)
+
+	dbRows := map[int64]map[string]string{}
+	rows, err := db.Query(`SELECT id, title FROM custom_entities WHERE type_name=?`, typeName)
+	if err == nil {
+		for rows.Next() {
+			var id int64
+			var title string
+			if rows.Scan(&id, &title) != nil {
+				continue
+			}
+			dbRows[id] = map[string]string{"title": title}
+		}
+		rows.Close()
+	}
+	propRows, err := db.Query(`SELECT entity_id, key, value FROM entity_properties WHERE entity_type=?`, typeName)
+	if err == nil {
+		for propRows.Next() {
+			var id int64
+			var k, val string
+			if propRows.Scan(&id, &k, &val) != nil {
+				continue
+			}
+			if _, ok := dbRows[id]; ok {
+				dbRows[id][k] = val
+			}
+		}
+		propRows.Close()
+	}
+
+	vaultFiles, _ := v.ScanEntityFiles(typeName)
+	vaultRows := map[int64]map[string]string{}
+	for _, fm := range vaultFiles {
+		id, _ := strconv.ParseInt(fm["id"], 10, 64)
+		if id > 0 {
+			vaultRows[id] = fm
+		}
+	}
+
+	ids := map[int64]bool{}
+	for id := range dbRows {
+		ids[id] = true
+	}
+	for id := range vaultRows {
+		ids[id] = true
+	}
+
+	for id := range ids {
+		dbFields, hadDB := dbRows[id]
+		vaultFields, hadVault := vaultRows[id]
+		if dbFields == nil {
+			dbFields = map[string]string{}
+		}
+		if vaultFields == nil {
+			vaultFields = map[string]string{}
+		}
+		synced := getVaultSyncFields(db, typeName, id)
+		resolved, fieldConflicts := diffEntityFields(dbFields, vaultFields, synced, syncKeys)
+
+		if len(fieldConflicts) > 0 {
+			title := resolved["title"]
+			if title == "" {
+				title = fmt.Sprintf("%s-%d", typeName, id)
+			}
+			*conflicts = append(*conflicts, syncConflict{EntityType: typeName, EntityID: id, Title: title, Fields: fieldConflicts})
+			continue
+		}
+
+		dbMatches := hadDB && fieldsEqual(resolved, dbFields, syncKeys)
+		vaultMatches := hadVault && fieldsEqual(resolved, vaultFields, syncKeys)
+		dbErr := error(nil)
+		if !dbMatches || !vaultMatches {
+			if !dbMatches {
+				if !hadDB {
+					_, dbErr = db.Exec(`INSERT INTO custom_entities (id, type_name, title) VALUES (?,?,?)`, id, typeName, resolved["title"])
+				} else {
+					_, dbErr = db.Exec(`UPDATE custom_entities SET title=? WHERE id=?`, resolved["title"], id)
+				}
+				if dbErr == nil {
+					for _, k := range propKeys {
+						_, _ = db.Exec(`INSERT INTO entity_properties (entity_type, entity_id, key, value) VALUES (?,?,?,?)
+							ON CONFLICT(entity_type, entity_id, key) DO UPDATE SET value=excluded.value`, typeName, id, k, resolved[k])
+					}
+				}
+			}
+			if dbErr == nil {
+				applied++
+				if !vaultMatches {
+					e := &domain.CustomEntity{ID: id, TypeName: typeName, Title: resolved["title"], Props: map[string]string{}}
+					for _, k := range propKeys {
+						e.Props[k] = resolved[k]
+					}
+					_ = v.WriteEntityMD(typeName, id, customEntityFM(e), vaultEntityBody(v, typeName, id))
+				}
+			}
+		}
+		if dbErr == nil {
+			setVaultSyncFields(db, typeName, id, resolved)
+		}
+	}
+	return applied
 }
 
 // ── Vault Sync Handler ────────────────────────────────────────────────────────
@@ -4546,8 +5943,11 @@ func vaultSyncHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		ins, upd := syncVaultToSQLite(v, dbPath)
-		writeJSON(w, 200, map[string]int{"inserted": ins, "updated": upd})
+		applied, conflicts := twoWaySyncVault(v, dbPath)
+		if conflicts == nil {
+			conflicts = []syncConflict{}
+		}
+		writeJSON(w, 200, map[string]any{"applied": applied, "conflicts": conflicts})
 	}
 }
 
@@ -4643,7 +6043,44 @@ func customTypeHandler(store storage.Storage) http.HandlerFunc {
 // ── Workspaces Handler ────────────────────────────────────────────────────────
 
 // workspacesHandler handles GET/POST /api/workspaces
-func workspacesHandler(store storage.Storage) http.HandlerFunc {
+// workspaceFM builds the vault frontmatter for a workspace's raibis/workspace/workspace-{id}.md file.
+func workspaceFM(ws *domain.Workspace) map[string]any {
+	return map[string]any{
+		"id":       ws.ID,
+		"title":    ws.Name,
+		"aliases":  []string{ws.Name},
+		"icon":     ws.Icon,
+		"position": ws.Position,
+	}
+}
+
+// workspaceLinksBody lists the entity types currently assigned to a
+// workspace — analogous to the "## Sub-items"/"## Children" sections other
+// entity types get, just listing type keys rather than wiki-linking to
+// individual records (entity types don't have their own vault pages).
+func workspaceLinksBody(ws *domain.Workspace) string {
+	if len(ws.EntityTypes) == 0 {
+		return ""
+	}
+	lines := []string{"", "## Entity Types"}
+	for _, et := range ws.EntityTypes {
+		lines = append(lines, fmt.Sprintf("- %s", et))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// refreshWorkspaceVaultFoldersAt is refreshWorkspaceVaultFolders for callers
+// that only have dbPath, not an already-open *sql.DB (i.e. HTTP handlers).
+func refreshWorkspaceVaultFoldersAt(dbPath string, v *vault.Vault) {
+	db, err := openRawDB(dbPath)
+	if err != nil {
+		return
+	}
+	defer db.Close()
+	refreshWorkspaceVaultFolders(db, v)
+}
+
+func workspacesHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -4676,6 +6113,9 @@ func workspacesHandler(store storage.Storage) http.HandlerFunc {
 				return
 			}
 			ws.ID = id
+			if vlt != nil {
+				_ = vlt.WriteEntityMD("workspace", id, workspaceFM(&ws), workspaceLinksBody(&ws))
+			}
 			writeJSON(w, 201, ws)
 
 		default:
@@ -4686,7 +6126,7 @@ func workspacesHandler(store storage.Storage) http.HandlerFunc {
 
 // workspaceHandler handles PUT/DELETE /api/workspaces/{id} and
 // PUT /api/workspaces/{id}/entity-types
-func workspaceHandler(store storage.Storage) http.HandlerFunc {
+func workspaceHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.TrimPrefix(r.URL.Path, "/api/workspaces/")
 		rest = strings.TrimRight(rest, "/")
@@ -4724,6 +6164,10 @@ func workspaceHandler(store storage.Storage) http.HandlerFunc {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
+				_ = vlt.WriteEntityMD("workspace", id, workspaceFM(ws), workspaceLinksBody(ws))
+			}
 			writeJSON(w, 200, ws)
 			return
 		}
@@ -4745,12 +6189,20 @@ func workspaceHandler(store storage.Storage) http.HandlerFunc {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
+				_ = vlt.WriteEntityMD("workspace", id, workspaceFM(updated), workspaceLinksBody(updated))
+			}
 			writeJSON(w, 200, updated)
 
 		case http.MethodDelete:
 			if err := store.DeleteWorkspace(id); err != nil {
 				errJSON(w, 500, err.Error())
 				return
+			}
+			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
+				_ = vlt.DeleteEntityMD("workspace", id)
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
 
@@ -4837,7 +6289,7 @@ func customEntityLinksBody(typeName string, entityID int64, store storage.Storag
 	return strings.Join(lines, "\n")
 }
 
-func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc {
+func customEntitiesHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Parse path: /api/custom/{type} or /api/custom/{type}/{id}
 		// Strip prefix "/api/custom/"
@@ -4859,6 +6311,13 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 					errJSON(w, 500, err.Error())
 					return
 				}
+				var workspaceFilter *int64
+				if v := r.URL.Query().Get("workspace_id"); v != "" {
+					if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+						workspaceFilter = &id
+					}
+				}
+				entities = filterByWorkspace(entities, workspaceFilter, func(e *domain.CustomEntity) *int64 { return e.WorkspaceID })
 				if entities == nil {
 					entities = []*domain.CustomEntity{}
 				}
@@ -4881,6 +6340,7 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 				}
 				e.ID = id
 				if vlt != nil {
+					refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 					_ = vlt.WriteEntityMD(typeName, id, customEntityFM(&e), customEntityLinksBody(typeName, id, store))
 				}
 				writeJSON(w, 201, e)
@@ -4934,6 +6394,7 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 				return
 			}
 			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
 				_ = vlt.WriteEntityMD(typeName, entityID, customEntityFM(&e), customEntityLinksBody(typeName, entityID, store))
 			}
 			go rollup.TriggerPropagation(store, typeName, entityID)
@@ -4955,6 +6416,22 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault) http.Handler
 	}
 }
 
+// filterByWorkspace narrows items to those whose workspace (via get) matches
+// filter. filter == nil means "All workspaces" — no filtering, every item
+// passes through unchanged (including ones with no workspace of their own).
+func filterByWorkspace[T any](items []T, filter *int64, get func(T) *int64) []T {
+	if filter == nil {
+		return items
+	}
+	out := items[:0]
+	for _, it := range items {
+		if ws := get(it); ws != nil && *ws == *filter {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
 // fmDefault returns s if non-empty, otherwise def.
 func fmDefault(s, def string) string {
 	if s == "" {
@@ -4973,6 +6450,22 @@ func fmInt64(s string) any {
 		return nil
 	}
 	return n
+}
+
+// fmInt64Ptr parses a string as *int64, returning nil if empty or invalid.
+func fmInt64Ptr(s string) *int64 {
+	if n, ok := fmInt64(s).(int64); ok {
+		return &n
+	}
+	return nil
+}
+
+// strPtrOrNil returns nil for an empty string, otherwise a pointer to s.
+func strPtrOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // fmFloat64 parses a string as float64, returning nil if empty or invalid.
@@ -5879,7 +7372,21 @@ func runAutomations(store storage.Storage, svc service.TaskService, t *domain.Ta
 }
 
 // habitsHandler handles GET /api/habits and POST /api/habits.
-func habitsHandler(svc *service.HabitService) http.HandlerFunc {
+// habitFM builds the vault frontmatter for a Habit.
+func habitFM(h *domain.Habit) map[string]any {
+	fm := map[string]any{
+		"id":      h.ID,
+		"title":   h.Title,
+		"aliases": []string{h.Title},
+		"type":    string(h.Type),
+	}
+	if h.ReferenceID != nil && *h.ReferenceID != "" {
+		fm["reference_id"] = *h.ReferenceID
+	}
+	return fm
+}
+
+func habitsHandler(svc *service.HabitService, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -5888,20 +7395,29 @@ func habitsHandler(svc *service.HabitService) http.HandlerFunc {
 				errJSON(w, 500, err.Error())
 				return
 			}
+			var workspaceFilter *int64
+			if v := r.URL.Query().Get("workspace_id"); v != "" {
+				if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+					workspaceFilter = &id
+				}
+			}
+			habits = filterByWorkspace(habits, workspaceFilter, func(h *domain.Habit) *int64 { return h.WorkspaceID })
 			writeJSON(w, 200, habits)
 		case http.MethodPost:
 			var body struct {
 				Title       string `json:"title"`
 				Type        string `json:"type"`
 				ReferenceID string `json:"reference_id"`
+				WorkspaceID *int64 `json:"workspace_id"`
 			}
 			if err := readJSON(r, &body); err != nil {
 				errJSON(w, 400, "invalid JSON: "+err.Error())
 				return
 			}
 			h := &domain.Habit{
-				Title: body.Title,
-				Type:  domain.HabitType(body.Type),
+				Title:       body.Title,
+				Type:        domain.HabitType(body.Type),
+				WorkspaceID: body.WorkspaceID,
 			}
 			if body.ReferenceID != "" {
 				h.ReferenceID = &body.ReferenceID
@@ -5911,6 +7427,10 @@ func habitsHandler(svc *service.HabitService) http.HandlerFunc {
 				errJSON(w, 400, err.Error())
 				return
 			}
+			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
+				_ = vlt.WriteEntityMD("habit", created.ID, habitFM(created), "")
+			}
 			writeJSON(w, 201, created)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -5919,7 +7439,7 @@ func habitsHandler(svc *service.HabitService) http.HandlerFunc {
 }
 
 // habitHandler handles GET/PATCH/DELETE /api/habits/:id and sub-resources.
-func habitHandler(svc *service.HabitService) http.HandlerFunc {
+func habitHandler(svc *service.HabitService, vlt *vault.Vault, dbPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
 
@@ -6025,16 +7545,31 @@ func habitHandler(svc *service.HabitService) http.HandlerFunc {
 					h.ReferenceID = &s
 				}
 			}
+			if v, ok := body["workspace_id"]; ok {
+				if v == nil {
+					h.WorkspaceID = nil
+				} else if fv, ok := v.(float64); ok {
+					wid := int64(fv)
+					h.WorkspaceID = &wid
+				}
+			}
 			updated, err := svc.Update(h)
 			if err != nil {
 				errJSON(w, 400, err.Error())
 				return
+			}
+			if vlt != nil {
+				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
+				_ = vlt.WriteEntityMD("habit", updated.ID, habitFM(updated), "")
 			}
 			writeJSON(w, 200, updated)
 		case http.MethodDelete:
 			if err := svc.Delete(id); err != nil {
 				errJSON(w, 500, err.Error())
 				return
+			}
+			if vlt != nil {
+				_ = vlt.DeleteEntityMD("habit", id)
 			}
 			writeJSON(w, 200, map[string]bool{"ok": true})
 		default:

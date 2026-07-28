@@ -385,17 +385,51 @@ async function injectListIcons(entityType, ids) {
 /* ─── State ──────────────────────────────────────────────────────────── */
 let customEntityTypes = [];
 // Workspaces group entity types (built-in or custom) under a named
-// container. An entity type belongs to at most one workspace; unassigned
-// types are "General" — always visible regardless of the active workspace.
+// container. An entity type can be assigned to more than one workspace at
+// once (e.g. both "Work" and "School" show a Tasks section); which specific
+// records show under each workspace is controlled by that record's own
+// workspace_id, not by this assignment. Records with no workspace_id are
+// "General" — visible only in the "All workspaces" view.
 let workspaces = [];
 let activeWorkspaceId = (() => {
   const v = localStorage.getItem('activeWorkspaceId');
   return v ? parseInt(v) : null;
 })();
+
+// withWorkspaceFilter appends the active workspace as a query param when one
+// is selected, so list endpoints only return that workspace's own records.
+// A no-op in "All workspaces" mode (activeWorkspaceId == null).
+function withWorkspaceFilter(url) {
+  if (activeWorkspaceId == null) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'workspace_id=' + activeWorkspaceId;
+}
+
+// withActiveWorkspace stamps a new record's create payload with the active
+// workspace, so it shows up under that workspace instead of vanishing into
+// "unassigned". A no-op in "All workspaces" mode, or if the caller already
+// set workspace_id explicitly.
+function withActiveWorkspace(body) {
+  if (activeWorkspaceId == null || (body && body.workspace_id != null)) return body;
+  return { ...body, workspace_id: activeWorkspaceId };
+}
 let currentView = 'dashboard';
 let _connectedPropTypesCache = null;
 let currentParams = null;
 let navHistory = []; // [{view, params, label}]
+
+// ── App tabs ─────────────────────────────────────────────────────────────
+// Each top-level nav destination gets at most one tab (deduped by `view`) —
+// navigating there always switches to/creates that tab rather than
+// replacing whatever the currently active tab shows. Detail sub-views
+// (project-detail, etc.) render inside the active tab without their own tab.
+let openTabs = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem('openTabs') || 'null');
+    if (Array.isArray(saved) && saved.length) return saved;
+  } catch(e) {}
+  return [{ id: 'tab-dashboard', view: 'dashboard', label: 'Dashboard' }];
+})();
+let activeTabId = localStorage.getItem('activeTabId') || openTabs[0].id;
 let allTags = [];
 let allCategories = [];
 // Single slot for the active view's propDefsChanged callback — replaced on each view mount
@@ -1275,6 +1309,19 @@ function openPropManager(btnEl, entity) {
       : `<div class="prop-mgr-empty">No custom properties yet</div>`;
 
     const curFmt = getDateFormat();
+    // Metrics-on-cards lives here (view-level settings) rather than in
+    // per-record Manage Widgets, since "does this entity's Cards view show
+    // the metric" is a view concern, not a per-record one — the widget
+    // layout itself is already entity-type-scoped either way.
+    const metricsWidget = getWidgetLayout(entity).find(w => w.type === 'metrics');
+    const metricsSection = metricsWidget ? `
+      <div style="border-top:1px solid var(--border);padding:10px 12px 8px">
+        <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:6px">Metrics on cards</div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="prop-mgr-metrics-cards" ${metricsWidget.showInCards ? 'checked' : ''} style="cursor:pointer;accent-color:var(--accent)">
+          Show on cards in Cards view
+        </label>
+      </div>` : '';
     panel.innerHTML = `
       <div class="prop-mgr-header">
         <span>Properties · ${entity.charAt(0).toUpperCase()+entity.slice(1)}</span>
@@ -1294,7 +1341,8 @@ function openPropManager(btnEl, entity) {
           <option value="eu"${curFmt==='eu'?' selected':''}>22/06/2026 (EU)</option>
           <option value="iso"${curFmt==='iso'?' selected':''}>2026-06-22 (ISO)</option>
         </select>
-      </div>`;
+      </div>
+      ${metricsSection}`;
 
     // Show edit button on hover (CSS already handles del; add same for edit)
     panel.querySelectorAll('.prop-mgr-row').forEach(row => {
@@ -1332,6 +1380,12 @@ function openPropManager(btnEl, entity) {
     bindAddPropBtn(entity, () => { render(); document.dispatchEvent(new CustomEvent('propDefsChanged', { detail: { entity } })); });
     const dateFmtSel = document.getElementById('prop-mgr-date-fmt');
     if (dateFmtSel) dateFmtSel.onchange = () => { localStorage.setItem('_globalDateFormat', dateFmtSel.value); renderView(currentView); };
+    const metricsCardsCb = document.getElementById('prop-mgr-metrics-cards');
+    if (metricsCardsCb) metricsCardsCb.onchange = () => {
+      const lay = getWidgetLayout(entity);
+      const mw = lay.find(w => w.type === 'metrics');
+      if (mw) { mw.showInCards = metricsCardsCb.checked; saveWidgetLayout(entity, lay); renderView(currentView); }
+    };
   }
 
   const panel = document.createElement('div');
@@ -1804,6 +1858,7 @@ const CUSTOM_PROP_TYPES = [
   { type: 'multi_select', label: 'Multi-select', icon: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3" cy="6" r="2"/><circle cx="3" cy="12" r="2"/><circle cx="3" cy="18" r="2"/>' },
   { type: 'status',       label: 'Status',       icon: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>' },
   { type: 'date',         label: 'Date',         icon: '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>' },
+  { type: 'schedule',     label: 'Schedule',     icon: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>' },
   { type: 'checkbox',     label: 'Checkbox',     icon: '<polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>' },
   { type: 'url',          label: 'URL',          icon: '<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>' },
   { type: 'phone',        label: 'Phone',        icon: '<path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 8.81 19.79 19.79 0 01.02 2.18 2 2 0 012 0h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L6.09 7.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/>' },
@@ -2106,7 +2161,10 @@ function collectRollupChildren(parentId, childTypeFilter, parentEntityKey) {
   return out;
 }
 
-// Pure calculation: returns the aggregated number, or null when not computable.
+// Pure calculation: returns the aggregated number, an array of {value,count}
+// breakdown rows (only for 'tally' with no single match_value chosen — text
+// display only, a bar/ring can't represent more than one number), or null
+// when not computable.
 function evaluateRollup(entityKey, entityId, def) {
   const cfg = def && def.rollup;
   if (!cfg || !cfg.target_property || !cfg.operation) return null;
@@ -2116,6 +2174,19 @@ function evaluateRollup(entityKey, entityId, def) {
   switch (cfg.operation) {
     case 'count':
       return children.length;
+    case 'tally': {
+      const match = cfg.condition && cfg.condition.match_value;
+      if (match !== undefined && match !== '') {
+        return raw.filter(v => String(v) === String(match)).length;
+      }
+      // No single value chosen — tally every distinct value that appears
+      // (e.g. status: todo=1, done=10, doing=3) instead of forcing the user
+      // to either pick one value or fall into a meaningless numeric sum of
+      // category strings.
+      const tally = {};
+      raw.forEach(v => { tally[v] = (tally[v] || 0) + 1; });
+      return Object.entries(tally).map(([value, count]) => ({ value, count }));
+    }
     case 'sum':
       return raw.reduce((a, v) => a + (parseFloat(v) || 0), 0);
     case 'average': {
@@ -2145,7 +2216,9 @@ function recalcEntityRollups(entityKey, entityId, visited) {
   visited.add(vkey);
   getCustomPropDefs(entityKey).filter(d => d.type === 'rollup').forEach(def => {
     const computed = evaluateRollup(entityKey, entityId, def);
-    if (computed === null) return;
+    // A tally breakdown (array) is display-only, computed fresh on every
+    // render — there's no single scalar to persist or cascade upward from.
+    if (computed === null || Array.isArray(computed)) return;
     const rounded = Math.round(computed * 100) / 100;
     const cur = parseFloat(getCustomPropValues(entityKey, entityId)[def.key]);
     if (cur === rounded) return; // unchanged — stop the write (and the cascade)
@@ -2160,6 +2233,13 @@ function recalcEntityRollups(entityKey, entityId, visited) {
 // text (∑ n), progress_bar (minimal track+fill), ring (SVG percentage ring).
 function renderRollupCardWidget(def, value) {
   const cfg = (def && def.rollup) || {};
+  const label0 = escHtml(def.label || def.key || '');
+  // A tally breakdown has no single number a bar/ring could represent —
+  // always render it as text, regardless of the rule's display setting.
+  if (Array.isArray(value)) {
+    const text = value.length ? value.map(x => `${escHtml(String(x.value))}: ${x.count}`).join(', ') : '—';
+    return `<div class="rollup-bar-row" title="${label0}: ${text}"><span class="rollup-bar-label">${label0}</span><span class="rollup-bar-num">${text}</span></div>`;
+  }
   const num = parseFloat(value);
   const has = !isNaN(num);
   const isPct = cfg.operation === 'percentage_match';
@@ -2191,6 +2271,10 @@ function renderRollupCardWidget(def, value) {
 // Shared display formatting for a rollup value.
 function renderRollupValue(val, def) {
   const editHint = `<svg class="rollup-edit-hint" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+  if (Array.isArray(val)) {
+    const text = val.length ? val.map(x => `${escHtml(String(x.value))}: ${x.count}`).join(', ') : '—';
+    return `<span style="font-size:12px;color:var(--text-secondary);display:inline-flex;align-items:center;gap:6px" title="Calculated rollup — click to edit">∑ ${text}${editHint}</span>`;
+  }
   const num = parseFloat(val);
   if (val === '' || val === undefined || val === null || isNaN(num)) {
     return `<span class="empty" title="Not yet calculated — click to edit rule" style="display:inline-flex;align-items:center;gap:6px">∑ —${editHint}</span>`;
@@ -3213,7 +3297,7 @@ function showAddOptionsPanel(anchorBtn, key, name, type, entity, onAdd, descript
 
   renderPanel();
   const rect = anchorBtn.getBoundingClientRect();
-  panel.style.cssText = `position:fixed;z-index:9200;min-width:270px;top:${rect.bottom+4}px;left:${rect.left}px`;
+  panel.style.cssText = `position:fixed;z-index:10050;min-width:270px;top:${rect.bottom+4}px;left:${rect.left}px`;
   document.body.appendChild(panel);
   requestAnimationFrame(() => {
     const cr = panel.getBoundingClientRect();
@@ -3302,7 +3386,7 @@ function showAddRelationPanel(anchorBtn, key, name, entity, onAdd, description) 
 
   renderPanel();
   const rect = anchorBtn.getBoundingClientRect();
-  panel.style.cssText = `position:fixed;z-index:9200;min-width:270px;top:${rect.bottom+4}px;left:${rect.left}px`;
+  panel.style.cssText = `position:fixed;z-index:10050;min-width:270px;top:${rect.bottom+4}px;left:${rect.left}px`;
   document.body.appendChild(panel);
   requestAnimationFrame(() => {
     const cr = panel.getBoundingClientRect();
@@ -3350,7 +3434,7 @@ function syncPropDefsToServer(entity) {
 // ── showAddRollupPanel ─────────────────────────────────────────────────────
 // Cascading config panel for a Rollup-typed property.
 // Builds: child_entity_type → target_property → operation → conditional UI.
-function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup, description) {
+function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup, description, opts) {
   document.getElementById('add-prop-rollup-picker')?.remove();
   const panel = document.createElement('div');
   panel.id = 'add-prop-rollup-picker';
@@ -3426,11 +3510,13 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
         <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Operation</div>
         <select id="rl-operation" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
           <option value="percentage_match" ${cfg.operation==='percentage_match'?'selected':''}>% Exact Match</option>
+          <option value="tally" ${cfg.operation==='tally'?'selected':''}>Count by value</option>
           <option value="sum" ${cfg.operation==='sum'?'selected':''}>Sum</option>
           <option value="average" ${cfg.operation==='average'?'selected':''}>Average (assign values)</option>
         </select>
       </div>
 
+      ${!(cfg.operation === 'tally' && !cfg.condition?.match_value) ? `
       <div style="padding:4px 10px 2px">
         <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Display as</div>
         <select id="rl-display" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
@@ -3438,19 +3524,20 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
           <option value="progress_bar" ${cfg.display==='progress_bar'?'selected':''}>Progress bar</option>
           <option value="ring" ${cfg.display==='ring'?'selected':''}>Percentage ring</option>
         </select>
-      </div>
+      </div>` : `
+      <div style="padding:4px 10px 2px;font-size:11px;color:var(--text-muted)">Shown as text — a bar/ring can't represent a breakdown of every value.</div>`}
 
-      ${cfg.operation === 'percentage_match' && propOptions.length ? `
+      ${(cfg.operation === 'percentage_match' || cfg.operation === 'tally') && propOptions.length ? `
         <div style="padding:4px 10px 2px">
-          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Match value</div>
+          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Match value${cfg.operation==='tally' ? ' (optional)' : ''}</div>
           <select id="rl-match-val" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
-            <option value="">— select value —</option>
+            <option value="">${cfg.operation==='tally' ? '— all values (breakdown) —' : '— select value —'}</option>
             ${propOptions.map(o => `<option value="${escHtml(o)}" ${(cfg.condition?.match_value||'')=== o?'selected':''}>${escHtml(o)}</option>`).join('')}
           </select>
         </div>
-      ` : cfg.operation === 'percentage_match' && cfg.target_property ? `
+      ` : (cfg.operation === 'percentage_match' || cfg.operation === 'tally') && cfg.target_property ? `
         <div style="padding:4px 10px 2px">
-          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Match value</div>
+          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Match value${cfg.operation==='tally' ? ' (optional — leave blank for a full breakdown)' : ''}</div>
           <input id="rl-match-val-txt" type="text" value="${escHtml(cfg.condition?.match_value||'')}" placeholder="Exact value to match…"
             style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box"/>
         </div>
@@ -3487,14 +3574,14 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
       cfg.value_map = {};
       render();
     };
-    panel.querySelector('#rl-display').onchange = (e) => { cfg.display = e.target.value; };
+    panel.querySelector('#rl-display')?.addEventListener('change', (e) => { cfg.display = e.target.value; });
     panel.querySelector('#rl-operation').onchange = (e) => {
       cfg.operation = e.target.value;
       cfg.condition = { match_value: '' };
       cfg.value_map = {};
       render();
     };
-    panel.querySelector('#rl-match-val')?.addEventListener('change', (e) => { cfg.condition = { match_value: e.target.value }; });
+    panel.querySelector('#rl-match-val')?.addEventListener('change', (e) => { cfg.condition = { match_value: e.target.value }; render(); });
     panel.querySelector('#rl-match-val-txt')?.addEventListener('input', (e) => { cfg.condition = { match_value: e.target.value }; });
     panel.querySelectorAll('.rl-vm-inp').forEach(inp => {
       inp.oninput = () => {
@@ -3516,9 +3603,18 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
       // Build final rollup config (only include non-empty fields)
       const rollupConfig = { target_property: cfg.target_property, operation: cfg.operation };
       if (cfg.child_entity_type) rollupConfig.child_entity_type = cfg.child_entity_type;
-      if (cfg.operation === 'percentage_match') rollupConfig.condition = { match_value: cfg.condition.match_value };
+      if ((cfg.operation === 'percentage_match' || cfg.operation === 'tally') && cfg.condition?.match_value) rollupConfig.condition = { match_value: cfg.condition.match_value };
       if (cfg.operation === 'average' && Object.keys(cfg.value_map || {}).length > 0) rollupConfig.value_map = cfg.value_map;
       if (cfg.display && cfg.display !== 'text') rollupConfig.display = cfg.display;
+
+      // Callers outside the custom-property system (e.g. the Metrics widget)
+      // pass opts.onSave to persist the config themselves instead of it being
+      // pushed into this entity's custom prop defs.
+      if (opts && opts.onSave) {
+        panel.remove();
+        opts.onSave(rollupConfig);
+        return;
+      }
 
       // Upsert: editing an existing rollup replaces its rule in place
       const defs = getCustomPropDefs(entity);
@@ -3541,7 +3637,7 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
 
   render();
   const rect = anchorBtn.getBoundingClientRect();
-  panel.style.cssText = `position:fixed;z-index:9200;min-width:286px;max-height:70vh;overflow-y:auto;top:${rect.bottom+4}px;left:${rect.left}px`;
+  panel.style.cssText = `position:fixed;z-index:10050;min-width:286px;max-height:70vh;overflow-y:auto;top:${rect.bottom+4}px;left:${rect.left}px`;
   document.body.appendChild(panel);
   requestAnimationFrame(() => {
     const cr = panel.getBoundingClientRect();
@@ -3582,7 +3678,7 @@ function bindAddPropBtn(entity, onAdd) {
 
       // Position fixed from viewport rect — escapes overflow:auto clipping in slideovers
       const bRect = btn.getBoundingClientRect();
-      picker.style.cssText = `position:fixed;z-index:9100;min-width:280px;padding:8px 6px 6px;top:${bRect.bottom+4}px;left:${bRect.left}px`;
+      picker.style.cssText = `position:fixed;z-index:10040;min-width:280px;padding:8px 6px 6px;top:${bRect.bottom+4}px;left:${bRect.left}px`;
       document.body.appendChild(picker);
       requestAnimationFrame(() => {
         const cr = picker.getBoundingClientRect();
@@ -3618,7 +3714,7 @@ function bindAddPropBtn(entity, onAdd) {
               <button id="add-prop-name-confirm" class="btn btn-sm btn-primary" style="white-space:nowrap">Add</button>
             </div>`;
           const bRect2 = btn.getBoundingClientRect();
-          namePicker.style.cssText = `position:fixed;z-index:9200;min-width:260px;top:${bRect2.bottom+4}px;left:${bRect2.left}px`;
+          namePicker.style.cssText = `position:fixed;z-index:10050;min-width:260px;top:${bRect2.bottom+4}px;left:${bRect2.left}px`;
           document.body.appendChild(namePicker);
           const nameInp = document.getElementById('add-prop-name-input');
           const descInp = document.getElementById('add-prop-desc-input');
@@ -3718,7 +3814,9 @@ function renderCustomPropChips(entity, recordId, viewMode, excludeDates) {
     if (def.type !== 'rollup' && def.type !== 'checkbox' && !val && val !== false && val !== 0) return '';
     if (def.type === 'rollup') {
       const fresh = evaluateRollup(entity, recordId, def);
-      const rv = fresh !== null ? Math.round(fresh * 100) / 100 : val;
+      const rv = fresh === null ? val : Array.isArray(fresh) ? fresh : Math.round(fresh * 100) / 100;
+      // Same bar/ring/text widget in every view — kept consistent across
+      // List/Table/Kanban/Cards by design rather than Card-only.
       return (rv === '' || rv === undefined || rv === null) ? '' : renderRollupCardWidget(def, rv);
     }
     if (def.type === 'checkbox') {
@@ -3742,6 +3840,11 @@ function renderCustomPropChips(entity, recordId, viewMode, excludeDates) {
       // Same treatment as Task's own Due Date badge — plain colored mono
       // text (overdue/today/soon), not a labeled pill like other props.
       return `<span class="task-due" style="font-size:10px;color:${dueDateColor(val)}"${tipAttrs(def.label, def.description)}>${fmtDate(val)}</span>`;
+    }
+    if (def.type === 'schedule') {
+      const sv = parseScheduleValue(val);
+      if (!sv) return '';
+      return `<span class="task-due" style="font-size:10px;color:${dueDateColor(sv.date)}"${tipAttrs(def.label, def.description)}>${fmtScheduleValue(val)}</span>`;
     }
     const display = String(val);
     if (!display) return '';
@@ -4069,6 +4172,12 @@ function buildInlinePropPanel(entity, recordId, builtinDefs, excludeKeys) {
             // shared vanilla global widget, opened via onEditRequest below.
             return `<span class="svelte-date-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-display="${escHtml(fmtDate(val)||val||'')}" onclick="event.stopPropagation()"></span>`;
           }
+          if (custom.type === 'schedule') {
+            // Same dumb-display DateProp mount as 'date' — bindInlinePropPanel
+            // tells them apart by looking up the def's type and opens the
+            // schedule picker (date + time) instead of the plain date one.
+            return `<span class="svelte-date-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-display="${escHtml(fmtScheduleValue(val))}" onclick="event.stopPropagation()"></span>`;
+          }
           if (custom.type === 'select' || custom.type === 'status') {
             const color = (custom.optionColors || {})[val] || '';
             return `<span class="svelte-select-mount" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${key}" data-value="${escHtml(val||'')}" data-color="${escHtml(color)}" onclick="event.stopPropagation()"></span>`;
@@ -4234,8 +4343,10 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
     svelteInstances.push(window.RaibisSvelte.mountDateProp(mountEl, {
       display: mDisplay || '',
       onEditRequest: () => {
+        const def = getCustomPropDefs(mEntity).find(d => d.key === mPropKey);
         const cur = getCustomPropValues(mEntity, mRecordId)[mPropKey] ?? '';
-        openSingleDatePickerGlobal(mountEl, cur || null, (val) => {
+        const openPicker = def && def.type === 'schedule' ? openSchedulePickerGlobal : openSingleDatePickerGlobal;
+        openPicker(mountEl, cur || null, (val) => {
           setCustomPropValue(mEntity, mRecordId, mPropKey, val || '');
           onRerender();
         });
@@ -4312,19 +4423,22 @@ function bindInlinePropPanel(entity, recordId, builtinEditFns, onRerender, root)
     if (fn) valEl.onclick = (e) => { e.stopPropagation(); fn(valEl); };
   });
 
-  // Wire custom prop value clicks (inline edit)
+  // Wire custom prop value clicks (inline edit). The Svelte mounts each own
+  // their real click target (a `role="button"` span/input/button), but that
+  // target is only as big as its own content — a bare "—" for an empty
+  // value is a couple pixels wide. Forward any click on the row's value
+  // cell to that inner control so the whole cell is clickable, not just
+  // the rendered glyph.
   panel.querySelectorAll('.inline-prop-row[data-is-custom="true"] .inline-prop-value').forEach(valEl => {
     const key = valEl.dataset.propKey;
     const defs = getCustomPropDefs(entity);
     const def = defs.find(d => d.key === key);
-    if (!def) return;
-    if (def.type === 'checkbox') return; // handled by Svelte CheckboxProp directly
-    if (def.type === 'text' || def.type === 'number' || def.type === 'email' || def.type === 'phone' || def.type === 'url') return; // handled by Svelte TextProp directly
-    if (def.type === 'rollup') return; // handled by Svelte RollupProp directly
-    if (def.type === 'date') return; // handled by Svelte DateProp directly
-    if (def.type === 'select' || def.type === 'status') return; // handled by Svelte SelectProp directly
-    if (def.type === 'relation') return; // handled by Svelte RelationProp directly
-    if (def.type === 'multi_select') return; // handled by Svelte MultiSelectProp directly
+    if (!def || def.type === 'checkbox') return; // checkbox's own hit target is the expected click point
+    valEl.onclick = (e) => {
+      if (e.target.closest('[role="button"], input, button')) return; // already reached the inner control directly
+      e.stopPropagation();
+      valEl.querySelector('[role="button"], input, button')?.click();
+    };
   });
 
   // Wire delete buttons (remove custom prop def + values from all records)
@@ -4505,6 +4619,27 @@ function fmtDateShort(dateStr) {
   const s = stripDate(dateStr);
   const [y, m, day] = s.split('-');
   return `${day}/${m}/${y}`;
+}
+
+// Schedule-type custom prop value: {date:'YYYY-MM-DD', time:'HH:MM'|null},
+// stored JSON-encoded in the same flat customPropVals string store every
+// other custom prop type uses (relation/multi_select already store JSON
+// there the same way).
+function parseScheduleValue(val) {
+  if (!val) return null;
+  try { const o = JSON.parse(val); return o && o.date ? o : null; } catch { return null; }
+}
+function fmtTime12h(hhmm) {
+  if (!hhmm) return '';
+  const [h, m] = hhmm.split(':').map(Number);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return `${h12}:${String(m).padStart(2,'0')} ${ampm}`;
+}
+function fmtScheduleValue(val) {
+  const o = parseScheduleValue(val);
+  if (!o) return '';
+  return o.time ? `${fmtDate(o.date)}, ${fmtTime12h(o.time)}` : fmtDate(o.date);
 }
 
 function isOverdue(dateStr) {
@@ -5483,14 +5618,21 @@ function closeSlideover() {
    add/remove calls used to leave stale offsets (FABs floating mid-screen). */
 function syncFabPanelClasses() {
   const fab = document.getElementById('fab-group');
-  if (!fab) return;
   const fsOpen = document.body.classList.contains('fullscreen-open');
   const formOpen = !fsOpen && document.getElementById('form-slideover')?.classList.contains('open');
   const mainOpen = !fsOpen && !formOpen && document.getElementById('slideover')?.classList.contains('open');
   const aiOpen = !fsOpen && !formOpen && !mainOpen && document.getElementById('ai-panel')?.classList.contains('open');
-  fab.classList.toggle('panel-open-form', !!formOpen);
-  fab.classList.toggle('panel-open-main', !!mainOpen);
-  fab.classList.toggle('panel-open-ai', !!aiOpen);
+  if (fab) {
+    fab.classList.toggle('panel-open-form', !!formOpen);
+    fab.classList.toggle('panel-open-main', !!mainOpen);
+    fab.classList.toggle('panel-open-ai', !!aiOpen);
+  }
+  // The schedule dock/toggle hides outright (rather than shifting alongside,
+  // like the FAB group does) whenever an editing slideover is open.
+  const sdToggle = document.getElementById('schedule-dock-toggle');
+  const sdDock = document.getElementById('schedule-dock');
+  if (sdToggle) { sdToggle.classList.toggle('panel-open-form', !!formOpen); sdToggle.classList.toggle('panel-open-main', !!mainOpen); }
+  if (sdDock) { sdDock.classList.toggle('panel-open-form', !!formOpen); sdDock.classList.toggle('panel-open-main', !!mainOpen); }
 }
 
 /* ─── Form Slideover (for create/edit forms) ─────────────────────────── */
@@ -5565,7 +5707,257 @@ function updateBreadcrumb(view, params, detailLabel, ancestorCrumbs = []) {
   });
 }
 
+// Detail sub-views (project-detail, goal-detail, sprint-detail, custom-
+// detail) render inside whichever tab is already active instead of getting
+// their own tab — every other view reachable from the sidebar does.
+function isTabbableView(view) {
+  return !!view && !view.endsWith('-detail');
+}
+
+function tabLabelFor(view) {
+  if (view.startsWith('custom:')) {
+    const t = (customEntityTypes || []).find(t => t.name === view.slice(7));
+    return t ? (t.display_name || t.name) : view.slice(7);
+  }
+  if (view.startsWith('taxonomy:')) {
+    const key = view.slice(9);
+    const tp = getGlobalTaxonomyProps().find(t => t.key === key);
+    return tp ? tp.label : key;
+  }
+  const link = document.querySelector(`.sidebar-nav [data-view="${view}"] span:not(.nav-icon)`);
+  if (link && link.textContent.trim()) return link.textContent.trim();
+  return view.charAt(0).toUpperCase() + view.slice(1);
+}
+
+// Small icon shown before a tab's label — reuses whatever icon the sidebar
+// nav already renders for that view rather than inventing a second set.
+function tabIconFor(view) {
+  if (view.startsWith('custom:')) {
+    const t = (customEntityTypes || []).find(t => t.name === view.slice(7));
+    if (t?.icon) return t.icon.startsWith('__svg:') ? renderEntityIcon(t.icon, 13) : `<span style="font-size:12px">${t.icon}</span>`;
+    return '';
+  }
+  const iconEl = document.querySelector(`.sidebar-nav [data-view="${view}"] .nav-icon`);
+  return iconEl ? iconEl.outerHTML : '';
+}
+
+function saveTabs() {
+  localStorage.setItem('openTabs', JSON.stringify(openTabs));
+  localStorage.setItem('activeTabId', activeTabId);
+}
+
+// A new, explicit tab (the "+" button) — opens a search palette so the user
+// picks what the new tab shows, rather than always landing on Dashboard.
+// Nav clicks never spawn a tab on their own; they just update whichever tab
+// is currently active (see renderView) so opening N tabs is always a
+// deliberate "+" action.
+function addNewTab() {
+  openTabSearchPalette();
+}
+
+// Reuses whatever the sidebar nav already renders (built-in views, custom
+// entity types, taxonomy props) as the searchable destination list instead
+// of maintaining a second copy of it. Typing also searches individual
+// records of every entity type (via the same fetch the schedule feature
+// uses); picking one opens a new tab redirected to that item's full window.
+function openTabSearchPalette() {
+  closeTabSearchPalette();
+  const items = Array.from(document.querySelectorAll('.sidebar-nav a.nav-item[data-view]')).map(a => ({
+    kind: 'view',
+    view: a.dataset.view,
+    label: a.querySelector('span:not(.nav-icon)')?.textContent.trim() || a.dataset.view,
+    icon: a.querySelector('.nav-icon')?.outerHTML || '',
+  }));
+  // entityKey → the sidebar view whose icon/list this record type belongs to
+  const RECORD_VIEW = { task: 'tasks', goal: 'goals', project: 'projects', sprint: 'sprints', note: 'notes', resource: 'resources', habit: 'habits' };
+  let records = null;          // lazily fetched on first keystroke
+  let recordsLoading = false;
+  let filtered = items;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'tab-search-overlay';
+  overlay.id = 'tab-search-overlay';
+  overlay.innerHTML = `
+    <div class="tab-search-modal">
+      <div class="tab-search-input-wrap">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="tab-search-input" placeholder="Open in new tab…" autocomplete="off" />
+      </div>
+      <div class="tab-search-list" id="tab-search-list"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  async function loadRecords() {
+    if (records || recordsLoading) return;
+    recordsLoading = true;
+    try {
+      const sources = await fetchScheduleEntitySources();
+      records = [];
+      sources.forEach(([entityKey, recs]) => {
+        const listView = entityKey.startsWith('custom_') ? `custom:${entityKey.slice(7)}` : RECORD_VIEW[entityKey];
+        if (!listView) return;
+        const typeLabel = tabLabelFor(listView);
+        const icon = tabIconFor(listView);
+        (recs || []).forEach(r => {
+          const title = r.title || r.name || '';
+          if (title) records.push({ kind: 'record', entityKey, id: r.id, label: title, icon, typeLabel });
+        });
+      });
+    } catch(e) { records = []; }
+    recordsLoading = false;
+    applyFilter();
+  }
+
+  function applyFilter() {
+    const f = document.getElementById('tab-search-input')?.value.trim().toLowerCase() || '';
+    if (!f) { filtered = items; renderList(); return; }
+    const views = items.filter(i => i.label.toLowerCase().includes(f));
+    const recs = (records || []).filter(r => r.label.toLowerCase().includes(f)).slice(0, 20);
+    filtered = [...views, ...recs];
+    renderList();
+  }
+
+  function selectItem(item) {
+    if (!item) return;
+    const tab = { id: `tab-${nanoid()}`, view: item.view || 'dashboard', label: item.label, icon: item.icon };
+    openTabs.push(tab);
+    activeTabId = tab.id;
+    saveTabs();
+    renderTabBar();
+    closeTabSearchPalette();
+    if (item.kind === 'record') {
+      const k = item.entityKey;
+      const id = String(item.id);
+      if (k === 'goal' || k === 'project' || k === 'sprint') {
+        renderView(`${k}-detail`, id);
+      } else if (k.startsWith('custom_')) {
+        renderView('custom-detail', `${k.slice(7)}/${id}`);
+      } else {
+        // No dedicated detail view for this type — its list view plus the
+        // item's slideover is the fullest window it has. renderView's own
+        // "relabel tabbable views" hook fires for the list view (it isn't a
+        // '-detail' view) and stomps this tab's label back to e.g. "Tasks" —
+        // re-stamp the record's own title/icon right after so the tab still
+        // reads "Task1", not the generic list name.
+        renderView(RECORD_VIEW[k] || 'dashboard', null);
+        const t = openTabs.find(x => x.id === tab.id);
+        if (t) { t.label = item.label; t.icon = item.icon; saveTabs(); renderTabBar(); }
+        openScheduledItemSlideover(k, item.id, () => renderView(currentView, currentParams));
+      }
+      return;
+    }
+    renderView(item.view, null);
+  }
+
+  function renderList() {
+    const list = document.getElementById('tab-search-list');
+    if (!list) return;
+    list.innerHTML = filtered.map((it, idx) => `
+      <div class="tab-search-item${idx === 0 ? ' active' : ''}" data-idx="${idx}">
+        <span class="tab-search-item-icon">${it.icon}</span>
+        <span class="tab-search-item-label">${escHtml(it.label)}</span>
+        ${it.typeLabel ? `<span class="tab-search-item-type">${escHtml(it.typeLabel)}</span>` : ''}
+      </div>`).join('') || `<div class="tab-search-empty">${recordsLoading ? 'Searching…' : 'No matches'}</div>`;
+    list.querySelectorAll('.tab-search-item').forEach(el => {
+      el.onclick = () => selectItem(filtered[+el.dataset.idx]);
+    });
+  }
+
+  const input = overlay.querySelector('#tab-search-input');
+  input.oninput = () => {
+    if (input.value.trim()) loadRecords();
+    applyFilter();
+  };
+  input.onkeydown = (e) => {
+    const list = document.getElementById('tab-search-list');
+    const els = Array.from(list.querySelectorAll('.tab-search-item'));
+    let idx = els.findIndex(el => el.classList.contains('active'));
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      idx = e.key === 'ArrowDown' ? Math.min(idx + 1, els.length - 1) : Math.max(idx - 1, 0);
+      els.forEach(el => el.classList.remove('active'));
+      els[idx]?.classList.add('active');
+      els[idx]?.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const el = els[idx];
+      if (el) selectItem(filtered[+el.dataset.idx]);
+    } else if (e.key === 'Escape') {
+      closeTabSearchPalette();
+    }
+  };
+  overlay.onclick = (e) => { if (e.target === overlay) closeTabSearchPalette(); };
+  renderList();
+  setTimeout(() => input.focus(), 30);
+}
+
+function closeTabSearchPalette() {
+  document.getElementById('tab-search-overlay')?.remove();
+}
+
+function closeTab(tabId) {
+  const idx = openTabs.findIndex(t => t.id === tabId);
+  if (idx === -1) return;
+  const wasActive = activeTabId === tabId;
+  openTabs.splice(idx, 1);
+  if (!openTabs.length) openTabs.push({ id: 'tab-dashboard', view: 'dashboard', label: 'Dashboard' });
+  if (wasActive) {
+    const next = openTabs[Math.max(0, idx - 1)];
+    activeTabId = next.id;
+    saveTabs();
+    renderTabBar();
+    renderView(next.view, next.params);
+    return;
+  }
+  saveTabs();
+  renderTabBar();
+}
+
+function renderTabBar() {
+  const bar = document.getElementById('tab-bar');
+  if (!bar) return;
+  bar.innerHTML = openTabs.map(t => `
+    <div class="app-tab${t.id === activeTabId ? ' active' : ''}" data-tab-id="${escHtml(t.id)}" title="${escHtml(t.label)}">
+      <span class="app-tab-icon">${t.icon || ''}</span>
+      <span class="app-tab-label">${escHtml(t.label)}</span>
+      ${openTabs.length > 1 ? `<button class="app-tab-close" data-tab-id="${escHtml(t.id)}" title="Close tab">×</button>` : ''}
+    </div>`).join('') + `<button class="app-tab-add" id="app-tab-add" title="New tab">+</button>`;
+  bar.querySelectorAll('.app-tab').forEach(el => {
+    el.onclick = (e) => {
+      if (e.target.closest('.app-tab-close')) return;
+      const tab = openTabs.find(t => t.id === el.dataset.tabId);
+      // Must flip activeTabId *before* renderView — otherwise renderView's
+      // own "sync active tab" hook looks up the tab we're leaving, not the
+      // one we clicked, and overwrites its state instead of switching to it.
+      if (tab) { activeTabId = tab.id; renderView(tab.view, tab.params); }
+    };
+  });
+  bar.querySelectorAll('.app-tab-close').forEach(btn => {
+    btn.onclick = (e) => { e.stopPropagation(); closeTab(btn.dataset.tabId); };
+  });
+  document.getElementById('app-tab-add').onclick = () => addNewTab();
+}
+
 function renderView(view, params) {
+  // Keep the active tab's own remembered state (view/params/label/icon) in
+  // sync with wherever we've navigated — including detail sub-views, so
+  // switching away and back restores exactly where this tab was left.
+  // Nav clicks never create a new tab on their own (only the "+" button
+  // does) — they just update whichever tab is currently active.
+  const activeTab = openTabs.find(t => t.id === activeTabId);
+  if (activeTab) {
+    activeTab.view = view;
+    activeTab.params = params || null;
+    // Detail sub-views (project-detail, etc.) keep the parent's label/icon
+    // (e.g. "Projects") rather than relabeling the tab to something detail-
+    // specific — only a genuine top-level nav destination updates these.
+    if (isTabbableView(view)) {
+      activeTab.label = tabLabelFor(view);
+      activeTab.icon = tabIconFor(view);
+    }
+    saveTabs();
+    renderTabBar();
+  }
   currentView = view;
   currentParams = params || null;
   closeSlideover();
@@ -5712,14 +6104,17 @@ async function loadWorkspaces() {
 }
 
 // true if entityTypeKey should show in the sidebar given the current
-// activeWorkspaceId — either no workspace is active (no filtering at all),
-// the type isn't assigned to any workspace ("General", always visible), or
-// it's assigned to the currently-active workspace.
+// activeWorkspaceId. "All workspaces" (activeWorkspaceId == null) shows
+// everything, unfiltered — that's the only place unassigned entity types
+// are visible/discoverable. Once a specific workspace is active, it shows
+// only the entity types assigned to THAT workspace's own list — checked
+// directly against the active workspace, not "whichever workspace claims
+// this type first", since a type can now be assigned to more than one
+// workspace at once (e.g. Tasks showing under both Work and School).
 function isEntityTypeVisibleInActiveWorkspace(entityTypeKey) {
   if (activeWorkspaceId == null) return true;
-  const owner = workspaces.find(w => (w.entity_types || []).includes(entityTypeKey));
-  if (!owner) return true;
-  return owner.id === activeWorkspaceId;
+  const active = workspaces.find(w => w.id === activeWorkspaceId);
+  return !!active && (active.entity_types || []).includes(entityTypeKey);
 }
 
 function applyWorkspaceFilterToNav() {
@@ -5745,13 +6140,23 @@ function renderWorkspaceSwitcher() {
     return;
   }
   const active = workspaces.find(w => w.id === activeWorkspaceId);
-  const label = active ? `${active.icon || '🗂️'} ${escHtml(active.name)}` : '🗂️ All workspaces';
+  const icon = active ? (active.icon || '🗂️') : '🗂️';
+  const label = active ? escHtml(active.name) : 'All workspaces';
+  // Trigger uses the same .nav-item styling as every other sidebar row
+  // (Dashboard, Tasks, …) instead of a toolbar-style bordered button, so it
+  // reads as part of the nav list rather than a foreign control. The
+  // dropdown panel itself already reuses the app-wide .col-picker-dropdown/
+  // .col-picker-item classes (same as the kanban group-by/column pickers).
   wrap.innerHTML = `
-    <div class="col-picker-wrap" style="position:relative;margin-bottom:8px">
-      <button class="btn btn-sm btn-ghost" id="workspace-switcher-btn" style="width:100%;justify-content:space-between;display:flex;align-items:center" title="Switch workspace">
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</span><span style="opacity:.6;flex-shrink:0">▾</span>
-      </button>
-      <div class="col-picker-dropdown hidden" id="workspace-switcher-dropdown" style="width:100%">
+    <div class="col-picker-wrap">
+      <a class="nav-item" id="workspace-switcher-btn" href="#" style="justify-content:space-between">
+        <span style="display:flex;align-items:center;gap:var(--space-2);overflow:hidden;min-width:0">
+          <span class="nav-icon" style="font-size:16px;opacity:1">${icon}</span>
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</span>
+        </span>
+        <span style="opacity:.5;flex-shrink:0;font-size:11px">▾</span>
+      </a>
+      <div class="col-picker-dropdown hidden" id="workspace-switcher-dropdown" style="left:var(--space-2);right:var(--space-2)">
         <div class="col-picker-item" data-ws-id="">🗂️ All workspaces</div>
         ${workspaces.map(w => `<div class="col-picker-item" data-ws-id="${w.id}">${w.icon || '🗂️'} ${escHtml(w.name)}</div>`).join('')}
         <div class="col-picker-item" id="workspace-manage-btn" style="border-top:1px solid var(--border);color:var(--text-muted)">⚙ Manage workspaces…</div>
@@ -5759,7 +6164,7 @@ function renderWorkspaceSwitcher() {
     </div>`;
   const btn = document.getElementById('workspace-switcher-btn');
   const drop = document.getElementById('workspace-switcher-dropdown');
-  btn.onclick = (e) => { e.stopPropagation(); drop.classList.toggle('hidden'); };
+  btn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.toggle('hidden'); };
   document.addEventListener('click', () => drop.classList.add('hidden'), { once: true });
   drop.querySelectorAll('[data-ws-id]').forEach(item => {
     item.onclick = () => {
@@ -5769,6 +6174,7 @@ function renderWorkspaceSwitcher() {
       else localStorage.setItem('activeWorkspaceId', String(activeWorkspaceId));
       renderWorkspaceSwitcher();
       applyWorkspaceFilterToNav();
+      renderView(currentView, currentParams); // refetch/refilter whatever's on screen for the new workspace
     };
   });
   document.getElementById('workspace-manage-btn').onclick = (e) => { e.stopPropagation(); showWorkspaceManagerModal(); };
@@ -5798,8 +6204,11 @@ function showWorkspaceManagerModal() {
   function resetForm() { editingId = null; nameValue = ''; iconSelected = '🗂️'; selectedTypes = []; }
 
   function ownerHint(typeKey) {
-    const owner = workspaces.find(w => w.id !== editingId && (w.entity_types || []).includes(typeKey));
-    return owner ? ` <span style="color:var(--text-muted)">(in ${escHtml(owner.name)})</span>` : '';
+    // A type can be assigned to more than one workspace at once now, so this
+    // is just an informational "also in X, Y" note, not a steal warning.
+    const others = workspaces.filter(w => w.id !== editingId && (w.entity_types || []).includes(typeKey));
+    if (!others.length) return '';
+    return ` <span style="color:var(--text-muted)">(also in ${others.map(w => escHtml(w.name)).join(', ')})</span>`;
   }
 
   function renderBody() {
@@ -5857,13 +6266,15 @@ function showWorkspaceManagerModal() {
     overlay.querySelectorAll('[data-del-ws]').forEach(btn => {
       btn.onclick = () => {
         const id = parseInt(btn.dataset.delWs);
-        showConfirmModal('Delete this workspace? Its entity types become unassigned (General) again.', async () => {
+        showConfirmModal('Delete this workspace? Items tagged with it lose that tag and only show up in "All workspaces" again.', async () => {
           try {
             await api('DELETE', `/api/workspaces/${id}`);
-            if (activeWorkspaceId === id) { activeWorkspaceId = null; localStorage.removeItem('activeWorkspaceId'); }
+            const wasActive = activeWorkspaceId === id;
+            if (wasActive) { activeWorkspaceId = null; localStorage.removeItem('activeWorkspaceId'); }
             if (editingId === id) resetForm();
             await loadWorkspaces();
             renderBody();
+            if (wasActive) renderView(currentView, currentParams);
             showToast('Workspace deleted');
           } catch (err) { showToast('Failed: ' + (err.message || err), 'error'); }
         });
@@ -5904,6 +6315,7 @@ function showWorkspaceManagerModal() {
         showToast(editingId ? 'Workspace updated' : 'Workspace created');
         resetForm();
         renderBody();
+        if (activeWorkspaceId === wsId) renderView(currentView, currentParams);
       } catch (err) { showToast('Failed: ' + (err.message || err), 'error'); }
     };
   }
@@ -6035,7 +6447,7 @@ async function renderCustomEntityList(typeName) {
 
   const main = document.getElementById('main-content');
   try {
-    const entities = await api('GET', `/api/custom/${typeName}`);
+    const entities = await api('GET', withWorkspaceFilter(`/api/custom/${typeName}`));
     let list = Array.isArray(entities) ? entities : [];
 
     main.innerHTML = `<div class="view">
@@ -6402,7 +6814,7 @@ async function renderCustomEntityList(typeName) {
           try {
             const inList = list.find(x => String(x.id) === String(parentId));
             const parentTitle = inList ? inList.title : displayName;
-            const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
+            const newE = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title, props: {} }));
             await api('POST', `/api/children/${entityKey}/${parentId}`, { child_entity_type: entityKey, child_entity_id: newE.id });
             const parentRef = JSON.stringify([{ id: String(parentId), label: parentTitle }]);
             await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
@@ -6489,7 +6901,7 @@ async function renderCustomEntityList(typeName) {
           const inList = list.find(x => String(x.id) === String(parentId));
           if (inList) parentTitle = inList.title;
           else { try { const pe = await api('GET', `/api/custom/${typeName}/${parentId}`); parentTitle = pe.title || displayName; } catch {} }
-          const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
+          const newE = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title, props: {} }));
           await api('POST', `/api/children/${entityKey}/${parentId}`, { child_entity_type: entityKey, child_entity_id: newE.id });
           const parentRef = JSON.stringify([{ id: String(parentId), label: parentTitle }]);
           await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
@@ -6578,8 +6990,8 @@ async function renderCustomEntityList(typeName) {
         const visProps = allCustomDefs.filter(pd => entityPropVisible(entityKey, pd.key)).map(pd => {
           if (pd.type === 'rollup') {
             const fresh = evaluateRollup(entityKey, e.id, pd);
-            const rv = fresh !== null ? Math.round(fresh * 100) / 100
-              : (e.props?.[pd.key] ?? getCustomPropValues(entityKey, e.id)[pd.key] ?? '');
+            const rv = fresh === null ? (e.props?.[pd.key] ?? getCustomPropValues(entityKey, e.id)[pd.key] ?? '')
+              : Array.isArray(fresh) ? fresh : Math.round(fresh * 100) / 100;
             return renderRollupCardWidget(pd, rv);
           }
           const raw = e.props?.[pd.key] || '';
@@ -6602,6 +7014,7 @@ async function renderCustomEntityList(typeName) {
           ? e.tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${escHtml(t.name)}</span>`).join('')
           : '';
         const allChips = [visProps, tagChips].filter(Boolean).join('');
+        const metricsChip = metricsCardChipHtml(entityKey, e.id);
         const subtreeHtml = hasSubs ? `<div id="ent-subs-${e.id}" style="margin-top:2px"></div>` : '';
         return `<div class="task-card-item custom-entity-row" data-id="${e.id}" style="cursor:pointer">
           <div class="kanban-card-header">
@@ -6609,6 +7022,7 @@ async function renderCustomEntityList(typeName) {
             <div class="kanban-card-title">${escHtml(e.title)}</div>
           </div>
           ${allChips ? `<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:6px">${allChips}</div>` : ''}
+          ${metricsChip}
           ${subtreeHtml}
         </div>`;
       }).join('')}</div>`;
@@ -6816,27 +7230,23 @@ async function renderCustomEntityDetail(typeName, entityId) {
     updateBreadcrumb('custom-detail', `${typeName}/${entityId}`, e.title, _cdAnc);
     await loadEntityCustomProps(entityKey, parseInt(entityId));
     const propPanel = buildInlinePropPanel(entityKey, parseInt(entityId), []);
-    const relDefs = getCustomPropDefs(entityKey).filter(d => d.type === 'relation');
-    const wData = { propPanelHtml: propPanel, tasks: [], notes: [], resources: [], projects: [] };
+    // Was reading def.target_entity, a field no relation def has ever set
+    // (the field is always relatedEntity — see _ensureRelProp et al.), and
+    // e.props directly instead of the actual property-value store, so this
+    // never populated anything for any custom entity. Fixed to match the
+    // rest of the app's relation convention, and to cover 'sprint' too.
+    const relDefs = getCustomPropDefs(entityKey).filter(d => d.type === 'relation' && d.key !== '_parent');
+    const wData = { propPanelHtml: propPanel, tasks: [], notes: [], resources: [], projects: [], sprints: [], entityData: e };
+    const RELATION_WIDGET_ENDPOINT = { task: 'tasks', note: 'notes', resource: 'resources', project: 'projects', sprint: 'sprints' };
+    const relVals = getCustomPropValues(entityKey, entityId);
     for (const def of relDefs) {
-      let ids = e.props[def.key];
-      if (!ids) continue;
-      if (!Array.isArray(ids)) ids = [ids];
-      const validIds = ids.map(id => parseInt(id)).filter(id => !isNaN(id));
-      if (!validIds.length) continue;
-      
-      let endpoint = '';
-      let targetArray = null;
-      if (def.target_entity === 'task') { endpoint = 'tasks'; targetArray = wData.tasks; }
-      else if (def.target_entity === 'note') { endpoint = 'notes'; targetArray = wData.notes; }
-      else if (def.target_entity === 'resource') { endpoint = 'resources'; targetArray = wData.resources; }
-      else if (def.target_entity === 'project') { endpoint = 'projects'; targetArray = wData.projects; }
-      // other targets like custom entities can also be handled if widgets support them
-      
-      if (endpoint && targetArray) {
-        const fetched = await Promise.all(validIds.map(id => api('GET', `/api/${endpoint}/${id}`).catch(() => null)));
-        targetArray.push(...fetched.filter(Boolean));
-      }
+      const endpoint = RELATION_WIDGET_ENDPOINT[def.relatedEntity];
+      const targetArray = endpoint && wData[endpoint];
+      if (!endpoint || !targetArray) continue;
+      const items = parseRelationValue(relVals[def.key] ?? '');
+      if (!items.length) continue;
+      const fetched = await Promise.all(items.map(it => api('GET', `/api/${endpoint}/${it.id}`).catch(() => null)));
+      targetArray.push(...fetched.filter(Boolean));
     }
     let _cdCrumbHtml = `<span class="bc-link" id="ced-bc-root" style="cursor:pointer">${escHtml(displayName)}</span>`;
     _cdAnc.forEach(anc => {
@@ -6857,9 +7267,10 @@ async function renderCustomEntityDetail(typeName, entityId) {
           <h1 class="view-title" id="ced-title">${escHtml(e.title)}</h1>
         </div>
         <div class="flex gap-8">
-          <button class="btn btn-ghost btn-sm" id="ced-manage-btn">Widgets ⚙</button>
+          ${quickAddButtonsHtml(entityKey)}
           <button class="btn btn-ghost" id="ced-back-btn">← Back</button>
           <button class="btn btn-primary btn-sm" id="ced-edit-btn">Edit</button>
+          <button class="entity-settings-btn" id="ced-manage-btn" title="Settings">${TB_ICONS.settings}</button>
         </div>
       </div>
       <div id="ced-widget-grid" class="widget-grid">
@@ -6896,7 +7307,8 @@ async function renderCustomEntityDetail(typeName, entityId) {
         typeName, parseInt(entityId), displayName, entityKey, e.title, _cdAnc
       );
     }
-    document.getElementById('ced-manage-btn').onclick = (ev) => openWidgetManager(entityKey, ev.currentTarget, () => renderCustomEntityDetail(typeName, entityId));
+    document.getElementById('ced-manage-btn').onclick = (ev) => openEntitySettingsPanel(entityKey, ev.currentTarget, () => renderCustomEntityDetail(typeName, entityId));
+    bindQuickAddButtons(main, entityKey, parseInt(entityId), e.title, () => renderCustomEntityDetail(typeName, entityId));
 
     const container = document.getElementById('ced-widget-grid');
     initWidgetGrid(entityKey, parseInt(entityId), container, () => renderCustomEntityDetail(typeName, entityId));
@@ -6998,7 +7410,7 @@ function initSubBranch(listEl, addBtnEl, typeName, entityId, displayName, entity
         const title = inp.value.trim();
         if (!title) { cancel(); return; }
         try {
-          const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
+          const newE = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title, props: {} }));
           await api('POST', `/api/children/${entityKey}/${parentId}`, { child_entity_type: entityKey, child_entity_id: newE.id });
           const parentRef = JSON.stringify([{ id: String(parentId), label: displayName }]);
           await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
@@ -7107,7 +7519,7 @@ function initSubBranch(listEl, addBtnEl, typeName, entityId, displayName, entity
         const title = inp.value.trim();
         if (!title) { row.remove(); return; }
         try {
-          const newE = await api('POST', `/api/custom/${typeName}`, { title, props: {} });
+          const newE = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title, props: {} }));
           await api('POST', `/api/children/${entityKey}/${entityId}`, { child_entity_type: entityKey, child_entity_id: newE.id });
           const parentRef = JSON.stringify([{ id: String(entityId), label: entityTitle || displayName }]);
           await api('POST', `/api/properties?entity_type=${entityKey}&entity_id=${newE.id}`, { key: '_parent', value: parentRef });
@@ -7179,6 +7591,7 @@ async function openCustomEntitySlideover(typeName, id) {
     <div class="prop-chips" id="prop-chips">
       <button class="prop-chip" id="chip-tags" data-key="tags"><span class="chip-label">Tags</span><span class="chip-value" id="chip-tags-val">${cesTags.length ? cesTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '—'}</span></button>
       <button class="prop-chip${cesCatName ? '' : ' chip-empty'}" id="chip-category" data-key="category"><span class="chip-label">Category</span><span class="chip-value" id="chip-category-val">${cesCatName ? builtinSelectChip('categories', cesCatName) : '—'}</span></button>
+      <button class="prop-chip${e.workspace_id ? '' : ' chip-empty'}" id="chip-workspace" data-key="workspace"><span class="chip-label">Workspace</span><span class="chip-value" id="chip-workspace-val">${e.workspace_id ? workspaceChipHtml(e.workspace_id) : '—'}</span></button>
       ${cesHeadingChips}
       <button class="prop-chips-more" id="prop-chips-more" title="More properties">···</button>
     </div>
@@ -7288,6 +7701,14 @@ async function openCustomEntitySlideover(typeName, id) {
     });
   });
 
+  document.getElementById('chip-workspace')?.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    openWorkspaceCombo(ev.currentTarget, e.workspace_id, async (newId) => {
+      await api('PUT', `/api/custom/${typeName}/${id}`, { ...e, workspace_id: newId });
+      openCustomEntitySlideover(typeName, id);
+    });
+  });
+
   // Heading custom prop chips → click triggers matching inline prop row editor
   cesHeadKeys.filter(k => k !== 'tags').forEach(k => {
     const chip = document.getElementById(`chip-cus-${k}`);
@@ -7369,7 +7790,7 @@ async function openCustomEntityForm(typeName, entityOrNull, presets = {}) {
     let newId;
     try {
       const p = { title: presets.title || 'Untitled', props: presets };
-      const created = await api('POST', `/api/custom/${typeName}`, p);
+      const created = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace(p));
       newId = created.id;
     } catch (e) {
       console.error(e);
@@ -7478,7 +7899,7 @@ async function openCustomEntityForm(typeName, entityOrNull, presets = {}) {
         entityId = entity.id;
         showToast(`${displayName} updated`);
       } else {
-        const created = await api('POST', `/api/custom/${typeName}`, { title, props: newProps });
+        const created = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title, props: newProps }));
         entityId = created.id;
         showToast(`${displayName} created`);
       }
@@ -7537,21 +7958,21 @@ function renderCurrentView() {
 // vs the body (vertical inline prop panel). Opened by the ··· button.
 
 const ENTITY_ALL_PROPS = {
-  task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goals'},{key:'project',label:'Projects'},{key:'category',label:'Category'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'},{key:'parent_task',label:'Parent Task'}],
-  goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'due',label:'Due Date'},{key:'metrics',label:'Metrics'}],
-  project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goals'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
-  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'},{key:'category',label:'Category'}],
-  note:     [{key:'date',label:'Date'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'}],
-  resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'}],
+  task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goals'},{key:'project',label:'Projects'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'},{key:'parent_task',label:'Parent Task'}],
+  goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'},{key:'due',label:'Due Date'},{key:'metrics',label:'Metrics'}],
+  project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goals'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
+  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'}],
+  note:     [{key:'date',label:'Date'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'}],
+  resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'}],
 };
 
 const ENTITY_SECTION_DEFAULTS = {
-  task:     { heading:['status','priority','due','focus','tags'],   body:['goal','project','category','points','recur','parent_task'] },
-  goal:     { heading:['status','type','year','tags'],              body:['category','due','metrics'] },
-  project:  { heading:['status','due','goal','tags'],              body:['category','macro','kanban','archived'] },
-  sprint:   { heading:['status','dates','project','tags'],         body:['points','category'] },
-  note:     { heading:['date','project','goal','tags'],            body:['category'] },
-  resource: { heading:['type','url','project','goal'],             body:['tags','category'] },
+  task:     { heading:['status','priority','due','focus','tags'],   body:['goal','project','category','workspace','points','recur','parent_task'] },
+  goal:     { heading:['status','type','year','tags'],              body:['category','workspace','due','metrics'] },
+  project:  { heading:['status','due','goal','tags'],              body:['category','workspace','macro','kanban','archived'] },
+  sprint:   { heading:['status','dates','project','tags'],         body:['points','category','workspace'] },
+  note:     { heading:['date','project','goal','tags'],            body:['category','workspace'] },
+  resource: { heading:['type','url','project','goal'],             body:['tags','category','workspace'] },
 };
 
 function getPropSections(entity) {
@@ -8570,13 +8991,13 @@ async function initSubItemsSection(entityType, entityId) {
     try {
       let newId;
       if (childType === 'task') {
-        const t = await api('POST', '/api/tasks', { title: title.trim(), status: 'todo', priority: 'medium' });
+        const t = await api('POST', '/api/tasks', withActiveWorkspace({ title: title.trim(), status: 'todo', priority: 'medium' }));
         newId = t.id;
       } else if (childType === 'goal') {
-        const g = await api('POST', '/api/goals', { title: title.trim(), status: 'active' });
+        const g = await api('POST', '/api/goals', withActiveWorkspace({ title: title.trim(), status: 'active' }));
         newId = g.id;
       } else if (childType === 'project') {
-        const p = await api('POST', '/api/projects', { title: title.trim(), status: 'active' });
+        const p = await api('POST', '/api/projects', withActiveWorkspace({ title: title.trim(), status: 'active' }));
         newId = p.id;
       } else if (childType === 'note') {
         const n = await api('POST', '/api/notes', { title: title.trim(), body: '' });
@@ -9004,7 +9425,13 @@ async function initEntityViewsSection(entityType, entityId, entityData) {
 // When a link is added via ev-add-btn, ensure the child entity has a custom
 // prop showing which parent entities reference it (and vice versa).
 async function _ensureRelProp(ownerType, ownerId, targetType, targetId, targetTitle) {
-  const propKey = `${targetType}s`;
+  // targetType/ownerType may be a 'custom_<name>' entity key — strip the
+  // prefix before pluralizing or labeling, else a custom target ends up
+  // with a mangled "custom_bugss"-style key and a raw "custom_bugs" label
+  // instead of a clean "Bugs" relation property.
+  const bareTarget = targetType.replace(/^custom_/, '');
+  const bareOwner = ownerType.replace(/^custom_/, '');
+  const propKey = targetType.startsWith('custom_') ? bareTarget : `${targetType}s`;
   // If a built-in FK prop already covers this relation (e.g. note.project for targetType='project'),
   // use its singular key instead of creating a duplicate plural custom prop def.
   const builtinProps = ENTITY_ALL_PROPS[ownerType] || [];
@@ -9012,11 +9439,13 @@ async function _ensureRelProp(ownerType, ownerId, targetType, targetId, targetTi
   const effectiveKey = builtinMatch ? targetType : propKey;
 
   if (!builtinMatch) {
-    const propLabel = EV_LABELS[targetType] || targetType;
+    const propLabel = targetType.startsWith('custom_')
+      ? ((customEntityTypes || []).find(t => t.name === bareTarget)?.display_name || bareTarget)
+      : (EV_LABELS[targetType] || targetType);
     const defs = getCustomPropDefs(ownerType);
     if (!defs.some(d => d.key === propKey)) {
-      const reverseKey = `${ownerType}s`;
-      defs.push({ key: propKey, label: propLabel, type: 'relation', relatedEntity: targetType, bilateral: true, reverseKey });
+      const reverseKey = `${bareOwner}s`;
+      defs.push({ key: propKey, label: propLabel, type: 'relation', relatedEntity: bareTarget, bilateral: true, reverseKey });
       setCustomPropDefs(ownerType, defs);
       const vp = getEntityVisProps(ownerType);
       if (!vp.includes(propKey)) setEntityVisProps(ownerType, [...vp, propKey]);
@@ -9030,10 +9459,29 @@ async function _ensureRelProp(ownerType, ownerId, targetType, targetId, targetTi
   } catch(e) {}
   const vals = getCustomPropValues(ownerType, ownerId);
   let arr = parseRelationValue(vals[effectiveKey] ?? '');
+  // A builtin field's display (renderMultiRelationValue) falls back to the
+  // record's own legacy scalar FK (e.g. sprint.project_id) ONLY while this
+  // array is still empty — the very first write here would otherwise wipe
+  // that existing link from view, since a non-empty array stops the
+  // fallback from ever being consulted again. Seed the legacy FK's target
+  // into the array once, before adding the new one, so nothing already
+  // linked silently disappears.
+  if (builtinMatch && !arr.length) {
+    try {
+      const isBuiltinOwner = ['task', 'goal', 'project', 'sprint', 'note', 'resource', 'habit'].includes(ownerType);
+      const ownerPath = ownerType === 'task' ? `/api/tasks/${ownerId}` : isBuiltinOwner ? `/api/${ownerType}s/${ownerId}` : null;
+      const legacyId = ownerPath ? (await api('GET', ownerPath))[`${effectiveKey}_id`] : null;
+      if (legacyId && String(legacyId) !== String(targetId)) {
+        const legacyList = await api('GET', `/api/${bareTarget}s`).catch(() => []);
+        const legacyRec = (legacyList || []).find(r => String(r.id) === String(legacyId));
+        arr.push({ id: String(legacyId), label: legacyRec ? (legacyRec.title || legacyRec.name || String(legacyId)) : String(legacyId) });
+      }
+    } catch(e) {}
+  }
   if (!arr.some(x => x.id === String(targetId))) {
     arr.push({ id: String(targetId), label: targetTitle });
-    setCustomPropValue(ownerType, ownerId, effectiveKey, JSON.stringify(arr));
   }
+  setCustomPropValue(ownerType, ownerId, effectiveKey, JSON.stringify(arr));
 }
 
 async function _removeRelProp(ownerType, ownerId, targetType, targetId) {
@@ -9062,14 +9510,20 @@ async function syncBuiltinRelation(ownerType, ownerId, ownerTitle, relEntity, ol
 // Reads stored multi-value for a builtin relation prop; falls back to FK display name
 function renderMultiRelationValue(entity, recordId, propKey, fkTitle) {
   const vals = getCustomPropValues(entity, recordId);
+  const relColors = (getPropOverrides(entity)[propKey] || {}).relationColors || {};
+  const chip = (id, label) => {
+    const name = relColors[String(id)];
+    return name ? `<span class="multi-chip color-${name}" style="font-size:11px">${escHtml(label)}</span>` : `<span class="multi-chip" style="font-size:11px">${escHtml(label)}</span>`;
+  };
   const stored = vals[propKey];
   if (stored) {
     const items = parseRelationValue(stored);
     // Deduplicate by id to guard against stale storage having duplicate entries
     const seen = new Set();
     const unique = items.filter(it => { if (seen.has(it.id)) return false; seen.add(it.id); return true; });
-    if (unique.length) return unique.map(it => `<span class="multi-chip" style="font-size:11px">${escHtml(it.label)}</span>`).join('');
+    if (unique.length) return unique.map(it => chip(it.id, it.label)).join('');
   }
+  // Legacy fallback (no custom-prop array stored yet, just the old single FK title) — no id to color by.
   return fkTitle ? `<span class="multi-chip" style="font-size:11px">${escHtml(fkTitle)}</span>` : '';
 }
 
@@ -9085,7 +9539,8 @@ function openMultiRelationPicker(valEl, entity, recordId, propKey, relEntity, re
     curItems = [{ id: fkId, label: fkItem ? (fkItem.title || fkItem.name || fkId) : fkId }];
   }
   const curIds = curItems.map(x => x.id).filter(Boolean);
-  openCombo(valEl, relList.map(it => ({ value: String(it.id), label: it.title || it.name || String(it.id) })), null,
+  const relColors = (getPropOverrides(entity)[propKey] || {}).relationColors || {};
+  openCombo(valEl, relList.map(it => ({ value: String(it.id), label: it.title || it.name || String(it.id), color: relColors[String(it.id)] || null })), null,
     async ({ multiIds }) => {
       if (!multiIds) return;
       const newItems = multiIds.map(id => {
@@ -9104,7 +9559,17 @@ function openMultiRelationPicker(valEl, entity, recordId, propKey, relEntity, re
       ]);
       rerender();
     },
-    { multiSelect: true, selectedIds: curIds }
+    {
+      multiSelect: true, selectedIds: curIds, colorAssignable: true,
+      onColorAssign: (id, color) => {
+        const overrides = getPropOverrides(entity);
+        overrides[propKey] = overrides[propKey] || {};
+        overrides[propKey].relationColors = overrides[propKey].relationColors || {};
+        if (color) overrides[propKey].relationColors[id] = color; else delete overrides[propKey].relationColors[id];
+        setPropOverrides(entity, overrides);
+        rerender();
+      },
+    }
   );
 }
 
@@ -9382,11 +9847,11 @@ async function renderDashboard() {
   let apiError = null;
   try {
     [data, goals, notes, resources, allTasks] = await Promise.all([
-      api('GET', '/api/dashboard'),
-      api('GET', '/api/goals'),
-      api('GET', '/api/notes'),
-      api('GET', '/api/resources'),
-      api('GET', '/api/tasks?all=1'),
+      api('GET', withWorkspaceFilter('/api/dashboard')),
+      api('GET', withWorkspaceFilter('/api/goals')),
+      api('GET', withWorkspaceFilter('/api/notes')),
+      api('GET', withWorkspaceFilter('/api/resources')),
+      api('GET', withWorkspaceFilter('/api/tasks?all=1')),
     ]);
   } catch(e) { data = {}; apiError = e.message || String(e); }
   if (apiError) {
@@ -9732,9 +10197,9 @@ async function renderTasks() {
   let apiError = null;
   try {
     [tasks, projects, allTasksFull] = await Promise.all([
-      api('GET', '/api/tasks'),
-      api('GET', '/api/projects'),
-      api('GET', '/api/tasks?all=1'),
+      api('GET', withWorkspaceFilter('/api/tasks')),
+      api('GET', withWorkspaceFilter('/api/projects')),
+      api('GET', withWorkspaceFilter('/api/tasks?all=1')),
     ]);
     allTasksCache = allTasksFull;
   } catch(e) { apiError = e.message || String(e); }
@@ -10176,7 +10641,7 @@ async function renderTasks() {
         const pt = allTasksFull.find(t => t.id === parentId);
         showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium',
           goal_id: pt?.goal_id || null, project_id: pt?.project_id || null, sprint_id: pt?.sprint_id || null }, async () => {
-          allTasksFull = await api('GET', '/api/tasks?all=1');
+          allTasksFull = await api('GET', withWorkspaceFilter('/api/tasks?all=1'));
           allTasksCache = allTasksFull;
           const parent = allTasksFull.find(t => t.id === parentId);
           if (parent) parent.sub_task_count = (parent.sub_task_count || 0) + 1;
@@ -10193,7 +10658,7 @@ async function renderTasks() {
         const pt = allTasksFull.find(t => t.id === parentId);
         showNewTaskModal({ parent_task_id: parentId, status: 'todo', priority: 'medium',
           goal_id: pt?.goal_id || null, project_id: pt?.project_id || null, sprint_id: pt?.sprint_id || null }, async () => {
-          allTasksFull = await api('GET', '/api/tasks?all=1');
+          allTasksFull = await api('GET', withWorkspaceFilter('/api/tasks?all=1'));
           allTasksCache = allTasksFull;
           expandedTasks.add(String(parentId));
           render();
@@ -10283,7 +10748,7 @@ async function renderTasks() {
 async function renderProjects() {
   let projects = [], goals = [];
   let apiError = null;
-  try { [projects, goals] = await Promise.all([api('GET', '/api/projects'), api('GET', '/api/goals')]); } catch(e) { apiError = e.message || String(e); }
+  try { [projects, goals] = await Promise.all([api('GET', withWorkspaceFilter('/api/projects')), api('GET', withWorkspaceFilter('/api/goals'))]); } catch(e) { apiError = e.message || String(e); }
 
   if (apiError) {
     document.getElementById('main-content').innerHTML = `<div class="view">
@@ -10318,6 +10783,7 @@ async function renderProjects() {
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>` : ''}
       ${activeTasks ? `<div style="margin-top:8px">${activeTasks}</div>` : ''}
+      ${metricsCardChipHtml('project', p.id)}
       ${renderCustomPropChips('project', p.id, 'cards')}`;
     return `<div class="card proj-slideover-card" data-proj-id="${p.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
@@ -10656,7 +11122,7 @@ async function renderProjects() {
 async function renderGoals() {
   let goals = [];
   let apiError = null;
-  try { goals = await api('GET', '/api/goals'); } catch(e) { apiError = e.message || String(e); }
+  try { goals = await api('GET', withWorkspaceFilter('/api/goals')); } catch(e) { apiError = e.message || String(e); }
 
   if (apiError) {
     document.getElementById('main-content').innerHTML = `<div class="view">
@@ -10852,6 +11318,7 @@ async function renderGoals() {
         <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0} tasks</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>` : ''}
+      ${metricsCardChipHtml('goal', g.id, g)}
       ${renderCustomPropChips('goal', g.id, 'cards')}`;
     return `<div class="card goal-slideover-card" data-goal-id="${g.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
@@ -11229,7 +11696,7 @@ async function renderNotes() {
 /* ─── Sprints View ───────────────────────────────────────────────────── */
 async function renderSprints() {
   let sprints = [], projects = [];
-  try { [sprints, projects] = await Promise.all([api('GET', '/api/sprints'), api('GET', '/api/projects')]); } catch(e) {}
+  try { [sprints, projects] = await Promise.all([api('GET', withWorkspaceFilter('/api/sprints')), api('GET', withWorkspaceFilter('/api/projects'))]); } catch(e) {}
 
   function buildSprintCard(s) {
     const prog = s.progress || {};
@@ -11265,6 +11732,7 @@ async function renderSprints() {
           <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pctSP}%;background:${color}"></div></div>
         </div>`;
       })() : ''}
+      ${metricsCardChipHtml('sprint', s.id)}
       ${renderCustomPropChips('sprint', s.id, 'cards')}`;
     return `<div class="card" data-sprint-id="${s.id}" style="cursor:pointer">
       <div class="flex-between gap-8" style="margin-bottom:6px">
@@ -11563,6 +12031,166 @@ function resetWidgetLayout(entity) { localStorage.removeItem(`widget_layout_${en
 function getCustomWidgetDefs() { try { return JSON.parse(localStorage.getItem('widget_custom_defs') || '[]'); } catch(e) { return []; } }
 function saveCustomWidgetDefs(defs) { localStorage.setItem('widget_custom_defs', JSON.stringify(defs)); }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   QUICK-ADD BUTTONS — configurable per-entity header buttons ("+ Task",
+   "+ Note", ...) that create a new related record and immediately open it.
+   A class property, not a per-entity-type feature: the same config store,
+   renderer, and click handler serve every built-in AND custom entity type,
+   so a brand-new custom entity type gets this for free.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+// Only Goal/Project/Sprint ever had hardcoded "+X" buttons before this was
+// made configurable — seed their saved config with exactly what they used
+// to hardcode, so upgrading doesn't remove buttons that were already there.
+// Every other entity (including every custom type) starts with none, same
+// as before.
+const QUICK_ADD_DEFAULTS = {
+  goal: [
+    { id: 'qa-task', label: 'Task', targetEntity: 'task' },
+    { id: 'qa-note', label: 'Note', targetEntity: 'note' },
+    { id: 'qa-resource', label: 'Resource', targetEntity: 'resource' },
+  ],
+  project: [
+    { id: 'qa-task', label: 'Task', targetEntity: 'task' },
+    { id: 'qa-note', label: 'Note', targetEntity: 'note' },
+    { id: 'qa-resource', label: 'Resource', targetEntity: 'resource' },
+  ],
+  sprint: [
+    { id: 'qa-task', label: 'Task', targetEntity: 'task' },
+  ],
+};
+
+// Native FK column to stamp when creating `target` from `source`, for the
+// (source, target) pairs the schema actually has a column for — keeps a
+// quick-added task/note/etc. showing up in that entity's existing native
+// Tasks/Notes/Resources widgets exactly like it always did. Any pair NOT
+// listed here (including every custom entity type, both as source and as
+// target) falls back to the generic `_parent` relation link below — the
+// same mechanism custom entities, rollups, and the schedule feature already
+// use, so it's a real fallback, not a dead end.
+const QUICK_ADD_FK = {
+  goal:    { task: 'goal_id', note: 'goal_id', resource: 'goal_id' },
+  project: { task: 'project_id', note: 'project_id', resource: 'project_id', sprint: 'project_id' },
+  sprint:  { task: 'sprint_id' },
+  task:    { note: 'task_id', resource: 'task_id' },
+};
+
+// api path segment + how to open the freshly-created record. Goal/Project/
+// Sprint always have a dedicated full detail view everywhere else in the
+// app, so quick-add opens that instead of a slideover, for consistency.
+const QUICK_ADD_ENTITY_META = {
+  task:     { api: 'tasks',     open: (id) => showTaskSlideover(id) },
+  note:     { api: 'notes',     open: (id, cb) => showNoteSlideover(id, cb) },
+  resource: { api: 'resources', open: (id, cb) => showResourceSlideover({ id }, cb) },
+  habit:    { api: 'habits',    open: (id) => api('GET', `/api/habits/${id}`).then(h => showHabitModal(h)) },
+  goal:     { api: 'goals',     open: (id) => renderView('goal-detail', String(id)) },
+  project:  { api: 'projects',  open: (id) => renderView('project-detail', String(id)) },
+  sprint:   { api: 'sprints',   open: (id) => renderView('sprint-detail', String(id)) },
+};
+
+function getQuickAddButtons(entity) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(`quickAddButtons_${entity}`) || 'null');
+    if (Array.isArray(saved)) return saved;
+  } catch(e) {}
+  return (QUICK_ADD_DEFAULTS[entity] || []).map(b => ({ ...b }));
+}
+function saveQuickAddButtons(entity, list) { localStorage.setItem(`quickAddButtons_${entity}`, JSON.stringify(list)); }
+
+// Every target a quick-add button could point at: every built-in record
+// type plus every currently-defined custom entity type — so a newly
+// created custom type is immediately choosable too.
+// `sourceEntity` filters out targets that can't actually be created from
+// this source — a Sprint requires a project_id at creation (backend 400s
+// without one), and only a Project can supply that natively, so offering
+// "Sprint" as a quick-add target anywhere else would just fail on click.
+function quickAddTargetOptions(sourceEntity) {
+  const builtins = [
+    { value: 'task', label: 'Task' }, { value: 'note', label: 'Note' },
+    { value: 'resource', label: 'Resource' }, { value: 'goal', label: 'Goal' },
+    { value: 'project', label: 'Project' },
+    ...(sourceEntity === 'project' ? [{ value: 'sprint', label: 'Sprint' }] : []),
+    { value: 'habit', label: 'Habit' },
+  ];
+  const customs = (customEntityTypes || []).map(t => ({ value: `custom_${t.name}`, label: t.display_name || t.name }));
+  return [...builtins, ...customs];
+}
+function quickAddTargetLabel(target) {
+  if (target.startsWith('custom_')) {
+    const t = (customEntityTypes || []).find(t => t.name === target.slice(7));
+    return t ? (t.display_name || t.name) : target.slice(7);
+  }
+  const all = [{ value: 'sprint', label: 'Sprint' }, ...quickAddTargetOptions()];
+  return (all.find(o => o.value === target) || {}).label || target;
+}
+
+// Full records of `targetType` related to (entity, entityId), for feeding a
+// Projects/Sprints/etc. widget — reads the SAME relation-prop key
+// _ensureRelProp/openMultiRelationPicker already read and write (the
+// entity's own builtin field when it has one, e.g. sprint.project, else the
+// auto-created plural key), resolved against an already-fetched list of
+// full target records so no extra API call is needed. `fallbackId` covers
+// a record that only ever had the legacy single FK set (never touched the
+// relation prop) — matches openMultiRelationPicker's own fallback.
+function relatedRecordsFromProp(entity, entityId, targetType, targetList, fallbackId) {
+  const builtinProps = ENTITY_ALL_PROPS[entity] || [];
+  const builtinMatch = builtinProps.find(p => p.key === targetType);
+  const propKey = builtinMatch ? targetType : `${targetType}s`;
+  const vals = getCustomPropValues(entity, entityId);
+  let items = parseRelationValue(vals[propKey] ?? '');
+  if (!items.length && fallbackId) items = [{ id: String(fallbackId) }];
+  return items.map(it => (targetList || []).find(t => String(t.id) === String(it.id))).filter(Boolean);
+}
+
+// Creates a new `btnCfg.targetEntity` record related to (entity, entityId),
+// then opens it immediately — the entire point of a quick-add button.
+async function runQuickAddButton(entity, entityId, entityTitle, btnCfg, onSaved) {
+  const target = btnCfg.targetEntity;
+  const fk = (QUICK_ADD_FK[entity] || {})[target];
+  // Always establishes a real, labeled, bidirectional relation property on
+  // BOTH records via the same ensureEVBilateral/_ensureRelProp mechanism the
+  // rest of the app already uses for entity-to-entity relations — reusing
+  // an existing builtin field (e.g. Sprint's own "Projects" picker) when one
+  // covers this pair, or auto-creating a matching pair of relation props
+  // when it doesn't. When a native FK also exists for this pair (e.g.
+  // project_id on a task), it's set too, so native FK-based widgets/lists
+  // keep working exactly as before — the relation property is in addition
+  // to that, not instead of it.
+  try {
+    let rec;
+    if (target.startsWith('custom_')) {
+      const typeName = target.slice(7);
+      rec = await api('POST', `/api/custom/${typeName}`, withActiveWorkspace({ title: 'Untitled', props: {} }));
+      await ensureEVBilateral(entity, entityId, entityTitle || '', target, rec.id, 'Untitled');
+      openCustomEntitySlideover(typeName, rec.id);
+      return;
+    }
+    const meta = QUICK_ADD_ENTITY_META[target];
+    if (!meta) return;
+    const presets = { title: 'Untitled' };
+    if (fk) presets[fk] = parseInt(entityId);
+    rec = await api('POST', `/api/${meta.api}`, withActiveWorkspace(presets));
+    await ensureEVBilateral(entity, entityId, entityTitle || '', target, rec.id, 'Untitled');
+    meta.open(rec.id, onSaved);
+  } catch(e) { showToast('Failed to create', 'error'); }
+}
+
+// Header buttons for a detail view — replaces what used to be hardcoded
+// per entity (Goal/Project's "+Task"/"+Note"/"+Resource", Sprint's
+// "+Task"). Config comes from getQuickAddButtons, editable via the entity
+// settings panel (openEntitySettingsPanel).
+function quickAddButtonsHtml(entity) {
+  return getQuickAddButtons(entity).map(b =>
+    `<button class="btn btn-ghost qa-btn" data-qa-id="${escHtml(b.id)}">+ ${escHtml(b.label)}</button>`).join('');
+}
+function bindQuickAddButtons(root, entity, entityId, entityTitle, onSaved) {
+  root.querySelectorAll('.qa-btn').forEach(btn => {
+    const cfg = getQuickAddButtons(entity).find(b => b.id === btn.dataset.qaId);
+    if (!cfg) return;
+    btn.onclick = () => runQuickAddButton(entity, entityId, entityTitle, cfg, onSaved);
+  });
+}
+
 // ── Widget content builders ───────────────────────────────────────────────────
 
 function _wTasksHtml(tasks) {
@@ -11620,17 +12248,241 @@ function _wProjectsHtml(projects) {
   }).join('');
 }
 
-function _wMetricsHtml(data) {
-  if (!data || data.target == null) return '<div class="empty-state-text" style="padding:12px 0">No metrics configured</div>';
+function _wSprintsHtml(sprints) {
+  if (!sprints || !sprints.length)
+    return '<div class="empty-state" style="padding:20px"><div class="empty-state-text">No sprints</div></div>';
+  return sprints.map(s => {
+    const prog = s.progress || {}, pct = prog.pct || 0;
+    return `<div class="card detail-nav" data-sprint-id="${s.id}" style="cursor:pointer;margin-bottom:8px">
+      <div class="flex-between gap-8"><span class="card-title">${escHtml(s.title)}</span>${builtinSelectChip('sprintStatuses', s.status)}</div>
+      <div class="progress-wrap" style="margin-top:8px">
+        <div class="progress-label"><span>${pct}%</span><span>${prog.done||0}/${prog.total||0}</span></div>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+      </div></div>`;
+  }).join('');
+}
+
+// A Metrics widget shows either a value computed from a relation (any
+// entity: reuses the same rollup engine a "Rollup" custom property uses —
+// child entity type + a property on that child + an aggregation) or, on
+// Goal only, manual numbers (Goal's own start_value/current_value/target
+// columns — the only entity with those columns). Rollup is the standard,
+// default experience everywhere, including Goal — manual is opt-in via the
+// ⇄ switch, not a Goal-specific default, so editing a Goal's Metrics widget
+// isn't a different (older) flow than every other entity gets.
+function _metricsUsesRollup(entity, w) {
+  return !!w && w.metricsSource !== 'manual';
+}
+
+function _wMetricsHtml(entity, entityId, data, w) {
+  const wid = w ? w.id : '';
+  const useRollup = _metricsUsesRollup(entity, w);
+  const editBtn = `<button class="widget-metrics-edit-btn" data-entity="${entity}" data-id="${entityId}" data-wid="${escHtml(wid)}"
+    title="${useRollup ? 'Configure what this measures' : 'Set start/current/target'}"
+    style="position:absolute;top:0;right:${entity==='goal'?20:0}px;background:none;border:none;cursor:pointer;color:var(--text-muted);padding:2px;line-height:0">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+  </button>`;
+  // Goal is the only entity that can ever use manual mode, so it's the only
+  // one that gets a switch between the two — everywhere else there's nothing
+  // to switch to.
+  const modeBtn = entity === 'goal'
+    ? `<button class="widget-metrics-mode-btn" data-entity="${entity}" data-id="${entityId}" data-wid="${escHtml(wid)}"
+        title="${useRollup ? 'Use manual values instead' : 'Compute from a relation instead'}"
+        style="position:absolute;top:2px;right:0;background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:11px;padding:2px;line-height:1">⇄</button>`
+    : '';
+  const chrome = editBtn + modeBtn;
+  const padRight = entity === 'goal' ? 36 : 20;
+
+  if (useRollup) {
+    const cfg = w && w.rollupCfg;
+    if (!cfg || !cfg.target_property) {
+      return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="empty-state-text" style="padding:12px 0">Not configured — click ✏ to pick a relation and property to measure.</div></div>`;
+    }
+    const computed = evaluateRollup(entity, entityId, { rollup: cfg });
+    if (computed === null) {
+      return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="empty-state-text" style="padding:12px 0">No matching related records yet.</div></div>`;
+    }
+    if (Array.isArray(computed)) {
+      // Tally breakdown renders as the same pastel stat tiles the dashboard
+      // and the scalar branches below use — one tile per distinct value —
+      // instead of a flat "todo: 1, done: 3" text line.
+      if (!computed.length) {
+        return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="empty-state-text" style="padding:12px 0">No matching related records yet.</div></div>`;
+      }
+      const tiles = computed.map(x =>
+        `<div class="stat-card"><div class="stat-value">${x.count}</div><div class="stat-label">${escHtml(String(x.value))}</div></div>`).join('');
+      return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="stats-row" style="margin-bottom:0">${tiles}</div></div>`;
+    }
+    const rounded = Math.round(computed * 100) / 100;
+    if (cfg.operation !== 'percentage_match') {
+      const label = escHtml(rollupTargetPropertyLabel(entity, cfg) || cfg.target_property);
+      return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="stats-row">
+        <div class="stat-card"><div class="stat-value">${rounded}</div><div class="stat-label">${label}</div></div>
+      </div></div>`;
+    }
+    const pct = Math.max(0, Math.min(100, rounded));
+    return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="stats-row">
+      <div class="stat-card"><div class="stat-value">0</div><div class="stat-label">Start</div></div>
+      <div class="stat-card"><div class="stat-value">${rounded}%</div><div class="stat-label">Current</div></div>
+      <div class="stat-card"><div class="stat-value">100</div><div class="stat-label">Target</div></div>
+    </div>
+    <div class="progress-track" style="margin-top:8px"><div class="progress-fill" style="width:${pct}%"></div></div>
+    <div style="text-align:right;font-size:12px;color:var(--text-muted);margin-top:4px">${pct}%</div></div>`;
+  }
+
+  if (!data || data.target == null) {
+    return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="empty-state-text" style="padding:12px 0">No metrics set yet — click ✏ to add a start/current/target.</div></div>`;
+  }
   const pct = data.target > 0 ? Math.round((data.current_value || 0) / data.target * 100) : 0;
-  return `<div class="stats-row">
+  return `<div style="position:relative;padding-right:${padRight}px">${chrome}<div class="stats-row">
     ${data.start_value != null ? `<div class="stat-card"><div class="stat-value">${data.start_value}</div><div class="stat-label">Start</div></div>` : ''}
     ${data.current_value != null ? `<div class="stat-card"><div class="stat-value">${data.current_value}</div><div class="stat-label">Current</div></div>` : ''}
     ${data.target != null ? `<div class="stat-card"><div class="stat-value">${data.target}</div><div class="stat-label">Target</div></div>` : ''}
   </div>
   <div class="progress-track" style="margin-top:8px"><div class="progress-fill" style="width:${pct}%"></div></div>
-  <div style="text-align:right;font-size:12px;color:var(--text-muted);margin-top:4px">${pct}%</div>`;
+  <div style="text-align:right;font-size:12px;color:var(--text-muted);margin-top:4px">${pct}%</div></div>`;
 }
+
+// Resolves a rollup target_property key to its human label, looking at the
+// same field-def sources showAddRollupPanel's picker draws from.
+function rollupTargetPropertyLabel(entity, cfg) {
+  const typeName = cfg.child_entity_type || '';
+  if (!typeName) return cfg.target_property;
+  const fromBuiltin = rollupBuiltinFieldDefs(typeName).find(d => d.key === cfg.target_property);
+  if (fromBuiltin) return fromBuiltin.label;
+  const entKey = customEntityTypes.some(t => t.name === typeName) ? `custom_${typeName}` : typeName;
+  const fromCustom = getCustomPropDefs(entKey).find(d => d.key === cfg.target_property);
+  return fromCustom ? fromCustom.label : cfg.target_property;
+}
+
+// Compact single-line version of a Metrics widget's value, for Cards view.
+// Shown when a metrics-type widget on this entity has showInCards enabled
+// (toggled from the entity's view settings — the gear icon next to
+// expand/property-visibility in the List/Cards/Table toolbar — see
+// openPropManager's "Metrics on cards" section). Every entity that can carry
+// a Metrics widget (Project/Goal/Sprint/custom detail types) funnels its
+// Cards template through this one function. Rollup-mode values render via
+// renderRollupCardWidget — the exact same text/progress_bar/ring/tally-
+// breakdown renderer a regular Rollup property already uses — so the
+// "Display as" choice made when configuring the widget's source is honored
+// here too, instead of always forcing one fixed bar style.
+function metricsCardChipHtml(entity, entityId, entityData) {
+  const w = getWidgetLayout(entity).find(x => x.type === 'metrics' && x.visible && x.showInCards);
+  if (!w) return '';
+  if (_metricsUsesRollup(entity, w)) {
+    const cfg = w.rollupCfg;
+    if (!cfg || !cfg.target_property) return '';
+    const computed = evaluateRollup(entity, entityId, { rollup: cfg });
+    if (computed === null) return '';
+    const value = Array.isArray(computed) ? computed : Math.round(computed * 100) / 100;
+    return `<div style="margin-top:4px">${renderRollupCardWidget({ label: 'Metrics', rollup: cfg }, value)}</div>`;
+  }
+  if (!entityData || entityData.target == null) return '';
+  const pct = entityData.target > 0 ? Math.max(0, Math.min(100, Math.round((entityData.current_value || 0) / entityData.target * 100))) : 0;
+  const label = `${entityData.current_value ?? 0}/${entityData.target}`;
+  return `<div class="rollup-bar-row" style="margin-top:4px" title="Metrics: ${escHtml(label)}"><span class="rollup-bar-label">Metrics</span><span class="rollup-bar" style="width:56px"><span class="rollup-bar-fill" style="width:${pct}%"></span></span><span class="rollup-bar-num">${escHtml(label)}</span></div>`;
+}
+
+// Opens the shared rollup config panel (the same one "+Add property > Rollup"
+// uses) to configure a Metrics widget's relation-based source instead of a
+// custom prop def.
+function openMetricsRollupConfigPanel(anchorEl, entity, w, onSaved) {
+  showAddRollupPanel(anchorEl, `widget-${w.id}`, 'Metrics', entity, onSaved, w.rollupCfg || {}, '', {
+    onSave: (rollupConfig) => {
+      const layout = getWidgetLayout(entity);
+      const ww = layout.find(x => x.id === w.id);
+      if (ww) { ww.metricsSource = 'rollup'; ww.rollupCfg = rollupConfig; saveWidgetLayout(entity, layout); }
+      onSaved();
+    },
+  });
+}
+
+// Small popover to set a goal's start/current/target values directly from
+// the Metrics widget — the widget only ever displays wData.entityData, this
+// is the one place that can actually write it.
+function openMetricsEditPopover(anchorEl, entity, entityId) {
+  document.getElementById('metrics-edit-popover')?.remove();
+  const panel = document.createElement('div');
+  panel.id = 'metrics-edit-popover';
+  panel.className = 'combo-popover';
+  panel.style.minWidth = '200px';
+  document.body.appendChild(panel);
+  const rect = anchorEl.getBoundingClientRect();
+  // The panel is empty until the GET below resolves, so clamping here measures
+  // a ~0-height div and does nothing useful — re-run once real content (the
+  // three inputs + buttons) is in the DOM and has its real size.
+  const clampToViewport = () => {
+    panel.style.top = (rect.bottom + 6) + 'px';
+    panel.style.left = rect.left + 'px';
+    requestAnimationFrame(() => {
+      const cr = panel.getBoundingClientRect();
+      if (cr.right > window.innerWidth - 8) panel.style.left = Math.max(8, window.innerWidth - cr.width - 8) + 'px';
+      if (cr.bottom > window.innerHeight - 8) panel.style.top = Math.max(8, rect.top - cr.height - 6) + 'px';
+    });
+  };
+  clampToViewport();
+
+  api('GET', `/api/${entity}s/${entityId}`).then(data => {
+    const field = (id, label, value) => `
+      <label style="display:block;font-size:11px;color:var(--text-muted);margin-bottom:6px">${label}
+        <input type="number" id="${id}" value="${value ?? ''}" style="width:100%;box-sizing:border-box;font-size:12px;padding:4px 6px;margin-top:2px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
+      </label>`;
+    panel.innerHTML = `
+      <div style="padding:8px 10px 4px;font-size:11px;font-weight:600;text-transform:uppercase;color:var(--text-muted)">Set metrics</div>
+      <div style="padding:4px 10px">
+        ${field('wm-metrics-sv', 'Start', data.start_value)}
+        ${field('wm-metrics-cv', 'Current', data.current_value)}
+        ${field('wm-metrics-t', 'Target', data.target)}
+      </div>
+      <div style="padding:8px 10px;display:flex;justify-content:flex-end;gap:6px;border-top:1px solid var(--border);margin-top:4px">
+        <button id="wm-metrics-cancel" class="btn btn-sm btn-ghost">Cancel</button>
+        <button id="wm-metrics-save" class="btn btn-sm btn-primary">Save</button>
+      </div>`;
+    clampToViewport();
+    document.getElementById('wm-metrics-sv').focus();
+    panel.querySelector('#wm-metrics-cancel').onclick = () => panel.remove();
+    panel.querySelector('#wm-metrics-save').onclick = async () => {
+      const sv = parseFloat(document.getElementById('wm-metrics-sv').value);
+      const cv = parseFloat(document.getElementById('wm-metrics-cv').value);
+      const t  = parseFloat(document.getElementById('wm-metrics-t').value);
+      await api('PATCH', `/api/${entity}s/${entityId}`, { start_value: isNaN(sv) ? null : sv, current_value: isNaN(cv) ? null : cv, target: isNaN(t) ? null : t });
+      panel.remove();
+      if (entity === 'goal') renderGoalDetail(entityId);
+    };
+  });
+
+  setTimeout(() => {
+    const dismiss = (e) => {
+      if (!panel.contains(e.target) && e.target !== anchorEl) { panel.remove(); document.removeEventListener('mousedown', dismiss); }
+    };
+    document.addEventListener('mousedown', dismiss);
+  }, 10);
+}
+document.addEventListener('click', (e) => {
+  const modeBtn = e.target.closest('.widget-metrics-mode-btn');
+  if (modeBtn) {
+    e.stopPropagation();
+    const entity = modeBtn.dataset.entity;
+    const layout = getWidgetLayout(entity);
+    const w = layout.find(x => x.id === modeBtn.dataset.wid);
+    if (!w) return;
+    w.metricsSource = _metricsUsesRollup(entity, w) ? 'manual' : 'rollup';
+    saveWidgetLayout(entity, layout);
+    renderView(currentView, currentParams);
+    return;
+  }
+  const btn = e.target.closest('.widget-metrics-edit-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  const entity = btn.dataset.entity;
+  const layout = getWidgetLayout(entity);
+  const w = layout.find(x => x.id === btn.dataset.wid);
+  if (w && _metricsUsesRollup(entity, w)) {
+    openMetricsRollupConfigPanel(btn, entity, w, () => renderView(currentView, currentParams));
+  } else {
+    openMetricsEditPopover(btn, entity, btn.dataset.id);
+  }
+});
 
 function _wCustomHtml(entity, entityId, data, def) {
   if (!def || !def.code) return '<div class="empty-state-text" style="padding:12px 0">No code. Edit via Widgets panel.</div>';
@@ -11658,15 +12510,22 @@ function buildWidgetGrid(entity, entityId, wData) {
       case 'notes':      body = _wNotesHtml(wData.notes); break;
       case 'resources':  body = _wResourcesHtml(wData.resources); break;
       case 'projects':   body = _wProjectsHtml(wData.projects); break;
+      case 'sprints':    body = _wSprintsHtml(wData.sprints); break;
       case 'properties': body = wData.propPanelHtml || ''; break;
       case 'editor':     body = `<div id="editorjs-${entity}-${entityId}" class="rich-editor-host"></div>`; break;
       case 'comments':   body = buildCommentSection(entity, entityId); break;
-      case 'metrics':    body = _wMetricsHtml(wData.entityData); break;
+      case 'metrics':    body = _wMetricsHtml(entity, entityId, wData.entityData, w); break;
       case 'custom': {
         const def = customDefs.find(d => d.id === w.customDefId);
         body = _wCustomHtml(entity, entityId, wData.entityData, def); break;
       }
       default: body = `<div class="empty-state-text">Unknown widget: ${escHtml(w.type)}</div>`;
+    }
+    // Unwrapped widgets skip the card chrome (border/background/header) entirely
+    // and always span the full grid width — no half-width toggle, since there's
+    // no header for that control to live in once the card is gone.
+    if (w.wrapped === false) {
+      return `<div class="widget-bare" data-widget-id="${escHtml(w.id)}" data-widget-type="${w.type}" style="grid-column:1/-1">${body}</div>`;
     }
     const is2col = w.type === 'tasks' && w.cols === 2;
     const colBtn = w.type === 'tasks'
@@ -11676,9 +12535,13 @@ function buildWidgetGrid(entity, entityId, wData) {
     const expandBtn = w.type === 'editor'
       ? `<button class="widget-col-btn widget-expand-btn" data-cf-expand="${escHtml(w.id)}" title="Content fullscreen">⤡</button>`
       : '';
+    // Same type icon the Manage Widgets rows show — the card and its row in
+    // the settings panel should read as the same thing.
+    const typeIcon = (WIDGET_TYPE_META[w.type] || { icon: '◉' }).icon;
     return `<div class="widget widget-item${w.half?' widget-half':''}" data-widget-id="${escHtml(w.id)}" data-widget-type="${w.type}">
       <div class="widget-header">
         ${dgh}
+        <span class="widget-title-icon">${typeIcon}</span>
         <span class="widget-title">${escHtml(w.label)}</span>
         <div class="widget-header-actions">${halfBtn}${colBtn}${expandBtn}</div>
       </div>
@@ -11695,7 +12558,12 @@ function initWidgetGrid(entity, entityId, container, onRerender) {
       animation: 150,
       onEnd: () => {
         const layout = getWidgetLayout(entity);
-        const order = Array.from(container.querySelectorAll('.widget-item[data-widget-id]')).map(el => el.dataset.widgetId);
+        // Bare (unwrapped) widgets have no drag handle so they can never be
+        // the item being dragged, but they're still direct children of the
+        // sortable container and must stay counted here — querying only
+        // .widget-item excluded them, so every drag silently bumped every
+        // bare widget to the end of the saved order.
+        const order = Array.from(container.querySelectorAll('[data-widget-id]')).map(el => el.dataset.widgetId);
         const sorted = order.map(id => layout.find(w => w.id === id)).filter(Boolean);
         const rest = layout.filter(w => !sorted.find(s => s.id === w.id));
         saveWidgetLayout(entity, [...sorted, ...rest]);
@@ -11736,7 +12604,15 @@ function initWidgetGrid(entity, entityId, container, onRerender) {
       const view = cfBtn.closest('.view');
       const title = view?.querySelector('.view-title')?.textContent || '';
       openContentFullscreen(entity, entityId, title);
+      return;
     }
+    // Cards inside a Projects/Sprints widget (any entity that has one, not
+    // just the ones that originally hardcoded it) navigate to that record's
+    // own detail view.
+    const projCard = e.target.closest('.detail-nav[data-proj-id]');
+    if (projCard) { renderView('project-detail', projCard.dataset.projId); return; }
+    const sprintCard = e.target.closest('.detail-nav[data-sprint-id]');
+    if (sprintCard) { renderView('sprint-detail', sprintCard.dataset.sprintId); return; }
   });
   const editorHost = container.querySelector('.rich-editor-host[id]');
   if (editorHost) initRichEditor(editorHost.id, entity, entityId, false);
@@ -11746,27 +12622,52 @@ function initWidgetGrid(entity, entityId, container, onRerender) {
 
 // ── Widget manager panel ──────────────────────────────────────────────────────
 
-function openWidgetManager(entity, anchorEl, onClose) {
-  document.getElementById('widget-mgr')?.remove();
+// entityKey a quick-add target resolves to for icon lookup purposes —
+// reuses whatever icon the sidebar nav (or custom entity type) already has,
+// same trick tabIconFor uses for tabs.
+function quickAddTargetView(target) {
+  if (target.startsWith('custom_')) return `custom:${target.slice(7)}`;
+  const map = { task: 'tasks', note: 'notes', resource: 'resources', goal: 'goals', project: 'projects', sprint: 'sprints', habit: 'habits' };
+  return map[target] || target;
+}
+
+// One merged panel — Quick-add buttons + Widgets — replacing the old plain
+// "Manage Widgets" popup. Both sections configure per-ENTITY-TYPE layout
+// (shared by every record of that type), so this needs only the type key,
+// not a specific record id — same as the old openWidgetManager signature.
+function openEntitySettingsPanel(entity, anchorEl, onClose) {
+  document.getElementById('entity-settings-panel')?.remove();
   const layout = getWidgetLayout(entity);
   const customDefs = getCustomWidgetDefs();
+  const qaButtons = getQuickAddButtons(entity);
   const dgh = `<svg width="10" height="16" viewBox="0 0 10 16" fill="var(--text-muted)" style="cursor:grab;flex-shrink:0"><circle cx="3" cy="2" r="1.5"/><circle cx="7" cy="2" r="1.5"/><circle cx="3" cy="6" r="1.5"/><circle cx="7" cy="6" r="1.5"/><circle cx="3" cy="10" r="1.5"/><circle cx="7" cy="10" r="1.5"/><circle cx="3" cy="14" r="1.5"/><circle cx="7" cy="14" r="1.5"/></svg>`;
 
-  const rowsHtml = layout.map(w => {
+  const qaRowsHtml = qaButtons.map(b => `<div class="es-row" data-qaid="${escHtml(b.id)}">
+      <span class="es-row-handle">${dgh}</span>
+      <span class="es-row-icon">${tabIconFor(quickAddTargetView(b.targetEntity)) || '◈'}</span>
+      <span class="es-row-label">${escHtml(b.label)}</span>
+      <button class="es-row-remove es-qa-del-btn" data-qaid="${escHtml(b.id)}" title="Remove">✕</button>
+    </div>`).join('');
+  const targetOpts = quickAddTargetOptions(entity).map(o => `<option value="${o.value}">${escHtml(o.label)}</option>`).join('');
+
+  const wgRowsHtml = layout.map(w => {
     const meta = WIDGET_TYPE_META[w.type] || { icon: '◉' };
-    return `<div class="wm-row" data-wid="${escHtml(w.id)}">
-      <span class="wm-row-handle">${dgh}</span>
-      <span class="wm-row-icon">${meta.icon}</span>
-      <span class="wm-row-label">${escHtml(w.label)}</span>
-      <label class="wm-toggle-wrap" title="${w.visible ? 'Click to hide' : 'Click to show'}">
-        <input type="checkbox" class="wm-vis-cb" ${w.visible ? 'checked' : ''} data-wid="${escHtml(w.id)}">
-        <span class="wm-toggle-slider"></span>
+    return `<div class="es-row" data-wid="${escHtml(w.id)}">
+      <span class="es-row-handle">${dgh}</span>
+      <span class="es-row-icon">${meta.icon}</span>
+      <span class="es-row-label">${escHtml(w.label)}</span>
+      <label class="es-toggle" title="${w.visible ? 'Click to hide' : 'Click to show'}">
+        <input type="checkbox" class="es-wg-vis-cb" ${w.visible ? 'checked' : ''} data-wid="${escHtml(w.id)}">
+        <span class="es-toggle-slider"></span>
       </label>
-      ${w.type === 'custom' ? `<button class="btn btn-ghost btn-sm wm-del-btn" data-wid="${escHtml(w.id)}" style="color:var(--danger);padding:2px 5px;line-height:1;flex-shrink:0">✕</button>` : '<span style="width:24px;flex-shrink:0"></span>'}
+      ${w.type === 'custom' ? `<button class="es-row-remove es-wg-del-btn" data-wid="${escHtml(w.id)}" title="Remove">✕</button>` : ''}
     </div>`;
   }).join('');
 
   const existingTypes = new Set(layout.map(w => w.type));
+  // Metrics defaults to manual start_value/current_value/target on Goal (the
+  // only entity with those columns) and to a computed relation everywhere
+  // else — see _metricsUsesRollup — so it's addable anywhere now.
   const addableOpts = Object.entries(WIDGET_TYPE_META)
     .filter(([t]) => t !== 'custom' && !existingTypes.has(t))
     .map(([t, m]) => `<option value="${t}">${m.icon} ${m.label}</option>`).join('');
@@ -11775,18 +12676,30 @@ function openWidgetManager(entity, anchorEl, onClose) {
     .map(d => `<option value="cx:${d.id}">◈ ${escHtml(d.name)}</option>`).join('');
 
   const panel = document.createElement('div');
-  panel.id = 'widget-mgr';
-  panel.className = 'widget-mgr';
+  panel.id = 'entity-settings-panel';
+  panel.className = 'es-panel';
   panel.innerHTML = `
-    <div class="wm-hd"><span class="wm-title">Manage Widgets</span><button class="btn btn-ghost btn-sm" id="wm-x">✕</button></div>
-    <div class="wm-body">
-      <div class="wm-list" id="wm-list">${rowsHtml || '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No widgets configured</div>'}</div>
-      <div class="wm-add">
-        <select id="wm-sel" class="form-input" style="flex:1;font-size:12px;min-width:0"><option value="">Add widget…</option>${addableOpts}${addCustomOpts}</select>
-        <button class="btn btn-sm btn-primary" id="wm-add">Add</button>
+    <div class="es-hd"><span class="es-title">Settings</span><button class="es-close" id="es-x">✕</button></div>
+    <div class="es-body">
+      <div class="es-section">
+        <span class="es-section-title">Quick-add buttons</span>
+        <div class="es-qa-list" id="es-qa-list">${qaRowsHtml || '<div class="es-empty">No quick-add buttons yet</div>'}</div>
+        <div class="es-add-row">
+          <select id="es-qa-sel" class="es-select"><option value="">Add button…</option>${targetOpts}</select>
+          <button class="es-add-btn" id="es-qa-add" title="Add">+</button>
+        </div>
       </div>
-      <button class="btn btn-sm btn-ghost" id="wm-new-cust" style="width:100%;margin-top:6px;font-size:12px">+ New Custom Widget</button>
-      <button class="btn btn-sm btn-ghost" id="wm-reset" style="width:100%;margin-top:4px;font-size:11px;color:var(--text-muted)">Reset to defaults</button>
+      <div class="es-divider"></div>
+      <div class="es-section">
+        <span class="es-section-title">Widgets</span>
+        <div class="es-wg-list" id="es-wg-list">${wgRowsHtml || '<div class="es-empty">No widgets configured</div>'}</div>
+        <div class="es-add-row">
+          <select id="es-wg-sel" class="es-select"><option value="">Add widget…</option>${addableOpts}${addCustomOpts}</select>
+          <button class="es-add-btn" id="es-wg-add" title="Add">+</button>
+        </div>
+        <button class="es-link-btn" id="es-new-cust">+ New custom widget</button>
+        <button class="es-link-btn es-muted" id="es-reset">Reset widgets to defaults</button>
+      </div>
     </div>`;
 
   document.body.appendChild(panel);
@@ -11795,13 +12708,18 @@ function openWidgetManager(entity, anchorEl, onClose) {
     const r = anchorEl.getBoundingClientRect();
     panel.style.top = (r.bottom + 8) + 'px';
     panel.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+    requestAnimationFrame(() => {
+      const pr = panel.getBoundingClientRect();
+      if (pr.bottom > window.innerHeight - 8) panel.style.maxHeight = Math.max(200, window.innerHeight - pr.top - 8) + 'px';
+    });
   }
 
   if (window.Sortable) {
-    new Sortable(document.getElementById('wm-list'), { handle: '.wm-row-handle', animation: 120 });
+    new Sortable(document.getElementById('es-wg-list'), { handle: '.es-row-handle', animation: 120 });
+    new Sortable(document.getElementById('es-qa-list'), { handle: '.es-row-handle', animation: 120 });
   }
 
-  panel.querySelectorAll('.wm-vis-cb').forEach(cb => {
+  panel.querySelectorAll('.es-wg-vis-cb').forEach(cb => {
     cb.onchange = () => {
       const lay = getWidgetLayout(entity);
       const w = lay.find(x => x.id === cb.dataset.wid);
@@ -11809,15 +12727,22 @@ function openWidgetManager(entity, anchorEl, onClose) {
     };
   });
 
-  panel.querySelectorAll('.wm-del-btn').forEach(btn => {
+  panel.querySelectorAll('.es-wg-del-btn').forEach(btn => {
     btn.onclick = () => {
       saveWidgetLayout(entity, getWidgetLayout(entity).filter(w => w.id !== btn.dataset.wid));
-      btn.closest('.wm-row').remove();
+      btn.closest('.es-row').remove();
     };
   });
 
-  document.getElementById('wm-add').onclick = () => {
-    const val = document.getElementById('wm-sel').value;
+  panel.querySelectorAll('.es-qa-del-btn').forEach(btn => {
+    btn.onclick = () => {
+      saveQuickAddButtons(entity, getQuickAddButtons(entity).filter(b => b.id !== btn.dataset.qaid));
+      btn.closest('.es-row').remove();
+    };
+  });
+
+  document.getElementById('es-wg-add').onclick = () => {
+    const val = document.getElementById('es-wg-sel').value;
     if (!val) return;
     const lay = getWidgetLayout(entity);
     if (val.startsWith('cx:')) {
@@ -11825,44 +12750,62 @@ function openWidgetManager(entity, anchorEl, onClose) {
       if (def) lay.push({ id: `w-cx-${Date.now()}`, type: 'custom', label: def.name, customDefId: def.id, visible: true });
     } else {
       const meta = WIDGET_TYPE_META[val];
-      if (meta) lay.push({ id: `w-${val}-${Date.now()}`, type: val, label: meta.label, visible: true });
+      if (meta) lay.push({ id: `w-${val}-${Date.now()}`, type: val, label: meta.label, visible: true, ...(val === 'metrics' ? { showInCards: true } : {}) });
     }
     saveWidgetLayout(entity, lay);
-    _closeWM(); openWidgetManager(entity, anchorEl, onClose);
+    _closeES(); openEntitySettingsPanel(entity, anchorEl, onClose);
   };
 
-  document.getElementById('wm-new-cust').onclick = () => {
-    _closeWM(); openCustomWidgetEditor(null, () => openWidgetManager(entity, anchorEl, onClose));
+  document.getElementById('es-qa-add').onclick = () => {
+    const val = document.getElementById('es-qa-sel').value;
+    if (!val) return;
+    const list = getQuickAddButtons(entity);
+    list.push({ id: `qa-${Date.now()}`, label: quickAddTargetLabel(val), targetEntity: val });
+    saveQuickAddButtons(entity, list);
+    _closeES(); openEntitySettingsPanel(entity, anchorEl, onClose);
   };
 
-  document.getElementById('wm-reset').onclick = () => {
+  document.getElementById('es-new-cust').onclick = () => {
+    _closeES(); openCustomWidgetEditor(null, () => openEntitySettingsPanel(entity, anchorEl, onClose));
+  };
+
+  document.getElementById('es-reset').onclick = () => {
     if (!confirm('Reset widget layout to defaults?')) return;
-    resetWidgetLayout(entity); _closeWM(); openWidgetManager(entity, anchorEl, onClose);
+    resetWidgetLayout(entity); _closeES(); openEntitySettingsPanel(entity, anchorEl, onClose);
   };
 
   const saveOrder = () => {
-    const listEl = document.getElementById('wm-list');
-    if (!listEl) return;
-    const lay = getWidgetLayout(entity);
-    const order = Array.from(listEl.querySelectorAll('.wm-row[data-wid]')).map(r => r.dataset.wid);
-    const sorted = order.map(id => lay.find(w => w.id === id)).filter(Boolean);
-    const rest = lay.filter(w => !sorted.find(s => s.id === w.id));
-    saveWidgetLayout(entity, [...sorted, ...rest]);
+    const wgList = document.getElementById('es-wg-list');
+    if (wgList) {
+      const lay = getWidgetLayout(entity);
+      const order = Array.from(wgList.querySelectorAll('.es-row[data-wid]')).map(r => r.dataset.wid);
+      const sorted = order.map(id => lay.find(w => w.id === id)).filter(Boolean);
+      const rest = lay.filter(w => !sorted.find(s => s.id === w.id));
+      saveWidgetLayout(entity, [...sorted, ...rest]);
+    }
+    const qaList = document.getElementById('es-qa-list');
+    if (qaList) {
+      const list = getQuickAddButtons(entity);
+      const order = Array.from(qaList.querySelectorAll('.es-row[data-qaid]')).map(r => r.dataset.qaid);
+      const sorted = order.map(id => list.find(b => b.id === id)).filter(Boolean);
+      const rest = list.filter(b => !sorted.find(s => s.id === b.id));
+      saveQuickAddButtons(entity, [...sorted, ...rest]);
+    }
   };
 
-  document.getElementById('wm-x').onclick = () => { saveOrder(); _closeWM(); if (onClose) onClose(); };
+  document.getElementById('es-x').onclick = () => { saveOrder(); _closeES(); if (onClose) onClose(); };
 
   setTimeout(() => {
     const handler = (e) => {
-      if (!document.getElementById('widget-mgr')?.contains(e.target)) {
-        saveOrder(); _closeWM(); document.removeEventListener('click', handler); if (onClose) onClose();
+      if (!document.getElementById('entity-settings-panel')?.contains(e.target)) {
+        saveOrder(); _closeES(); document.removeEventListener('click', handler); if (onClose) onClose();
       }
     };
     document.addEventListener('click', handler);
   }, 120);
 }
 
-function _closeWM() { document.getElementById('widget-mgr')?.remove(); }
+function _closeES() { document.getElementById('entity-settings-panel')?.remove(); }
 
 // ── Custom widget code editor ─────────────────────────────────────────────────
 
@@ -12039,12 +12982,12 @@ async function renderSprintDetail(sprintId) {
         </div>
       </div>
       <div class="flex gap-8">
-        <button class="btn btn-ghost btn-sm" id="sd-manage-btn">Widgets ⚙</button>
-        <button class="btn btn-ghost" id="sd-back-btn">← Back</button>
+        ${quickAddButtonsHtml('sprint')}
         ${prevStatus ? `<button class="btn btn-ghost" id="sd-prev-status-btn" data-prev="${prevStatus}">${prevLabel}</button>` : ''}
         ${nextStatus ? `<button class="btn btn-ghost" id="sd-status-btn" data-next="${nextStatus}">${nextLabel}</button>` : ''}
-        <button class="btn btn-ghost" id="sd-json-btn">Show JSON</button>
-        <button class="btn btn-primary" id="sd-add-task-btn">+ Task</button>
+        <button class="btn btn-ghost" id="sd-json-btn">Export JSON</button>
+        <button class="btn btn-ghost" id="sd-back-btn">← Back</button>
+        <button class="entity-settings-btn" id="sd-manage-btn" title="Settings">${TB_ICONS.settings}</button>
       </div>
     </div>
     <div class="widget" style="margin-bottom:16px">
@@ -12078,17 +13021,17 @@ async function renderSprintDetail(sprintId) {
       </div>
     </div>
     <div id="sd-widget-grid" class="widget-grid" style="margin-top:12px">
-      ${buildWidgetGrid('sprint', sprintId, { tasks, propPanelHtml: sprintDetailPropPanel, entityData: sprint })}
+      ${buildWidgetGrid('sprint', sprintId, { tasks, propPanelHtml: sprintDetailPropPanel, entityData: sprint,
+        projects: relatedRecordsFromProp('sprint', sprintId, 'project', sdLocalProjects, sprint.project_id) })}
     </div>
   </div>`;
 
-  document.getElementById('sd-manage-btn').onclick = (e) => openWidgetManager('sprint', e.currentTarget, () => renderSprintDetail(sprintId));
+  document.getElementById('sd-manage-btn').onclick = (e) => openEntitySettingsPanel('sprint', e.currentTarget, () => renderSprintDetail(sprintId));
+  bindQuickAddButtons(document.getElementById('main-content'), 'sprint', parseInt(sprintId), sprint.title, () => renderSprintDetail(sprintId));
   document.getElementById('sd-back-btn').onclick = () => renderView('sprints');
   bindDetailTitleDblClickEdit(document.getElementById('sd-title'), sprint.title, (val) => patchSprint({ title: val }));
   document.getElementById('sd-json-btn').onclick = () =>
     showJSONModal(`/api/export/sprint/${sprintId}`, `sprint-${sprint.title.replace(/\s+/g,'-')}.json`);
-  document.getElementById('sd-add-task-btn').onclick = () =>
-    showNewTaskModal({ sprint_id: parseInt(sprintId) }, () => renderSprintDetail(sprintId));
   document.getElementById('sd-prev-status-btn')?.addEventListener('click', async (e) => {
     const prev = e.currentTarget.dataset.prev;
     if (!confirm(`Revert sprint to "${prev}"?`)) return;
@@ -12313,7 +13256,7 @@ async function renderSprintDetail(sprintId) {
 async function renderHabits() {
   let habits = [];
   let apiError = null;
-  try { habits = await api('GET', '/api/habits'); } catch(e) { apiError = e.message || String(e); }
+  try { habits = await api('GET', withWorkspaceFilter('/api/habits')); } catch(e) { apiError = e.message || String(e); }
 
   if (apiError) {
     document.getElementById('main-content').innerHTML = `<div class="view">
@@ -12469,7 +13412,7 @@ async function renderHabits() {
 
       return `<div class="habit-heatmap-row">
         <div class="habit-heatmap-title">
-          <span style="font-weight:600">${_esc(h.title)}</span>
+          <span style="font-weight:600">${escHtml(h.title)}</span>
           ${streakBadge(h)}
           <span onclick="event.stopPropagation()">${checkinBtn(h)}</span>
         </div>
@@ -12614,7 +13557,7 @@ function showHabitModal(habit) {
   const body = `
     <div class="form-group">
       <label class="form-label">Title *</label>
-      <input type="text" id="h-title" value="${isEdit ? _esc(habit.title) : ''}" placeholder="e.g. Morning run, Read 30 min…" autocomplete="off" />
+      <input type="text" id="h-title" value="${isEdit ? escHtml(habit.title) : ''}" placeholder="e.g. Morning run, Read 30 min…" autocomplete="off" />
     </div>
     <div class="form-group">
       <label class="form-label">Type</label>
@@ -12626,7 +13569,14 @@ function showHabitModal(habit) {
     </div>
     <div class="form-group" id="h-ref-group" style="${(isEdit && habit.type === 'learning') || (!isEdit) ? '' : 'display:none'}">
       <label class="form-label">StudyTrack Reference ID <span style="font-weight:400;color:var(--text-muted)">(required for Learning)</span></label>
-      <input type="text" id="h-ref" value="${isEdit && habit.reference_id ? _esc(habit.reference_id) : ''}" placeholder="e.g. gcp-ml-engineer" autocomplete="off" style="font-family:var(--font-mono);font-size:13px" />
+      <input type="text" id="h-ref" value="${isEdit && habit.reference_id ? escHtml(habit.reference_id) : ''}" placeholder="e.g. gcp-ml-engineer" autocomplete="off" style="font-family:var(--font-mono);font-size:13px" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Workspace</label>
+      <select id="h-workspace">
+        <option value="">— None —</option>
+        ${workspaces.map(w => `<option value="${w.id}"${isEdit && habit.workspace_id === w.id ? ' selected' : ''}>${escHtml(w.icon || '')} ${escHtml(w.name)}</option>`).join('')}
+      </select>
     </div>
     <div id="h-error" style="display:none;color:var(--danger,#DC2626);font-size:13px;margin-top:8px;padding:8px 12px;background:var(--danger-bg,#fff1f1);border-radius:6px"></div>
     <div class="form-actions">
@@ -12668,7 +13618,8 @@ function showHabitModal(habit) {
       return;
     }
 
-    const payload = { title: titleVal, type: typeVal };
+    const wsVal = document.getElementById('h-workspace').value;
+    const payload = { title: titleVal, type: typeVal, workspace_id: wsVal ? parseInt(wsVal) : null };
     if (refVal) payload.reference_id = refVal;
 
     const saveBtn = document.getElementById('h-save-btn');
@@ -12680,7 +13631,7 @@ function showHabitModal(habit) {
         payload.id = habit.id;
         await api('PATCH', `/api/habits/${habit.id}`, payload);
       } else {
-        await api('POST', '/api/habits', payload);
+        await api('POST', '/api/habits', withActiveWorkspace(payload));
       }
       closeFormSlideover();
       renderHabits();
@@ -12700,7 +13651,7 @@ function showHabitModal(habit) {
 async function renderResources() {
   let resources = [];
   let apiError = null;
-  try { resources = await api('GET', '/api/resources'); } catch(e) { apiError = e.message || String(e); }
+  try { resources = await api('GET', withWorkspaceFilter('/api/resources')); } catch(e) { apiError = e.message || String(e); }
 
   if (apiError) {
     document.getElementById('main-content').innerHTML = `<div class="view">
@@ -13093,6 +14044,11 @@ async function renderProjectDetail(projectId) {
   let pdLocalGoals = [];
   try { pdLocalGoals = await api('GET', '/api/goals'); } catch(e) {}
   const goalName = pdLocalGoals.find(g => String(g.id) === String(p.goal_id))?.title || null;
+  // A sprint belongs to its project via sprint.project_id (the reverse of
+  // goal_id/project_id on tasks/notes/resources) — same reverse-FK relation
+  // Tasks/Notes/Resources widgets already read, just on the other table.
+  let pdSprints = [];
+  try { pdSprints = await api('GET', `/api/sprints?project_id=${projectId}`); } catch(e) {}
   const allProjDetailBuiltinDefs = [
     { key: 'status',   label: 'Status',    icon: pIco('<circle cx="12" cy="12" r="10"/>'),
       renderValue: () => builtinSelectChip('projectStatuses', p.status||'active', { badge: true }) },
@@ -13104,6 +14060,8 @@ async function renderProjectDetail(projectId) {
       renderValue: () => tags.length ? tags.map(t => tagHtml(t)).join('') : '' },
     { key: 'category', label: 'Category',  icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(p.workspace_id) },
     { key: 'macro',    label: 'Macro Area',icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
       renderValue: () => p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : '' },
     { key: 'kanban',   label: 'Kanban Col',icon: pIco('<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>'),
@@ -13121,6 +14079,7 @@ async function renderProjectDetail(projectId) {
     goal:     (valEl) => openMultiRelationPicker(valEl, 'project', projectId, 'goal', 'goal', pdLocalGoals, p, patchProject, 'goal_id', () => renderProjectDetail(projectId)),
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); renderProjectDetail(projectId); return; } await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); renderProjectDetail(projectId); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, p.category_id, async (newId) => { await patchProject({ category_id: newId ? parseInt(newId) : null }); }); },
+    workspace: (valEl) => openWorkspaceCombo(valEl, p.workspace_id, async (newId) => { await patchProject({ workspace_id: newId }); }),
     macro:    (valEl) => { openEditableValueCombo(valEl, MACRO_AREAS, 'project_macro_area', null, async (val) => { await patchProject({ macro_area: val||null }); }, { allowClear: true }); },
     kanban:   (valEl) => { openEditableValueCombo(valEl, KANBAN_COLS, 'project_kanban_col', null, async (val) => { await patchProject({ kanban_col: val||null }); }, { allowClear: true }); },
     archived: (valEl) => { patchProject({ archived: !p.archived }); },
@@ -13176,20 +14135,22 @@ async function renderProjectDetail(projectId) {
         </div>
       </div>
       <div class="flex gap-8">
-        <button class="btn btn-ghost btn-sm" id="pd-manage-btn">Widgets ⚙</button>
+        ${quickAddButtonsHtml('project')}
         <button class="btn btn-ghost" id="pd-export-btn">Export JSON</button>
         <button class="btn btn-ghost" id="pd-back-btn">← Back</button>
+        <button class="entity-settings-btn" id="pd-manage-btn" title="Settings">${TB_ICONS.settings}</button>
       </div>
     </div>
     <div id="pd-widget-grid" class="widget-grid">
-      ${buildWidgetGrid('project', projectId, { tasks, notes, resources, propPanelHtml: projDetailPropPanel })}
+      ${buildWidgetGrid('project', projectId, { tasks, notes, resources, sprints: pdSprints, propPanelHtml: projDetailPropPanel, entityData: p })}
     </div>
   </div>`;
 
   document.getElementById('pd-back-btn').onclick = () => renderView('projects');
+  bindQuickAddButtons(document.getElementById('main-content'), 'project', parseInt(projectId), p.title, () => renderProjectDetail(projectId));
   document.getElementById('pd-export-btn').onclick = () =>
     showJSONModal(`/api/export/project/${projectId}`, `project-${p.title}.json`);
-  document.getElementById('pd-manage-btn').onclick = (e) => openWidgetManager('project', e.currentTarget, () => renderProjectDetail(projectId));
+  document.getElementById('pd-manage-btn').onclick = (e) => openEntitySettingsPanel('project', e.currentTarget, () => renderProjectDetail(projectId));
   bindDetailTitleDblClickEdit(document.getElementById('pd-title'), p.title, (val) => patchProject({ title: val }));
   // ── Project icon + cover ─────────────────────────────────────────────
   const projIconBtn = document.getElementById('proj-icon-btn');
@@ -13255,6 +14216,8 @@ async function renderGoalDetail(goalId) {
       renderValue: () => tags.length ? tags.map(t => tagHtml(t)).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(g.workspace_id) },
     { key: 'due',      label: 'Due Date', icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => g.due_date ? `<span>${fmtDate(g.due_date)}</span>` : '' },
     { key: 'metrics',  label: 'Metrics',  icon: pIco('<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
@@ -13270,6 +14233,7 @@ async function renderGoalDetail(goalId) {
     year:     (valEl) => { openEditableValueCombo(valEl, GOAL_YEARS, 'goal_year', null, async (val) => { await patchGoal({ year: val||null }); }, { allowClear: true }); },
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); renderGoalDetail(goalId); return; } await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); renderGoalDetail(goalId); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, g.category_id, async (newId) => { await patchGoal({ category_id: newId ? parseInt(newId) : null }); }); },
+    workspace: (valEl) => openWorkspaceCombo(valEl, g.workspace_id, async (newId) => { await patchGoal({ workspace_id: newId }); }),
     due:      (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(g.due_date), async (val) => { await patchGoal({ due_date: val||null }); }); },
     metrics:  (valEl) => {
       valEl.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -13299,6 +14263,11 @@ async function renderGoalDetail(goalId) {
   const tasks = g.tasks || [];
   const notes = g.notes || [];
   const resources = g.resources || [];
+  // Sprints have no goal_id — a Goal can only reach them via the generic
+  // relation prop (manually linked, or bilaterally set by a "+Sprint"
+  // quick-add button pointing here), not a reverse-FK lookup.
+  let gdSprints = [];
+  try { gdSprints = relatedRecordsFromProp('goal', goalId, 'sprint', await api('GET', '/api/sprints'), null); } catch(e) {}
 
   // Load all tasks so toggle reveals subtasks that don't carry goal_id
   try {
@@ -13311,14 +14280,6 @@ async function renderGoalDetail(goalId) {
   tasks.forEach(t => {
     t.sub_task_count = allTasksCache.filter(s => s.parent_task_id === t.id).length;
   });
-
-  // Metrics row
-  const metricsHtml = (g.start_value != null || g.target != null) ? `
-    <div class="stats-row" style="margin-bottom:16px">
-      ${g.start_value != null ? `<div class="stat-card"><div class="stat-value">${g.start_value}</div><div class="stat-label">Start</div></div>` : ''}
-      ${g.current_value != null ? `<div class="stat-card"><div class="stat-value">${g.current_value}</div><div class="stat-label">Current</div></div>` : ''}
-      ${g.target != null ? `<div class="stat-card"><div class="stat-value">${g.target}</div><div class="stat-label">Target</div></div>` : ''}
-    </div>` : '';
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="entity-view-cover" id="goal-cover-row"></div>
@@ -13340,27 +14301,22 @@ async function renderGoalDetail(goalId) {
         </div>
       </div>
       <div class="flex gap-8">
-        <button class="btn btn-ghost btn-sm" id="gd-manage-btn">Widgets ⚙</button>
+        ${quickAddButtonsHtml('goal')}
         <button class="btn btn-ghost" id="gd-export-btn">Export JSON</button>
         <button class="btn btn-ghost" id="gd-back-btn">← Back</button>
-        <button class="btn btn-primary" id="gd-add-task-btn">+ Task</button>
-        <button class="btn btn-ghost" id="gd-add-note-btn">+ Note</button>
-        <button class="btn btn-ghost" id="gd-add-res-btn">+ Resource</button>
+        <button class="entity-settings-btn" id="gd-manage-btn" title="Settings">${TB_ICONS.settings}</button>
       </div>
     </div>
-    ${metricsHtml}
     <div id="gd-widget-grid" class="widget-grid">
-      ${buildWidgetGrid('goal', goalId, { tasks, notes, resources, projects, propPanelHtml: goalDetailPropPanel })}
+      ${buildWidgetGrid('goal', goalId, { tasks, notes, resources, projects, sprints: gdSprints, propPanelHtml: goalDetailPropPanel, entityData: g })}
     </div>
   </div>`;
 
   document.getElementById('gd-back-btn').onclick = () => renderView('goals');
   document.getElementById('gd-export-btn').onclick = () =>
     showJSONModal(`/api/export/goal/${goalId}`, `goal-${g.title}.json`);
-  document.getElementById('gd-add-task-btn').onclick = () => showNewTaskModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
-  document.getElementById('gd-add-note-btn').onclick = () => showNoteModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
-  document.getElementById('gd-add-res-btn').onclick = () => showResourceModal({ goal_id: parseInt(goalId) }, () => renderGoalDetail(goalId));
-  document.getElementById('gd-manage-btn').onclick = (e) => openWidgetManager('goal', e.currentTarget, () => renderGoalDetail(goalId));
+  bindQuickAddButtons(document.getElementById('main-content'), 'goal', parseInt(goalId), g.title, () => renderGoalDetail(goalId));
+  document.getElementById('gd-manage-btn').onclick = (e) => openEntitySettingsPanel('goal', e.currentTarget, () => renderGoalDetail(goalId));
   bindDetailTitleDblClickEdit(document.getElementById('gd-title'), g.title, (val) => patchGoal({ title: val }));
   // ── Goal icon + cover ─────────────────────────────────────────────────
   const goalIconBtn = document.getElementById('goal-icon-btn');
@@ -13384,9 +14340,6 @@ async function renderGoalDetail(goalId) {
     };
   }
   initDetailViewCover('goal', goalId, 'goal-cover-row', 'goal-action-row');
-  document.querySelectorAll('.detail-nav[data-proj-id]').forEach(el => {
-    el.onclick = () => renderView('project-detail', el.dataset.projId);
-  });
   document.querySelectorAll('.clickable-note').forEach(el => {
     el.onclick = () => {
       const n = notes.find(x => String(x.id) === el.dataset.noteId);
@@ -13612,6 +14565,98 @@ function openDateRangePickerGlobal(anchorEl, startVal, endVal, onChange, singleD
 
 function openSingleDatePickerGlobal(anchorEl, currentVal, onChange) {
   openDateRangePickerGlobal(anchorEl, currentVal, null, (start) => onChange(start || null), true);
+}
+
+// Schedule picker: a single-date month calendar (same grid as the range
+// picker, single-select only) plus a native time input and Schedule/
+// Unschedule/Cancel actions. currentVal is a schedule value string (see
+// parseScheduleValue); onChange receives the new value string or null.
+function openSchedulePickerGlobal(anchorEl, currentVal, onChange) {
+  closeDatePicker();
+  const today = new Date(); today.setHours(0,0,0,0);
+  const cur = parseScheduleValue(currentVal);
+  let selDate = cur ? new Date(cur.date + 'T00:00:00') : today;
+  let selTime = cur ? (cur.time || '') : '';
+
+  const seed = selDate || today;
+  let viewYear = seed.getFullYear();
+  let viewMonth = seed.getMonth();
+
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const DAYS = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+  function toISO(d) { return d ? d.toISOString().split('T')[0] : null; }
+
+  _dpEl = document.createElement('div');
+  _dpEl.className = 'datepicker-popover';
+
+  function renderPicker() {
+    const firstDay = new Date(viewYear, viewMonth, 1);
+    let startDow = firstDay.getDay();
+    startDow = startDow === 0 ? 6 : startDow - 1;
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+    let dayGrid = '';
+    let dayNum = 1 - startDow;
+    for (let r = 0; r < 6; r++) {
+      for (let c = 0; c < 7; c++, dayNum++) {
+        if (dayNum < 1 || dayNum > daysInMonth) {
+          dayGrid += `<div class="dp-day other-month"></div>`;
+        } else {
+          const d = new Date(viewYear, viewMonth, dayNum); d.setHours(0,0,0,0);
+          let cls = 'dp-day';
+          if (d.getTime() === today.getTime()) cls += ' today';
+          if (selDate && d.getTime() === selDate.getTime()) cls += ' selected';
+          dayGrid += `<div class="${cls}" data-iso="${toISO(d)}">${dayNum}</div>`;
+        }
+      }
+    }
+    _dpEl.innerHTML = `
+      <div class="dp-header">
+        <button class="dp-nav-btn" id="dp-prev">‹</button>
+        <span class="dp-month-label">${MONTHS[viewMonth]} ${viewYear}</span>
+        <button class="dp-nav-btn" id="dp-next">›</button>
+      </div>
+      <div class="dp-grid">
+        ${DAYS.map(d => `<div class="dp-day-head">${d}</div>`).join('')}
+        ${dayGrid}
+      </div>
+      <div style="padding:8px 10px;border-top:1px solid var(--border)">
+        <label style="display:block;font-size:11px;color:var(--text-muted);margin-bottom:3px">Time</label>
+        <input type="time" id="sp-time" value="${escHtml(selTime)}" style="width:100%;font-size:13px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box">
+      </div>
+      <div style="padding:8px 10px;display:flex;gap:6px">
+        <button class="btn btn-sm btn-ghost" id="sp-unschedule" style="flex:1;color:var(--danger)">Unschedule</button>
+        <button class="btn btn-sm btn-primary" id="sp-schedule" style="flex:1">Schedule</button>
+      </div>
+      <div style="text-align:center;padding-bottom:8px">
+        <button class="btn btn-sm btn-ghost" id="sp-cancel" style="font-size:12px;color:var(--text-muted)">Cancel</button>
+      </div>`;
+
+    _dpEl.querySelector('#dp-prev').onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderPicker(); };
+    _dpEl.querySelector('#dp-next').onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderPicker(); };
+    _dpEl.querySelectorAll('.dp-day[data-iso]').forEach(el => {
+      el.onclick = () => { selDate = new Date(el.dataset.iso + 'T00:00:00'); renderPicker(); };
+    });
+    _dpEl.querySelector('#sp-time').oninput = (e) => { selTime = e.target.value; };
+    _dpEl.querySelector('#sp-unschedule').onclick = () => { onChange(null); closeDatePicker(); };
+    _dpEl.querySelector('#sp-cancel').onclick = () => closeDatePicker();
+    _dpEl.querySelector('#sp-schedule').onclick = () => {
+      onChange(JSON.stringify({ date: toISO(selDate), time: selTime || null }));
+      closeDatePicker();
+    };
+  }
+
+  renderPicker();
+  const rect = anchorEl.getBoundingClientRect();
+  _dpEl.style.top = (rect.bottom + 4) + 'px';
+  _dpEl.style.left = rect.left + 'px';
+  document.body.appendChild(_dpEl);
+  requestAnimationFrame(() => {
+    if (!_dpEl) return;
+    const cr = _dpEl.getBoundingClientRect();
+    if (cr.right > window.innerWidth - 8) _dpEl.style.left = (window.innerWidth - cr.width - 8) + 'px';
+    if (cr.bottom > window.innerHeight - 8) _dpEl.style.top = (rect.top - cr.height - 4) + 'px';
+  });
+  setTimeout(() => document.addEventListener('mousedown', _dpOutside), 0);
 }
 
 /* ─── Combo Popover (global) ─────────────────────────────────────────── */
@@ -13954,6 +14999,22 @@ function openCategoryCombo(anchorEl, currentId, onPick) {
   }, { allowClear: true });
 }
 
+// openWorkspaceCombo: single-select picker for the Workspace property, backed
+// by the real workspaces list (not a freeform/renamable value like category).
+function openWorkspaceCombo(anchorEl, currentId, onPick) {
+  const items = [{ value: '', label: '— None —' }, ...workspaces.map(w => ({ value: w.id, label: `${w.icon || ''} ${w.name}`.trim() }))];
+  openCombo(anchorEl, items, currentId ?? '', ({ value }) => onPick(value ? parseInt(value) : null));
+}
+
+// workspaceChipHtml renders a record's assigned workspace as a small chip,
+// or an em-dash when unassigned. Shared by every entity's Workspace property.
+function workspaceChipHtml(workspaceId) {
+  if (!workspaceId) return '';
+  const w = workspaces.find(x => x.id === workspaceId);
+  if (!w) return '';
+  return `<span class="multi-chip">${w.icon || ''} ${escHtml(w.name)}</span>`;
+}
+
 async function showTaskSlideover(taskId) {
   openSlideover('Task Detail', '<div class="loading">Loading…</div>');
 
@@ -14199,6 +15260,8 @@ async function showTaskSlideover(taskId) {
       renderValue: () => tags.length ? tags.map(t => tagHtml(t)).join('') : '' },
     { key: 'category', label: 'Category',     icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
+    { key: 'workspace', label: 'Workspace',   icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(task.workspace_id) },
     { key: 'goal',     label: 'Goals',        icon: pIco('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
       renderValue: () => renderMultiRelationValue('task', taskId, 'goal', goalName) },
     { key: 'project',  label: 'Projects',     icon: pIco('<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>'),
@@ -14385,6 +15448,7 @@ async function showTaskSlideover(taskId) {
         await patchTask({ category_id: newId ? parseInt(newId) : null });
       });
     },
+    workspace: (valEl) => openWorkspaceCombo(valEl, task.workspace_id, async (newId) => { await patchTask({ workspace_id: newId }); showTaskSlideover(taskId); }),
     goal:    (valEl) => openMultiRelationPicker(valEl, 'task', taskId, 'goal', 'goal', allGoals, task, patchTask, 'goal_id', () => showTaskSlideover(taskId)),
     project: (valEl) => openMultiRelationPicker(valEl, 'task', taskId, 'project', 'project', allProjects, task, patchTask, 'project_id', () => showTaskSlideover(taskId)),
     points: (valEl) => {
@@ -14723,6 +15787,191 @@ function buildCalendar(tasks, year, month, showNav) {
 }
 
 /* ─── Calendar View (sidebar nav) ───────────────────────────────────── */
+// Ensures the entity type has a schedule-type custom prop def to write
+// into — a fresh task created by clicking an empty timeline slot has
+// nowhere to store a time until one exists.
+function ensureScheduleDef(entityKey) {
+  const defs = getCustomPropDefs(entityKey);
+  let def = defs.find(d => d.type === 'schedule');
+  if (!def) {
+    def = { key: 'scheduled', label: 'Scheduled', type: 'schedule' };
+    defs.push(def);
+    setCustomPropDefs(entityKey, defs);
+    const v = getEntityVisProps(entityKey);
+    if (!v.includes('scheduled')) setEntityVisProps(entityKey, [...v, 'scheduled']);
+  }
+  return def;
+}
+
+// Opens whatever slideover/modal a given entity type normally uses to view
+// a single record — built-ins each have their own (differently-shaped)
+// opener, custom types share one. Used by the hour-timeline's markers,
+// which can point at any entity type.
+async function openScheduledItemSlideover(entityKey, id, onSaved) {
+  onSaved = onSaved || (() => {});
+  if (entityKey === 'task') { showTaskSlideover(id); return; }
+  if (entityKey === 'sprint') { showSprintSlideover(id); return; }
+  if (entityKey.startsWith('custom_')) { openCustomEntitySlideover(entityKey.slice(7), id); return; }
+  const pathMap = { goal: 'goals', project: 'projects', note: 'notes', resource: 'resources', habit: 'habits' };
+  const path = pathMap[entityKey];
+  if (!path) return;
+  try {
+    const rec = await api('GET', `/api/${path}/${id}`);
+    if (entityKey === 'goal') showGoalSlideover(rec, onSaved);
+    else if (entityKey === 'project') {
+      const goals = await api('GET', '/api/goals').catch(() => []);
+      showProjectSlideover(rec, goals, onSaved);
+    } else if (entityKey === 'note') showNoteModal(rec, onSaved);
+    else if (entityKey === 'resource') showResourceModal(rec, onSaved);
+    else if (entityKey === 'habit') showHabitModal(rec);
+  } catch(e) {}
+}
+
+// Fetches every entity source relevant to schedule-type custom props, once.
+// Standalone (not a renderCalendarView closure) so both the Calendar page's
+// own Schedule scope and the persistent schedule dock (openable from any
+// view) can reuse the exact same collection logic.
+async function fetchScheduleEntitySources() {
+  const sources = [];
+  try {
+    const [tasks, goals, projects, sprints, notes, resources, habits] = await Promise.all([
+      api('GET', '/api/tasks?all=1'), api('GET', '/api/goals'), api('GET', '/api/projects'),
+      api('GET', '/api/sprints'), api('GET', '/api/notes'), api('GET', '/api/resources'), api('GET', '/api/habits'),
+    ]);
+    sources.push(['task', tasks], ['goal', goals], ['project', projects], ['sprint', sprints],
+                 ['note', notes], ['resource', resources], ['habit', habits]);
+  } catch(e) {}
+  try {
+    const customLists = await Promise.all((customEntityTypes || []).map(ct =>
+      api('GET', `/api/custom/${ct.name}`).catch(() => [])));
+    (customEntityTypes || []).forEach((ct, i) => sources.push([`custom_${ct.name}`, customLists[i] || []]));
+  } catch(e) {}
+  return sources;
+}
+
+// Any entity of any type (built-in or custom) that has a 'schedule'-type
+// custom prop set to dateISO — this is what generalizes "add hours" to
+// every entity, not just tasks with native due dates. Pure/sync filter over
+// already-fetched sources, so a caller paging through many dates (Calendar's
+// own Schedule scope) only fetches once.
+function scheduledItemsForDateFrom(sources, dateISO) {
+  const items = [];
+  sources.forEach(([entityKey, records]) => {
+    const scheduleDefs = getCustomPropDefs(entityKey).filter(d => d.type === 'schedule');
+    if (!scheduleDefs.length || !records || !records.length) return;
+    records.forEach(r => {
+      const vals = getCustomPropValues(entityKey, r.id);
+      scheduleDefs.forEach(def => {
+        const sv = parseScheduleValue(vals[def.key]);
+        if (sv && sv.date === dateISO) {
+          items.push({ entityKey, id: r.id, title: r.title || r.name || `#${r.id}`, time: sv.time, propLabel: def.label });
+        }
+      });
+    });
+  });
+  return items.sort((a, b) => (a.time || '99:99').localeCompare(b.time || '99:99'));
+}
+
+// One-shot convenience for callers (the persistent schedule dock) that only
+// need a single date and don't already have sources fetched.
+async function collectScheduledItemsForDate(dateISO) {
+  const sources = await fetchScheduleEntitySources();
+  return scheduledItemsForDateFrom(sources, dateISO);
+}
+
+/* ─── Persistent schedule dock ────────────────────────────────────────
+   A static, always-on-top toggle (top-right, every view) opening a
+   right-docked hour-timeline panel — the same generalized "add hours to
+   any entity" view as Calendar's own Schedule scope, but reachable without
+   leaving whatever page you're on. Hides outright while an editing
+   slideover is open (see syncFabPanelClasses). */
+let scheduleDockOpen = localStorage.getItem('scheduleDockOpen') === '1';
+let scheduleDockDate = new Date();
+
+function scheduleDockDateISO() {
+  const d = scheduleDockDate;
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function toggleScheduleDock() {
+  scheduleDockOpen = !scheduleDockOpen;
+  localStorage.setItem('scheduleDockOpen', scheduleDockOpen ? '1' : '0');
+  document.getElementById('schedule-dock-toggle')?.classList.toggle('active', scheduleDockOpen);
+  document.getElementById('schedule-dock')?.classList.toggle('open', scheduleDockOpen);
+  if (scheduleDockOpen) renderScheduleDock();
+}
+
+async function renderScheduleDock() {
+  const body = document.getElementById('schedule-dock-body');
+  const label = document.getElementById('sd-dock-date-label');
+  if (!body || !label) return;
+  const ds = scheduleDockDateISO();
+  const today = new Date(); today.setHours(0,0,0,0);
+  const d = new Date(scheduleDockDate); d.setHours(0,0,0,0);
+  label.textContent = d.getTime() === today.getTime() ? 'Today' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  body.innerHTML = '<div class="loading">Loading…</div>';
+  const items = await collectScheduledItemsForDate(ds);
+  if (!scheduleDockOpen) return; // closed while the fetch was in flight
+  const rowH = 48;
+  const hourLabel = (h) => { const ap = h >= 12 ? 'PM' : 'AM'; const h12 = h % 12 || 12; return `${h12}${ap}`; };
+  const isToday = d.getTime() === today.getTime();
+  const markers = items.filter(it => it.time).map(item => {
+    const [h, m] = item.time.split(':').map(Number);
+    const top = (h + m / 60) * rowH;
+    const color = item.entityKey === 'task' ? 'var(--color-accent)' : 'var(--color-warning)';
+    return `<div class="hour-tl-marker" data-entity="${escHtml(item.entityKey)}" data-id="${item.id}" title="${escHtml(item.title)} · ${fmtTime12h(item.time)}"
+      style="position:absolute;left:40px;right:8px;top:${top}px;height:2px;background:${color};cursor:pointer">
+      <span style="position:absolute;left:-4px;top:-3px;width:7px;height:7px;border-radius:50%;background:${color}"></span>
+      <span style="position:absolute;left:9px;top:-8px;font-size:10.5px;background:var(--bg-surface);padding:0 3px;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis">${escHtml(item.title)}</span>
+    </div>`;
+  }).join('');
+  let nowLine = '';
+  if (isToday) {
+    const now = new Date();
+    const top = (now.getHours() + now.getMinutes() / 60) * rowH;
+    nowLine = `<div style="position:absolute;left:40px;right:8px;top:${top}px;height:2px;background:var(--danger)"><span style="position:absolute;left:-4px;top:-3px;width:7px;height:7px;border-radius:50%;background:var(--danger)"></span></div>`;
+  }
+  const hourRows = Array.from({ length: 24 }, (_, h) => `
+    <div style="height:${rowH}px;border-top:1px solid var(--border);display:flex">
+      <div style="width:40px;flex-shrink:0;font-size:10px;color:var(--text-muted);padding:1px 5px 0 0;text-align:right">${hourLabel(h)}</div>
+      <div class="hour-tl-slot" data-hour="${h}" style="flex:1;cursor:pointer"></div>
+    </div>`).join('');
+  body.innerHTML = `<div style="position:relative">${hourRows}<div style="position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none"><div style="pointer-events:auto">${markers}</div>${nowLine}</div></div>`;
+  body.querySelectorAll('.hour-tl-marker[data-id]').forEach(marker => {
+    marker.onclick = (e) => { e.stopPropagation(); openScheduledItemSlideover(marker.dataset.entity, marker.dataset.id, () => renderScheduleDock()); };
+  });
+  body.querySelectorAll('.hour-tl-slot[data-hour]').forEach(slot => {
+    slot.onclick = async (e) => {
+      e.stopPropagation();
+      const hh = parseInt(slot.dataset.hour, 10);
+      const def = ensureScheduleDef('task');
+      const task = await api('POST', '/api/tasks', withActiveWorkspace({ title: 'Untitled' })).catch(() => null);
+      if (!task) return;
+      setCustomPropValue('task', task.id, def.key, JSON.stringify({ date: ds, time: `${String(hh).padStart(2,'0')}:00` }));
+      showTaskSlideover(task.id);
+      renderScheduleDock();
+    };
+  });
+}
+
+function initScheduleDock() {
+  const toggle = document.getElementById('schedule-dock-toggle');
+  if (!toggle) return;
+  toggle.classList.toggle('active', scheduleDockOpen);
+  document.getElementById('schedule-dock')?.classList.toggle('open', scheduleDockOpen);
+  toggle.onclick = () => toggleScheduleDock();
+  document.getElementById('sd-dock-close').onclick = () => toggleScheduleDock();
+  document.getElementById('sd-dock-prev').onclick = () => {
+    scheduleDockDate = new Date(scheduleDockDate); scheduleDockDate.setDate(scheduleDockDate.getDate() - 1);
+    renderScheduleDock();
+  };
+  document.getElementById('sd-dock-next').onclick = () => {
+    scheduleDockDate = new Date(scheduleDockDate); scheduleDockDate.setDate(scheduleDockDate.getDate() + 1);
+    renderScheduleDock();
+  };
+  if (scheduleDockOpen) renderScheduleDock();
+}
+
 async function renderCalendarView() {
   let tasks = [], goals = [], projects = [], sprints = [];
   try {
@@ -14734,6 +15983,11 @@ async function renderCalendarView() {
     ]);
     allTasksCache = tasks;
   } catch(e) {}
+
+  // Schedule scope's data — fetched once up front like everything else this
+  // view renders synchronously from after this point.
+  const scheduleEntitySources = await fetchScheduleEntitySources();
+  const scheduledItemsOnDate = (dateISO) => scheduledItemsForDateFrom(scheduleEntitySources, dateISO);
 
   // Build sprint date ranges for background shading
   const sprintRanges = sprints
@@ -15008,6 +16262,64 @@ async function renderCalendarView() {
     return `<div class="cal-day-headers-row" style="${gridCols}">${headers}</div>${barsSection}<div class="cal-week-row"><div class="cal-week-cells" style="${gridCols}">${cells}</div></div>`;
   }
 
+  // Hour-by-hour single-day timeline — the generalized version of "add
+  // hours to a task" for every entity type. Anything (task, goal, project,
+  // sprint, note, resource, habit, or a custom entity type) with a
+  // 'schedule'-type custom prop set to this day shows as a time marker,
+  // positioned by its time-of-day rather than bucketed into the whole day
+  // the way every other calendar scope here does.
+  function buildHourTimeline() {
+    const ds = dateStr(calAnchorDate);
+    const todayD = new Date(); todayD.setHours(0,0,0,0);
+    const isToday = calAnchorDate.getTime() === todayD.getTime();
+    const allDay = eventsOnDate(ds);
+    const scheduled = scheduledItemsOnDate(ds);
+    const rowH = 56;
+    const hourLabel = (h) => { const ap = h >= 12 ? 'PM' : 'AM'; const h12 = h % 12 || 12; return `${h12}:00 ${ap}`; };
+
+    const allDayHtml = allDay.length ? `<div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:4px">
+      ${allDay.map(ev => {
+        const color = chipColor(ev);
+        const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
+        return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${escHtml(ev.title)}">${escHtml(ev.title)}</div>`;
+      }).join('')}
+    </div>` : '';
+
+    const markers = scheduled.filter(it => it.time).map(item => {
+      const [h, m] = item.time.split(':').map(Number);
+      const top = (h + m / 60) * rowH;
+      const color = item.entityKey === 'task' ? 'var(--color-accent)' : 'var(--color-warning)';
+      return `<div class="hour-tl-marker" data-entity="${escHtml(item.entityKey)}" data-id="${item.id}" title="${escHtml(item.title)} · ${fmtTime12h(item.time)}"
+        style="position:absolute;left:74px;right:8px;top:${top}px;height:2px;background:${color};cursor:pointer">
+        <span style="position:absolute;left:-5px;top:-4px;width:9px;height:9px;border-radius:50%;background:${color}"></span>
+        <span style="position:absolute;left:12px;top:-9px;font-size:11px;background:var(--bg-surface);padding:0 4px;white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis">${escHtml(item.title)} · ${fmtTime12h(item.time)}</span>
+      </div>`;
+    }).join('');
+
+    let nowLine = '';
+    if (isToday) {
+      const now = new Date();
+      const top = (now.getHours() + now.getMinutes() / 60) * rowH;
+      nowLine = `<div style="position:absolute;left:74px;right:8px;top:${top}px;height:2px;background:var(--danger)"><span style="position:absolute;left:-5px;top:-4px;width:9px;height:9px;border-radius:50%;background:var(--danger)"></span></div>`;
+    }
+
+    const hourRows = Array.from({ length: 24 }, (_, h) => `
+      <div style="height:${rowH}px;border-top:1px solid var(--border);display:flex">
+        <div style="width:74px;flex-shrink:0;font-size:11px;color:var(--text-muted);padding:2px 8px 0 0;text-align:right">${hourLabel(h)}</div>
+        <div class="hour-tl-slot" data-hour="${h}" style="flex:1;cursor:pointer"></div>
+      </div>`).join('');
+
+    return `<div class="hour-timeline">
+      ${allDayHtml}
+      <div style="position:relative">
+        ${hourRows}
+        <div style="position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none">
+          <div style="pointer-events:auto">${markers}</div>${nowLine}
+        </div>
+      </div>
+    </div>`;
+  }
+
   // Gantt / timeline view for ranged tasks
   function buildGantt() {
     // Show current month as the timeline window
@@ -15108,7 +16420,8 @@ async function renderCalendarView() {
     let label = '';
     const scopes = [
       { id:'month', label:'Month' }, { id:'week', label:'Week' },
-      { id:'3day', label:'3 Days' }, { id:'day', label:'Day' }, { id:'gantt', label:'Gantt' }, { id:'timeline', label:'Timeline' }
+      { id:'3day', label:'3 Days' }, { id:'day', label:'Day' }, { id:'schedule', label:'Schedule' },
+      { id:'gantt', label:'Gantt' }, { id:'timeline', label:'Timeline' }
     ];
     const scopeBtns = scopes.map(s =>
       `<button class="btn btn-sm ${calScope===s.id?'btn-primary':'btn-ghost'} cal-scope-btn" data-scope="${s.id}">${s.label}</button>`
@@ -15137,6 +16450,7 @@ async function renderCalendarView() {
     if (calScope === 'week') return buildScopedCal(7);
     if (calScope === '3day') return buildScopedCal(3);
     if (calScope === 'day') return buildScopedCal(1);
+    if (calScope === 'schedule') return buildHourTimeline();
     if (calScope === 'gantt') return buildGantt();
     if (calScope === 'timeline') return buildTimeline();
     return buildMonthCal();
@@ -15223,6 +16537,21 @@ async function renderCalendarView() {
     });
     document.querySelectorAll('.cal-span-bar[data-task-id]').forEach(bar => {
       bar.onclick = (e) => { e.stopPropagation(); showTaskSlideover(bar.dataset.taskId); };
+    });
+    document.querySelectorAll('.hour-tl-marker[data-id]').forEach(marker => {
+      marker.onclick = (e) => { e.stopPropagation(); openScheduledItemSlideover(marker.dataset.entity, marker.dataset.id, () => renderCalendarView()); };
+    });
+    document.querySelectorAll('.hour-tl-slot[data-hour]').forEach(slot => {
+      slot.onclick = async (e) => {
+        e.stopPropagation();
+        const hh = parseInt(slot.dataset.hour, 10);
+        const ds = dateStr(calAnchorDate);
+        const def = ensureScheduleDef('task');
+        const task = await api('POST', '/api/tasks', withActiveWorkspace({ title: 'Untitled' })).catch(() => null);
+        if (!task) return;
+        setCustomPropValue('task', task.id, def.key, JSON.stringify({ date: ds, time: `${String(hh).padStart(2,'0')}:00` }));
+        showTaskSlideover(task.id);
+      };
     });
     document.querySelectorAll('.gantt-bar.cal-event-task').forEach(bar => {
       bar.onclick = (e) => { e.stopPropagation(); showTaskSlideover(bar.dataset.taskId); };
@@ -15936,7 +17265,7 @@ async function showNewTaskModal(presets, afterSave) {
   presets.title = presets.title || 'Untitled';
   let newTask;
   try {
-    newTask = await api('POST', '/api/tasks', presets);
+    newTask = await api('POST', '/api/tasks', withActiveWorkspace(presets));
   } catch (e) {
     console.error('Failed to create task', e);
     return;
@@ -15984,7 +17313,7 @@ async function showGoalModal(goal, afterSave) {
   try {
     const presets = goal || {};
     presets.title = presets.title || 'Untitled';
-    const created = await api('POST', '/api/goals', presets);
+    const created = await api('POST', '/api/goals', withActiveWorkspace(presets));
     newId = created.id;
   } catch (e) {
     console.error(e);
@@ -16036,6 +17365,8 @@ async function showProjectSlideover(project, goals, afterSave) {
       renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category',  icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(p.workspace_id) },
     { key: 'macro',    label: 'Macro Area',icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
       renderValue: () => p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : '' },
     { key: 'kanban',   label: 'Kanban Col',icon: pIco('<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>'),
@@ -16192,6 +17523,7 @@ async function showProjectSlideover(project, goals, afterSave) {
     goal:     (valEl) => openMultiRelationPicker(valEl, 'project', projectId, 'goal', 'goal', goals||[], p, patchProject, 'goal_id', () => showProjectSlideover({ id: projectId }, goals, afterSave)),
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showProjectSlideover({ id: projectId }, goals, afterSave); return; } await api('PUT', `/api/projects/${projectId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showProjectSlideover({ id: projectId }, goals, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, p.category_id, async (newId) => { await patchProject({ category_id: newId ? parseInt(newId) : null }); showProjectSlideover({ id: projectId }, goals, afterSave); }); },
+    workspace: (valEl) => openWorkspaceCombo(valEl, p.workspace_id, async (newId) => { await patchProject({ workspace_id: newId }); showProjectSlideover({ id: projectId }, goals, afterSave); }),
     macro:    (valEl) => { openEditableValueCombo(valEl, MACRO_AREAS, 'project_macro_area', null, async (val) => { await patchProject({ macro_area: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }, { allowClear: true }); },
     kanban:   (valEl) => { openEditableValueCombo(valEl, KANBAN_COLS, 'project_kanban_col', null, async (val) => { await patchProject({ kanban_col: val||null }); showProjectSlideover({ id: projectId }, goals, afterSave); }, { allowClear: true }); },
     archived: (valEl) => { patchProject({ archived: !p.archived }).then(() => showProjectSlideover({ id: projectId }, goals, afterSave)); },
@@ -16271,6 +17603,8 @@ async function showGoalSlideover(goal, afterSave) {
       renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(g.workspace_id) },
     { key: 'due',      label: 'Due Date', icon: pIco('<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'),
       renderValue: () => g.due_date ? `<span>${fmtDate(g.due_date)}</span>` : '' },
     { key: 'metrics',  label: 'Metrics',  icon: pIco('<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'),
@@ -16415,6 +17749,7 @@ async function showGoalSlideover(goal, afterSave) {
     year:     (valEl) => { openEditableValueCombo(valEl, GOAL_YEARS, 'goal_year', null, async (val) => { await patchGoal({ year: val||null }); showGoalSlideover({ id: goalId }, afterSave); }, { allowClear: true }); },
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showGoalSlideover({ id: goalId }, afterSave); return; } await api('PUT', `/api/goals/${goalId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showGoalSlideover({ id: goalId }, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, g.category_id, async (newId) => { await patchGoal({ category_id: newId ? parseInt(newId) : null }); showGoalSlideover({ id: goalId }, afterSave); }); },
+    workspace: (valEl) => openWorkspaceCombo(valEl, g.workspace_id, async (newId) => { await patchGoal({ workspace_id: newId }); showGoalSlideover({ id: goalId }, afterSave); }),
     due:      (valEl) => { openSingleDatePickerGlobal(valEl, stripDate(g.due_date), async (val) => { await patchGoal({ due_date: val||null }); showGoalSlideover({ id: goalId }, afterSave); }); },
     metrics:  (valEl) => {
       valEl.innerHTML = `<div style="display:flex;flex-direction:column;gap:4px">
@@ -16480,7 +17815,7 @@ async function showProjectModal(project, goals, afterSave) {
   try {
     const presets = project || {};
     presets.title = presets.title || 'Untitled';
-    const created = await api('POST', '/api/projects', presets);
+    const created = await api('POST', '/api/projects', withActiveWorkspace(presets));
     newId = created.id;
   } catch (e) {
     console.error(e);
@@ -16550,6 +17885,8 @@ async function showNoteSlideover(noteId, afterSave) {
       renderValue: () => tags.length ? tags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => catName ? builtinSelectChip('categories', catName) : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(n.workspace_id) },
   ];
   const noteBodyDefs = allNoteBuiltinDefs.filter(d => noteSections.body.includes(d.key));
   await loadEntityCustomProps('note', noteId);
@@ -16662,6 +17999,7 @@ async function showNoteSlideover(noteId, afterSave) {
     goal:     (valEl) => openMultiRelationPicker(valEl, 'note', noteId, 'goal', 'goal', goals, n, patchNote, 'goal_id', () => showNoteSlideover(noteId, afterSave)),
     tags:     (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = tags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showNoteSlideover(noteId, afterSave); return; } await api('PUT', `/api/notes/${noteId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showNoteSlideover(noteId, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: async (valEl) => { try { allCategories = await api('GET', '/api/categories'); } catch(e) {} openCategoryCombo(valEl, n.category_id, async (newId) => { await patchNote({ category_id: newId ? parseInt(newId) : null }); showNoteSlideover(noteId, afterSave); }); },
+    workspace: (valEl) => openWorkspaceCombo(valEl, n.workspace_id, async (newId) => { await patchNote({ workspace_id: newId }); showNoteSlideover(noteId, afterSave); }),
   };
 
   noteExtraHeadKeys.forEach(k => {
@@ -16739,6 +18077,8 @@ async function showSprintSlideover(sprintId, afterSave) {
       renderValue: () => s.story_points != null ? `<span>${s.story_points}</span>` : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => sprintCatName ? `<span>${sprintCatName}</span>` : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(s.workspace_id) },
   ];
   const sprintBodyDefs = allSprintBuiltinDefs.filter(d => sprintSections.body.includes(d.key));
   const sprintInlinePropPanel = buildInlinePropPanel('sprint', sprintId, sprintBodyDefs);
@@ -16920,6 +18260,7 @@ async function showSprintSlideover(sprintId, afterSave) {
         showSprintSlideover(sprintId, afterSave);
       });
     },
+    workspace: (valEl) => openWorkspaceCombo(valEl, s.workspace_id, async (newId) => { await patchSprint({ workspace_id: newId }); showSprintSlideover(sprintId, afterSave); }),
   };
 
   document.getElementById('chip-category')?.addEventListener('click', (e) => {
@@ -16973,7 +18314,7 @@ async function showSprintModal(projects, sprint) {
   try {
     const presets = sprint || {};
     presets.title = presets.title || 'Untitled';
-    const created = await api('POST', '/api/sprints', presets);
+    const created = await api('POST', '/api/sprints', withActiveWorkspace(presets));
     newId = created.id;
   } catch (e) {
     console.error(e);
@@ -17033,6 +18374,8 @@ async function showResourceSlideover(resource, afterSave) {
       renderValue: () => resTags.length ? resTags.map(t => `<span class="multi-chip color-${t.color||'blue'}">${t.name}</span>`).join('') : '' },
     { key: 'category', label: 'Category', icon: pIco('<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>'),
       renderValue: () => resCatName ? `<span>${resCatName}</span>` : '' },
+    { key: 'workspace', label: 'Workspace', icon: pIco('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+      renderValue: () => workspaceChipHtml(r.workspace_id) },
   ];
   const resBodyDefs = allResBuiltinDefs.filter(d => resSections.body.includes(d.key));
   await loadEntityCustomProps('resource', resId);
@@ -17196,6 +18539,7 @@ async function showResourceSlideover(resource, afterSave) {
     goal:    (valEl) => openMultiRelationPicker(valEl, 'resource', resId, 'goal', 'goal', goals, r, patchResource, 'goal_id', () => showResourceSlideover({ id: resId }, afterSave)),
     tags:    (valEl) => { const _i = allTags.map(t => ({ value: t.id, label: t.name, color: t.color })); const _c = resTags.map(t => t.id); openCombo(valEl, _i, null, async ({ multiIds, create }) => { if (create) { try { const nt = await api('POST', '/api/tags', { name: create, color: 'blue' }); allTags.push(nt); await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: [...new Set([..._c, nt.id])] }); } catch(e) {} closeCombo(); showResourceSlideover({ id: resId }, afterSave); return; } await api('PUT', `/api/resources/${resId}/tags`, { tag_ids: (multiIds||[]).map(Number) }); showResourceSlideover({ id: resId }, afterSave); }, { multiSelect: true, allowCreate: true, selectedIds: _c }); },
     category: (valEl) => { openCategoryCombo(valEl, _resCatId, async (newId) => { await api('POST', `/api/properties?entity_type=resource&entity_id=${resId}`, { key: '_category_id', value: newId }); showResourceSlideover({ id: resId }, afterSave); }); },
+    workspace: (valEl) => openWorkspaceCombo(valEl, r.workspace_id, async (newId) => { await patchResource({ workspace_id: newId }); showResourceSlideover({ id: resId }, afterSave); }),
   };
 
   resExtraHeadKeys.forEach(k => {
@@ -17258,7 +18602,7 @@ async function showResourceModal(presets, afterSave) {
   let newId;
   try {
     p.title = p.title || 'Untitled';
-    const created = await api('POST', '/api/resources', p);
+    const created = await api('POST', '/api/resources', withActiveWorkspace(p));
     newId = created.id;
   } catch (e) {
     console.error(e);
@@ -18936,7 +20280,7 @@ async function openRaibisSettings(defaultTab = 'apps') {
       if (projectId) payload.project_id = projectId;
       if (ptsRaw !== '') payload.story_points = parseInt(ptsRaw) || 0;
       try {
-        await api('POST', '/api/sprints', payload);
+        await api('POST', '/api/sprints', withActiveWorkspace(payload));
         showToast('Sprint created', 'success');
         close();
         onCreated?.();
@@ -19263,6 +20607,99 @@ document.addEventListener('propDefsChanged', (e) => {
   if (_viewPropDefsCallback) _viewPropDefsCallback(e.detail.entity);
 });
 
+/* ─── Vault sync conflict resolution ─────────────────────────────────
+   Shown when /api/sync finds fields changed on BOTH sides (app and
+   Obsidian) since the last sync. Mirrors a GitHub merge-conflict
+   screen: one card per conflicting entity, one row per conflicting
+   field, pick which side wins per field, then POST the choices to
+   /api/sync/resolve. */
+function showSyncConflictsModal(conflicts) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9100;display:flex;align-items:center;justify-content:center';
+
+  // choiceKey = "entityType:entityId:field" → "app" | "obsidian"
+  const choices = {};
+  conflicts.forEach(c => {
+    c.fields.forEach(f => {
+      choices[`${c.entity_type}:${c.entity_id}:${f.key}`] = 'app';
+    });
+  });
+
+  function render() {
+    overlay.innerHTML = `
+      <div style="background:var(--bg-card);border-radius:12px;padding:28px 32px;width:640px;max-width:95vw;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.35)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <h2 style="font-size:17px;font-weight:700;margin:0">Sync conflicts</h2>
+          <button id="_sc-close" style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--text-muted);line-height:1">×</button>
+        </div>
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
+          These changed both in the app and in Obsidian since the last sync. Pick which version to keep for each field.
+        </div>
+        <div style="display:flex;flex-direction:column;gap:16px;margin-bottom:20px">
+          ${conflicts.map(c => `
+            <div style="border:1px solid var(--border);border-radius:8px;padding:12px 14px">
+              <div style="font-weight:600;font-size:13px;margin-bottom:4px">${escHtml(c.title)} <span style="font-weight:400;color:var(--text-muted);font-size:11px">(${escHtml(c.entity_type)})</span></div>
+              ${c.fields.map(f => {
+                const ck = `${c.entity_type}:${c.entity_id}:${f.key}`;
+                const isApp = choices[ck] === 'app';
+                return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--border)">
+                  <span style="font-size:12px;font-weight:500;width:100px;flex-shrink:0">${escHtml(f.label)}</span>
+                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;flex:1;padding:5px 8px;border-radius:6px;border:1px solid ${isApp ? 'var(--accent)' : 'var(--border)'};min-width:0">
+                    <input type="radio" name="${escHtml(ck)}" value="app" data-choice-key="${escHtml(ck)}" ${isApp ? 'checked' : ''} style="flex-shrink:0">
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">App: <strong>${escHtml(f.app_value || '—')}</strong></span>
+                  </label>
+                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;flex:1;padding:5px 8px;border-radius:6px;border:1px solid ${!isApp ? 'var(--accent)' : 'var(--border)'};min-width:0">
+                    <input type="radio" name="${escHtml(ck)}" value="obsidian" data-choice-key="${escHtml(ck)}" ${!isApp ? 'checked' : ''} style="flex-shrink:0">
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Obsidian: <strong>${escHtml(f.obsidian_value || '—')}</strong></span>
+                  </label>
+                </div>`;
+              }).join('')}
+            </div>`).join('')}
+        </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+          <button id="_sc-cancel" class="btn btn-ghost">Resolve later</button>
+          <button id="_sc-resolve" class="btn btn-primary">Apply resolution</button>
+        </div>
+      </div>`;
+    bind();
+  }
+
+  function bind() {
+    overlay.querySelector('#_sc-close').onclick = () => overlay.remove();
+    overlay.querySelector('#_sc-cancel').onclick = () => overlay.remove();
+    overlay.querySelectorAll('[data-choice-key]').forEach(radio => {
+      radio.onchange = () => {
+        choices[radio.dataset.choiceKey] = radio.value;
+        render();
+      };
+    });
+    overlay.querySelector('#_sc-resolve').onclick = async () => {
+      const resolutions = Object.entries(choices).map(([ck, keep]) => {
+        const [entity_type, entity_id, field] = ck.split(':');
+        return { entity_type, entity_id: parseInt(entity_id), field, keep };
+      });
+      try {
+        const r = await api('POST', '/api/sync/resolve', resolutions);
+        overlay.remove();
+        if (r.conflicts && r.conflicts.length) {
+          showToast(`Resolved; ${r.conflicts.length} conflict${r.conflicts.length===1?'':'s'} still pending`, 'error');
+          showSyncConflictsModal(r.conflicts);
+        } else {
+          showToast(`Sync resolved: ${r.applied} updated`);
+        }
+        renderView(currentView);
+      } catch (e) {
+        showToast('Failed to resolve: ' + (e.message || e), 'error');
+      }
+    };
+  }
+
+  document.body.appendChild(overlay);
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) overlay.remove(); });
+  render();
+}
+
 /* ─── Init ───────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', async () => {
   // Hide any built-in entity nav items the user has deleted
@@ -19410,14 +20847,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Connected apps panel
   document.getElementById('connected-apps-btn').onclick = openConnectedAppsPanel;
 
-  // Sync vault button
+  // Sync vault button — two-way: app changes flow to Obsidian automatically
+  // as they happen; this pulls in anything changed directly in Obsidian
+  // since the last sync, and flags real conflicts (both sides changed the
+  // same field) for the user to resolve instead of silently picking one.
   const syncBtn = document.getElementById('sync-btn');
   if (syncBtn) {
     syncBtn.onclick = async () => {
       syncBtn.classList.add('spinning');
       try {
         const r = await api('POST', '/api/sync');
-        showToast(`Vault sync: ${r.inserted} inserted, ${r.updated} updated`);
+        if (r.conflicts && r.conflicts.length) {
+          showToast(`Vault sync: ${r.applied} updated, ${r.conflicts.length} conflict${r.conflicts.length===1?'':'s'} to resolve`, 'error');
+          showSyncConflictsModal(r.conflicts);
+        } else {
+          showToast(`Vault sync: ${r.applied} updated`);
+        }
         await loadCustomEntityTypes();
         renderView(currentView);
       } catch(e) { showToast('Sync failed', 'error'); }
@@ -19470,8 +20915,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   } catch(e) {}
 
-  renderView('dashboard');
+  // Restore whichever tab was active last session (defaults to the single
+  // seeded Dashboard tab on first run) — renderTabBar() first so the strip
+  // shows even if the active view happens to equal the initial currentView
+  // default and renderView's own tab bookkeeping is a no-op for it.
+  renderTabBar();
+  const activeTab = openTabs.find(t => t.id === activeTabId) || openTabs[0];
+  renderView(activeTab.view, activeTab.params);
   initAiPanel();
+  initScheduleDock();
 
   // Quick note FAB
   const quickNoteFab = document.getElementById('quick-note-fab');
