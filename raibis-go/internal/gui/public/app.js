@@ -4246,46 +4246,30 @@ function openRelationPicker(anchorEl, entity, recordId, key, onRerender) {
           for (const sid of multiIds) api('POST', `/api/relations/sprint/${sid}`, { related_entity_type: 'task', related_entity_id: parseInt(recordId) }).catch(() => {});
           for (const id of curIds) if (!multiIds.map(String).includes(String(id))) api('DELETE', `/api/relations/sprint/${id}/task/${recordId}`, {}).catch(() => {});
         }
-        // Bilateral sync
+        // Bilateral sync — delegates to _ensureRelProp/_removeRelProp (the
+        // same mechanism quick-add and openMultiRelationPicker use) instead
+        // of hand-rolling it here. That fixes two real bugs this duplicate
+        // copy had: it never set the native FK column on the other side
+        // (e.g. picking tasks from a Project's own "Tasks" property never
+        // set task.project_id, so the task never showed up in any
+        // FK-based widget/list), and its reverseKey guess (`${entity}_${key}`)
+        // didn't match the actual builtin field key on the other side, so
+        // the reverse link could land on a property nothing ever displays.
         if (def.bilateral !== false) {
-          const revKey = def.reverseKey ?? `${entity}_${key}`;
           let sourceTitle = String(recordId);
           try {
             const isBuiltinSrc = ['task','goal','project','sprint','note','resource','habit'].includes(entity);
-            const srcPath = entity === 'task' ? `/api/tasks/${recordId}` : isBuiltinSrc ? `/api/${entity}s/${recordId}` : `/api/custom/${entity}/${recordId}`;
+            const srcPath = entity === 'task' ? `/api/tasks/${recordId}` : isBuiltinSrc ? `/api/${entity}s/${recordId}` : `/api/custom/${entity.replace(/^custom_/, '')}/${recordId}`;
             const src = await api('GET', srcPath);
             sourceTitle = src.title || src.name || String(recordId);
           } catch {}
           const newIdSet = new Set(multiIds.map(String));
           const oldIdSet = new Set(curIds.map(String));
-          for (const id of newIdSet) {
-            if (!oldIdSet.has(id)) {
-              let revVals = getCustomPropValues(relEntity, parseInt(id));
-              try {
-                const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
-                revVals = { ...revVals, ...serverProps };
-                localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
-              } catch(e) {}
-              let revArr = parseRelationValue(revVals[revKey] ?? '');
-              if (!revArr.some(x => x.id === String(recordId))) {
-                revArr.push({ id: String(recordId), label: sourceTitle });
-                setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
-              }
-            }
-          }
-          for (const id of oldIdSet) {
-            if (id && !newIdSet.has(id)) {
-              let revVals = getCustomPropValues(relEntity, parseInt(id));
-              try {
-                const serverProps = await api('GET', `/api/properties?entity_type=${relEntity}&entity_id=${id}`);
-                revVals = { ...revVals, ...serverProps };
-                localStorage.setItem(`customPropVals_${relEntity}_${id}`, JSON.stringify(revVals));
-              } catch(e) {}
-              let revArr = parseRelationValue(revVals[revKey] ?? '');
-              revArr = revArr.filter(x => x.id !== String(recordId));
-              setCustomPropValue(relEntity, parseInt(id), revKey, JSON.stringify(revArr));
-            }
-          }
+          const relEntityKey = isBuiltin ? relEntity : `custom_${relEntity}`;
+          await Promise.all([
+            ...[...newIdSet].filter(id => !oldIdSet.has(id)).map(id => _ensureRelProp(relEntityKey, parseInt(id), entity, parseInt(recordId), sourceTitle)),
+            ...[...oldIdSet].filter(id => !newIdSet.has(id)).map(id => _removeRelProp(relEntityKey, parseInt(id), entity, parseInt(recordId))),
+          ]);
         }
         onRerender();
       },
@@ -6007,6 +5991,13 @@ function renderView(view, params) {
     case 'automations':     renderAutomationsView(); break;
     case 'custom-detail': {
       if (params) { const [tn, eid] = params.split('/'); renderCustomEntityDetail(tn, eid); }
+      break;
+    }
+    // Named '-detail' so isTabbableView keeps whatever tab/label was
+    // already active — this is a transient filtered-results view opened
+    // from a taxonomy chip, not a destination of its own.
+    case 'taxonomy-filter-detail': {
+      if (params) { const p = JSON.parse(params); renderTaxonomyFilterView(p.kind, p.value, p.label, p.back); }
       break;
     }
     default:
@@ -9482,10 +9473,36 @@ async function _ensureRelProp(ownerType, ownerId, targetType, targetId, targetTi
     arr.push({ id: String(targetId), label: targetTitle });
   }
   setCustomPropValue(ownerType, ownerId, effectiveKey, JSON.stringify(arr));
+  // If the OWNER record has a real scalar FK column pointing at this target
+  // type (task.project_id, sprint.project_id, note.goal_id, ...) — the same
+  // map quick-add buttons use — fill it in when it's still empty. Without
+  // this, a relation added from the TARGET side's own picker (e.g. editing
+  // a Project's own "Tasks" property, rather than the task's "Projects"
+  // property) only ever wrote the relation-prop array and never the native
+  // FK, so the linked record silently never showed up in any widget/list
+  // that reads the FK. Only fills an EMPTY FK, never overwrites an existing
+  // one — some callers (Sprint's "assign task" flow) intentionally keep an
+  // already-set FK as the task's one "primary" sprint/project while still
+  // recording additional relations elsewhere, and clobbering it here would
+  // silently break that.
+  const ownerFkField = (QUICK_ADD_FK[bareTarget] || {})[bareOwner];
+  if (ownerFkField) {
+    const patchPath = ownerType === 'task' ? `/api/tasks/${ownerId}`
+      : ownerType.startsWith('custom_') ? null
+      : `/api/${ownerType}s/${ownerId}`;
+    if (patchPath) {
+      try {
+        const rec = await api('GET', patchPath);
+        if (rec && !rec[ownerFkField]) await api('PATCH', patchPath, { [ownerFkField]: parseInt(targetId) }).catch(() => {});
+      } catch(e) {}
+    }
+  }
 }
 
 async function _removeRelProp(ownerType, ownerId, targetType, targetId) {
-  const propKey = `${targetType}s`;
+  const bareTarget = targetType.replace(/^custom_/, '');
+  const bareOwner = ownerType.replace(/^custom_/, '');
+  const propKey = targetType.startsWith('custom_') ? bareTarget : `${targetType}s`;
   const builtinProps = ENTITY_ALL_PROPS[ownerType] || [];
   const builtinMatch = builtinProps.find(p => p.key === targetType);
   const effectiveKey = builtinMatch ? targetType : propKey;
@@ -9499,6 +9516,23 @@ async function _removeRelProp(ownerType, ownerId, targetType, targetId) {
   let arr = parseRelationValue(vals[effectiveKey] ?? '');
   arr = arr.filter(x => x.id !== String(targetId));
   setCustomPropValue(ownerType, ownerId, effectiveKey, JSON.stringify(arr));
+  // Mirror of the FK-set in _ensureRelProp: clear the owner's scalar FK if
+  // it currently points at the record being unlinked, so removing a
+  // relation actually removes it from FK-based widgets/lists too.
+  const ownerFkField = (QUICK_ADD_FK[bareTarget] || {})[bareOwner];
+  if (ownerFkField) {
+    const patchPath = ownerType === 'task' ? `/api/tasks/${ownerId}`
+      : ownerType.startsWith('custom_') ? null
+      : `/api/${ownerType}s/${ownerId}`;
+    if (patchPath) {
+      try {
+        const rec = await api('GET', patchPath);
+        if (rec && String(rec[ownerFkField]) === String(targetId)) {
+          await api('PATCH', patchPath, { [ownerFkField]: null }).catch(() => {});
+        }
+      } catch(e) {}
+    }
+  }
 }
 
 // Called when a builtin FK field changes: syncs the reverse custom prop on the related entity
@@ -13837,7 +13871,7 @@ async function renderCategories() {
 
   const chips = cats.map(c => {
     const hex = COLOR_HEX[c.color] || c.color || '#378ADD';
-    return `<div class="taxonomy-chip">
+    return `<div class="taxonomy-chip taxonomy-chip-filter" data-cat-id="${c.id}" data-cat-name="${escHtml(c.name)}" title="Show everything in ${escHtml(c.name)}">
       <div class="taxonomy-chip-color" style="background:${hex}"></div>
       <span class="taxonomy-chip-name">${c.name}</span>
       <div class="taxonomy-chip-actions">
@@ -13877,6 +13911,15 @@ async function renderCategories() {
       renderCategories();
     };
   });
+  document.querySelectorAll('.taxonomy-chip-filter').forEach(chip => {
+    chip.onclick = (e) => {
+      if (e.target.closest('.taxonomy-chip-actions')) return;
+      renderView('taxonomy-filter-detail', JSON.stringify({
+        kind: 'category', value: chip.dataset.catId, label: chip.dataset.catName,
+        back: { view: 'categories', params: null },
+      }));
+    };
+  });
 }
 
 /* ─── Tags View ──────────────────────────────────────────────────────── */
@@ -13886,7 +13929,7 @@ async function renderTags() {
 
   const chips = tags.map(t => {
     const hex = COLOR_HEX[t.color] || t.color || '#378ADD';
-    return `<div class="taxonomy-chip">
+    return `<div class="taxonomy-chip taxonomy-chip-filter" data-tag-id="${t.id}" data-tag-name="${escHtml(t.name)}" title="Show everything tagged ${escHtml(t.name)}">
       <div class="taxonomy-chip-color" style="background:${hex}"></div>
       <span class="taxonomy-chip-name">${t.name}</span>
       <div class="taxonomy-chip-actions">
@@ -13926,6 +13969,15 @@ async function renderTags() {
       renderTags();
     };
   });
+  document.querySelectorAll('.taxonomy-chip-filter').forEach(chip => {
+    chip.onclick = (e) => {
+      if (e.target.closest('.taxonomy-chip-actions')) return;
+      renderView('taxonomy-filter-detail', JSON.stringify({
+        kind: 'tag', value: chip.dataset.tagId, label: chip.dataset.tagName,
+        back: { view: 'tags', params: null },
+      }));
+    };
+  });
 }
 
 /* ─── Taxonomy Prop View ─────────────────────────────────────────────── */
@@ -13939,7 +13991,7 @@ async function renderTaxonomyPropView(key) {
   const options = getTaxonomyOptions(key);
   const optChips = options.map(o => {
     const hex = COLOR_HEX[o.color] || o.color || '#378ADD';
-    return `<div class="taxonomy-chip">
+    return `<div class="taxonomy-chip taxonomy-chip-filter" data-opt-name="${escHtml(o.name)}" title="Show everything with ${escHtml(o.name)}">
       <div class="taxonomy-chip-color" style="background:${hex}"></div>
       <span class="taxonomy-chip-name">${escHtml(o.name)}</span>
       <div class="taxonomy-chip-actions">
@@ -13990,6 +14042,119 @@ async function renderTaxonomyPropView(key) {
       if (!confirm('Delete this option?')) return;
       saveTaxonomyOptions(btn.dataset.key, getTaxonomyOptions(btn.dataset.key).filter(o => String(o.id) !== btn.dataset.optId));
       renderTaxonomyPropView(key);
+    };
+  });
+  document.querySelectorAll('.taxonomy-chip-filter').forEach(chip => {
+    chip.onclick = (e) => {
+      if (e.target.closest('.taxonomy-chip-actions')) return;
+      renderView('taxonomy-filter-detail', JSON.stringify({
+        // The multi-select value stored on records lives under "tax_<key>",
+        // not the bare taxonomy key — see getCustomPropDefs' taxDefs.
+        kind: 'tax', value: { taxKey: `tax_${key}`, optionName: chip.dataset.optName }, label: chip.dataset.optName,
+        back: { view: `taxonomy:${key}`, params: null },
+      }));
+    };
+  });
+}
+
+/* ─── Taxonomy-as-filter: click a tag/category/taxonomy-option chip to see
+   every item (built-in or custom) carrying that value ───────────────────── */
+
+// Every built-in entity type that has category/tags at all — habits don't.
+// Custom entity types are appended per-call from customEntityTypes.
+const TAXONOMY_FILTER_SOURCES = [
+  { key: 'task',     api: 'tasks',     listPath: '/api/tasks?all=1' },
+  { key: 'goal',     api: 'goals',     listPath: '/api/goals' },
+  { key: 'project',  api: 'projects',  listPath: '/api/projects' },
+  { key: 'sprint',   api: 'sprints',   listPath: '/api/sprints' },
+  { key: 'note',     api: 'notes',     listPath: '/api/notes' },
+  { key: 'resource', api: 'resources', listPath: '/api/resources' },
+];
+
+// kind: 'category' | 'tag' | 'tax'. value: category/tag id, or for 'tax' an
+// { taxKey, optionName } pair. category_id rides along on every list
+// response already (free); tags and custom-taxonomy values need one fetch
+// per record — fine at personal-vault scale, the ceiling this app targets.
+async function collectTaxonomyMatches(kind, value) {
+  const results = [];
+  const customs = (customEntityTypes || []).map(t => ({ key: `custom_${t.name}`, api: `custom/${t.name}`, listPath: `/api/custom/${t.name}` }));
+  // Custom entities have no native tags table (only built-ins do).
+  const sources = kind === 'tag' ? TAXONOMY_FILTER_SOURCES : [...TAXONOMY_FILTER_SOURCES, ...customs];
+
+  await Promise.all(sources.map(async src => {
+    let list = [];
+    try { list = await api('GET', src.listPath); } catch(e) { return; }
+    if (!Array.isArray(list)) return;
+    const title = r => r.title || r.name || '(untitled)';
+
+    if (kind === 'category') {
+      if (src.key.startsWith('custom_')) {
+        // Custom entities store their category as a custom prop, not a column.
+        await Promise.all(list.map(async r => {
+          try {
+            const props = await api('GET', `/api/properties?entity_type=${src.key}&entity_id=${r.id}`);
+            if (String(props._category_id) === String(value)) results.push({ entityKey: src.key, id: r.id, title: title(r) });
+          } catch(e) {}
+        }));
+      } else {
+        list.forEach(r => { if (r.category_id && String(r.category_id) === String(value)) results.push({ entityKey: src.key, id: r.id, title: title(r) }); });
+      }
+      return;
+    }
+    if (kind === 'tag') {
+      await Promise.all(list.map(async r => {
+        let tags = r.tags;
+        if (!tags) { try { tags = await api('GET', `/api/${src.api}/${r.id}/tags`); } catch(e) { tags = []; } }
+        if ((tags || []).some(t => String(t.id) === String(value))) results.push({ entityKey: src.key, id: r.id, title: title(r) });
+      }));
+      return;
+    }
+    // kind === 'tax'
+    await Promise.all(list.map(async r => {
+      try {
+        const props = await api('GET', `/api/properties?entity_type=${src.key}&entity_id=${r.id}`);
+        const raw = props[value.taxKey];
+        if (!raw) return;
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr.includes(value.optionName)) results.push({ entityKey: src.key, id: r.id, title: title(r) });
+      } catch(e) {}
+    }));
+  }));
+
+  return results;
+}
+
+async function renderTaxonomyFilterView(kind, value, label, back) {
+  const main = document.getElementById('main-content');
+  main.innerHTML = `<div class="view">
+    <div class="view-header">
+      <h1 class="view-title">${escHtml(label)}</h1>
+      <button class="btn btn-ghost" id="txf-back-btn">← Back</button>
+    </div>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">Every item tagged <b>${escHtml(label)}</b>.</p>
+    <div id="txf-results"><div class="loading">Loading…</div></div>
+  </div>`;
+  document.getElementById('txf-back-btn').onclick = () => renderView(back.view, back.params);
+
+  const results = await collectTaxonomyMatches(kind, value);
+  const box = document.getElementById('txf-results');
+  if (!box) return; // navigated away while loading
+  if (!results.length) {
+    box.innerHTML = `<div class="empty-state"><div class="empty-state-icon">◈</div><div class="empty-state-text">Nothing has this ${kind === 'category' ? 'category' : kind === 'tag' ? 'tag' : 'value'} yet</div></div>`;
+    return;
+  }
+  box.innerHTML = `<div class="taxonomy-filter-list">${results.map((r, i) => `
+    <div class="taxonomy-filter-row" data-idx="${i}" style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--color-border);cursor:pointer">
+      <span class="taxonomy-filter-type" style="font-size:11px;color:var(--color-text-tertiary);flex-shrink:0;width:80px;text-transform:capitalize">${escHtml(tabLabelFor(r.entityKey.startsWith('custom_') ? `custom:${r.entityKey.slice(7)}` : `${r.entityKey}s`))}</span>
+      <span style="font-size:13px;color:var(--color-text)">${escHtml(r.title)}</span>
+    </div>`).join('')}</div>`;
+  box.querySelectorAll('.taxonomy-filter-row').forEach(row => {
+    row.onclick = () => {
+      const r = results[+row.dataset.idx];
+      const k = r.entityKey;
+      if (k === 'goal' || k === 'project' || k === 'sprint') renderView(`${k}-detail`, String(r.id));
+      else if (k.startsWith('custom_')) renderView('custom-detail', `${k.slice(7)}/${r.id}`);
+      else openScheduledItemSlideover(k, r.id, () => {});
     };
   });
 }
@@ -16185,137 +16350,77 @@ async function renderCalendarView() {
     </div>`;
   }
 
-  function buildScopedCal(numDays) {
-    // Week/3-day/day views: show numDays columns starting from calAnchorDate
+  // Hour-by-hour timeline — 1, 3, or 7 day columns sharing one scrollable
+  // hour grid (the generalized version of "add hours to a task" for every
+  // entity type). Anything (task, goal, project, sprint, note, resource,
+  // habit, or a custom entity type) with a 'schedule'-type custom prop set
+  // to one of these days shows as a time marker in that day's column,
+  // positioned by its time-of-day. Used by Day/3 Days/Week/Schedule alike
+  // (numDays 1/3/7/1) — Week/3-Day/Day used to fall back to a flat
+  // Month-style cell with no hours and nothing to scroll; this gives every
+  // one of them a real, scrollable, hour-based view.
+  function buildHourTimeline(numDays) {
+    numDays = numDays || 1;
     const start = new Date(calAnchorDate); start.setHours(0,0,0,0);
+    const days = Array.from({ length: numDays }, (_, i) => dateAdd(start, i));
     const todayD = new Date(); todayD.setHours(0,0,0,0);
-    const days = [];
-    for (let i = 0; i < numDays; i++) days.push(dateAdd(start, i));
-    const wStart = dateStr(days[0]);
-    const wEnd   = dateStr(days[days.length - 1]);
+    const rowH = 56;
+    const gutter = 74;
+    const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const hourLabel = (h) => { const ap = h >= 12 ? 'PM' : 'AM'; const h12 = h % 12 || 12; return `${h12}:00 ${ap}`; };
 
     const headers = days.map(d => {
       const isT = d.getTime() === todayD.getTime();
-      const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-      return `<div class="cal-day-header ${isT?'today':''}" style="${isT?'color:var(--accent);font-weight:600':''}">
-        ${dayNames[d.getDay()]} ${d.getDate()}
-      </div>`;
+      return `<div class="cal-day-header ${isT?'today':''}" style="${isT?'color:var(--accent);font-weight:600':''}">${dayNames[d.getDay()]} ${d.getDate()}</div>`;
     }).join('');
 
-    // Compute spanning bars for this window
-    const rangedEvs = events.filter(ev => {
-      if (!ev.ranged) return false;
-      if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
-      return ev.end >= wStart && ev.start <= wEnd;
-    });
-    const lanes = [];
-    const bars = rangedEvs.map(ev => {
-      const clampedStart = ev.start < wStart ? wStart : ev.start;
-      const clampedEnd   = ev.end   > wEnd   ? wEnd   : ev.end;
-      const startCol = days.findIndex(d => dateStr(d) === clampedStart);
-      const endCol   = days.findIndex(d => dateStr(d) === clampedEnd);
-      let lane = lanes.findIndex(laneEnd => laneEnd < clampedStart);
-      if (lane === -1) { lane = lanes.length; lanes.push(clampedEnd); }
-      else { lanes[lane] = clampedEnd; }
-      return { ev, startCol, endCol, lane };
-    });
-    const maxLane = bars.reduce((m, b) => Math.max(m, b.lane), -1);
-    const numLanes = maxLane + 1;
-
-    const cells = days.map((d, col) => {
-      const ds = dateStr(d);
-      const isT = d.getTime() === todayD.getTime();
-      const isInSprint = sprintRanges.some(r => ds >= r.start && ds <= r.end);
-      const sprintStyle = isInSprint ? 'background:var(--accent-glow);' : '';
-      const dayEvents = events.filter(ev => {
-        if (ev.ranged) return false;
-        if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
-        return ev.date === ds;
-      });
-      const chips = dayEvents.map(ev => {
-        const color = chipColor(ev);
-        const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
-        return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
-      }).join('');
-      return `<div class="calendar-day ${isT?'today':''}" style="${sprintStyle}min-height:100px" data-date="${ds}">
-        <div class="cal-tasks">${chips||'<div style="color:var(--text-muted);font-size:11px">—</div>'}</div>
-      </div>`;
-    }).join('');
-
-    const barEls = bars.map(({ ev, startCol, endCol, lane }) => {
-      const color = chipColor(ev);
-      const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
-      const isStart = ev.start >= wStart;
-      const isEnd   = ev.end   <= wEnd;
-      const blr = isStart ? '3px' : '0';
-      const brr = isEnd   ? '3px' : '0';
-      return `<div class="cal-span-bar" ${taskId} title="${ev.title}"
-        style="grid-column:${startCol+1}/${endCol+2};grid-row:${lane+1};background:${color};border-radius:${blr} ${brr} ${brr} ${blr};">
-        <span class="cal-span-bar-label">${ev.title}</span>
-      </div>`;
-    }).join('');
-
-    const gridCols = `grid-template-columns:repeat(${numDays},1fr)`;
-    const barsSection = numLanes > 0
-      ? `<div class="cal-week-bars" style="${gridCols};grid-template-rows:repeat(${numLanes},20px)">${barEls}</div>`
-      : '';
-    return `<div class="cal-day-headers-row" style="${gridCols}">${headers}</div>${barsSection}<div class="cal-week-row"><div class="cal-week-cells" style="${gridCols}">${cells}</div></div>`;
-  }
-
-  // Hour-by-hour single-day timeline — the generalized version of "add
-  // hours to a task" for every entity type. Anything (task, goal, project,
-  // sprint, note, resource, habit, or a custom entity type) with a
-  // 'schedule'-type custom prop set to this day shows as a time marker,
-  // positioned by its time-of-day rather than bucketed into the whole day
-  // the way every other calendar scope here does.
-  function buildHourTimeline() {
-    const ds = dateStr(calAnchorDate);
-    const todayD = new Date(); todayD.setHours(0,0,0,0);
-    const isToday = calAnchorDate.getTime() === todayD.getTime();
-    const allDay = eventsOnDate(ds);
-    const scheduled = scheduledItemsOnDate(ds);
-    const rowH = 56;
-    const hourLabel = (h) => { const ap = h >= 12 ? 'PM' : 'AM'; const h12 = h % 12 || 12; return `${h12}:00 ${ap}`; };
-
-    const allDayHtml = allDay.length ? `<div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:4px">
-      ${allDay.map(ev => {
+    const hasAllDay = days.some(d => eventsOnDate(dateStr(d)).length > 0);
+    const allDayRow = days.map(d => {
+      const allDay = eventsOnDate(dateStr(d));
+      if (!allDay.length) return '<div></div>';
+      return `<div style="padding:4px 6px;display:flex;flex-wrap:wrap;gap:3px">${allDay.map(ev => {
         const color = chipColor(ev);
         const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
         return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${escHtml(ev.title)}">${escHtml(ev.title)}</div>`;
-      }).join('')}
-    </div>` : '';
-
-    const markers = scheduled.filter(it => it.time).map(item => {
-      const [h, m] = item.time.split(':').map(Number);
-      const top = (h + m / 60) * rowH;
-      const color = item.entityKey === 'task' ? 'var(--color-accent)' : 'var(--color-warning)';
-      return `<div class="hour-tl-marker" data-entity="${escHtml(item.entityKey)}" data-id="${item.id}" title="${escHtml(item.title)} · ${fmtTime12h(item.time)}"
-        style="position:absolute;left:74px;right:8px;top:${top}px;height:2px;background:${color};cursor:pointer">
-        <span style="position:absolute;left:-5px;top:-4px;width:9px;height:9px;border-radius:50%;background:${color}"></span>
-        <span style="position:absolute;left:12px;top:-9px;font-size:11px;background:var(--bg-surface);padding:0 4px;white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis">${escHtml(item.title)} · ${fmtTime12h(item.time)}</span>
-      </div>`;
+      }).join('')}</div>`;
     }).join('');
 
-    let nowLine = '';
-    if (isToday) {
-      const now = new Date();
-      const top = (now.getHours() + now.getMinutes() / 60) * rowH;
-      nowLine = `<div style="position:absolute;left:74px;right:8px;top:${top}px;height:2px;background:var(--danger)"><span style="position:absolute;left:-5px;top:-4px;width:9px;height:9px;border-radius:50%;background:var(--danger)"></span></div>`;
-    }
+    const hourLabels = Array.from({ length: 24 }, (_, h) =>
+      `<div style="height:${rowH}px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted);padding:2px 8px 0 0;text-align:right;box-sizing:border-box">${hourLabel(h)}</div>`
+    ).join('');
 
-    const hourRows = Array.from({ length: 24 }, (_, h) => `
-      <div style="height:${rowH}px;border-top:1px solid var(--border);display:flex">
-        <div style="width:74px;flex-shrink:0;font-size:11px;color:var(--text-muted);padding:2px 8px 0 0;text-align:right">${hourLabel(h)}</div>
-        <div class="hour-tl-slot" data-hour="${h}" style="flex:1;cursor:pointer"></div>
-      </div>`).join('');
+    const dayColumns = days.map(d => {
+      const ds = dateStr(d);
+      const isT = d.getTime() === todayD.getTime();
+      const scheduled = scheduledItemsOnDate(ds);
+      const slots = Array.from({ length: 24 }, (_, h) =>
+        `<div class="hour-tl-slot" data-hour="${h}" data-date="${ds}" style="height:${rowH}px;border-top:1px solid var(--border);border-left:1px solid var(--border);cursor:pointer;box-sizing:border-box"></div>`
+      ).join('');
+      const markers = scheduled.filter(it => it.time).map(item => {
+        const [h, m] = item.time.split(':').map(Number);
+        const top = (h + m / 60) * rowH;
+        const color = item.entityKey === 'task' ? 'var(--color-accent)' : 'var(--color-warning)';
+        return `<div class="hour-tl-marker" data-entity="${escHtml(item.entityKey)}" data-id="${item.id}" title="${escHtml(item.title)} · ${fmtTime12h(item.time)}"
+          style="position:absolute;left:4px;right:4px;top:${top}px;height:2px;background:${color};cursor:pointer">
+          <span style="position:absolute;left:-4px;top:-3px;width:8px;height:8px;border-radius:50%;background:${color}"></span>
+          <span style="position:absolute;left:8px;top:-8px;font-size:10.5px;background:var(--bg-surface);padding:0 3px;white-space:nowrap;max-width:${numDays>1?'150px':'260px'};overflow:hidden;text-overflow:ellipsis">${escHtml(item.title)}${numDays===1?' · '+fmtTime12h(item.time):''}</span>
+        </div>`;
+      }).join('');
+      let nowLine = '';
+      if (isT) {
+        const now = new Date();
+        const top = (now.getHours() + now.getMinutes() / 60) * rowH;
+        nowLine = `<div style="position:absolute;left:0;right:0;top:${top}px;height:2px;background:var(--danger)"><span style="position:absolute;left:-4px;top:-3px;width:8px;height:8px;border-radius:50%;background:var(--danger)"></span></div>`;
+      }
+      return `<div style="position:relative">${slots}<div style="position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none"><div style="pointer-events:auto">${markers}</div>${nowLine}</div></div>`;
+    }).join('');
 
     return `<div class="hour-timeline">
-      ${allDayHtml}
-      <div style="position:relative">
-        ${hourRows}
-        <div style="position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none">
-          <div style="pointer-events:auto">${markers}</div>${nowLine}
-        </div>
+      <div class="cal-day-headers-row" style="grid-template-columns:${gutter}px repeat(${numDays},1fr)"><div></div>${headers}</div>
+      ${hasAllDay ? `<div class="cal-day-headers-row" style="grid-template-columns:${gutter}px repeat(${numDays},1fr);border-bottom:1px solid var(--border)"><div></div>${allDayRow}</div>` : ''}
+      <div style="display:flex">
+        <div style="width:${gutter}px;flex-shrink:0">${hourLabels}</div>
+        <div style="flex:1;display:grid;grid-template-columns:repeat(${numDays},1fr)">${dayColumns}</div>
       </div>
     </div>`;
   }
@@ -16447,10 +16552,10 @@ async function renderCalendarView() {
 
   function buildContent() {
     if (calScope === 'month') return buildMonthCal();
-    if (calScope === 'week') return buildScopedCal(7);
-    if (calScope === '3day') return buildScopedCal(3);
-    if (calScope === 'day') return buildScopedCal(1);
-    if (calScope === 'schedule') return buildHourTimeline();
+    if (calScope === 'week') return buildHourTimeline(7);
+    if (calScope === '3day') return buildHourTimeline(3);
+    if (calScope === 'day') return buildHourTimeline(1);
+    if (calScope === 'schedule') return buildHourTimeline(1);
     if (calScope === 'gantt') return buildGantt();
     if (calScope === 'timeline') return buildTimeline();
     return buildMonthCal();
@@ -16545,7 +16650,7 @@ async function renderCalendarView() {
       slot.onclick = async (e) => {
         e.stopPropagation();
         const hh = parseInt(slot.dataset.hour, 10);
-        const ds = dateStr(calAnchorDate);
+        const ds = slot.dataset.date || dateStr(calAnchorDate);
         const def = ensureScheduleDef('task');
         const task = await api('POST', '/api/tasks', withActiveWorkspace({ title: 'Untitled' })).catch(() => null);
         if (!task) return;
