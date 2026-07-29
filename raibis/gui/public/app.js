@@ -540,6 +540,10 @@ let calYear = new Date().getFullYear();
 let calMonth = new Date().getMonth();
 let calScope = localStorage.getItem('calScope') || 'month'; // 'month'|'week'|'3day'|'day'
 let calAnchorDate = new Date(); // anchor for week/3day/day views
+// Week/3-Day/Day default to the hour-by-hour timeline; this lets the user
+// switch to a compact day-cell view (no hours) instead, same idea as Month's
+// cells but for a shorter span.
+let calHourMode = localStorage.getItem('calHourMode') !== '0';
 let globalSearchDebounce = null;
 
 // Column visibility for table views
@@ -1309,19 +1313,28 @@ function openPropManager(btnEl, entity) {
       : `<div class="prop-mgr-empty">No custom properties yet</div>`;
 
     const curFmt = getDateFormat();
-    // Metrics-on-cards lives here (view-level settings) rather than in
-    // per-record Manage Widgets, since "does this entity's Cards view show
-    // the metric" is a view concern, not a per-record one — the widget
-    // layout itself is already entity-type-scoped either way.
+    // Tracker-on-cards lives here (view-level settings, reachable from any
+    // Cards/List/Table toolbar) rather than only inside per-record Manage
+    // Widgets — that panel only exists on entities with a detail page, so
+    // Tasks/Notes/Resources and any has_detail_view:false custom type had
+    // no way to configure a tracker at all. Configuring it here creates the
+    // underlying Metrics widget (with showInCards on) if one doesn't exist
+    // yet, so this works for every entity regardless of whether it has a
+    // detail page.
     const metricsWidget = getWidgetLayout(entity).find(w => w.type === 'metrics');
-    const metricsSection = metricsWidget ? `
+    const metricsSection = `
       <div style="border-top:1px solid var(--border);padding:10px 12px 8px">
-        <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:6px">Metrics on cards</div>
-        <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
-          <input type="checkbox" id="prop-mgr-metrics-cards" ${metricsWidget.showInCards ? 'checked' : ''} style="cursor:pointer;accent-color:var(--accent)">
-          Show on cards in Cards view
-        </label>
-      </div>` : '';
+        <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:6px">Tracker on cards</div>
+        ${metricsWidget ? `
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:6px">
+            <input type="checkbox" id="prop-mgr-metrics-cards" ${metricsWidget.showInCards ? 'checked' : ''} style="cursor:pointer;accent-color:var(--accent)">
+            Show on cards in Cards view
+          </label>
+          <button class="btn btn-sm btn-ghost" id="prop-mgr-metrics-configure" style="font-size:11px;width:100%">Configure tracker…</button>
+        ` : `
+          <button class="btn btn-sm btn-ghost" id="prop-mgr-metrics-add" style="font-size:12px;width:100%">+ Add a tracker (progress, count, …)</button>
+        `}
+      </div>`;
     panel.innerHTML = `
       <div class="prop-mgr-header">
         <span>Properties · ${entity.charAt(0).toUpperCase()+entity.slice(1)}</span>
@@ -1385,6 +1398,24 @@ function openPropManager(btnEl, entity) {
       const lay = getWidgetLayout(entity);
       const mw = lay.find(w => w.type === 'metrics');
       if (mw) { mw.showInCards = metricsCardsCb.checked; saveWidgetLayout(entity, lay); renderView(currentView); }
+    };
+    const metricsAddBtn = document.getElementById('prop-mgr-metrics-add');
+    if (metricsAddBtn) metricsAddBtn.onclick = (e) => {
+      e.stopPropagation();
+      const lay = getWidgetLayout(entity);
+      const w = { id: `w-metrics-${Date.now()}`, type: 'metrics', label: 'Metrics', visible: true, showInCards: true };
+      lay.push(w);
+      saveWidgetLayout(entity, lay);
+      panel.remove();
+      openMetricsRollupConfigPanel(btnEl, entity, w, () => renderView(currentView));
+    };
+    const metricsConfigureBtn = document.getElementById('prop-mgr-metrics-configure');
+    if (metricsConfigureBtn) metricsConfigureBtn.onclick = (e) => {
+      e.stopPropagation();
+      const w = getWidgetLayout(entity).find(x => x.type === 'metrics');
+      if (!w) return;
+      panel.remove();
+      openMetricsRollupConfigPanel(btnEl, entity, w, () => renderView(currentView));
     };
   }
 
@@ -9440,6 +9471,13 @@ async function _ensureRelProp(ownerType, ownerId, targetType, targetId, targetTi
       setCustomPropDefs(ownerType, defs);
       const vp = getEntityVisProps(ownerType);
       if (!vp.includes(propKey)) setEntityVisProps(ownerType, [...vp, propKey]);
+      // Unlike a def added via "+Add Property > Relation", an auto-created
+      // one here never reaches the server's schema row — relationPropTargets
+      // (Go) reads relatedEntity from exactly that row to render Obsidian
+      // wiki-links with the right target type, so without this an
+      // auto-created relation's links silently fall back to a guessed
+      // (and sometimes wrong, e.g. for a custom target type) name.
+      syncPropDefsToServer(ownerType);
     }
   }
   try {
@@ -16425,6 +16463,92 @@ async function renderCalendarView() {
     </div>`;
   }
 
+  // Compact Week/3-Day/Day: one flat cell per day (no hours), same idea as
+  // Month's cells but for a shorter span — the "days only" alternative to
+  // buildHourTimeline, toggled via calHourMode.
+  function buildCompactCal(numDays) {
+    const start = new Date(calAnchorDate); start.setHours(0,0,0,0);
+    const todayD = new Date(); todayD.setHours(0,0,0,0);
+    const days = [];
+    for (let i = 0; i < numDays; i++) days.push(dateAdd(start, i));
+    const wStart = dateStr(days[0]);
+    const wEnd   = dateStr(days[days.length - 1]);
+
+    const headers = days.map(d => {
+      const isT = d.getTime() === todayD.getTime();
+      const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      return `<div class="cal-day-header ${isT?'today':''}" style="${isT?'color:var(--accent);font-weight:600':''}">
+        ${dayNames[d.getDay()]} ${d.getDate()}
+      </div>`;
+    }).join('');
+
+    // Spanning bars for ranged events within this window
+    const rangedEvs = events.filter(ev => {
+      if (!ev.ranged) return false;
+      if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
+      return ev.end >= wStart && ev.start <= wEnd;
+    });
+    const lanes = [];
+    const bars = rangedEvs.map(ev => {
+      const clampedStart = ev.start < wStart ? wStart : ev.start;
+      const clampedEnd   = ev.end   > wEnd   ? wEnd   : ev.end;
+      const startCol = days.findIndex(d => dateStr(d) === clampedStart);
+      const endCol   = days.findIndex(d => dateStr(d) === clampedEnd);
+      let lane = lanes.findIndex(laneEnd => laneEnd < clampedStart);
+      if (lane === -1) { lane = lanes.length; lanes.push(clampedEnd); }
+      else { lanes[lane] = clampedEnd; }
+      return { ev, startCol, endCol, lane };
+    });
+    const maxLane = bars.reduce((m, b) => Math.max(m, b.lane), -1);
+    const numLanes = maxLane + 1;
+
+    const cells = days.map(d => {
+      const ds = dateStr(d);
+      const isT = d.getTime() === todayD.getTime();
+      const isInSprint = sprintRanges.some(r => ds >= r.start && ds <= r.end);
+      const sprintStyle = isInSprint ? 'background:var(--accent-glow);' : '';
+      const dayEvents = events.filter(ev => {
+        if (ev.ranged) return false;
+        if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
+        return ev.date === ds;
+      });
+      const scheduled = scheduledItemsOnDate(ds);
+      const chips = [
+        ...dayEvents.map(ev => {
+          const color = chipColor(ev);
+          const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
+          return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${escHtml(ev.title)}">${escHtml(ev.title)}</div>`;
+        }),
+        ...scheduled.map(item => {
+          const color = item.entityKey === 'task' ? 'var(--color-accent)' : 'var(--color-warning)';
+          return `<div class="hour-tl-marker" data-entity="${escHtml(item.entityKey)}" data-id="${item.id}" style="position:static;border-left:2px solid ${color};padding:2px 6px;background:var(--color-surface-hover);border-radius:3px;font-size:11px;cursor:pointer" title="${escHtml(item.title)} · ${fmtTime12h(item.time)}">${item.time ? fmtTime12h(item.time) + ' ' : ''}${escHtml(item.title)}</div>`;
+        }),
+      ].join('');
+      return `<div class="calendar-day ${isT?'today':''}" style="${sprintStyle}min-height:100px" data-date="${ds}">
+        <div class="cal-tasks">${chips||'<div style="color:var(--text-muted);font-size:11px">—</div>'}</div>
+      </div>`;
+    }).join('');
+
+    const barEls = bars.map(({ ev, startCol, endCol, lane }) => {
+      const color = chipColor(ev);
+      const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
+      const isStart = ev.start >= wStart;
+      const isEnd   = ev.end   <= wEnd;
+      const blr = isStart ? '3px' : '0';
+      const brr = isEnd   ? '3px' : '0';
+      return `<div class="cal-span-bar" ${taskId} title="${escHtml(ev.title)}"
+        style="grid-column:${startCol+1}/${endCol+2};grid-row:${lane+1};background:${color};border-radius:${blr} ${brr} ${brr} ${blr};">
+        <span class="cal-span-bar-label">${escHtml(ev.title)}</span>
+      </div>`;
+    }).join('');
+
+    const gridCols = `grid-template-columns:repeat(${numDays},1fr)`;
+    const barsSection = numLanes > 0
+      ? `<div class="cal-week-bars" style="${gridCols};grid-template-rows:repeat(${numLanes},20px)">${barEls}</div>`
+      : '';
+    return `<div class="cal-day-headers-row" style="${gridCols}">${headers}</div>${barsSection}<div class="cal-week-row"><div class="cal-week-cells" style="${gridCols}">${cells}</div></div>`;
+  }
+
   // Gantt / timeline view for ranged tasks
   function buildGantt() {
     // Show current month as the timeline window
@@ -16542,19 +16666,29 @@ async function renderCalendarView() {
       label = `${calAnchorDate.getDate()} ${monthNames[calAnchorDate.getMonth()]} – ${endD.getDate()} ${monthNames[endD.getMonth()]} ${endD.getFullYear()}`;
     }
     const hidePrevNext = calScope === 'timeline';
+    // Hours/Compact only makes sense for the day-span scopes — Schedule is
+    // always hour-based (that's its whole point), Month/Gantt/Timeline have
+    // no such notion.
+    const showHourToggle = ['week', '3day', 'day'].includes(calScope);
+    const hourToggle = showHourToggle ? `
+      <div class="cal-hour-toggle" style="display:flex;gap:2px;margin-left:10px;border:1px solid var(--color-border);border-radius:var(--radius-md);padding:2px">
+        <button class="btn btn-sm ${calHourMode?'btn-primary':'btn-ghost'} cal-hourmode-btn" data-mode="hours" style="padding:2px 8px">Hours</button>
+        <button class="btn btn-sm ${!calHourMode?'btn-primary':'btn-ghost'} cal-hourmode-btn" data-mode="days" style="padding:2px 8px">Days only</button>
+      </div>` : '';
     return `<div class="cal-nav">
       <button class="btn btn-sm btn-ghost" id="cal-prev" ${hidePrevNext ? 'style="visibility:hidden"' : ''}>‹ Prev</button>
       <span style="font-family:'DM Mono',monospace;font-size:14px;min-width:200px;text-align:center">${label}</span>
       <button class="btn btn-sm btn-ghost" id="cal-next" ${hidePrevNext ? 'style="visibility:hidden"' : ''}>Next ›</button>
       <div style="display:flex;gap:4px;margin-left:16px">${scopeBtns}</div>
+      ${hourToggle}
     </div>`;
   }
 
   function buildContent() {
     if (calScope === 'month') return buildMonthCal();
-    if (calScope === 'week') return buildHourTimeline(7);
-    if (calScope === '3day') return buildHourTimeline(3);
-    if (calScope === 'day') return buildHourTimeline(1);
+    if (calScope === 'week') return calHourMode ? buildHourTimeline(7) : buildCompactCal(7);
+    if (calScope === '3day') return calHourMode ? buildHourTimeline(3) : buildCompactCal(3);
+    if (calScope === 'day') return calHourMode ? buildHourTimeline(1) : buildCompactCal(1);
     if (calScope === 'schedule') return buildHourTimeline(1);
     if (calScope === 'gantt') return buildGantt();
     if (calScope === 'timeline') return buildTimeline();
@@ -16637,6 +16771,34 @@ async function renderCalendarView() {
         rebind();
       };
     });
+    document.querySelectorAll('.cal-hourmode-btn').forEach(btn => {
+      btn.onclick = () => {
+        calHourMode = btn.dataset.mode === 'hours';
+        localStorage.setItem('calHourMode', calHourMode ? '1' : '0');
+        document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
+        rebind();
+      };
+    });
+    // Scroll (mouse wheel / trackpad) navigates months in Month view, same
+    // as Prev/Next — reuses their exact click handlers rather than
+    // duplicating the month math. Debounced so one fast swipe doesn't fly
+    // through several months at once. #cal-content itself survives every
+    // Prev/Next/scope-switch within one visit to this view (only its
+    // innerHTML gets replaced) — rebind() re-runs on every one of those, so
+    // a plain addEventListener here would stack a new listener (and a new,
+    // independently-debounced cooldown closure) each time. Guard with a
+    // dataset flag so it's attached exactly once per real page visit.
+    const calContentEl = document.getElementById('cal-content');
+    if (calContentEl && !calContentEl.dataset.wheelBound) {
+      calContentEl.dataset.wheelBound = '1';
+      let wheelCooldown = false;
+      calContentEl.addEventListener('wheel', (e) => {
+        if (calScope !== 'month' || wheelCooldown || Math.abs(e.deltaY) < 24) return;
+        wheelCooldown = true;
+        document.getElementById(e.deltaY > 0 ? 'cal-next' : 'cal-prev')?.click();
+        setTimeout(() => { wheelCooldown = false; }, 450);
+      }, { passive: true });
+    }
     document.querySelectorAll('.cal-task-chip[data-task-id]').forEach(chip => {
       chip.onclick = (e) => { e.stopPropagation(); showTaskSlideover(chip.dataset.taskId); };
     });
