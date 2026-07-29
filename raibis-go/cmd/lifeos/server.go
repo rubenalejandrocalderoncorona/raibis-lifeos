@@ -3730,7 +3730,7 @@ func propertiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc
 					fm := make(map[string]any, len(existingProps))
 					for k, v := range existingProps {
 						// relation values render as wiki-links, never raw JSON
-						if links, ok := relationValueToLinks(k, v, targets); ok {
+						if links, ok := relationValueToLinks(store, k, v, targets); ok {
 							fm[k] = links
 							continue
 						}
@@ -5924,7 +5924,7 @@ func syncCustomEntityTypeTwoWay(db *sql.DB, v *vault.Vault, conflicts *[]syncCon
 					for _, k := range propKeys {
 						e.Props[k] = resolved[k]
 					}
-					_ = v.WriteEntityMD(typeName, id, customEntityFM(e), vaultEntityBody(v, typeName, id))
+					_ = v.WriteEntityMD(typeName, id, customEntityFM(nil, e), vaultEntityBody(v, typeName, id))
 				}
 			}
 		}
@@ -6215,7 +6215,7 @@ func workspaceHandler(store storage.Storage, vlt *vault.Vault, dbPath string) ht
 // ── Custom Entities Handler ───────────────────────────────────────────────────
 
 // customEntitiesHandler handles all /api/custom/{type} and /api/custom/{type}/{id} requests.
-func customEntityFM(e *domain.CustomEntity) map[string]any {
+func customEntityFM(store storage.Storage, e *domain.CustomEntity) map[string]any {
 	createdAt := e.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now()
@@ -6231,7 +6231,7 @@ func customEntityFM(e *domain.CustomEntity) map[string]any {
 		if strings.HasPrefix(k, "_") {
 			continue
 		}
-		if links, ok := relationValueToLinks(k, v, nil); ok {
+		if links, ok := relationValueToLinks(store, k, v, nil); ok {
 			fm[k] = links
 			continue
 		}
@@ -6341,7 +6341,7 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault, dbPath strin
 				e.ID = id
 				if vlt != nil {
 					refreshWorkspaceVaultFoldersAt(dbPath, vlt)
-					_ = vlt.WriteEntityMD(typeName, id, customEntityFM(&e), customEntityLinksBody(typeName, id, store))
+					_ = vlt.WriteEntityMD(typeName, id, customEntityFM(store, &e), customEntityLinksBody(typeName, id, store))
 				}
 				writeJSON(w, 201, e)
 
@@ -6395,7 +6395,7 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault, dbPath strin
 			}
 			if vlt != nil {
 				refreshWorkspaceVaultFoldersAt(dbPath, vlt)
-				_ = vlt.WriteEntityMD(typeName, entityID, customEntityFM(&e), customEntityLinksBody(typeName, entityID, store))
+				_ = vlt.WriteEntityMD(typeName, entityID, customEntityFM(store, &e), customEntityLinksBody(typeName, entityID, store))
 			}
 			go rollup.TriggerPropagation(store, typeName, entityID)
 			writeJSON(w, 200, e)
@@ -6738,6 +6738,10 @@ func childrenLinksBody(entityType string, entityID int64, store storage.Storage)
 			if n, err := store.GetNote(c.ChildEntityID); err == nil {
 				title = n.Title
 			}
+		default:
+			if ce, err := store.GetCustomEntity(c.ChildEntityType, c.ChildEntityID); err == nil {
+				title = ce.Title
+			}
 		}
 		if title == "" {
 			title = fmt.Sprintf("%s-%d", c.ChildEntityType, c.ChildEntityID)
@@ -6779,6 +6783,10 @@ func relationsLinksBody(entityType string, entityID int64, store storage.Storage
 			if sp, err := store.GetSprint(r.RelatedID); err == nil {
 				title = sp.Title
 			}
+		default:
+			if ce, err := store.GetCustomEntity(r.RelatedType, r.RelatedID); err == nil && ce.Title != "" {
+				title = ce.Title
+			}
 		}
 		lines = append(lines, fmt.Sprintf("- [[%s-%d|%s]]", r.RelatedType, r.RelatedID, title))
 	}
@@ -6811,7 +6819,7 @@ func resyncEntityVault(entityType string, entityID int64, store storage.Storage,
 		if strings.HasPrefix(entityType, "custom_") {
 			tn := strings.TrimPrefix(entityType, "custom_")
 			if e, err := store.GetCustomEntity(tn, entityID); err == nil {
-				_ = vlt.WriteEntityMD(tn, e.ID, customEntityFM(e), customEntityLinksBody(tn, e.ID, store))
+				_ = vlt.WriteEntityMD(tn, e.ID, customEntityFM(store, e), customEntityLinksBody(tn, e.ID, store))
 			}
 		}
 	}
@@ -6830,13 +6838,43 @@ func mergeFMWithProps(fm map[string]any, store storage.Storage, entityType strin
 		if strings.HasPrefix(k, "_") {
 			continue
 		}
-		if links, ok := relationValueToLinks(k, v, targets); ok {
+		if links, ok := relationValueToLinks(store, k, v, targets); ok {
 			fm[k] = links
 			continue
 		}
 		fm[k] = v
 	}
 	return fm
+}
+
+var builtinRelationSingulars = map[string]bool{
+	"goal": true, "project": true, "sprint": true, "task": true,
+	"note": true, "resource": true, "habit": true,
+}
+
+// guessRelationTarget infers a relation prop key's target type when no
+// schema-recorded relatedEntity is available (e.g. data written before
+// relation prop defs started syncing server-side, or a request that races
+// ahead of that sync). Prefers an exact key match — a known builtin
+// singular field name, or a custom entity type whose bare name IS the key
+// (custom type names are usually already plural/collection-like, e.g.
+// "bugs", so blindly stripping a trailing "s" guesses wrong for them) —
+// before falling back to naive depluralization.
+func guessRelationTarget(store storage.Storage, key string) string {
+	if builtinRelationSingulars[key] {
+		return key
+	}
+	if store == nil {
+		return strings.TrimSuffix(key, "s")
+	}
+	if types, err := store.ListCustomEntityTypes(); err == nil {
+		for _, t := range types {
+			if t.Name == key {
+				return key
+			}
+		}
+	}
+	return strings.TrimSuffix(key, "s")
 }
 
 // relationPropTargets maps relation-typed prop keys to their target type name,
@@ -6905,7 +6943,7 @@ func syncRelationPropEdges(store storage.Storage, vlt *vault.Vault, entityType s
 	}
 	target := relationPropTargets(store, entityType)[key]
 	if target == "" {
-		target = strings.TrimSuffix(key, "s")
+		target = guessRelationTarget(store, key)
 	}
 	changed := []int64{}
 	for id := range newIDs {
@@ -6942,7 +6980,7 @@ func syncRelationPropEdges(store storage.Storage, vlt *vault.Vault, entityType s
 // {id,label} items — into a list of wiki-links ("[[type-id|label]]"), so
 // every relation property reads as real links in Obsidian. Non-relation
 // values are passed through untouched (ok=false).
-func relationValueToLinks(key, raw string, targets map[string]string) ([]string, bool) {
+func relationValueToLinks(store storage.Storage, key, raw string, targets map[string]string) ([]string, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.HasPrefix(trimmed, "[{") {
 		return nil, false
@@ -6956,7 +6994,7 @@ func relationValueToLinks(key, raw string, targets map[string]string) ([]string,
 	}
 	target := targets[key]
 	if target == "" {
-		target = strings.TrimSuffix(key, "s") // resources → resource
+		target = guessRelationTarget(store, key)
 	}
 	links := make([]string, 0, len(items))
 	for _, it := range items {

@@ -2371,6 +2371,8 @@ body.kanban-dragging-active * {
   flex-shrink: 0;
 }
 .taxonomy-chip-actions { display: flex; gap: var(--space-1); }
+.taxonomy-chip-filter { cursor: pointer; }
+.taxonomy-filter-row:hover { background: var(--color-surface-hover); }
 
 /* ─── Breadcrumb (duplicate from layout — keeping for specificity) ── */
 .bc-crumb {
