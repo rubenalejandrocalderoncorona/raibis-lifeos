@@ -16397,6 +16397,47 @@ async function renderCalendarView() {
   // (numDays 1/3/7/1) — Week/3-Day/Day used to fall back to a flat
   // Month-style cell with no hours and nothing to scroll; this gives every
   // one of them a real, scrollable, hour-based view.
+  // Lays out ranged (start/end) events across `days` as continuous spanning
+  // bars — clamped to the visible window, stacked into lanes when they
+  // overlap. Shared by buildCompactCal and buildHourTimeline's all-day row
+  // so a multi-day range always reads as ONE bar, never a chip repeated on
+  // every day it touches.
+  function buildSpanBarsRow(days, gridCols, laneHeight = 20) {
+    const wStart = dateStr(days[0]);
+    const wEnd   = dateStr(days[days.length - 1]);
+    const rangedEvs = events.filter(ev => {
+      if (!ev.ranged) return false;
+      if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
+      return ev.end >= wStart && ev.start <= wEnd;
+    });
+    const lanes = [];
+    const bars = rangedEvs.map(ev => {
+      const clampedStart = ev.start < wStart ? wStart : ev.start;
+      const clampedEnd   = ev.end   > wEnd   ? wEnd   : ev.end;
+      const startCol = days.findIndex(d => dateStr(d) === clampedStart);
+      const endCol   = days.findIndex(d => dateStr(d) === clampedEnd);
+      let lane = lanes.findIndex(laneEnd => laneEnd < clampedStart);
+      if (lane === -1) { lane = lanes.length; lanes.push(clampedEnd); }
+      else { lanes[lane] = clampedEnd; }
+      return { ev, startCol, endCol, lane };
+    });
+    const numLanes = bars.reduce((m, b) => Math.max(m, b.lane), -1) + 1;
+    if (numLanes === 0) return { html: '', numLanes: 0 };
+    const barEls = bars.map(({ ev, startCol, endCol, lane }) => {
+      const color = chipColor(ev);
+      const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
+      const isStart = ev.start >= wStart;
+      const isEnd   = ev.end   <= wEnd;
+      const blr = isStart ? '3px' : '0';
+      const brr = isEnd   ? '3px' : '0';
+      return `<div class="cal-span-bar" ${taskId} title="${escHtml(ev.title)}"
+        style="grid-column:${startCol+1}/${endCol+2};grid-row:${lane+1};background:${color};border-radius:${blr} ${brr} ${brr} ${blr};">
+        <span class="cal-span-bar-label">${escHtml(ev.title)}</span>
+      </div>`;
+    }).join('');
+    return { html: `<div class="cal-week-bars" style="${gridCols};grid-template-rows:repeat(${numLanes},${laneHeight}px)">${barEls}</div>`, numLanes };
+  }
+
   function buildHourTimeline(numDays) {
     numDays = numDays || 1;
     const start = new Date(calAnchorDate); start.setHours(0,0,0,0);
@@ -16412,9 +16453,13 @@ async function renderCalendarView() {
       return `<div class="cal-day-header ${isT?'today':''}" style="${isT?'color:var(--accent);font-weight:600':''}">${dayNames[d.getDay()]} ${d.getDate()}</div>`;
     }).join('');
 
-    const hasAllDay = days.some(d => eventsOnDate(dateStr(d)).length > 0);
+    // Ranged (start/end) events render as one spanning bar via
+    // buildSpanBarsRow, never as a per-day chip — single-day items still
+    // get their own chip in the day's all-day cell.
+    const spanBars = buildSpanBarsRow(days, `grid-template-columns:repeat(${numDays},1fr)`);
+    const hasAllDay = days.some(d => eventsOnDate(dateStr(d)).some(ev => !ev.ranged));
     const allDayRow = days.map(d => {
-      const allDay = eventsOnDate(dateStr(d));
+      const allDay = eventsOnDate(dateStr(d)).filter(ev => !ev.ranged);
       if (!allDay.length) return '<div></div>';
       return `<div style="padding:4px 6px;display:flex;flex-wrap:wrap;gap:3px">${allDay.map(ev => {
         const color = chipColor(ev);
@@ -16455,6 +16500,7 @@ async function renderCalendarView() {
 
     return `<div class="hour-timeline">
       <div class="cal-day-headers-row" style="grid-template-columns:${gutter}px repeat(${numDays},1fr)"><div></div>${headers}</div>
+      ${spanBars.numLanes ? `<div style="display:flex"><div style="width:${gutter}px;flex-shrink:0"></div><div style="flex:1">${spanBars.html}</div></div>` : ''}
       ${hasAllDay ? `<div class="cal-day-headers-row" style="grid-template-columns:${gutter}px repeat(${numDays},1fr);border-bottom:1px solid var(--border)"><div></div>${allDayRow}</div>` : ''}
       <div style="display:flex">
         <div style="width:${gutter}px;flex-shrink:0">${hourLabels}</div>
@@ -16471,8 +16517,6 @@ async function renderCalendarView() {
     const todayD = new Date(); todayD.setHours(0,0,0,0);
     const days = [];
     for (let i = 0; i < numDays; i++) days.push(dateAdd(start, i));
-    const wStart = dateStr(days[0]);
-    const wEnd   = dateStr(days[days.length - 1]);
 
     const headers = days.map(d => {
       const isT = d.getTime() === todayD.getTime();
@@ -16481,26 +16525,6 @@ async function renderCalendarView() {
         ${dayNames[d.getDay()]} ${d.getDate()}
       </div>`;
     }).join('');
-
-    // Spanning bars for ranged events within this window
-    const rangedEvs = events.filter(ev => {
-      if (!ev.ranged) return false;
-      if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
-      return ev.end >= wStart && ev.start <= wEnd;
-    });
-    const lanes = [];
-    const bars = rangedEvs.map(ev => {
-      const clampedStart = ev.start < wStart ? wStart : ev.start;
-      const clampedEnd   = ev.end   > wEnd   ? wEnd   : ev.end;
-      const startCol = days.findIndex(d => dateStr(d) === clampedStart);
-      const endCol   = days.findIndex(d => dateStr(d) === clampedEnd);
-      let lane = lanes.findIndex(laneEnd => laneEnd < clampedStart);
-      if (lane === -1) { lane = lanes.length; lanes.push(clampedEnd); }
-      else { lanes[lane] = clampedEnd; }
-      return { ev, startCol, endCol, lane };
-    });
-    const maxLane = bars.reduce((m, b) => Math.max(m, b.lane), -1);
-    const numLanes = maxLane + 1;
 
     const cells = days.map(d => {
       const ds = dateStr(d);
@@ -16529,24 +16553,9 @@ async function renderCalendarView() {
       </div>`;
     }).join('');
 
-    const barEls = bars.map(({ ev, startCol, endCol, lane }) => {
-      const color = chipColor(ev);
-      const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
-      const isStart = ev.start >= wStart;
-      const isEnd   = ev.end   <= wEnd;
-      const blr = isStart ? '3px' : '0';
-      const brr = isEnd   ? '3px' : '0';
-      return `<div class="cal-span-bar" ${taskId} title="${escHtml(ev.title)}"
-        style="grid-column:${startCol+1}/${endCol+2};grid-row:${lane+1};background:${color};border-radius:${blr} ${brr} ${brr} ${blr};">
-        <span class="cal-span-bar-label">${escHtml(ev.title)}</span>
-      </div>`;
-    }).join('');
-
     const gridCols = `grid-template-columns:repeat(${numDays},1fr)`;
-    const barsSection = numLanes > 0
-      ? `<div class="cal-week-bars" style="${gridCols};grid-template-rows:repeat(${numLanes},20px)">${barEls}</div>`
-      : '';
-    return `<div class="cal-day-headers-row" style="${gridCols}">${headers}</div>${barsSection}<div class="cal-week-row"><div class="cal-week-cells" style="${gridCols}">${cells}</div></div>`;
+    const spanBars = buildSpanBarsRow(days, gridCols);
+    return `<div class="cal-day-headers-row" style="${gridCols}">${headers}</div>${spanBars.html}<div class="cal-week-row"><div class="cal-week-cells" style="${gridCols}">${cells}</div></div>`;
   }
 
   // Gantt / timeline view for ranged tasks
@@ -16728,6 +16737,35 @@ async function renderCalendarView() {
     };
   });
 
+  // A plain innerHTML swap on cal-content read as an abrupt jump-cut
+  // (aesthetic complaint) — this fades+drifts the old month grid out and
+  // the new one in from the opposite edge instead, matching how Notion
+  // Calendar's own month view feels on Prev/Next/scroll. Only applied to
+  // Month scope (dir omitted/0 elsewhere); Prev/Next/wheel all share this
+  // one path — the month math happens in the caller before this runs.
+  function swapCalContent(dir) {
+    const el = document.getElementById('cal-content');
+    if (!el || calScope !== 'month' || !dir) {
+      el.innerHTML = buildNav() + buildContent();
+      rebind();
+      return;
+    }
+    el.style.transition = 'transform .15s ease, opacity .15s ease';
+    el.style.transform = `translateY(${dir * -14}px)`;
+    el.style.opacity = '0';
+    setTimeout(() => {
+      el.innerHTML = buildNav() + buildContent();
+      el.style.transition = 'none';
+      el.style.transform = `translateY(${dir * 14}px)`;
+      el.style.opacity = '0';
+      void el.offsetHeight; // force reflow so the next transition actually animates
+      el.style.transition = 'transform .18s ease, opacity .18s ease';
+      el.style.transform = 'translateY(0)';
+      el.style.opacity = '1';
+      rebind();
+    }, 150);
+  }
+
   function rebind() {
     // Must mount before the .tl-bar/.tl-label click bindings below, since
     // Timeline scope's day-grid is rendered by TimelineGrid.svelte —
@@ -16741,8 +16779,7 @@ async function renderCalendarView() {
         const step = calScope==='week'?-7:calScope==='3day'?-3:-1;
         calAnchorDate = dateAdd(calAnchorDate, step);
       }
-      document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
-      rebind();
+      swapCalContent(-1);
     });
     document.getElementById('cal-next')?.addEventListener('click', () => {
       if (calScope === 'timeline') return;
@@ -16752,8 +16789,7 @@ async function renderCalendarView() {
         const step = calScope==='week'?7:calScope==='3day'?3:1;
         calAnchorDate = dateAdd(calAnchorDate, step);
       }
-      document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
-      rebind();
+      swapCalContent(1);
     });
     document.querySelectorAll('.cal-scope-btn').forEach(btn => {
       btn.onclick = () => {
