@@ -3042,9 +3042,11 @@ body.kanban-dragging-active * {
   transition: opacity var(--duration-fast) var(--ease-out);
 }
 .schedule-dock-toggle:hover { color: var(--color-accent); border-color: var(--color-accent); }
-.schedule-dock-toggle.active { color: var(--color-accent); border-color: var(--color-accent); }
-/* Hidden entirely (not shifted alongside) while any slideover/edit panel is
-   open — it shouldn't try to dock next to that panel. */
+/* Hidden entirely (not shifted alongside) while any slideover/edit panel, or
+   the dock itself, is open — the dock sits at the same top-right corner and
+   has its own close (×) button, so the toggle would otherwise float on top
+   of the now-open panel instead of disappearing. */
+.schedule-dock-toggle.active,
 .schedule-dock-toggle.panel-open-main,
 .schedule-dock-toggle.panel-open-form {
   display: none;
