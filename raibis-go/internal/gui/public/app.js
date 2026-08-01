@@ -14116,8 +14116,7 @@ const TAXONOMY_FILTER_SOURCES = [
 async function collectTaxonomyMatches(kind, value) {
   const results = [];
   const customs = (customEntityTypes || []).map(t => ({ key: `custom_${t.name}`, api: `custom/${t.name}`, listPath: `/api/custom/${t.name}` }));
-  // Custom entities have no native tags table (only built-ins do).
-  const sources = kind === 'tag' ? TAXONOMY_FILTER_SOURCES : [...TAXONOMY_FILTER_SOURCES, ...customs];
+  const sources = [...TAXONOMY_FILTER_SOURCES, ...customs];
 
   await Promise.all(sources.map(async src => {
     let list = [];

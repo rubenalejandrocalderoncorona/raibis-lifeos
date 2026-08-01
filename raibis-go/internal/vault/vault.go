@@ -242,6 +242,18 @@ func (v *Vault) EntityFilePath(entityType string, id int64) string {
 	return filepath.Join(dir, fmt.Sprintf("%s-%d.md", entityType, id))
 }
 
+// WriteMDWithFrontmatter writes frontmatter + body to an arbitrary path —
+// for entity types like Notes whose file lives at a user-facing path
+// (notes/<slug>-<ts>.md) rather than the raibis/{type}/{type}-{id}.md
+// convention WriteEntityMD assumes.
+func (v *Vault) WriteMDWithFrontmatter(path string, frontmatter map[string]any, body string) error {
+	content := buildFrontmatter(frontmatter)
+	if body != "" {
+		content += "\n" + body
+	}
+	return v.WriteFile(path, content)
+}
+
 // WriteEntityMD writes YAML frontmatter + optional body for a Raibis entity.
 // Errors are logged by callers; the HTTP response is never blocked on vault I/O.
 func (v *Vault) WriteEntityMD(entityType string, id int64, frontmatter map[string]any, body string) error {
