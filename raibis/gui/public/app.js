@@ -3243,6 +3243,12 @@ function customPropCell(entity, recordId, def) {
     const color = val ? dueDateColor(val) : '';
     return `<td><button type="button" class="table-date-chip" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" data-value="${val}" style="background:none;border:none;cursor:pointer;font-family:var(--font-mono);font-size:11px;${color?`color:${color}`:'color:var(--text-primary)'};padding:0">${display}</button></td>`;
   }
+  if (def.type === 'schedule') {
+    const sv = parseScheduleValue(val);
+    const display = sv ? fmtScheduleValue(val) : '—';
+    const color = sv ? dueDateColor(sv.date) : '';
+    return `<td><button type="button" class="table-schedule-chip" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" data-value="${escHtml(val)}" style="background:none;border:none;cursor:pointer;font-family:var(--font-mono);font-size:11px;${color?`color:${color}`:'color:var(--text-primary)'};padding:0">${display}</button></td>`;
+  }
   if (def.type === 'number') {
     return `<td><input type="number" class="custom-prop-input" data-entity="${entity}" data-record-id="${recordId}" data-prop-key="${def.key}" value="${val}" style="font-size:12px;width:70px;border:1px solid var(--border);border-radius:3px;padding:1px 4px;background:transparent;color:var(--text-primary)"></td>`;
   }
@@ -3925,6 +3931,18 @@ function bindCustomPropCells() {
       });
     };
   });
+  document.querySelectorAll('.table-schedule-chip').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      openSchedulePickerGlobal(btn, btn.dataset.value || '', (val) => {
+        btn.dataset.value = val || '';
+        const sv = val ? parseScheduleValue(val) : null;
+        btn.textContent = sv ? fmtScheduleValue(val) : '—';
+        btn.style.color = sv ? dueDateColor(sv.date) : 'var(--text-primary)';
+        setCustomPropValue(btn.dataset.entity, btn.dataset.recordId, btn.dataset.propKey, val || '');
+      });
+    };
+  });
   document.querySelectorAll('.custom-prop-select-cell').forEach(cell => {
     cell.onclick = (e) => {
       e.stopPropagation();
@@ -4062,7 +4080,18 @@ function bindCustomPropCells() {
     };
   });
 }
-const CAL_EVENT_TYPES = ['task','goal','project','sprint'];
+// Every entity type the calendar can plot: the built-ins that carry native
+// dates/schedules, plus every current custom entity type (a record of any
+// custom type can carry a 'schedule'-type prop same as a task can). Computed
+// live rather than a static list so a custom type created after this file
+// loaded still shows up in the filter/legend without a reload.
+function calAllEventTypes() {
+  return ['task', 'goal', 'project', 'sprint', 'note', 'resource', 'habit',
+    ...(customEntityTypes || []).map(t => `custom_${t.name}`)];
+}
+function calTypeLabel(t) {
+  return t.startsWith('custom_') ? tabLabelFor(`custom:${t.slice(7)}`) : tabLabelFor(`${t}s`);
+}
 
 // ── Modal date chip helpers (shared across all forms) ────────────────────
 function _dateChipDisplay(iso) {
@@ -4597,7 +4626,10 @@ function bindPropLabelResizer(panelEl) {
   });
 }
 
-let calEventTypes = JSON.parse(localStorage.getItem('calEventTypes') || 'null') || [...CAL_EVENT_TYPES];
+// Placeholder until renderCalendarView's one-time default-expansion runs
+// (calAllEventTypes() needs customEntityTypes, not populated yet this early
+// at script-parse time) — see the localStorage-null check in renderCalendarView.
+let calEventTypes = JSON.parse(localStorage.getItem('calEventTypes') || 'null') || ['task', 'goal', 'project', 'sprint'];
 
 /* ─── Utilities ──────────────────────────────────────────────────────── */
 async function api(method, path, body) {
@@ -6707,6 +6739,7 @@ async function renderCustomEntityList(typeName) {
     function renderPropVal(pd, rawVal) {
       if (!rawVal) return '';
       if (pd.type === 'date') return fmtDate(rawVal) || rawVal;
+      if (pd.type === 'schedule') return fmtScheduleValue(rawVal) || rawVal;
       if (pd.type === 'multi_select' || pd.type === 'checkbox') {
         try { const arr = JSON.parse(rawVal); if (Array.isArray(arr)) return arr.join(', '); } catch {}
       }
@@ -16175,6 +16208,12 @@ function initScheduleDock() {
 }
 
 async function renderCalendarView() {
+  // First-ever visit (no saved filter preference yet): default to showing
+  // every entity type, built-in and custom — calAllEventTypes() needs
+  // customEntityTypes, which is populated by now but wasn't at script-parse
+  // time when calEventTypes' module-level fallback had to run.
+  if (localStorage.getItem('calEventTypes') === null) calEventTypes = calAllEventTypes();
+
   let tasks = [], goals = [], projects = [], sprints = [];
   try {
     [tasks, goals, projects, sprints] = await Promise.all([
@@ -16266,6 +16305,30 @@ async function renderCalendarView() {
     return typeColors[ev.type] || 'var(--color-accent)';
   }
 
+  // Everything Month view shows on one day: native start/due-date events
+  // plus Schedule-type custom props from any entity (built-in or custom) —
+  // shared by the initial chip render and the "+N" overflow expand so both
+  // stay in sync instead of one silently dropping scheduled items.
+  function monthDayEntries(ds) {
+    const dayEvents = events.filter(ev => {
+      if (ev.ranged) return false;
+      if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
+      return ev.date === ds;
+    });
+    const scheduled = scheduledItemsOnDate(ds).filter(it => calEventTypes.includes(it.entityKey));
+    return [...dayEvents.map(ev => ({ ev })), ...scheduled.map(item => ({ item }))];
+  }
+  function monthDayChipHtml({ ev, item }) {
+    if (ev) {
+      const color = chipColor(ev);
+      const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
+      return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
+    }
+    const color = item.entityKey === 'task' ? 'var(--color-accent)' : 'var(--color-warning)';
+    const label = item.time ? `${fmtTime12h(item.time)} ${item.title}` : item.title;
+    return `<div class="cal-task-chip hour-tl-marker" data-entity="${escHtml(item.entityKey)}" data-id="${item.id}" style="border-left:2px solid ${color}" title="${escHtml(item.title)}${item.time ? ' · ' + fmtTime12h(item.time) : ''}">${escHtml(label)}</div>`;
+  }
+
   function dateAdd(d, days) {
     const r = new Date(d); r.setDate(r.getDate() + days); return r;
   }
@@ -16355,19 +16418,11 @@ async function renderCalendarView() {
         const isTodayCell = cellDate.getTime() === todayD.getTime();
         const isInSprint = sprintRanges.some(r => ds >= r.start && ds <= r.end);
         const sprintStyle = isInSprint ? 'background:var(--accent-glow);' : '';
-        const dayEvents = events.filter(ev => {
-          if (ev.ranged) return false;
-          if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
-          return ev.date === ds;
-        });
+        const combined = monthDayEntries(ds);
         const CHIP_LIMIT = 2;
-        const visibleEvents = dayEvents.slice(0, CHIP_LIMIT);
-        const overflow = dayEvents.length - CHIP_LIMIT;
-        const chips = visibleEvents.map(ev => {
-          const color = chipColor(ev);
-          const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
-          return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
-        }).join('');
+        const visibleEntries = combined.slice(0, CHIP_LIMIT);
+        const overflow = combined.length - CHIP_LIMIT;
+        const chips = visibleEntries.map(monthDayChipHtml).join('');
         const overflowChip = overflow > 0 ? `<div class="cal-overflow-btn" data-date="${ds}">+${overflow}</div>` : '';
         return `<div class="calendar-day ${isCurrentMonth?'':'other-month'} ${isTodayCell?'today':''}" style="${sprintStyle}" data-date="${ds}">
           <div class="cal-tasks">${chips}${overflowChip}</div>
@@ -16703,34 +16758,34 @@ async function renderCalendarView() {
     return buildMonthCal();
   }
 
+  // One combined legend+filter: a clickable pill per entity type (built-in
+  // AND custom, via calAllEventTypes()) that both shows its color key and
+  // toggles it in/out of calEventTypes — replaces the old hardcoded
+  // 4-type legend plus a separate hidden "⊟ Filter" dropdown that only
+  // ever offered those same 4 types.
+  const legendHtml = calAllEventTypes().map(t => {
+    const on = calEventTypes.includes(t);
+    const color = typeColors[t] || 'var(--color-text-tertiary)';
+    return `<label class="cal-type-check-label" style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;opacity:${on ? 1 : 0.4}">
+      <input type="checkbox" class="cal-type-check" data-type="${escHtml(t)}" ${on ? 'checked' : ''} style="display:none">
+      <span style="display:inline-block;width:8px;height:8px;background:${color};border-radius:50%"></span>${escHtml(calTypeLabel(t))}
+    </label>`;
+  }).join('');
+
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
       <h1 class="view-title">${navIcon('calendar')}Calendar</h1>
-      <div class="col-picker-wrap" style="position:relative">
-        <button class="btn btn-sm btn-ghost" id="cal-filter-btn" title="Filter event types">⊟ Filter</button>
-        <div class="col-picker-dropdown hidden" id="cal-filter-dropdown">
-          ${CAL_EVENT_TYPES.map(t => `<label class="col-picker-item"><input type="checkbox" class="cal-type-check" data-type="${t}" ${calEventTypes.includes(t)?'checked':''}> ${t}s</label>`).join('')}
-        </div>
-      </div>
     </div>
-    <div class="cal-legend" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;font-size:12px">
-      <span><span style="display:inline-block;width:8px;height:8px;background:var(--accent);border-radius:50%;margin-right:4px"></span>Tasks</span>
-      <span><span style="display:inline-block;width:8px;height:8px;background:var(--success);border-radius:50%;margin-right:4px"></span>Goals</span>
-      <span><span style="display:inline-block;width:8px;height:8px;background:var(--warning);border-radius:50%;margin-right:4px"></span>Projects</span>
-      <span><span style="display:inline-block;width:8px;height:8px;background:#9b7fe8;border-radius:50%;margin-right:4px"></span>Sprints</span>
-    </div>
+    <div class="cal-legend" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">${legendHtml}</div>
     <div id="cal-content">${buildNav()}${buildContent()}</div>
   </div>`;
 
-  // Calendar filter picker
-  const calFilterBtn = document.getElementById('cal-filter-btn');
-  const calFilterDrop = document.getElementById('cal-filter-dropdown');
-  calFilterBtn.onclick = (e) => { e.stopPropagation(); calFilterDrop.classList.toggle('hidden'); };
   document.querySelectorAll('.cal-type-check').forEach(chk => {
     chk.onchange = () => {
       calEventTypes = [...document.querySelectorAll('.cal-type-check:checked')].map(c => c.dataset.type);
       if (!calEventTypes.length) calEventTypes = ['task'];
       localStorage.setItem('calEventTypes', JSON.stringify(calEventTypes));
+      chk.closest('label').style.opacity = calEventTypes.includes(chk.dataset.type) ? '1' : '0.4';
       document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
       rebind();
     };
@@ -16886,18 +16941,10 @@ async function renderCalendarView() {
       btn.onclick = (e) => {
         e.stopPropagation();
         const ds = btn.dataset.date;
-        const dayEvents = events.filter(ev => {
-          if (ev.ranged) return false;
-          if (!calEventTypes.includes(ev.type.split('-')[0])) return false;
-          return ev.date === ds;
-        });
         const cell = btn.closest('.calendar-day');
         const tasksContainer = cell.querySelector('.cal-tasks');
-        tasksContainer.innerHTML = dayEvents.map(ev => {
-          const color = chipColor(ev);
-          const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
-          return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
-        }).join('') + `<div class="cal-overflow-btn cal-collapse-btn">▲ less</div>`;
+        tasksContainer.innerHTML = monthDayEntries(ds).map(monthDayChipHtml).join('')
+          + `<div class="cal-overflow-btn cal-collapse-btn">▲ less</div>`;
         cell.querySelector('.cal-collapse-btn').onclick = (e2) => {
           e2.stopPropagation();
           document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
@@ -16905,6 +16952,9 @@ async function renderCalendarView() {
         };
         cell.querySelectorAll('.cal-task-chip[data-task-id]').forEach(chip => {
           chip.onclick = (e2) => { e2.stopPropagation(); showTaskSlideover(chip.dataset.taskId); };
+        });
+        cell.querySelectorAll('.hour-tl-marker[data-id]').forEach(chip => {
+          chip.onclick = (e2) => { e2.stopPropagation(); openScheduledItemSlideover(chip.dataset.entity, chip.dataset.id, () => renderCalendarView()); };
         });
       };
     });
