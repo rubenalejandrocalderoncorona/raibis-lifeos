@@ -654,7 +654,7 @@ func taskHandler(svc service.TaskService, store storage.Storage, dbPath string, 
 				errJSON(w, 400, "invalid task id")
 				return
 			}
-			entityTagsHandler(store, "task", taskID)(w, r)
+			entityTagsHandler(store, vlt, "task", taskID)(w, r)
 			return
 		}
 
@@ -1041,7 +1041,7 @@ func goalHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http.Ha
 				errJSON(w, 400, "invalid id")
 				return
 			}
-			entityTagsHandler(store, "goal", eid)(w, r)
+			entityTagsHandler(store, vlt, "goal", eid)(w, r)
 			return
 		}
 
@@ -1285,7 +1285,7 @@ func projectHandler(store storage.Storage, dbPath string, vlt *vault.Vault) http
 				errJSON(w, 400, "invalid id")
 				return
 			}
-			entityTagsHandler(store, "project", eid)(w, r)
+			entityTagsHandler(store, vlt, "project", eid)(w, r)
 			return
 		}
 
@@ -1531,7 +1531,7 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http.
 				errJSON(w, 400, "invalid id")
 				return
 			}
-			entityTagsHandler(store, "sprint", eid)(w, r)
+			entityTagsHandler(store, vlt, "sprint", eid)(w, r)
 			return
 		}
 		id, ok := parseID(r.URL.Path)
@@ -1679,6 +1679,47 @@ func sprintHandler(store storage.Storage, vlt *vault.Vault, dbPath string) http.
 
 // ── Notes ─────────────────────────────────────────────────────────────────────
 
+// noteFM builds the frontmatter for a note's vault file. Notes previously
+// wrote only the raw body with no frontmatter at all — every other entity
+// type (task/project/goal/sprint/resource/habit/custom) gets id/title/tags/
+// relations reflected in Obsidian, but a note's goal/task/project link and
+// tags were invisible there. Resolves relation IDs to wiki-links the same
+// way relationsLinksBody does for other entities.
+func noteFM(store storage.Storage, n *domain.Note) map[string]any {
+	fm := map[string]any{
+		"id":         n.ID,
+		"title":      n.Title,
+		"created_at": n.CreatedAt.Format(time.RFC3339),
+		"updated_at": n.UpdatedAt.Format(time.RFC3339),
+	}
+	if n.CategoryName != "" {
+		fm["category"] = n.CategoryName
+	}
+	if n.GoalID != nil {
+		if g, err := store.GetGoal(*n.GoalID); err == nil {
+			fm["goal"] = []string{fmt.Sprintf("[[goal-%d|%s]]", *n.GoalID, g.Title)}
+		}
+	}
+	if n.TaskID != nil {
+		if t, err := store.GetTask(*n.TaskID); err == nil {
+			fm["task"] = []string{fmt.Sprintf("[[task-%d|%s]]", *n.TaskID, t.Title)}
+		}
+	}
+	if n.ProjectID != nil {
+		if p, err := store.GetProject(*n.ProjectID); err == nil {
+			fm["project"] = []string{fmt.Sprintf("[[project-%d|%s]]", *n.ProjectID, p.Title)}
+		}
+	}
+	if tags, err := store.GetEntityTags("note", n.ID); err == nil && len(tags) > 0 {
+		names := make([]string, len(tags))
+		for i, t := range tags {
+			names[i] = t.Name
+		}
+		fm["tags"] = names
+	}
+	return fm
+}
+
 func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -1754,10 +1795,6 @@ func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 				n.NoteDate = &body.NoteDate
 			}
 			fp := v.NoteFilePath(body.Title)
-			if err := v.WriteFile(fp, body.Body); err != nil {
-				errJSON(w, 500, "vault write: "+err.Error())
-				return
-			}
 			n.FilePath = &fp
 			id, err := store.CreateNote(n)
 			if err != nil {
@@ -1765,6 +1802,10 @@ func notesHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 				return
 			}
 			created, _ := store.GetNote(id)
+			if err := v.WriteMDWithFrontmatter(fp, noteFM(store, created), body.Body); err != nil {
+				errJSON(w, 500, "vault write: "+err.Error())
+				return
+			}
 			created.Body, _ = v.ReadFile(fp)
 			writeJSON(w, 201, created)
 
@@ -1785,7 +1826,7 @@ func noteHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 				errJSON(w, 400, "invalid id")
 				return
 			}
-			entityTagsHandler(store, "note", eid)(w, r)
+			entityTagsHandler(store, v, "note", eid)(w, r)
 			return
 		}
 
@@ -1871,17 +1912,9 @@ func noteHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 					n.WorkspaceID = &wid
 				}
 			}
-			if bodyStr, ok := body["body"].(string); ok {
-				fp := n.FilePath
-				if fp == nil {
-					newPath := v.NoteFilePath(n.Title)
-					fp = &newPath
-					n.FilePath = fp
-				}
-				if err := v.WriteFile(*fp, bodyStr); err != nil {
-					errJSON(w, 500, "vault write: "+err.Error())
-					return
-				}
+			if n.FilePath == nil {
+				newPath := v.NoteFilePath(n.Title)
+				n.FilePath = &newPath
 			}
 			if err := store.UpdateNote(n); err != nil {
 				errJSON(w, 500, err.Error())
@@ -1889,6 +1922,22 @@ func noteHandler(store storage.Storage, v *vault.Vault) http.HandlerFunc {
 			}
 			updated, _ := store.GetNote(id)
 			updated.Tags, _ = store.GetEntityTags("note", id)
+			// Rewrite the file whenever anything changed — not just when body
+			// text did — so a title/tag/relation-only edit still refreshes
+			// the frontmatter instead of leaving it stale until the next
+			// content edit. Falls back to the existing body (frontmatter
+			// stripped, or the write below would nest an old copy inside).
+			finalBody, bodyProvided := body["body"].(string)
+			if !bodyProvided && updated.FilePath != nil {
+				existing, _ := v.ReadFile(*updated.FilePath)
+				_, finalBody = vault.ParseFrontmatter(existing)
+			}
+			if updated.FilePath != nil {
+				if err := v.WriteMDWithFrontmatter(*updated.FilePath, noteFM(store, updated), finalBody); err != nil {
+					errJSON(w, 500, "vault write: "+err.Error())
+					return
+				}
+			}
 			if updated.FilePath != nil {
 				updated.Body, _ = v.ReadFile(*updated.FilePath)
 			}
@@ -2065,7 +2114,7 @@ func tagHandler(store storage.Storage) http.HandlerFunc {
 	}
 }
 
-func entityTagsHandler(store storage.Storage, entityType string, entityID int64) http.HandlerFunc {
+func entityTagsHandler(store storage.Storage, vlt *vault.Vault, entityType string, entityID int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -2095,6 +2144,11 @@ func entityTagsHandler(store storage.Storage, entityType string, entityID int64)
 			if tags == nil {
 				tags = []domain.Tag{}
 			}
+			// Tags previously never reached the vault file at all — taskFM/
+			// goalFM/etc. render a tags: frontmatter list IF the struct's
+			// Tags field is populated, but nothing ever re-wrote the file
+			// after a tag assignment to pick that up.
+			go resyncEntityVault(entityType, entityID, store, vlt)
 			writeJSON(w, 200, tags)
 
 		default:
@@ -2334,7 +2388,7 @@ func resourceHandler(store storage.Storage, dbPath string, vlt *vault.Vault) htt
 				errJSON(w, 400, "invalid id")
 				return
 			}
-			entityTagsHandler(store, "resource", eid)(w, r)
+			entityTagsHandler(store, vlt, "resource", eid)(w, r)
 			return
 		}
 		id, ok := parseID(r.URL.Path)
@@ -3732,6 +3786,16 @@ func propertiesHandler(store storage.Storage, vlt *vault.Vault) http.HandlerFunc
 						// relation values render as wiki-links, never raw JSON
 						if links, ok := relationValueToLinks(store, k, v, targets); ok {
 							fm[k] = links
+							continue
+						}
+						// A plain string array (aliases, tags, ...) round-trips
+						// through ParseFrontmatter as one flat string — e.g.
+						// `["a", "b"]` literally, brackets included — rather
+						// than losing that shape here, unpack it back into a
+						// real array so buildFrontmatter doesn't re-escape the
+						// whole thing as one big quoted string.
+						if arr, ok := parseSimpleStringArray(v); ok {
+							fm[k] = arr
 							continue
 						}
 						fm[k] = v
@@ -6247,6 +6311,15 @@ func customEntityFM(store storage.Storage, e *domain.CustomEntity) map[string]an
 			}
 		}
 	}
+	if store != nil {
+		if tags, err := store.GetEntityTags("custom_"+e.TypeName, e.ID); err == nil && len(tags) > 0 {
+			names := make([]string, len(tags))
+			for i, t := range tags {
+				names[i] = t.Name
+			}
+			fm["tags"] = names
+		}
+	}
 	return fm
 }
 
@@ -6285,6 +6358,15 @@ func customEntityLinksBody(typeName string, entityID int64, store storage.Storag
 			lines = append(lines, fmt.Sprintf("- [[%s-%d|%s]]", childType, c.ChildEntityID, title))
 		}
 	}
+
+	// Built-in entities (goal/project/task) also get their relations and
+	// comments rendered into the body — custom entities only ever got the
+	// parent link and sub-items, missing both sections entirely. Relation
+	// edges are recorded under the bare type name (propertiesHandler strips
+	// "custom_" before calling syncRelationPropEdges) even though children
+	// and tags use the "custom_"-prefixed key — match that for the lookup.
+	lines = append(lines, relationsLinksBody(typeName, entityID, store))
+	lines = append(lines, commentsSection("custom_"+typeName, entityID, store))
 
 	return strings.Join(lines, "\n")
 }
@@ -6360,7 +6442,7 @@ func customEntitiesHandler(store storage.Storage, vlt *vault.Vault, dbPath strin
 				errJSON(w, 400, "invalid entity id")
 				return
 			}
-			entityTagsHandler(store, "custom_"+typeName, eid)(w, r)
+			entityTagsHandler(store, vlt, "custom_"+typeName, eid)(w, r)
 			return
 		}
 		entityID, err := strconv.ParseInt(idPart, 10, 64)
@@ -6516,6 +6598,9 @@ func taskFM(t *domain.Task) map[string]any {
 	if t.StoryPoints != nil && *t.StoryPoints > 0 {
 		fm["story_points"] = *t.StoryPoints
 	}
+	if t.CategoryName != "" {
+		fm["category"] = t.CategoryName
+	}
 	if len(t.Tags) > 0 {
 		names := make([]string, len(t.Tags))
 		for i, tg := range t.Tags {
@@ -6555,6 +6640,9 @@ func goalFM(g *domain.Goal) map[string]any {
 	if g.CurrentValue != nil {
 		fm["current_value"] = *g.CurrentValue
 	}
+	if g.CategoryName != "" {
+		fm["category"] = g.CategoryName
+	}
 	if len(g.Tags) > 0 {
 		names := make([]string, len(g.Tags))
 		for i, tg := range g.Tags {
@@ -6587,6 +6675,9 @@ func projectFM(p *domain.Project) map[string]any {
 	}
 	if p.StartDate != nil {
 		fm["start_date"] = p.StartDate.Format("2006-01-02")
+	}
+	if p.CategoryName != "" {
+		fm["category"] = p.CategoryName
 	}
 	if len(p.Tags) > 0 {
 		names := make([]string, len(p.Tags))
@@ -6799,21 +6890,30 @@ func resyncEntityVault(entityType string, entityID int64, store storage.Storage,
 	switch entityType {
 	case "goal":
 		if g, err := store.GetGoal(entityID); err == nil {
+			g.Tags, _ = store.GetEntityTags("goal", g.ID)
 			body := childrenLinksBody("goal", g.ID, store) + relationsLinksBody("goal", g.ID, store) + commentsSection("goal", g.ID, store)
 			_ = vlt.WriteEntityMD("goal", g.ID, mergeFMWithProps(goalFM(g), store, "goal", g.ID), body)
 		}
 	case "project":
 		if p, err := store.GetProject(entityID); err == nil {
+			p.Tags, _ = store.GetEntityTags("project", p.ID)
 			body := projectLinksBody(p, store) + childrenLinksBody("project", p.ID, store) + relationsLinksBody("project", p.ID, store) + commentsSection("project", p.ID, store)
 			_ = vlt.WriteEntityMD("project", p.ID, mergeFMWithProps(projectFM(p), store, "project", p.ID), body)
 		}
 	case "task":
 		if t, err := store.GetTask(entityID); err == nil {
+			t.Tags, _ = store.GetEntityTags("task", t.ID)
 			_ = vlt.WriteEntityMD("task", t.ID, mergeFMWithProps(taskFM(t), store, "task", t.ID), taskLinksBody(t, store)+relationsLinksBody("task", t.ID, store))
 		}
 	case "sprint":
 		if sp, err := store.GetSprint(entityID); err == nil {
 			_ = vlt.WriteEntityMD("sprint", sp.ID, mergeFMWithProps(sprintFM(sp), store, "sprint", sp.ID), sprintLinksBody(sp, store))
+		}
+	case "note":
+		if n, err := store.GetNote(entityID); err == nil && n.FilePath != nil {
+			existing, _ := vlt.ReadFile(*n.FilePath)
+			_, bodyText := vault.ParseFrontmatter(existing)
+			_ = vlt.WriteMDWithFrontmatter(*n.FilePath, noteFM(store, n), bodyText)
 		}
 	default:
 		if strings.HasPrefix(entityType, "custom_") {
@@ -6974,6 +7074,23 @@ func syncRelationPropEdges(store storage.Storage, vlt *vault.Vault, entityType s
 			resyncEntityVault(resyncType, id, store, vlt)
 		}
 	}
+}
+
+// parseSimpleStringArray recovers a []string from its bracketed frontmatter
+// form (`["a", "b"]`) — the shape ParseFrontmatter hands back as one flat
+// string since it doesn't know which fields are arrays. ok=false for
+// anything that isn't a plain array of strings (in particular `[{...}]`
+// relation values, which relationValueToLinks already handles).
+func parseSimpleStringArray(v string) ([]string, bool) {
+	trimmed := strings.TrimSpace(v)
+	if !strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "[{") {
+		return nil, false
+	}
+	var arr []string
+	if err := json.Unmarshal([]byte(trimmed), &arr); err != nil {
+		return nil, false
+	}
+	return arr, true
 }
 
 // relationValueToLinks converts a stored relation value — a JSON array of
