@@ -4080,17 +4080,94 @@ function bindCustomPropCells() {
     };
   });
 }
-// Every entity type the calendar can plot: the built-ins that carry native
-// dates/schedules, plus every current custom entity type (a record of any
-// custom type can carry a 'schedule'-type prop same as a task can). Computed
-// live rather than a static list so a custom type created after this file
-// loaded still shows up in the filter/legend without a reload.
+// Built-ins with native start/due-date-shaped columns — these always have
+// calendar-relevant data regardless of custom props. Everything else (note/
+// resource/habit/any custom type) only earns a calendar filter entry once
+// it actually has a 'date' or 'schedule'-type prop defined — otherwise the
+// list would grow to include entity types with nothing to ever plot.
+const CAL_NATIVE_DATE_TYPES = new Set(['task', 'goal', 'project', 'sprint']);
+function calTypeHasDateCapability(t) {
+  if (CAL_NATIVE_DATE_TYPES.has(t)) return true;
+  return getCustomPropDefs(t).some(d => d.type === 'date' || d.type === 'schedule');
+}
+// Every entity type the calendar can actually plot something for: the
+// built-ins that carry native dates, plus any entity type (built-in or
+// custom) that has picked up a date/schedule-type prop. Computed live
+// rather than a static list so a newly-added custom type — or a newly
+// added date/schedule prop on an existing type — shows up in the filter
+// without a reload.
 function calAllEventTypes() {
-  return ['task', 'goal', 'project', 'sprint', 'note', 'resource', 'habit',
+  const candidates = ['task', 'goal', 'project', 'sprint', 'note', 'resource', 'habit',
     ...(customEntityTypes || []).map(t => `custom_${t.name}`)];
+  return candidates.filter(calTypeHasDateCapability);
 }
 function calTypeLabel(t) {
   return t.startsWith('custom_') ? tabLabelFor(`custom:${t.slice(7)}`) : tabLabelFor(`${t}s`);
+}
+
+// ── Per-type calendar colors ──────────────────────────────────────────
+// Defaults use the app's theme-aware CSS vars (adapt to light/dark
+// automatically); a user-picked color is stored as one of the named
+// COLOR_HEX palette entries already used for tags/categories, so calendar
+// colors look consistent with the rest of the app rather than introducing
+// a second, unrelated color system. Anything with neither a default nor a
+// user pick (a fresh custom type) gets a deterministic pick from the same
+// palette, hashed from its type key, so distinct types are at least
+// visually distinguishable from first render instead of all sharing one
+// generic color until someone manually assigns one.
+const CAL_DEFAULT_TYPE_COLORS = {
+  task: 'var(--color-accent)',
+  goal: 'var(--color-success)',
+  project: 'var(--color-warning)',
+  sprint: '#9b7fe8',
+};
+function getCalTypeColors() {
+  try { return JSON.parse(localStorage.getItem('calTypeColors') || '{}'); } catch { return {}; }
+}
+function setCalTypeColor(t, colorName) {
+  const colors = getCalTypeColors();
+  if (colorName) colors[t] = colorName; else delete colors[t];
+  localStorage.setItem('calTypeColors', JSON.stringify(colors));
+}
+function calFallbackColorFor(t) {
+  const names = Object.keys(COLOR_HEX);
+  let hash = 0;
+  for (let i = 0; i < t.length; i++) hash = (hash * 31 + t.charCodeAt(i)) >>> 0;
+  return COLOR_HEX[names[hash % names.length]];
+}
+function calTypeColor(t) {
+  const custom = getCalTypeColors();
+  if (custom[t]) return COLOR_HEX[custom[t]] || custom[t];
+  return CAL_DEFAULT_TYPE_COLORS[t] || calFallbackColorFor(t);
+}
+// Small popover of the shared named palette (same colors as tag/category
+// pickers) — click a dot to assign it to `type` and re-render the calendar.
+function openCalColorPicker(anchorEl, type, onPicked) {
+  document.getElementById('cal-color-picker')?.remove();
+  const panel = document.createElement('div');
+  panel.id = 'cal-color-picker';
+  panel.className = 'combo-popover';
+  panel.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;padding:8px;width:120px';
+  panel.innerHTML = Object.entries(COLOR_HEX).map(([name, hex]) =>
+    `<button type="button" data-color="${name}" title="${name}" style="width:20px;height:20px;border-radius:50%;background:${hex};border:2px solid transparent;cursor:pointer"></button>`
+  ).join('') + `<button type="button" data-color="" title="Reset to default" style="width:20px;height:20px;border-radius:50%;background:none;border:2px dashed var(--color-border);cursor:pointer;font-size:10px;color:var(--color-text-tertiary)">×</button>`;
+  document.body.appendChild(panel);
+  const rect = anchorEl.getBoundingClientRect();
+  panel.style.position = 'fixed';
+  panel.style.left = `${rect.left}px`;
+  panel.style.top = `${rect.bottom + 4}px`;
+  panel.style.zIndex = 'var(--z-top)';
+  panel.querySelectorAll('button[data-color]').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      setCalTypeColor(type, btn.dataset.color || null);
+      panel.remove();
+      onPicked();
+    };
+  });
+  setTimeout(() => document.addEventListener('mousedown', function onDocClick(e) {
+    if (!panel.contains(e.target)) { panel.remove(); document.removeEventListener('mousedown', onDocClick); }
+  }), 0);
 }
 
 // ── Modal date chip helpers (shared across all forms) ────────────────────
@@ -16084,22 +16161,32 @@ async function fetchScheduleEntitySources() {
   return sources;
 }
 
-// Any entity of any type (built-in or custom) that has a 'schedule'-type
-// custom prop set to dateISO — this is what generalizes "add hours" to
-// every entity, not just tasks with native due dates. Pure/sync filter over
-// already-fetched sources, so a caller paging through many dates (Calendar's
-// own Schedule scope) only fetches once.
+// Any entity of any type (built-in or custom) that has a 'schedule' or
+// 'date'-type custom prop set to dateISO — this is what generalizes "add
+// hours" to every entity, not just tasks with native due dates. 'date'-type
+// props carry no time (item.time stays null — the hour-timeline's marker
+// rendering already skips those, since there's no hour to position them
+// at; Month/Days-only view render them as a plain all-day chip same as a
+// 'schedule' one with no time set). Pure/sync filter over already-fetched
+// sources, so a caller paging through many dates (Calendar's own Schedule
+// scope) only fetches once.
 function scheduledItemsForDateFrom(sources, dateISO) {
   const items = [];
   sources.forEach(([entityKey, records]) => {
-    const scheduleDefs = getCustomPropDefs(entityKey).filter(d => d.type === 'schedule');
-    if (!scheduleDefs.length || !records || !records.length) return;
+    const defs = getCustomPropDefs(entityKey).filter(d => d.type === 'schedule' || d.type === 'date');
+    if (!defs.length || !records || !records.length) return;
     records.forEach(r => {
       const vals = getCustomPropValues(entityKey, r.id);
-      scheduleDefs.forEach(def => {
-        const sv = parseScheduleValue(vals[def.key]);
-        if (sv && sv.date === dateISO) {
-          items.push({ entityKey, id: r.id, title: r.title || r.name || `#${r.id}`, time: sv.time, propLabel: def.label });
+      defs.forEach(def => {
+        const raw = vals[def.key];
+        if (!raw) return;
+        if (def.type === 'schedule') {
+          const sv = parseScheduleValue(raw);
+          if (sv && sv.date === dateISO) {
+            items.push({ entityKey, id: r.id, title: r.title || r.name || `#${r.id}`, time: sv.time, propLabel: def.label });
+          }
+        } else if (stripDate(raw) === dateISO) {
+          items.push({ entityKey, id: r.id, title: r.title || r.name || `#${r.id}`, time: null, propLabel: def.label });
         }
       });
     });
@@ -16153,7 +16240,7 @@ async function renderScheduleDock() {
   const markers = items.filter(it => it.time).map(item => {
     const [h, m] = item.time.split(':').map(Number);
     const top = (h + m / 60) * rowH;
-    const color = item.entityKey === 'task' ? 'var(--color-accent)' : 'var(--color-warning)';
+    const color = calTypeColor(item.entityKey);
     return `<div class="hour-tl-marker" data-entity="${escHtml(item.entityKey)}" data-id="${item.id}" title="${escHtml(item.title)} · ${fmtTime12h(item.time)}"
       style="position:absolute;left:40px;right:8px;top:${top}px;height:2px;background:${color};cursor:pointer">
       <span style="position:absolute;left:-4px;top:-3px;width:7px;height:7px;border-radius:50%;background:${color}"></span>
@@ -16279,13 +16366,6 @@ async function renderCalendarView() {
     }
   });
 
-  const typeColors = {
-    task:    'var(--color-accent)',
-    goal:    'var(--color-success)',
-    project: 'var(--color-warning)',
-    sprint:  '#9b7fe8',
-  };
-
   // Returns events that appear on a given dateStr (ranged or single-day)
   function eventsOnDate(dateStr) {
     return events.filter(ev => {
@@ -16299,10 +16379,11 @@ async function renderCalendarView() {
     // 1. Category color (tasks with a category)
     if (ev.category_id) {
       const cat = allCategories.find(c => c.id === ev.category_id);
-      if (cat) return COLOR_HEX[cat.color] || cat.color || typeColors[ev.type] || 'var(--color-accent)';
+      if (cat) return COLOR_HEX[cat.color] || cat.color || calTypeColor(ev.type);
     }
-    // 2. Type color (goal, project, sprint, uncategorised task)
-    return typeColors[ev.type] || 'var(--color-accent)';
+    // 2. Type color (goal, project, sprint, uncategorised task) — user-
+    // customizable via the filter dropdown's color swatches.
+    return calTypeColor(ev.type);
   }
 
   // Everything Month view shows on one day: native start/due-date events
@@ -16324,7 +16405,7 @@ async function renderCalendarView() {
       const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
       return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
     }
-    const color = item.entityKey === 'task' ? 'var(--color-accent)' : 'var(--color-warning)';
+    const color = calTypeColor(item.entityKey);
     const label = item.time ? `${fmtTime12h(item.time)} ${item.title}` : item.title;
     return `<div class="cal-task-chip hour-tl-marker" data-entity="${escHtml(item.entityKey)}" data-id="${item.id}" style="border-left:2px solid ${color}" title="${escHtml(item.title)}${item.time ? ' · ' + fmtTime12h(item.time) : ''}">${escHtml(label)}</div>`;
   }
@@ -16536,7 +16617,7 @@ async function renderCalendarView() {
       const markers = scheduled.filter(it => it.time).map(item => {
         const [h, m] = item.time.split(':').map(Number);
         const top = (h + m / 60) * rowH;
-        const color = item.entityKey === 'task' ? 'var(--color-accent)' : 'var(--color-warning)';
+        const color = calTypeColor(item.entityKey);
         return `<div class="hour-tl-marker" data-entity="${escHtml(item.entityKey)}" data-id="${item.id}" title="${escHtml(item.title)} · ${fmtTime12h(item.time)}"
           style="position:absolute;left:4px;right:4px;top:${top}px;height:2px;background:${color};cursor:pointer">
           <span style="position:absolute;left:-4px;top:-3px;width:8px;height:8px;border-radius:50%;background:${color}"></span>
@@ -16598,7 +16679,7 @@ async function renderCalendarView() {
           return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${escHtml(ev.title)}">${escHtml(ev.title)}</div>`;
         }),
         ...scheduled.map(item => {
-          const color = item.entityKey === 'task' ? 'var(--color-accent)' : 'var(--color-warning)';
+          const color = calTypeColor(item.entityKey);
           return `<div class="hour-tl-marker" data-entity="${escHtml(item.entityKey)}" data-id="${item.id}" style="position:static;border-left:2px solid ${color};padding:2px 6px;background:var(--color-surface-hover);border-radius:3px;font-size:11px;cursor:pointer" title="${escHtml(item.title)} · ${fmtTime12h(item.time)}">${item.time ? fmtTime12h(item.time) + ' ' : ''}${escHtml(item.title)}</div>`;
         }),
       ].join('');
@@ -16758,36 +16839,57 @@ async function renderCalendarView() {
     return buildMonthCal();
   }
 
-  // One combined legend+filter: a clickable pill per entity type (built-in
-  // AND custom, via calAllEventTypes()) that both shows its color key and
-  // toggles it in/out of calEventTypes — replaces the old hardcoded
-  // 4-type legend plus a separate hidden "⊟ Filter" dropdown that only
-  // ever offered those same 4 types.
-  const legendHtml = calAllEventTypes().map(t => {
+  // Filter + color-key as one dropdown (built-in AND custom types, via
+  // calAllEventTypes()) rather than a plain inline row — with enough
+  // entity types (several custom types each with a date/schedule prop)
+  // a flat row of pills stopped fitting the header and started wrapping
+  // awkwardly. Each row: a checkbox to include/exclude that type, and a
+  // separately-clickable color dot to reassign its calendar color.
+  const calAllTypesNow = calAllEventTypes();
+  // calEventTypes can carry stale entries from before a type lost its date
+  // capability (or before this filter existed at all) — count only against
+  // what's actually selectable right now, or "8 selected, 5 possible" reads
+  // as a bug rather than a saved preference intersecting a shorter list.
+  const calFilterCountLabel = () => `⊟ Filter (${calEventTypes.filter(t => calAllTypesNow.includes(t)).length}/${calAllTypesNow.length})`;
+  const filterItemsHtml = calAllTypesNow.map(t => {
     const on = calEventTypes.includes(t);
-    const color = typeColors[t] || 'var(--color-text-tertiary)';
-    return `<label class="cal-type-check-label" style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;opacity:${on ? 1 : 0.4}">
-      <input type="checkbox" class="cal-type-check" data-type="${escHtml(t)}" ${on ? 'checked' : ''} style="display:none">
-      <span style="display:inline-block;width:8px;height:8px;background:${color};border-radius:50%"></span>${escHtml(calTypeLabel(t))}
-    </label>`;
+    const color = calTypeColor(t);
+    return `<div class="col-picker-item" style="opacity:${on ? 1 : 0.45}">
+      <input type="checkbox" class="cal-type-check" data-type="${escHtml(t)}" ${on ? 'checked' : ''}>
+      <button type="button" class="cal-type-color-btn" data-type="${escHtml(t)}" title="Change color" style="width:12px;height:12px;border-radius:50%;background:${color};border:none;cursor:pointer;flex-shrink:0;padding:0"></button>
+      <span style="flex:1">${escHtml(calTypeLabel(t))}</span>
+    </div>`;
   }).join('');
 
   document.getElementById('main-content').innerHTML = `<div class="view">
     <div class="view-header">
       <h1 class="view-title">${navIcon('calendar')}Calendar</h1>
+      <div class="col-picker-wrap" style="position:relative">
+        <button class="btn btn-sm btn-ghost" id="cal-filter-btn" title="Filter entity types">${calFilterCountLabel()}</button>
+        <div class="col-picker-dropdown hidden" id="cal-filter-dropdown">${filterItemsHtml}</div>
+      </div>
     </div>
-    <div class="cal-legend" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">${legendHtml}</div>
     <div id="cal-content">${buildNav()}${buildContent()}</div>
   </div>`;
 
+  const calFilterBtn = document.getElementById('cal-filter-btn');
+  const calFilterDrop = document.getElementById('cal-filter-dropdown');
+  calFilterBtn.onclick = (e) => { e.stopPropagation(); calFilterDrop.classList.toggle('hidden'); };
   document.querySelectorAll('.cal-type-check').forEach(chk => {
     chk.onchange = () => {
       calEventTypes = [...document.querySelectorAll('.cal-type-check:checked')].map(c => c.dataset.type);
       if (!calEventTypes.length) calEventTypes = ['task'];
       localStorage.setItem('calEventTypes', JSON.stringify(calEventTypes));
-      chk.closest('label').style.opacity = calEventTypes.includes(chk.dataset.type) ? '1' : '0.4';
+      chk.closest('.col-picker-item').style.opacity = calEventTypes.includes(chk.dataset.type) ? '1' : '0.45';
+      calFilterBtn.textContent = calFilterCountLabel();
       document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
       rebind();
+    };
+  });
+  document.querySelectorAll('.cal-type-color-btn').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      openCalColorPicker(btn, btn.dataset.type, () => renderCalendarView());
     };
   });
 
