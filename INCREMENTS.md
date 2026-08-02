@@ -271,3 +271,124 @@ All endpoints respond with `application/json`. Base URL over UDS: `http://localh
 | POST | `/api/quick-capture` | `{"input": "Title #high @ProjectName !2026-04-01"}` |
 | GET | `/api/export/:entity/:id` | Full JSON bundle (goal/project/task/note with hydrated bodies) |
 | PUT | `/api/:type/:id/tags` | `{"tag_ids": [1, 2]}` — replace tag set |
+
+---
+
+## Increment 8 — iOS App & External Calendar/Task Sync (Roadmap)
+
+> **Status:** Not started. Decisions below came out of a scoping discussion
+> with the user on 2026-08-01, before any code was written. This section
+> is the brief for whichever increment picks this up next — read it fully
+> before starting, since several of the architectural choices here
+> (why WKWebView-first, why Obsidian writes never move off the Go server)
+> are load-bearing and shouldn't be silently revisited mid-implementation.
+
+### Context: why the Go server stays the single source of truth
+
+The Obsidian vault-write logic (`internal/vault/`, the `*FM` frontmatter
+builders in `cmd/lifeos/server.go`) is centralized in the Go server and
+has been hardened over many rounds of bug fixes (tags/category never
+syncing, frontmatter corruption on property writes, custom-entity parity
+gaps — see git log on this file's era). **No new client — iOS or
+otherwise — should reimplement vault writes.** Every sync path (mobile
+app, Google Calendar, Apple Reminders, etc.) must go through the existing
+REST API so a single, tested code path owns "what does this look like in
+Obsidian."
+
+This has a direct consequence for the vault itself: the machine running
+`lifeos server --vault <path>` needs filesystem access to it. A
+self-hosted Obsidian setup means that server process — reachable from
+wherever the user's other clients live (phone, other computers) over the
+network (LAN, Tailscale, or a reverse proxy with auth) — not a separate
+per-device vault writer.
+
+### Part A — iOS App
+
+**Decision: ship a WKWebView wrapper first, not a native rewrite.**
+
+| | Native SwiftUI | WKWebView wrapper (chosen first step) |
+|---|---|---|
+| Time to first usable build | Weeks (new codebase reproducing the web UI) | Days (reuses `raibis/gui/public/` as-is) |
+| Feel | True native | Feels like the web app in a shell |
+| Apple Reminders (EventKit) | Works directly | **Still needs a small native bridge regardless** — EventKit is only reachable from native Apple code, never from a web view or the headless Go server |
+| Obsidian vault writes | Routed through the Go server's API either way | Same |
+| Maintenance | Second codebase to keep in sync with the web app forever | One codebase; iOS gets every desktop feature for free |
+
+Rationale: EventKit's native-only constraint means *some* Swift code is
+unavoidable no matter which path is chosen for the main UI — so there's
+no version of this where "go native" avoids writing Swift entirely. Given
+that, start with the cheap option (wrapper) to get mobile access fast,
+and revisit a full native rewrite only once real usage data shows it's
+worth the multi-week investment (which parts of mobile use matter, how
+often the phone is really the primary device vs. a quick-glance client).
+
+**Tasks (not yet started):**
+1. New Xcode target (separate from the existing `LifeOS-macOS` SwiftUI
+   sidecar-embedding app — iOS cannot embed/spawn the Go binary as a
+   subprocess the way macOS does; the sandbox doesn't allow it). This
+   target is a thin WKWebView shell pointed at the user's self-hosted
+   server URL (configurable in-app, not hardcoded).
+2. Handle auth/reachability: does the self-hosted server sit behind a
+   VPN (Tailscale), a reverse proxy with its own auth, or plain LAN-only?
+   This decides whether the iOS app needs its own login screen or just a
+   server-URL field. **Needs a decision from the user before this task
+   starts.**
+3. Small native EventKit bridge (separate small module, not the whole
+   app) — see Part B, Apple Reminders, for what it needs to do.
+
+### Part B — External Sync (Google Calendar → Google Tasks → Apple Reminders → Outlook later)
+
+**Decisions already made:**
+- Two-way sync (changes in raibis and the external service both propagate).
+- Priority order: Google Calendar, then Google Tasks, then Apple
+  Reminders. Outlook explicitly deprioritized — revisit after the above
+  three are working.
+- Every synced change must also land in Obsidian — i.e., the sync engine
+  writes through the *same* create/update paths (`/api/tasks`,
+  `/api/properties` for schedule-type props, etc.) that already trigger
+  vault writes, rather than a separate side-channel that could drift out
+  of sync with what's on disk.
+
+**Not yet decided — needed before implementation starts:**
+- **Conflict rule.** Starting proposal: last-write-wins by timestamp.
+  Simple, no merge UI needed, but silently drops one side's edit on a
+  genuine simultaneous conflict (rare in practice for a single-user tool).
+  Revisit if that turns out to matter.
+- **Identity mapping.** Need a new table (e.g. `external_sync_links`:
+  `raibis_entity_type, raibis_entity_id, provider, external_id,
+  last_synced_at`) so a sync pass can tell "this task already has a
+  Google Calendar event" instead of creating duplicates every run.
+- **Sync trigger.** Polling (simple, works through NAT/behind a
+  firewall, works for a self-hosted box with no public HTTPS endpoint)
+  vs. provider push/webhooks (instant, but Google's push notifications
+  require a publicly reachable HTTPS callback — likely not available for
+  a self-hosted setup unless the user already exposes one). **Default to
+  polling** unless the user has a public endpoint already.
+
+**Blocker before any Google work starts:** the user needs to create a
+Google Cloud project, enable the Calendar API (and later Tasks API), and
+generate an OAuth client ID/secret. This is tied to their Google account
+— it cannot be done on their behalf. Offer to write up the exact
+click-by-click steps when this increment is picked up.
+
+**Proposed implementation shape (Google Calendar, first target):**
+1. New Go package `internal/sync/googlecal/` — OAuth token exchange +
+   refresh, calendar event CRUD against Google's API.
+2. New `external_sync_links` table + migration.
+3. A sync-loop goroutine (polling interval configurable, default
+   something like 5 minutes) that: fetches raibis-side changes since
+   last sync (tasks/schedule-props with `updated_at` newer than
+   `last_synced_at`), pushes them to Google; fetches Google-side changes
+   via their `updated`/sync-token mechanism, applies them through
+   raibis's own API handlers (so vault writes happen automatically).
+4. New `/api/integrations/google-calendar/*` endpoints: OAuth
+   start/callback, connection status, manual "sync now", disconnect.
+5. Settings UI in `raibis/gui/public/app.js` (a new panel, likely under
+   the existing "Connected apps" area referenced in the sidebar) to
+   connect/disconnect and see last-sync status.
+6. Google Tasks reuses steps 1-5's shape against a different Google API
+   surface once Calendar is working end-to-end.
+7. Apple Reminders depends on Part A's native EventKit bridge existing
+   first — the bridge reads/writes Reminders locally on-device and talks
+   to the same `/api/integrations/*` pattern as the other two, just from
+   Swift instead of a Go goroutine.
