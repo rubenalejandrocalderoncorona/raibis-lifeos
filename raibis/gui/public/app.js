@@ -16375,14 +16375,12 @@ async function renderCalendarView() {
     });
   }
 
+  // Always the entity type's color — same one shown (and picked) in the
+  // filter dropdown. A category-color override used to take priority here,
+  // which meant a task's chip could show a different color than what the
+  // filter said "Tasks" was, depending on which category it happened to
+  // have — confusing since the filter is the one place a color is chosen.
   function chipColor(ev) {
-    // 1. Category color (tasks with a category)
-    if (ev.category_id) {
-      const cat = allCategories.find(c => c.id === ev.category_id);
-      if (cat) return COLOR_HEX[cat.color] || cat.color || calTypeColor(ev.type);
-    }
-    // 2. Type color (goal, project, sprint, uncategorised task) — user-
-    // customizable via the filter dropdown's color swatches.
     return calTypeColor(ev.type);
   }
 
@@ -16402,8 +16400,7 @@ async function renderCalendarView() {
   function monthDayChipHtml({ ev, item }) {
     if (ev) {
       const color = chipColor(ev);
-      const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
-      return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
+      return `<div class="cal-task-chip" data-entity="${escHtml(ev.type)}" data-id="${ev.id}" style="border-left:2px solid ${color}" title="${ev.title}">${ev.title}</div>`;
     }
     const color = calTypeColor(item.entityKey);
     const label = item.time ? `${fmtTime12h(item.time)} ${item.title}` : item.title;
@@ -16472,12 +16469,11 @@ async function renderCalendarView() {
       // Bar sub-grid (in-flow, no position:absolute)
       const barEls = bars.map(({ ev, startCol, endCol, lane }) => {
         const color = chipColor(ev);
-        const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
         const isStart = ev.start >= dateStr(weekDates[0]);
         const isEnd   = ev.end   <= dateStr(weekDates[6]);
         const blr = isStart ? '3px' : '0';
         const brr = isEnd   ? '3px' : '0';
-        return `<div class="cal-span-bar" ${taskId} title="${ev.title}"
+        return `<div class="cal-span-bar" data-entity="${escHtml(ev.type)}" data-id="${ev.id}" title="${ev.title}"
           style="grid-column:${startCol+1}/${endCol+2};grid-row:${lane+1};background:${color};border-radius:${blr} ${brr} ${brr} ${blr};">
           <span class="cal-span-bar-label">${ev.title}</span>
         </div>`;
@@ -16490,7 +16486,7 @@ async function renderCalendarView() {
       const dayNums = weekDates.map((cellDate) => {
         const isTodayCell = cellDate.getTime() === todayD.getTime();
         const isCurrentMonth = cellDate.getMonth() === calMonth;
-        return `<div class="cal-day-num-cell ${isTodayCell?'today':''} ${isCurrentMonth?'':'other-month'}">${cellDate.getDate()}</div>`;
+        return `<div class="cal-day-num-cell ${isTodayCell?'today':''} ${isCurrentMonth?'':'other-month'}" data-date="${dateStr(cellDate)}" style="cursor:pointer">${cellDate.getDate()}</div>`;
       }).join('');
 
       const chipsCells = weekDates.map((cellDate) => {
@@ -16505,7 +16501,7 @@ async function renderCalendarView() {
         const overflow = combined.length - CHIP_LIMIT;
         const chips = visibleEntries.map(monthDayChipHtml).join('');
         const overflowChip = overflow > 0 ? `<div class="cal-overflow-btn" data-date="${ds}">+${overflow}</div>` : '';
-        return `<div class="calendar-day ${isCurrentMonth?'':'other-month'} ${isTodayCell?'today':''}" style="${sprintStyle}" data-date="${ds}">
+        return `<div class="calendar-day ${isCurrentMonth?'':'other-month'} ${isTodayCell?'today':''}" style="${sprintStyle}cursor:pointer" data-date="${ds}">
           <div class="cal-tasks">${chips}${overflowChip}</div>
         </div>`;
       }).join('');
@@ -16560,12 +16556,11 @@ async function renderCalendarView() {
     if (numLanes === 0) return { html: '', numLanes: 0 };
     const barEls = bars.map(({ ev, startCol, endCol, lane }) => {
       const color = chipColor(ev);
-      const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
       const isStart = ev.start >= wStart;
       const isEnd   = ev.end   <= wEnd;
       const blr = isStart ? '3px' : '0';
       const brr = isEnd   ? '3px' : '0';
-      return `<div class="cal-span-bar" ${taskId} title="${escHtml(ev.title)}"
+      return `<div class="cal-span-bar" data-entity="${escHtml(ev.type)}" data-id="${ev.id}" title="${escHtml(ev.title)}"
         style="grid-column:${startCol+1}/${endCol+2};grid-row:${lane+1};background:${color};border-radius:${blr} ${brr} ${brr} ${blr};">
         <span class="cal-span-bar-label">${escHtml(ev.title)}</span>
       </div>`;
@@ -16598,8 +16593,7 @@ async function renderCalendarView() {
       if (!allDay.length) return '<div></div>';
       return `<div style="padding:4px 6px;display:flex;flex-wrap:wrap;gap:3px">${allDay.map(ev => {
         const color = chipColor(ev);
-        const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
-        return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${escHtml(ev.title)}">${escHtml(ev.title)}</div>`;
+        return `<div class="cal-task-chip" data-entity="${escHtml(ev.type)}" data-id="${ev.id}" style="border-left:2px solid ${color}" title="${escHtml(ev.title)}">${escHtml(ev.title)}</div>`;
       }).join('')}</div>`;
     }).join('');
 
@@ -16675,15 +16669,14 @@ async function renderCalendarView() {
       const chips = [
         ...dayEvents.map(ev => {
           const color = chipColor(ev);
-          const taskId = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
-          return `<div class="cal-task-chip" ${taskId} style="border-left:2px solid ${color}" title="${escHtml(ev.title)}">${escHtml(ev.title)}</div>`;
+          return `<div class="cal-task-chip" data-entity="${escHtml(ev.type)}" data-id="${ev.id}" style="border-left:2px solid ${color}" title="${escHtml(ev.title)}">${escHtml(ev.title)}</div>`;
         }),
         ...scheduled.map(item => {
           const color = calTypeColor(item.entityKey);
           return `<div class="hour-tl-marker" data-entity="${escHtml(item.entityKey)}" data-id="${item.id}" style="position:static;border-left:2px solid ${color};padding:2px 6px;background:var(--color-surface-hover);border-radius:3px;font-size:11px;cursor:pointer" title="${escHtml(item.title)} · ${fmtTime12h(item.time)}">${item.time ? fmtTime12h(item.time) + ' ' : ''}${escHtml(item.title)}</div>`;
         }),
       ].join('');
-      return `<div class="calendar-day ${isT?'today':''}" style="${sprintStyle}min-height:100px" data-date="${ds}">
+      return `<div class="calendar-day ${isT?'today':''}" style="${sprintStyle}min-height:100px;cursor:pointer" data-date="${ds}">
         <div class="cal-tasks">${chips||'<div style="color:var(--text-muted);font-size:11px">—</div>'}</div>
       </div>`;
     }).join('');
@@ -16737,7 +16730,6 @@ async function renderCalendarView() {
       const leftPct = ((startDay - 1) / totalDays) * 100;
       const widthPct = (spanDays / totalDays) * 100;
 
-      const taskAttr = ev.type === 'task' ? `data-task-id="${ev.id}"` : '';
       return `<div class="gantt-row">
         <div class="gantt-label" title="${ev.title}">${ev.title}</div>
         <div class="gantt-track">
@@ -16746,7 +16738,7 @@ async function renderCalendarView() {
             const todayStr = dateStr(new Date());
             return `<div class="gantt-cell ${ds === todayStr ? 'gantt-today-col' : ''}"></div>`;
           }).join('')}
-          <div class="gantt-bar cal-event-${ev.type === 'task' ? 'task' : 'other'}" ${taskAttr}
+          <div class="gantt-bar cal-event-${ev.type === 'task' ? 'task' : 'other'}" data-entity="${escHtml(ev.type)}" data-id="${ev.id}"
             style="left:${leftPct}%;width:${widthPct}%;background:${color};border-radius:3px;opacity:0.85"
             title="${ev.title}: ${startDs} → ${endDs}">
             <span class="gantt-bar-label">${ev.title}</span>
@@ -16963,6 +16955,23 @@ async function renderCalendarView() {
         rebind();
       };
     });
+    // Clicking a day (its number, or empty space in its cell) jumps to the
+    // full Day view for that date — chip/marker/overflow-btn clicks inside
+    // the same cell already stopPropagation() in their own handlers, so
+    // this only fires when the click didn't land on one of those.
+    const goToDay = (ds) => {
+      calScope = 'day';
+      localStorage.setItem('calScope', calScope);
+      calAnchorDate = new Date(ds + 'T00:00:00');
+      document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
+      rebind();
+    };
+    document.querySelectorAll('.cal-day-num-cell[data-date]').forEach(el => {
+      el.onclick = (e) => { e.stopPropagation(); goToDay(el.dataset.date); };
+    });
+    document.querySelectorAll('.calendar-day[data-date]').forEach(el => {
+      el.onclick = () => goToDay(el.dataset.date);
+    });
     document.querySelectorAll('.cal-hourmode-btn').forEach(btn => {
       btn.onclick = () => {
         calHourMode = btn.dataset.mode === 'hours';
@@ -16991,11 +17000,11 @@ async function renderCalendarView() {
         setTimeout(() => { wheelCooldown = false; }, 450);
       }, { passive: true });
     }
-    document.querySelectorAll('.cal-task-chip[data-task-id]').forEach(chip => {
-      chip.onclick = (e) => { e.stopPropagation(); showTaskSlideover(chip.dataset.taskId); };
+    document.querySelectorAll('.cal-task-chip[data-entity]').forEach(chip => {
+      chip.onclick = (e) => { e.stopPropagation(); openScheduledItemSlideover(chip.dataset.entity, chip.dataset.id, () => renderCalendarView()); };
     });
-    document.querySelectorAll('.cal-span-bar[data-task-id]').forEach(bar => {
-      bar.onclick = (e) => { e.stopPropagation(); showTaskSlideover(bar.dataset.taskId); };
+    document.querySelectorAll('.cal-span-bar[data-entity]').forEach(bar => {
+      bar.onclick = (e) => { e.stopPropagation(); openScheduledItemSlideover(bar.dataset.entity, bar.dataset.id, () => renderCalendarView()); };
     });
     document.querySelectorAll('.hour-tl-marker[data-id]').forEach(marker => {
       marker.onclick = (e) => { e.stopPropagation(); openScheduledItemSlideover(marker.dataset.entity, marker.dataset.id, () => renderCalendarView()); };
@@ -17012,8 +17021,8 @@ async function renderCalendarView() {
         showTaskSlideover(task.id);
       };
     });
-    document.querySelectorAll('.gantt-bar.cal-event-task').forEach(bar => {
-      bar.onclick = (e) => { e.stopPropagation(); showTaskSlideover(bar.dataset.taskId); };
+    document.querySelectorAll('.gantt-bar[data-entity]').forEach(bar => {
+      bar.onclick = (e) => { e.stopPropagation(); openScheduledItemSlideover(bar.dataset.entity, bar.dataset.id, () => renderCalendarView()); };
     });
     document.querySelectorAll('.tl-bar[data-task-id]').forEach(bar => {
       bar.onclick = (e) => { e.stopPropagation(); showTaskSlideover(bar.dataset.taskId); };
@@ -17052,10 +17061,7 @@ async function renderCalendarView() {
           document.getElementById('cal-content').innerHTML = buildNav() + buildContent();
           rebind();
         };
-        cell.querySelectorAll('.cal-task-chip[data-task-id]').forEach(chip => {
-          chip.onclick = (e2) => { e2.stopPropagation(); showTaskSlideover(chip.dataset.taskId); };
-        });
-        cell.querySelectorAll('.hour-tl-marker[data-id]').forEach(chip => {
+        cell.querySelectorAll('.cal-task-chip[data-entity]').forEach(chip => {
           chip.onclick = (e2) => { e2.stopPropagation(); openScheduledItemSlideover(chip.dataset.entity, chip.dataset.id, () => renderCalendarView()); };
         });
       };
