@@ -563,6 +563,7 @@ const TASK_PROPS = [
   { key: 'recurrence',  label: 'Recurrence' },
   { key: 'description', label: 'Description' },
   { key: 'parent_task', label: 'Parent Task' },
+  { key: 'metrics',     label: 'Metrics' },
 ];
 const TASK_PROP_DEFAULTS = TASK_PROPS.map(p => p.key); // all visible by default
 
@@ -624,8 +625,11 @@ function getEntityVisProps(entity) {
   if (stored) {
     base = JSON.parse(stored);
     if (entity.startsWith('custom_')) {
-      // Migration: include newly added prop defs (and tags) not yet in stored visibility list
-      const allCustomKeys = ['tags', ...getCustomPropDefs(entity).filter(d => !d._taxonomy).map(d => d.key)];
+      // Migration: include newly added prop defs (and tags/metrics) not yet
+      // in stored visibility list. Internal (_-prefixed) defs — e.g. the
+      // "_parent" relation key custom entities carry — are never
+      // user-facing, so they're excluded the same way _taxonomy defs are.
+      const allCustomKeys = ['tags', 'metrics', ...getCustomPropDefs(entity).filter(d => !d._taxonomy && !d.key.startsWith('_')).map(d => d.key)];
       const baseSet = new Set(base);
       const hiddenCustom = new Set(JSON.parse(localStorage.getItem(`entityHiddenCustom_${entity}`) || '[]'));
       const newKeys = allCustomKeys.filter(k => !baseSet.has(k) && !hiddenCustom.has(k));
@@ -650,8 +654,8 @@ function getEntityVisProps(entity) {
       if (newKeys.length > 0) localStorage.setItem(`entityVisProps_${entity}`, JSON.stringify(base));
     }
   } else if (entity.startsWith('custom_')) {
-    // Default: tags + all defined props visible for custom entity types
-    base = ['tags', ...getCustomPropDefs(entity).filter(d => !d._taxonomy).map(d => d.key)];
+    // Default: tags + metrics + all defined props visible for custom entity types
+    base = ['tags', 'metrics', ...getCustomPropDefs(entity).filter(d => !d._taxonomy && !d.key.startsWith('_')).map(d => d.key)];
   } else {
     // Default: every canonical field visible for a fresh install
     base = (ENTITY_ALL_PROPS[entity] || []).map(p => p.key);
@@ -673,7 +677,7 @@ function setEntityVisProps(entity, keys) {
   if (hiddenTax.length > 0) localStorage.setItem(`entityHiddenTax_${entity}`, JSON.stringify(hiddenTax));
   else localStorage.removeItem(`entityHiddenTax_${entity}`);
   if (entity.startsWith('custom_')) {
-    const allCustomKeys = ['tags', ...getCustomPropDefs(entity).filter(d => !d._taxonomy).map(d => d.key)];
+    const allCustomKeys = ['tags', 'metrics', ...getCustomPropDefs(entity).filter(d => !d._taxonomy && !d.key.startsWith('_')).map(d => d.key)];
     const hiddenCustom = allCustomKeys.filter(k => !keySet.has(k));
     if (hiddenCustom.length > 0) localStorage.setItem(`entityHiddenCustom_${entity}`, JSON.stringify(hiddenCustom));
     else localStorage.removeItem(`entityHiddenCustom_${entity}`);
@@ -1324,11 +1328,11 @@ function openPropManager(btnEl, entity) {
     const metricsWidget = getWidgetLayout(entity).find(w => w.type === 'metrics');
     const metricsSection = `
       <div style="border-top:1px solid var(--border);padding:10px 12px 8px">
-        <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:6px">Tracker on cards</div>
+        <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:6px">Tracker</div>
         ${metricsWidget ? `
           <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:6px">
             <input type="checkbox" id="prop-mgr-metrics-cards" ${metricsWidget.showInCards ? 'checked' : ''} style="cursor:pointer;accent-color:var(--accent)">
-            Show on cards in Cards view
+            Show on Cards, List &amp; Kanban
           </label>
           <button class="btn btn-sm btn-ghost" id="prop-mgr-metrics-configure" style="font-size:11px;width:100%">Configure tracker…</button>
         ` : `
@@ -3475,7 +3479,7 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
   document.getElementById('add-prop-rollup-picker')?.remove();
   const panel = document.createElement('div');
   panel.id = 'add-prop-rollup-picker';
-  panel.className = 'prop-vis-panel';
+  panel.className = 'metric-picker-popover';
 
   // Mutable config state
   const cfg = Object.assign({
@@ -3519,81 +3523,82 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
     const propDefs = getChildDefs(cfg.child_entity_type);
     const propOptions = getPropOptions(cfg.child_entity_type, cfg.target_property);
 
+    const rollupIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>';
+
     panel.innerHTML = `
-      <div style="padding:6px 10px 4px;font-size:11px;color:var(--text-muted);font-weight:600;text-transform:uppercase">Rollup: "${escHtml(name)}"</div>
-
-      <div style="padding:4px 10px 2px">
-        <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Child entity type <span style="font-weight:400">(optional filter)</span></div>
-        <select id="rl-child-type" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
-          <option value="">All children</option>
-          <optgroup label="Standard">
-            ${ROLLUP_BUILTIN_TYPES.map(bt => `<option value="${escHtml(bt.name)}" ${cfg.child_entity_type===bt.name?'selected':''}>${escHtml(bt.display_name)}</option>`).join('')}
-          </optgroup>
-          ${customEntityTypes.length ? `<optgroup label="Custom">
-            ${customEntityTypes.map(ct => `<option value="${escHtml(ct.name)}" ${cfg.child_entity_type===ct.name?'selected':''}>${escHtml(ct.display_name||ct.name)}</option>`).join('')}
-          </optgroup>` : ''}
-        </select>
-      </div>
-
-      <div style="padding:4px 10px 2px">
-        <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Property to aggregate</div>
-        <select id="rl-target-prop" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
-          <option value="">— select property —</option>
-          ${propDefs.map(pd => `<option value="${escHtml(pd.key)}" ${cfg.target_property===pd.key?'selected':''}>${escHtml(pd.label||pd.key)}</option>`).join('')}
-        </select>
-      </div>
-
-      <div style="padding:4px 10px 2px">
-        <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Operation</div>
-        <select id="rl-operation" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
-          <option value="percentage_match" ${cfg.operation==='percentage_match'?'selected':''}>% Exact Match</option>
-          <option value="tally" ${cfg.operation==='tally'?'selected':''}>Count by value</option>
-          <option value="sum" ${cfg.operation==='sum'?'selected':''}>Sum</option>
-          <option value="average" ${cfg.operation==='average'?'selected':''}>Average (assign values)</option>
-        </select>
-      </div>
-
-      ${!(cfg.operation === 'tally' && !cfg.condition?.match_value) ? `
-      <div style="padding:4px 10px 2px">
-        <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Display as</div>
-        <select id="rl-display" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
-          <option value="text" ${(cfg.display||'text')==='text'?'selected':''}>Text</option>
-          <option value="progress_bar" ${cfg.display==='progress_bar'?'selected':''}>Progress bar</option>
-          <option value="ring" ${cfg.display==='ring'?'selected':''}>Percentage ring</option>
-        </select>
-      </div>` : `
-      <div style="padding:4px 10px 2px;font-size:11px;color:var(--text-muted)">Shown as text — a bar/ring can't represent a breakdown of every value.</div>`}
-
-      ${(cfg.operation === 'percentage_match' || cfg.operation === 'tally') && propOptions.length ? `
-        <div style="padding:4px 10px 2px">
-          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Match value${cfg.operation==='tally' ? ' (optional)' : ''}</div>
-          <select id="rl-match-val" style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary)">
-            <option value="">${cfg.operation==='tally' ? '— all values (breakdown) —' : '— select value —'}</option>
-            ${propOptions.map(o => `<option value="${escHtml(o)}" ${(cfg.condition?.match_value||'')=== o?'selected':''}>${escHtml(o)}</option>`).join('')}
+      <div class="mp-header">${rollupIcon}<span class="mp-header-title">${escHtml(name)}</span></div>
+      <div class="mp-body">
+        <div>
+          <div class="mp-field-label">Child entity type <span class="mp-field-hint">(optional filter)</span></div>
+          <select id="rl-child-type" class="mp-select">
+            <option value="">All children</option>
+            <optgroup label="Standard">
+              ${ROLLUP_BUILTIN_TYPES.map(bt => `<option value="${escHtml(bt.name)}" ${cfg.child_entity_type===bt.name?'selected':''}>${escHtml(bt.display_name)}</option>`).join('')}
+            </optgroup>
+            ${customEntityTypes.length ? `<optgroup label="Custom">
+              ${customEntityTypes.map(ct => `<option value="${escHtml(ct.name)}" ${cfg.child_entity_type===ct.name?'selected':''}>${escHtml(ct.display_name||ct.name)}</option>`).join('')}
+            </optgroup>` : ''}
           </select>
         </div>
-      ` : (cfg.operation === 'percentage_match' || cfg.operation === 'tally') && cfg.target_property ? `
-        <div style="padding:4px 10px 2px">
-          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:3px">Match value${cfg.operation==='tally' ? ' (optional — leave blank for a full breakdown)' : ''}</div>
-          <input id="rl-match-val-txt" type="text" value="${escHtml(cfg.condition?.match_value||'')}" placeholder="Exact value to match…"
-            style="width:100%;font-size:12px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);color:var(--text-primary);box-sizing:border-box"/>
-        </div>
-      ` : ''}
 
-      ${cfg.operation === 'average' && propOptions.length ? `
-        <div style="padding:4px 10px 2px">
-          <div style="font-size:11px;font-weight:500;color:var(--text-muted);margin-bottom:4px">Assign numeric values</div>
-          <div style="display:grid;grid-template-columns:1fr 72px;gap:3px;align-items:center">
-            ${propOptions.map(o => `
-              <div style="font-size:12px;padding:3px 6px;background:var(--bg-surface);border-radius:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(o)}</div>
-              <input type="number" class="rl-vm-inp" data-opt="${escHtml(o)}" value="${cfg.value_map?.[o] ?? ''}" placeholder="0"
-                style="font-size:12px;padding:3px 6px;border:1px solid var(--border);border-radius:3px;text-align:right;width:100%;box-sizing:border-box"/>
-            `).join('')}
+        <div>
+          <div class="mp-field-label">Property to aggregate</div>
+          <select id="rl-target-prop" class="mp-select">
+            <option value="">— select property —</option>
+            ${propDefs.map(pd => `<option value="${escHtml(pd.key)}" ${cfg.target_property===pd.key?'selected':''}>${escHtml(pd.label||pd.key)}</option>`).join('')}
+          </select>
+        </div>
+
+        <div>
+          <div class="mp-field-label">Operation</div>
+          <select id="rl-operation" class="mp-select">
+            <option value="percentage_match" ${cfg.operation==='percentage_match'?'selected':''}>% Exact Match</option>
+            <option value="tally" ${cfg.operation==='tally'?'selected':''}>Count by value</option>
+            <option value="sum" ${cfg.operation==='sum'?'selected':''}>Sum</option>
+            <option value="average" ${cfg.operation==='average'?'selected':''}>Average (assign values)</option>
+          </select>
+        </div>
+
+        ${!(cfg.operation === 'tally' && !cfg.condition?.match_value) ? `
+        <div>
+          <div class="mp-field-label">Display as</div>
+          <select id="rl-display" class="mp-select">
+            <option value="text" ${(cfg.display||'text')==='text'?'selected':''}>Text</option>
+            <option value="progress_bar" ${cfg.display==='progress_bar'?'selected':''}>Progress bar</option>
+            <option value="ring" ${cfg.display==='ring'?'selected':''}>Percentage ring</option>
+          </select>
+        </div>` : `
+        <div class="mp-note">Shown as text — a bar/ring can't represent a breakdown of every value.</div>`}
+
+        ${(cfg.operation === 'percentage_match' || cfg.operation === 'tally') && propOptions.length ? `
+          <div>
+            <div class="mp-field-label">Match value${cfg.operation==='tally' ? ' <span class="mp-field-hint">(optional)</span>' : ''}</div>
+            <select id="rl-match-val" class="mp-select">
+              <option value="">${cfg.operation==='tally' ? '— all values (breakdown) —' : '— select value —'}</option>
+              ${propOptions.map(o => `<option value="${escHtml(o)}" ${(cfg.condition?.match_value||'')=== o?'selected':''}>${escHtml(o)}</option>`).join('')}
+            </select>
           </div>
-        </div>
-      ` : ''}
+        ` : (cfg.operation === 'percentage_match' || cfg.operation === 'tally') && cfg.target_property ? `
+          <div>
+            <div class="mp-field-label">Match value${cfg.operation==='tally' ? ' <span class="mp-field-hint">(optional — leave blank for a full breakdown)</span>' : ''}</div>
+            <input id="rl-match-val-txt" type="text" class="mp-input" value="${escHtml(cfg.condition?.match_value||'')}" placeholder="Exact value to match…"/>
+          </div>
+        ` : ''}
 
-      <div style="padding:8px 10px;display:flex;justify-content:flex-end;gap:6px;border-top:1px solid var(--border);margin-top:6px">
+        ${cfg.operation === 'average' && propOptions.length ? `
+          <div>
+            <div class="mp-field-label">Assign numeric values</div>
+            <div class="mp-value-map-grid">
+              ${propOptions.map(o => `
+                <div class="mp-value-map-label">${escHtml(o)}</div>
+                <input type="number" class="rl-vm-inp mp-input" data-opt="${escHtml(o)}" value="${cfg.value_map?.[o] ?? ''}" placeholder="0" style="text-align:right"/>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+      </div>
+
+      <div class="mp-footer">
         <button id="rl-cancel" class="btn btn-sm btn-ghost">Cancel</button>
         <button id="rl-save" class="btn btn-sm btn-primary">Save Rollup</button>
       </div>`;
@@ -3674,7 +3679,8 @@ function showAddRollupPanel(anchorBtn, key, name, entity, onAdd, existingRollup,
 
   render();
   const rect = anchorBtn.getBoundingClientRect();
-  panel.style.cssText = `position:fixed;z-index:10050;min-width:286px;max-height:70vh;overflow-y:auto;top:${rect.bottom+4}px;left:${rect.left}px`;
+  panel.style.top = (rect.bottom + 4) + 'px';
+  panel.style.left = rect.left + 'px';
   document.body.appendChild(panel);
   requestAnimationFrame(() => {
     const cr = panel.getBoundingClientRect();
@@ -5410,7 +5416,7 @@ function taskRowHtml(task, showProject, indent, viewMode) {
 
   const excludeCustomDates = vm === 'list';
   const allDates = excludeCustomDates ? [dueBadge, customDatePropsHtml('task', task.id, vm)].filter(Boolean).join(', ') : dueBadge;
-  const metaChipsHtml = `${projBadge}${goalBadge}${catChip}${tagChips}${statusChip}${priorityChip}${storyPts}`;
+  const metaChipsHtml = `${projBadge}${goalBadge}${catChip}${tagChips}${statusChip}${priorityChip}${storyPts}${metricsListChipHtml('task', task.id, task)}`;
   const customChipsHtml = renderCustomPropChips('task', task.id, vm, excludeCustomDates);
   // Content (title/meta/chips/due) is mounted as a Svelte component
   // post-render (see mountTaskRowSvelteInstances) — ctx-handle and the
@@ -6675,7 +6681,7 @@ async function renderCustomEntityList(typeName) {
         // Use full prop defs (including taxonomy) for the visibility panel.
         // A getter (not a snapshot) so the panel can rebuild with fresh defs
         // if a property gets added elsewhere while it's still open.
-        const propList = () => [{ key: 'tags', label: 'Tags' }, ...getCustomPropDefs(entityKey).map(pd => ({ key: pd.key, label: pd.label || pd.key }))];
+        const propList = () => [{ key: 'tags', label: 'Tags' }, { key: 'metrics', label: 'Metrics' }, ...getCustomPropDefs(entityKey).filter(pd => !pd.key.startsWith('_')).map(pd => ({ key: pd.key, label: pd.label || pd.key }))];
         bindPropVisPanel(propVisWrap, propList, () => getEntityVisProps(entityKey), (keys) => setEntityVisProps(entityKey, keys), render);
       };
     }
@@ -7109,7 +7115,7 @@ async function renderCustomEntityList(typeName) {
           rowClass: 'custom-entity-row',
           afterHandleHtml: toggleBtn,
           titleHtml: `<span class="entity-list-title">${escHtml(e.title)}</span>`,
-          metaChips: [tagChip],
+          metaChips: [tagChip, metricsListChipHtml(entityKey, e.id)],
         }) + `<div id="ent-subs-${e.id}"></div>`;
       }).join('')}</div>`;
     }
@@ -7242,7 +7248,7 @@ async function renderCustomEntityList(typeName) {
             : '';
           const allChips = [visProps, tagChips].filter(Boolean).join('');
           const titleHtml = escHtml(item.title);
-          const bodyHtml = allChips ? `<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:4px">${allChips}</div>` : '';
+          const bodyHtml = (allChips ? `<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:4px">${allChips}</div>` : '') + metricsCardChipHtml(entityKey, item.id);
           return `<div class="kanban-card custom-entity-row" data-id="${item.id}" style="cursor:pointer">
             <span class="svelte-stdkanban-mount" data-entity-key="${escHtml(entityKey)}" data-entity-id="${item.id}" data-title="${escHtml(titleHtml)}" data-body="${escHtml(bodyHtml)}"></span>
           </div>`;
@@ -8091,9 +8097,9 @@ function renderCurrentView() {
 
 const ENTITY_ALL_PROPS = {
   task:     [{key:'status',label:'Status'},{key:'priority',label:'Priority'},{key:'due',label:'Due Date'},{key:'focus',label:'Focus Block'},{key:'tags',label:'Tags'},{key:'goal',label:'Goals'},{key:'project',label:'Projects'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'},{key:'points',label:'Story Points'},{key:'recur',label:'Recurring'},{key:'parent_task',label:'Parent Task'}],
-  goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'},{key:'due',label:'Due Date'},{key:'metrics',label:'Metrics'}],
-  project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goals'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
-  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'progress',label:'Progress'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'}],
+  goal:     [{key:'status',label:'Status'},{key:'type',label:'Type'},{key:'year',label:'Year'},{key:'metrics',label:'Metrics'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'},{key:'due',label:'Due Date'}],
+  project:  [{key:'status',label:'Status'},{key:'due',label:'Due Date'},{key:'goal',label:'Goals'},{key:'metrics',label:'Metrics'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'},{key:'macro',label:'Macro Area'},{key:'kanban',label:'Kanban Col'},{key:'archived',label:'Archived'}],
+  sprint:   [{key:'status',label:'Status'},{key:'dates',label:'Dates'},{key:'project',label:'Projects'},{key:'metrics',label:'Metrics'},{key:'tags',label:'Tags'},{key:'points',label:'Story Points'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'}],
   note:     [{key:'date',label:'Date'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'}],
   resource: [{key:'type',label:'Type'},{key:'url',label:'URL'},{key:'project',label:'Projects'},{key:'goal',label:'Goals'},{key:'tags',label:'Tags'},{key:'category',label:'Category'},{key:'workspace',label:'Workspace'}],
 };
@@ -8138,7 +8144,7 @@ function openPropSectionManager(anchorEl, entity, onSave) {
 
   function allProps() {
     const base = ENTITY_ALL_PROPS[entity] || [];
-    const custom = getCustomPropDefs(entity).map(d => ({ key: d.key, label: d.label }));
+    const custom = getCustomPropDefs(entity).filter(d => !d.key.startsWith('_')).map(d => ({ key: d.key, label: d.label }));
     return [...base, ...custom];
   }
 
@@ -10496,7 +10502,7 @@ async function renderTasks() {
       e.stopPropagation();
       bindPropVisPanel(
         propVisWrap,
-        () => [...TASK_PROPS, ...getCustomPropDefs('task').map(d => ({ key: d.key, label: d.label }))],
+        () => [...TASK_PROPS, ...getCustomPropDefs('task').filter(d => !d.key.startsWith('_')).map(d => ({ key: d.key, label: d.label }))],
         () => getTaskVisProps(tasksViewMode),
         (keys) => setTaskVisProps(tasksViewMode, keys),
         render
@@ -10580,7 +10586,7 @@ async function renderTasks() {
       const meta = [builtinSelectChip('taskStatuses', t.status), priorityBadge(t.priority), dueLine, tags, storyPts].filter(Boolean);
       const metaHtml = meta.length ? `<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:6px">${meta.join('')}</div>` : '';
       const subtree = buildSubtree(t.id, 0);
-      const customChipsHtml = renderCustomPropChips('task', t.id, 'cards');
+      const customChipsHtml = renderCustomPropChips('task', t.id, 'cards') + metricsCardChipHtml('task', t.id, t);
       // Content is mounted as a Svelte component post-render (see
       // mountTaskCardSvelteInstances) — the outer div stays vanilla since
       // the "click to open" wiring operates on it regardless of content.
@@ -10727,7 +10733,7 @@ async function renderTasks() {
         const storyPts = kVis('story_points') && t.story_points ? `<span style="font-size:10px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px">${t.story_points}pt</span>` : '';
         const metaLine = [priorityLine, statusLine, dueLine, tagLine, storyPts].some(Boolean)
           ? `<div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">${priorityLine}${statusLine}${dueLine}${tagLine}${storyPts}</div>` : '';
-        const customChipsHtml = renderCustomPropChips('task', t.id, 'kanban');
+        const customChipsHtml = renderCustomPropChips('task', t.id, 'kanban') + metricsCardChipHtml('task', t.id, t);
         return `<div class="kanban-card" data-task-id="${t.id}" style="cursor:grab">
           <span class="svelte-taskcard-mount" data-task-id="${t.id}" data-title="${escHtml(t.title)}" data-icon-size="15" data-recur="${escHtml(recurBadge)}" data-proj="${escHtml(projLine)}" data-meta="${escHtml(metaLine)}" data-chips="${escHtml(customChipsHtml)}"></span>
         </div>`;
@@ -10960,7 +10966,7 @@ async function renderProjects() {
         ${tagChips}
       </div>
       ${vis('goal') && p.goal_title ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">Goal: ${p.goal_title}</div>` : ''}
-      ${vis('progress') ? `<div class="progress-wrap">
+      ${!hasMetricsTracker('project') && vis('metrics') ? `<div class="progress-wrap">
         <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0}</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>` : ''}
@@ -10998,7 +11004,7 @@ async function renderProjects() {
         ${vis('kanban')   ? `<td>${p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : '—'}</td>` : ''}
         ${vis('category') ? `<td>${(() => { const cn = (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name; return cn ? builtinSelectChip('categories', cn) : '—'; })()}</td>` : ''}
         ${vis('due')      ? `<td>${datePropBadge(p.due_date, 'Due Date', 'When this project is due. Colored by how soon it is — red once overdue.') || '—'}</td>` : ''}
-        ${vis('progress') ? `<td>${pct}% (${prog.done||0}/${prog.total||0})</td>` : ''}
+        ${vis('metrics') ? `<td>${pct}% (${prog.done||0}/${prog.total||0})</td>` : ''}
         ${vis('tags')     ? `<td>${(p.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
         ${customCols}`;
       return `<tr class="svelte-tasktablerow-mount" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
@@ -11013,7 +11019,7 @@ async function renderProjects() {
       vis('kanban')   ? '<th>Kanban Col</th>' : '',
       vis('category') ? '<th>Category</th>' : '',
       vis('due')      ? '<th>Due</th>'      : '',
-      vis('progress') ? '<th>Progress</th>' : '',
+      vis('metrics') ? '<th>Progress</th>' : '',
       vis('tags')     ? '<th>Tags</th>'     : '',
       customHeaders,
       addPropColumnHeader('project'),
@@ -11052,10 +11058,11 @@ async function renderProjects() {
             ${vis('macro') && groupBy !== 'macro_area' && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : ''}
             ${vis('kanban') && groupBy !== 'kanban_col' && p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : ''}
           </div>
-          ${vis('progress') ? `<div style="margin-top:8px">
+          ${!hasMetricsTracker('project') && vis('metrics') ? `<div style="margin-top:8px">
             <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${pct}% · ${prog.done||0}/${prog.total||0}</div>
           </div>` : ''}
+          ${metricsCardChipHtml('project', p.id)}
           ${renderCustomPropChips('project', p.id, 'kanban')}`;
         return `<div class="kanban-card proj-kanban-card" data-proj-id="${p.id}" style="cursor:grab">
           <span class="svelte-stdkanban-mount" data-entity-key="project" data-entity-id="${p.id}" data-title="${escHtml(p.title)}" data-body="${escHtml(bodyHtml)}"></span>
@@ -11136,7 +11143,7 @@ async function renderProjects() {
   if (projPropVisBtn && projPropVisWrap) {
     projPropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(projPropVisWrap, () => [...(ENTITY_ALL_PROPS.project||[]), ...getCustomPropDefs('project').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('project'), (keys) => setEntityVisProps('project', keys), render);
+      bindPropVisPanel(projPropVisWrap, () => [...(ENTITY_ALL_PROPS.project||[]), ...getCustomPropDefs('project').filter(d => !d.key.startsWith('_')).map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('project'), (keys) => setEntityVisProps('project', keys), render);
     };
   }
   // Wire new project button
@@ -11187,7 +11194,8 @@ async function renderProjects() {
           vis('macro') && p.macro_area ? builtinSelectChip('project_macro_area', p.macro_area, { labelOverride: p.macro_area.split('(')[0].trim() }) : '',
           vis('kanban') && p.kanban_col ? builtinSelectChip('project_kanban_col', p.kanban_col) : '',
           vis('category') && (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(p.category_id)) || {}).name) : '',
-          vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : '',
+          !hasMetricsTracker('project') && vis('metrics') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : '',
+          metricsListChipHtml('project', p.id),
           vis('tags') ? (p.tags || []).map(t => tagHtml(t)).join('') : '',
         ],
         dueHtml: vis('due') ? datePropBadge(p.due_date, 'Due Date', 'When this project is due. Colored by how soon it is — red once overdue.') : '',
@@ -11357,7 +11365,7 @@ async function renderGoals() {
   if (goalPropVisBtn && goalPropVisWrap) {
     goalPropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(goalPropVisWrap, () => [...(ENTITY_ALL_PROPS.goal||[]), ...getCustomPropDefs('goal').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('goal'), (keys) => setEntityVisProps('goal', keys), render);
+      bindPropVisPanel(goalPropVisWrap, () => [...(ENTITY_ALL_PROPS.goal||[]), ...getCustomPropDefs('goal').filter(d => !d.key.startsWith('_')).map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('goal'), (keys) => setEntityVisProps('goal', keys), render);
     };
   }
 
@@ -11405,7 +11413,8 @@ async function renderGoals() {
           vis('year') && g.year ? builtinSelectChip('goal_year', g.year) : '',
           vis('status') ? builtinSelectChip('goalStatuses', g.status) : '',
           vis('category') && (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name) : '',
-          vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : '',
+          !hasMetricsTracker('goal') && vis('metrics') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : '',
+          metricsListChipHtml('goal', g.id, g),
           vis('tags') ? (g.tags || []).map(t => tagHtml(t)).join('') : '',
         ],
         dueHtml: vis('due') ? datePropBadge(g.due_date, 'Due Date', 'When this goal is due. Colored by how soon it is — red once overdue.') : '',
@@ -11495,11 +11504,18 @@ async function renderGoals() {
         ${vis('due') ? datePropBadge(g.due_date, 'Due Date', 'When this goal is due. Colored by how soon it is — red once overdue.') : ''}
         ${tagChips}
       </div>
-      ${vis('metrics') && (g.target != null) ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">${g.current_value ?? '—'}/${g.target}</div>` : ''}
-      ${vis('progress') ? `<div class="progress-wrap">
-        <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0} tasks</span></div>
-        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
-      </div>` : ''}
+      ${hasMetricsTracker('goal') ? '' : (
+        vis('metrics') && (g.target != null) ? (() => {
+          const mpct = g.target > 0 ? Math.max(0, Math.min(100, Math.round((g.current_value || 0) / g.target * 100))) : 0;
+          return `<div class="progress-wrap">
+            <div class="progress-label"><span>Target</span><span>${g.current_value ?? 0}/${g.target}</span></div>
+            <div class="progress-track"><div class="progress-fill" style="width:${mpct}%"></div></div>
+          </div>`;
+        })() : (vis('metrics') ? `<div class="progress-wrap">
+          <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0} tasks</span></div>
+          <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+        </div>` : '')
+      )}
       ${metricsCardChipHtml('goal', g.id, g)}
       ${renderCustomPropChips('goal', g.id, 'cards')}`;
     return `<div class="card goal-slideover-card" data-goal-id="${g.id}" style="cursor:pointer">
@@ -11532,7 +11548,7 @@ async function renderGoals() {
         ${vis('year')     ? `<td>${g.year ? builtinSelectChip('goal_year', g.year) : '—'}</td>` : ''}
         ${vis('category') ? `<td>${(() => { const cn = (allCategories.find(c => String(c.id) === String(g.category_id)) || {}).name; return cn ? builtinSelectChip('categories', cn) : '—'; })()}</td>` : ''}
         ${vis('due')      ? `<td>${datePropBadge(g.due_date, 'Due Date', 'When this goal is due. Colored by how soon it is — red once overdue.') || '—'}</td>` : ''}
-        ${vis('progress') ? `<td>${pct}%</td>` : ''}
+        ${vis('metrics') ? `<td>${pct}%</td>` : ''}
         ${vis('tags')     ? `<td>${(g.tags||[]).map(t=>tagHtml(t)).join('')}</td>` : ''}
         ${customCols}`;
       return `<tr class="svelte-tasktablerow-mount" data-cells="${escHtml(rowCellsHtml)}"></tr>`;
@@ -11546,7 +11562,7 @@ async function renderGoals() {
       vis('year')     ? '<th>Year</th>'     : '',
       vis('category') ? '<th>Category</th>' : '',
       vis('due')      ? '<th>Due</th>'      : '',
-      vis('progress') ? '<th>Progress</th>' : '',
+      vis('metrics') ? '<th>Progress</th>' : '',
       vis('tags')     ? '<th>Tags</th>'     : '',
       customHeaders,
       addPropColumnHeader('goal'),
@@ -11584,10 +11600,11 @@ async function renderGoals() {
             ${vis('type') && groupBy !== 'type' && g.type ? builtinSelectChip('goal_type', g.type) : ''}
             ${vis('year') && groupBy !== 'year' && g.year ? builtinSelectChip('goal_year', g.year) : ''}
           </div>
-          ${vis('progress') ? `<div style="margin-top:8px">
+          ${!hasMetricsTracker('goal') && vis('metrics') ? `<div style="margin-top:8px">
             <div class="progress-track" style="height:4px"><div class="progress-fill" style="width:${pct}%"></div></div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${pct}% · ${prog.done||0}/${prog.total||0}</div>
           </div>` : ''}
+          ${metricsCardChipHtml('goal', g.id, g)}
           ${renderCustomPropChips('goal', g.id, 'kanban')}`;
         return `<div class="kanban-card goal-kanban-card" data-goal-id="${g.id}" style="cursor:grab">
           <span class="svelte-stdkanban-mount" data-entity-key="goal" data-entity-id="${g.id}" data-title="${escHtml(g.title)}" data-body="${escHtml(bodyHtml)}"></span>
@@ -11701,7 +11718,7 @@ async function renderNotes() {
   if (notePropVisBtn && notePropVisWrap) {
     notePropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(notePropVisWrap, () => [...(ENTITY_ALL_PROPS.note||[]), ...getCustomPropDefs('note').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('note'), (keys) => setEntityVisProps('note', keys), render);
+      bindPropVisPanel(notePropVisWrap, () => [...(ENTITY_ALL_PROPS.note||[]), ...getCustomPropDefs('note').filter(d => !d.key.startsWith('_')).map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('note'), (keys) => setEntityVisProps('note', keys), render);
     };
   }
 
@@ -11899,7 +11916,7 @@ async function renderSprints() {
         ${vis('category') && (allCategories.find(c => String(c.id) === String(s.category_id)) || {}).name ? builtinSelectChip('categories', (allCategories.find(c => String(c.id) === String(s.category_id)) || {}).name) : ''}
       </div>
       ${vis('dates') && (s.start_date || s.end_date) ? `<div class="card-meta">${dateRangeBadge(s.start_date, s.end_date, 'Dates', 'The sprint\'s start and end dates.')}</div>` : ''}
-      ${vis('progress') ? `<div class="progress-wrap">
+      ${!hasMetricsTracker('sprint') && vis('metrics') ? `<div class="progress-wrap">
         <div class="progress-label"><span>${pct}%</span><span>${prog.done || 0}/${prog.total || 0}</span></div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>` : ''}
@@ -11945,7 +11962,7 @@ async function renderSprints() {
         ${vis('project')  ? `<td>${s.project_title ? `<span class="multi-chip" style="font-size:11px">${escHtml(s.project_title)}</span>` : '—'}</td>` : ''}
         ${vis('category') ? `<td>${(() => { const cn = (allCategories.find(c => String(c.id) === String(s.category_id)) || {}).name; return cn ? builtinSelectChip('categories', cn) : '—'; })()}</td>` : ''}
         ${vis('dates')    ? `<td>${dateRangeBadge(s.start_date, s.end_date, 'Dates', 'The sprint\'s start and end dates.') || '—'}</td>` : ''}
-        ${vis('progress') ? `<td>${pct}%</td>` : ''}
+        ${vis('metrics') ? `<td>${pct}%</td>` : ''}
         ${customCols}
         <td>
           ${s.status === 'active' ? `<button class="btn btn-sm btn-ghost sprint-prev-status-btn" data-sprint-id="${s.id}" data-prev="planned">↩ Planned</button>` : ''}
@@ -11964,7 +11981,7 @@ async function renderSprints() {
       vis('project')  ? '<th>Project</th>'  : '',
       vis('category') ? '<th>Category</th>' : '',
       vis('dates')    ? '<th>Dates</th>'    : '',
-      vis('progress') ? '<th>Progress</th>' : '',
+      vis('metrics') ? '<th>Progress</th>' : '',
       customHeaders,
       '<th></th>',
       addPropColumnHeader('sprint'),
@@ -11999,7 +12016,7 @@ async function renderSprints() {
   if (sprintPropVisBtn && sprintPropVisWrap) {
     sprintPropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(sprintPropVisWrap, () => [...(ENTITY_ALL_PROPS.sprint||[]), ...getCustomPropDefs('sprint').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('sprint'), (keys) => setEntityVisProps('sprint', keys), render);
+      bindPropVisPanel(sprintPropVisWrap, () => [...(ENTITY_ALL_PROPS.sprint||[]), ...getCustomPropDefs('sprint').filter(d => !d.key.startsWith('_')).map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('sprint'), (keys) => setEntityVisProps('sprint', keys), render);
     };
   }
 
@@ -12045,8 +12062,9 @@ async function renderSprints() {
         metaChips: [
           vis('status') ? builtinSelectChip('sprintStatuses', s.status) : '',
           vis('project') && s.project_title ? `<span class="entity-list-meta">${s.project_title}</span>` : '',
-          vis('progress') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : '',
+          !hasMetricsTracker('sprint') && vis('metrics') && prog.total > 0 ? `<span class="entity-list-progress"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>` : '',
           vis('points') && s.story_points ? `<span class="entity-list-meta">${s.story_points} pts</span>` : '',
+          metricsListChipHtml('sprint', s.id),
           vis('tags') ? (s.tags || []).map(t => tagHtml(t)).join('') : '',
         ],
         dueHtml: vis('dates') && (s.start_date || s.end_date) ? dateRangeBadge(s.start_date, s.end_date, 'Dates', 'The sprint\'s start and end dates.') : '',
@@ -12548,7 +12566,32 @@ function rollupTargetPropertyLabel(entity, cfg) {
 // breakdown renderer a regular Rollup property already uses — so the
 // "Display as" choice made when configuring the widget's source is honored
 // here too, instead of always forcing one fixed bar style.
+// True when this entity type has a configured, visible-on-cards Metrics
+// widget — meaning metricsCardChipHtml/metricsListChipHtml will actually
+// render something. Callers use this to suppress an entity's OWN built-in
+// progress bar (task-completion %, or a Goal's manual target) whenever a
+// Tracker has been configured, so a card never shows two progress bars for
+// what the user experiences as "the one metric" — the configured Tracker
+// wins, and the built-in bar is just the pre-Tracker default.
+function hasMetricsTracker(entity) {
+  return !!getWidgetLayout(entity).find(x => x.type === 'metrics' && x.visible && x.showInCards);
+}
+
+// The "Metrics" property-visibility toggle, unified across the two
+// otherwise-separate visibility systems this app has: Task uses its own
+// single cross-view list (TASK_PROPS/getTaskVisProps), while every other
+// entity — built-in or custom — uses entityPropVisible/ENTITY_ALL_PROPS.
+// This is the ONE flag that governs whether any progress-bar-like content
+// shows at all for an entity: metricsCardChipHtml/metricsListChipHtml (the
+// configured Tracker) and each entity's own built-in fallback bar (native
+// task-completion %, or a Goal's manual target) all gate on it, so hiding
+// "Metrics" hides the bar regardless of which source was producing it.
+function metricsPropVisible(entity) {
+  return entity === 'task' ? getTaskVisProps().includes('metrics') : entityPropVisible(entity, 'metrics');
+}
+
 function metricsCardChipHtml(entity, entityId, entityData) {
+  if (!metricsPropVisible(entity)) return '';
   const w = getWidgetLayout(entity).find(x => x.type === 'metrics' && x.visible && x.showInCards);
   if (!w) return '';
   if (_metricsUsesRollup(entity, w)) {
@@ -12563,6 +12606,42 @@ function metricsCardChipHtml(entity, entityId, entityData) {
   const pct = entityData.target > 0 ? Math.max(0, Math.min(100, Math.round((entityData.current_value || 0) / entityData.target * 100))) : 0;
   const label = `${entityData.current_value ?? 0}/${entityData.target}`;
   return `<div class="rollup-bar-row" style="margin-top:4px" title="Metrics: ${escHtml(label)}"><span class="rollup-bar-label">Metrics</span><span class="rollup-bar" style="width:56px"><span class="rollup-bar-fill" style="width:${pct}%"></span></span><span class="rollup-bar-num">${escHtml(label)}</span></div>`;
+}
+
+// Compact single-line counterpart to metricsCardChipHtml, for List view rows
+// where every field lives in one flex-wrap meta row instead of a block-level
+// card body. A percentage-shaped result (percentage_match rollup, or the
+// manual target/current_value mode) renders as the same mini
+// entity-list-progress bar the native task-progress column already uses in
+// every List view, so a configured tracker looks like it belongs there
+// instead of like a bolted-on extra. Anything else (sum/average/tally, or a
+// non-percentage "display as" choice) falls back to a plain text chip since
+// a bar can't represent it.
+function metricsListChipHtml(entity, entityId, entityData) {
+  if (!metricsPropVisible(entity)) return '';
+  const w = getWidgetLayout(entity).find(x => x.type === 'metrics' && x.visible && x.showInCards);
+  if (!w) return '';
+  if (_metricsUsesRollup(entity, w)) {
+    const cfg = w.rollupCfg;
+    if (!cfg || !cfg.target_property) return '';
+    const computed = evaluateRollup(entity, entityId, { rollup: cfg });
+    if (computed === null) return '';
+    if (Array.isArray(computed)) {
+      const text = computed.length ? computed.map(x => `${escHtml(String(x.value))}: ${x.count}`).join(', ') : '—';
+      return `<span class="entity-list-meta" title="Metrics">${text}</span>`;
+    }
+    const num = Math.round(computed * 100) / 100;
+    if (cfg.operation === 'percentage_match') {
+      const pct = Math.max(0, Math.min(100, num));
+      return `<span class="entity-list-progress" title="Metrics: ${pct}%"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>`;
+    }
+    const disp = Number.isInteger(num) ? String(num) : num.toFixed(1);
+    return `<span class="entity-list-meta" title="Metrics: ${escHtml(disp)}">${escHtml(disp)}</span>`;
+  }
+  if (!entityData || entityData.target == null) return '';
+  const pct = entityData.target > 0 ? Math.max(0, Math.min(100, Math.round((entityData.current_value || 0) / entityData.target * 100))) : 0;
+  const label = `${entityData.current_value ?? 0}/${entityData.target}`;
+  return `<span class="entity-list-progress" title="Metrics: ${escHtml(label)}"><span class="entity-list-progress-bar" style="width:${pct}%"></span></span><span class="entity-list-pct">${pct}%</span>`;
 }
 
 // Opens the shared rollup config panel (the same one "+Add property > Rollup"
@@ -13867,7 +13946,7 @@ async function renderResources() {
   if (resPropVisBtn && resPropVisWrap) {
     resPropVisBtn.onclick = (e) => {
       e.stopPropagation();
-      bindPropVisPanel(resPropVisWrap, () => [...(ENTITY_ALL_PROPS.resource||[]), ...getCustomPropDefs('resource').map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('resource'), (keys) => setEntityVisProps('resource', keys), render);
+      bindPropVisPanel(resPropVisWrap, () => [...(ENTITY_ALL_PROPS.resource||[]), ...getCustomPropDefs('resource').filter(d => !d.key.startsWith('_')).map(d => ({ key: d.key, label: d.label }))], () => getEntityVisProps('resource'), (keys) => setEntityVisProps('resource', keys), render);
     };
   }
 
@@ -20023,6 +20102,10 @@ async function openRaibisSettings(defaultTab = 'apps') {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
           App Integrations
         </button>
+        <button class="settings-tab${defaultTab==='menubar'?' active':''}" data-stab="menubar">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="4" rx="1"/><circle cx="6" cy="6" r="0.5" fill="currentColor"/><path d="M4 8v11a1 1 0 001 1h14a1 1 0 001-1V8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+          Menu Bar
+        </button>
       </div>
       <div class="settings-content" id="_settings-content">
         <div class="settings-content-header">
@@ -20070,10 +20153,79 @@ async function openRaibisSettings(defaultTab = 'apps') {
     } else if (tab === 'apps') {
       title.textContent = 'Connected Apps';
       await renderAppsTab(body);
+    } else if (tab === 'menubar') {
+      title.textContent = 'Menu Bar';
+      await renderMenubarTab(body);
     } else {
       title.textContent = 'App Integrations';
       await renderIntegrationsTab(body);
     }
+  }
+
+  async function renderMenubarTab(body) {
+    // Built-ins first, then every custom entity type that currently exists
+    // — "custom_<name>" section ids match what menubarTodayHandler expects
+    // server-side (see cmd/lifeos/server.go), so a type created after this
+    // panel was last opened shows up automatically next time it's opened.
+    const typeOptions = [
+      { value: 'task', label: 'Tasks' },
+      { value: 'goal', label: 'Goals' },
+      { value: 'project', label: 'Projects' },
+      { value: 'sprint', label: 'Sprints' },
+      ...customEntityTypes.map(ct => ({ value: `custom_${ct.name}`, label: ct.display_name || ct.name })),
+    ];
+    body.innerHTML = `
+      <div style="border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:16px;background:var(--color-surface)">
+        <h4 style="margin:0 0 6px;font-size:13px;font-weight:600">Tray icon dropdown</h4>
+        <p style="margin:0 0 14px;font-size:12px;color:var(--text-muted);line-height:1.5">
+          On macOS, clicking the raibis icon in the menu bar shows a native dropdown. Choose what shows up in it, and how far ahead to look.
+        </p>
+        <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">What to include</div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px" id="_mb-type-options">
+          ${typeOptions.map(t => `
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:8px 10px;border:1px solid var(--color-border);border-radius:var(--radius-md)">
+              <input type="checkbox" data-mb-type="${escHtml(t.value)}" style="cursor:pointer;accent-color:var(--accent)">
+              ${escHtml(t.label)}
+              ${t.value.startsWith('custom_') ? '<span style="font-size:10px;color:var(--text-muted);margin-left:auto">only shows records with a Date/Schedule property</span>' : ''}
+            </label>`).join('')}
+        </div>
+        <div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Time frame</div>
+        <select id="_mb-timeframe" style="width:100%;font-size:13px;padding:6px 8px;border:1px solid var(--color-border);border-radius:var(--radius-md);background:var(--bg-card);color:var(--text-primary);cursor:pointer;margin-bottom:6px">
+          <option value="today">Today</option>
+          <option value="week">Next 7 days</option>
+          <option value="month">Next 30 days</option>
+        </select>
+        <div id="_mb-save-note" style="font-size:11px;color:var(--text-muted);margin-top:6px;min-height:14px"></div>
+      </div>`;
+
+    let cfg = { entity_types: ['task', 'project'], timeframe: 'today' };
+    try {
+      const settings = await api('GET', '/api/settings');
+      if (settings.menubar_config) {
+        const parsed = JSON.parse(settings.menubar_config);
+        if (parsed && Array.isArray(parsed.entity_types) && parsed.entity_types.length) cfg = parsed;
+      }
+    } catch(e) {}
+
+    body.querySelectorAll('input[data-mb-type]').forEach(inp => {
+      inp.checked = cfg.entity_types.includes(inp.dataset.mbType);
+    });
+    const tfSel = document.getElementById('_mb-timeframe');
+    tfSel.value = cfg.timeframe || 'today';
+
+    const save = async () => {
+      const note = document.getElementById('_mb-save-note');
+      const entity_types = Array.from(body.querySelectorAll('input[data-mb-type]:checked')).map(i => i.dataset.mbType);
+      const value = JSON.stringify({ entity_types, timeframe: tfSel.value });
+      try {
+        await api('PUT', '/api/settings', { key: 'menubar_config', value });
+        if (note) note.textContent = entity_types.length ? 'Saved.' : 'Saved — nothing selected, so the dropdown will be empty.';
+      } catch(e) {
+        if (note) note.textContent = 'Failed to save — try again.';
+      }
+    };
+    body.querySelectorAll('input[data-mb-type]').forEach(inp => { inp.onchange = save; });
+    tfSel.onchange = save;
   }
 
   async function renderDataTab(body) {
@@ -21342,11 +21494,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Load taxonomy data
+  // Load taxonomy data, plus the task cache every rollup/Metrics-tracker
+  // computation reads (collectRollupChildren, evaluateRollup). Previously
+  // allTasksCache was only warmed by opening the Tasks page or a detail
+  // view, so a Project/Goal/Task Card, List, or Kanban view configured with
+  // a task-rollup tracker rendered nothing until the user happened to visit
+  // one of those first — loading it here up front means the tracker works
+  // on whichever view the user lands on first.
   try {
-    [allTags, allCategories] = await Promise.all([
+    [allTags, allCategories, allTasksCache] = await Promise.all([
       api('GET', '/api/tags'),
       api('GET', '/api/categories'),
+      api('GET', '/api/tasks?all=1'),
     ]);
   } catch(e) {
     allTags = [];

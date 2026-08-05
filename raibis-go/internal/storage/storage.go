@@ -139,6 +139,11 @@ type Storage interface {
 	// currently holds it.
 	SetWorkspaceEntityTypes(workspaceID int64, entityTypes []string) error
 
+	// ── App settings (generic key/value store) ─────────────────────────────
+	GetSetting(key string) (string, bool, error)
+	SetSetting(key, value string) error
+	ListSettings() (map[string]string, error)
+
 	// ── Data management ───────────────────────────────────────────────────
 	// PurgeAll deletes all user data from every entity table.
 	PurgeAll() error
