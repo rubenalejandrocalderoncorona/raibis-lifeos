@@ -2105,6 +2105,71 @@ body.kanban-dragging-active * {
 }
 .dp-clear-btn:hover { background: var(--danger-dim); color: var(--danger); }
 
+/* ─── Metric/Rollup picker popover (Tracker config) ───────────────────
+   Same chrome as .datepicker-popover (rounded-lg, shadow-modal, header +
+   body + footer split with border dividers) so configuring a Tracker feels
+   like the same design language as picking a date or schedule, instead of
+   a plain stack of native <select> boxes. */
+.metric-picker-popover {
+  position: fixed;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+  z-index: 10050;
+  min-width: 300px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.mp-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.mp-header svg { color: var(--accent); flex-shrink: 0; }
+.mp-header-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.mp-field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: 5px;
+}
+.mp-field-hint { font-weight: 400; text-transform: none; letter-spacing: normal; color: var(--text-dim); }
+.mp-select, .mp-input {
+  width: 100%;
+  font-size: 13px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text);
+  box-sizing: border-box;
+  transition: border-color 100ms, background 100ms;
+  cursor: pointer;
+}
+.mp-select:hover, .mp-input:hover { border-color: var(--accent); }
+.mp-select:focus, .mp-input:focus { outline: none; border-color: var(--accent); background: var(--bg-card); }
+.mp-input { cursor: text; }
+.mp-note { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+.mp-value-map-grid { display: grid; grid-template-columns: 1fr 76px; gap: 6px; align-items: center; }
+.mp-value-map-label {
+  font-size: 12px; padding: 6px 8px; background: var(--bg-surface);
+  border-radius: var(--radius-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mp-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+
 /* ─── Modal date chip button ────────────────────────────────────────── */
 .modal-date-chip {
   display: inline-flex;

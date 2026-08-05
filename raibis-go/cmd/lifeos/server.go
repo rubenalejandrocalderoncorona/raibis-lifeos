@@ -268,6 +268,10 @@ func buildMux(svc service.TaskService, habitSvc *service.HabitService, store sto
 	// Server config (vault path, db path)
 	mux.HandleFunc("/api/config", withCORS(configHandler(v, dbPath)))
 
+	// App settings (generic key/value) + the Tauri tray menu's data feed
+	mux.HandleFunc("/api/settings", withCORS(settingsHandler(store)))
+	mux.HandleFunc("/api/menubar/today", withCORS(menubarTodayHandler(store)))
+
 	// Embedded Web GUI — self-contained, no external /public folder needed.
 	// Serves index.html + assets for all non-/api/ requests.
 	sub, err := gui.Sub()
@@ -7139,6 +7143,321 @@ func configHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
 		writeJSON(w, 200, map[string]string{
 			"vault_path": v.Root,
 			"db_path":    dbPath,
+		})
+	}
+}
+
+// ── App settings ────────────────────────────────────────────────────────────
+// Small key/value store for app-wide preferences that need to be readable
+// from outside the web UI's localStorage — currently just the Tauri tray
+// menu, which fetches "menubar_scope" over HTTP before building its native
+// dropdown.
+
+func settingsHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			settings, err := store.ListSettings()
+			if err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			if settings == nil {
+				settings = map[string]string{}
+			}
+			writeJSON(w, 200, settings)
+
+		case http.MethodPut, http.MethodPost:
+			var body struct {
+				Key   string `json:"key"`
+				Value string `json:"value"`
+			}
+			if err := readJSON(r, &body); err != nil || body.Key == "" {
+				errJSON(w, 400, "key is required")
+				return
+			}
+			if err := store.SetSetting(body.Key, body.Value); err != nil {
+				errJSON(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, map[string]string{body.Key: body.Value})
+
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// menubarItemSummary is deliberately narrow — just enough for a native tray
+// dropdown row (title + a short status label) and an id to open the full
+// item in the main window on click.
+type menubarItemSummary struct {
+	ID     int64  `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
+// menubarSection is one labeled group in the tray dropdown — one per
+// user-selected entity type: "task" | "goal" | "project" | "sprint", or
+// "custom_<name>" for a user-defined type.
+type menubarSection struct {
+	Type  string                `json:"type"`
+	Label string                `json:"label"`
+	Items []menubarItemSummary  `json:"items"`
+}
+
+// menubarConfig is the JSON stored under the "menubar_config" app setting —
+// which entity types the tray dropdown shows, and how far ahead it looks.
+type menubarConfig struct {
+	EntityTypes []string `json:"entity_types"`
+	Timeframe   string   `json:"timeframe"` // "today" | "week" | "month"
+}
+
+func defaultMenubarConfig() menubarConfig {
+	return menubarConfig{EntityTypes: []string{"task", "project"}, Timeframe: "today"}
+}
+
+func loadMenubarConfig(store storage.Storage) menubarConfig {
+	cfg := defaultMenubarConfig()
+	v, ok, err := store.GetSetting("menubar_config")
+	if err != nil || !ok || v == "" {
+		return cfg
+	}
+	var parsed menubarConfig
+	if err := json.Unmarshal([]byte(v), &parsed); err != nil || len(parsed.EntityTypes) == 0 {
+		return cfg
+	}
+	if parsed.Timeframe == "" {
+		parsed.Timeframe = "today"
+	}
+	return parsed
+}
+
+// menubarDateWindow returns the inclusive [from, to] "YYYY-MM-DD" window a
+// timeframe setting covers, anchored on today.
+func menubarDateWindow(timeframe string) (from, to string) {
+	now := time.Now()
+	from = now.Format("2006-01-02")
+	days := 0
+	switch timeframe {
+	case "week":
+		days = 6
+	case "month":
+		days = 29
+	}
+	to = now.AddDate(0, 0, days).Format("2006-01-02")
+	return from, to
+}
+
+func menubarDateInWindow(d, from, to string) bool {
+	if len(d) < 10 {
+		return false
+	}
+	d = d[:10]
+	return d >= from && d <= to
+}
+
+func menubarTaskSection(store storage.Storage, from, to string) (menubarSection, error) {
+	tasks, err := store.ListTasks(domain.TaskFilter{})
+	if err != nil {
+		return menubarSection{}, err
+	}
+	items := []menubarItemSummary{}
+	for _, t := range tasks {
+		if t.Status == domain.Status("done") || t.DueDate == nil {
+			continue
+		}
+		if !menubarDateInWindow(t.DueDate.Format("2006-01-02"), from, to) {
+			continue
+		}
+		items = append(items, menubarItemSummary{ID: t.ID, Title: t.Title, Status: string(t.Status)})
+	}
+	return menubarSection{Type: "task", Label: "Tasks", Items: items}, nil
+}
+
+func menubarGoalSection(store storage.Storage, from, to string) (menubarSection, error) {
+	goals, err := store.ListGoals(domain.Status(""))
+	if err != nil {
+		return menubarSection{}, err
+	}
+	items := []menubarItemSummary{}
+	for _, g := range goals {
+		if g.DueDate == nil || *g.DueDate == "" || !menubarDateInWindow(*g.DueDate, from, to) {
+			continue
+		}
+		items = append(items, menubarItemSummary{ID: g.ID, Title: g.Title, Status: string(g.Status)})
+	}
+	return menubarSection{Type: "goal", Label: "Goals", Items: items}, nil
+}
+
+func menubarProjectSection(store storage.Storage, from, to string) (menubarSection, error) {
+	projects, err := store.ListProjects(domain.Status(""))
+	if err != nil {
+		return menubarSection{}, err
+	}
+	items := []menubarItemSummary{}
+	for _, p := range projects {
+		if p.Archived || p.DueDate == nil {
+			continue
+		}
+		if !menubarDateInWindow(p.DueDate.Format("2006-01-02"), from, to) {
+			continue
+		}
+		items = append(items, menubarItemSummary{ID: p.ID, Title: p.Title, Status: string(p.Status)})
+	}
+	return menubarSection{Type: "project", Label: "Projects", Items: items}, nil
+}
+
+// menubarSprintSection has no direct "list all sprints" storage method —
+// sprints are only ever listed per-project — so this walks every project.
+// Fine for a personal-scale app; would need a dedicated query at real scale.
+func menubarSprintSection(store storage.Storage, from, to string) (menubarSection, error) {
+	projects, err := store.ListProjects(domain.Status(""))
+	if err != nil {
+		return menubarSection{}, err
+	}
+	items := []menubarItemSummary{}
+	for _, p := range projects {
+		sprints, err := store.ListSprints(p.ID)
+		if err != nil {
+			continue
+		}
+		for _, s := range sprints {
+			if s.StartDate == nil {
+				continue
+			}
+			startStr := s.StartDate.Format("2006-01-02")
+			endStr := startStr
+			if s.EndDate != nil {
+				endStr = s.EndDate.Format("2006-01-02")
+			}
+			// In-window if the sprint's [start,end] range overlaps [from,to] at all.
+			if startStr > to || endStr < from {
+				continue
+			}
+			items = append(items, menubarItemSummary{ID: s.ID, Title: s.Title, Status: string(s.Status)})
+		}
+	}
+	return menubarSection{Type: "sprint", Label: "Sprints", Items: items}, nil
+}
+
+// menubarFindDateProp returns the key + kind ("date" or "schedule") of the
+// first matching custom property on a custom entity type's prop_defs, so its
+// records can be placed on a timeframe the same way built-in due dates are.
+func menubarFindDateProp(propDefsJSON string) (key, kind string, ok bool) {
+	var defs []struct {
+		Key  string `json:"key"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(propDefsJSON), &defs); err != nil {
+		return "", "", false
+	}
+	for _, d := range defs {
+		if d.Type == "date" || d.Type == "schedule" {
+			return d.Key, d.Type, true
+		}
+	}
+	return "", "", false
+}
+
+// menubarCustomSection covers a user-defined entity type. Its records only
+// show up if that type actually has a date- or schedule-type property —
+// otherwise there's nothing to place on a timeframe, so it's just an empty
+// section rather than an error (a type someone selected before adding a
+// date property to it, say).
+func menubarCustomSection(store storage.Storage, ct *domain.CustomEntityType, from, to string) (menubarSection, error) {
+	sectionType := "custom_" + ct.Name
+	label := ct.DisplayName
+	if label == "" {
+		label = ct.Name
+	}
+	key, kind, ok := menubarFindDateProp(ct.PropDefs)
+	if !ok {
+		return menubarSection{Type: sectionType, Label: label, Items: []menubarItemSummary{}}, nil
+	}
+	entities, err := store.ListCustomEntities(ct.Name)
+	if err != nil {
+		return menubarSection{}, err
+	}
+	items := []menubarItemSummary{}
+	for _, e := range entities {
+		raw, present := e.Props[key]
+		if !present || raw == "" {
+			continue
+		}
+		d := raw
+		if kind == "schedule" {
+			var sv struct {
+				Date string `json:"date"`
+			}
+			if json.Unmarshal([]byte(raw), &sv) != nil || sv.Date == "" {
+				continue
+			}
+			d = sv.Date
+		}
+		if !menubarDateInWindow(d, from, to) {
+			continue
+		}
+		items = append(items, menubarItemSummary{ID: e.ID, Title: e.Title})
+	}
+	return menubarSection{Type: sectionType, Label: label, Items: items}, nil
+}
+
+// menubarTodayHandler serves the content for the Tauri tray icon's native
+// dropdown (see raibis-tauri/src-tauri/src/main.rs). Which entity types are
+// included, and how far the date window reaches, are user-configurable via
+// the "menubar_config" app setting (see loadMenubarConfig) — built-in types
+// filter on their native due/start/end dates; a custom entity type filters
+// on its first date- or schedule-type custom property, when it has one.
+// A selected type without any date field of its own just produces an empty
+// section rather than an error.
+func menubarTodayHandler(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			errJSON(w, 405, "method not allowed")
+			return
+		}
+		cfg := loadMenubarConfig(store)
+		from, to := menubarDateWindow(cfg.Timeframe)
+
+		customTypes, _ := store.ListCustomEntityTypes()
+		customByName := map[string]*domain.CustomEntityType{}
+		for _, ct := range customTypes {
+			customByName[ct.Name] = ct
+		}
+
+		sections := []menubarSection{}
+		for _, et := range cfg.EntityTypes {
+			var sec menubarSection
+			var err error
+			switch {
+			case et == "task":
+				sec, err = menubarTaskSection(store, from, to)
+			case et == "goal":
+				sec, err = menubarGoalSection(store, from, to)
+			case et == "project":
+				sec, err = menubarProjectSection(store, from, to)
+			case et == "sprint":
+				sec, err = menubarSprintSection(store, from, to)
+			case strings.HasPrefix(et, "custom_"):
+				ct, found := customByName[strings.TrimPrefix(et, "custom_")]
+				if !found {
+					continue // type was renamed/deleted since the setting was saved
+				}
+				sec, err = menubarCustomSection(store, ct, from, to)
+			default:
+				continue
+			}
+			if err != nil {
+				continue
+			}
+			sections = append(sections, sec)
+		}
+
+		writeJSON(w, 200, map[string]any{
+			"date":      from,
+			"timeframe": cfg.Timeframe,
+			"sections":  sections,
 		})
 	}
 }

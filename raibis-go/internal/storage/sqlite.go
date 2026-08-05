@@ -295,6 +295,15 @@ func applyMigrations(db *sql.DB) error {
 			synced_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (entity_type, entity_id)
 		)`,
+
+		// ── app_settings: generic key/value store for small app-wide
+		// preferences (e.g. what the menu-bar tray dropdown shows) that need
+		// to be readable by the Tauri shell's native code, not just the web
+		// UI's localStorage.
+		`CREATE TABLE IF NOT EXISTS app_settings (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -2213,6 +2222,52 @@ func (s *sqliteStorage) listPropsNoLock(entityType string, entityID int64) (map[
 		`SELECT key, value FROM entity_properties WHERE entity_type=? AND entity_id=?`,
 		entityType, entityID,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		m[k] = v
+	}
+	return m, rows.Err()
+}
+
+// ── App settings ─────────────────────────────────────────────────────────────
+
+func (s *sqliteStorage) GetSetting(key string) (string, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
+}
+
+func (s *sqliteStorage) SetSetting(key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO app_settings (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		key, value,
+	)
+	return err
+}
+
+func (s *sqliteStorage) ListSettings() (map[string]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(`SELECT key, value FROM app_settings`)
 	if err != nil {
 		return nil, err
 	}
