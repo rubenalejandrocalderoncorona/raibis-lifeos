@@ -623,11 +623,31 @@ func (s *sqliteStorage) UpdateTask(t *domain.Task) error {
 	return err
 }
 
+// DeleteTask removes the task and every generic-relation row that
+// references it — entity_children (both as parent and as child),
+// entity_relations (both sides), entity_properties, entity_tags — so a
+// deleted task never lingers as a broken "## Sub-items"/"## Relations"
+// wikilink in some OTHER entity's Obsidian file (see DeleteSprint, the
+// original instance of this pattern).
 func (s *sqliteStorage) DeleteTask(id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM tasks WHERE id = ?`, id)
-	return err
+	stmts := []struct {
+		q    string
+		args []any
+	}{
+		{`DELETE FROM entity_children   WHERE (parent_entity_type='task' AND parent_entity_id=?) OR (child_entity_type='task' AND child_entity_id=?)`, []any{id, id}},
+		{`DELETE FROM entity_relations  WHERE (type_a='task' AND id_a=?) OR (type_b='task' AND id_b=?)`, []any{id, id}},
+		{`DELETE FROM entity_properties WHERE entity_type='task' AND entity_id=?`, []any{id}},
+		{`DELETE FROM entity_tags       WHERE entity_type='task' AND entity_id=?`, []any{id}},
+		{`DELETE FROM tasks             WHERE id=?`, []any{id}},
+	}
+	for _, st := range stmts {
+		if _, err := s.db.Exec(st.q, st.args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // taskSelectCols is the shared SELECT + JOIN for GetTask and ListTasks.
@@ -720,11 +740,27 @@ func (s *sqliteStorage) UpdateGoal(g *domain.Goal) error {
 	return err
 }
 
+// DeleteGoal removes the goal and every generic-relation row referencing
+// it — see DeleteTask for why.
 func (s *sqliteStorage) DeleteGoal(id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM goals WHERE id=?`, id)
-	return err
+	stmts := []struct {
+		q    string
+		args []any
+	}{
+		{`DELETE FROM entity_children   WHERE (parent_entity_type='goal' AND parent_entity_id=?) OR (child_entity_type='goal' AND child_entity_id=?)`, []any{id, id}},
+		{`DELETE FROM entity_relations  WHERE (type_a='goal' AND id_a=?) OR (type_b='goal' AND id_b=?)`, []any{id, id}},
+		{`DELETE FROM entity_properties WHERE entity_type='goal' AND entity_id=?`, []any{id}},
+		{`DELETE FROM entity_tags       WHERE entity_type='goal' AND entity_id=?`, []any{id}},
+		{`DELETE FROM goals             WHERE id=?`, []any{id}},
+	}
+	for _, st := range stmts {
+		if _, err := s.db.Exec(st.q, st.args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const goalSelectCols = `
@@ -813,11 +849,27 @@ func (s *sqliteStorage) UpdateProject(p *domain.Project) error {
 	return err
 }
 
+// DeleteProject removes the project and every generic-relation row
+// referencing it — see DeleteTask for why.
 func (s *sqliteStorage) DeleteProject(id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM projects WHERE id=?`, id)
-	return err
+	stmts := []struct {
+		q    string
+		args []any
+	}{
+		{`DELETE FROM entity_children   WHERE (parent_entity_type='project' AND parent_entity_id=?) OR (child_entity_type='project' AND child_entity_id=?)`, []any{id, id}},
+		{`DELETE FROM entity_relations  WHERE (type_a='project' AND id_a=?) OR (type_b='project' AND id_b=?)`, []any{id, id}},
+		{`DELETE FROM entity_properties WHERE entity_type='project' AND entity_id=?`, []any{id}},
+		{`DELETE FROM entity_tags       WHERE entity_type='project' AND entity_id=?`, []any{id}},
+		{`DELETE FROM projects          WHERE id=?`, []any{id}},
+	}
+	for _, st := range stmts {
+		if _, err := s.db.Exec(st.q, st.args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const projSelectCols = `
@@ -1024,11 +1076,27 @@ func (s *sqliteStorage) UpdateNote(n *domain.Note) error {
 	return err
 }
 
+// DeleteNote removes the note and every generic-relation row referencing
+// it — see DeleteTask for why.
 func (s *sqliteStorage) DeleteNote(id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`DELETE FROM notes WHERE id=?`, id)
-	return err
+	stmts := []struct {
+		q    string
+		args []any
+	}{
+		{`DELETE FROM entity_children   WHERE (parent_entity_type='note' AND parent_entity_id=?) OR (child_entity_type='note' AND child_entity_id=?)`, []any{id, id}},
+		{`DELETE FROM entity_relations  WHERE (type_a='note' AND id_a=?) OR (type_b='note' AND id_b=?)`, []any{id, id}},
+		{`DELETE FROM entity_properties WHERE entity_type='note' AND entity_id=?`, []any{id}},
+		{`DELETE FROM entity_tags       WHERE entity_type='note' AND entity_id=?`, []any{id}},
+		{`DELETE FROM notes             WHERE id=?`, []any{id}},
+	}
+	for _, st := range stmts {
+		if _, err := s.db.Exec(st.q, st.args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const noteSelectCols = `
@@ -2205,15 +2273,32 @@ func (s *sqliteStorage) UpdateCustomEntity(e *domain.CustomEntity) error {
 	return nil
 }
 
+// DeleteCustomEntity removes the record and every generic-relation row
+// referencing it — see DeleteTask for why. entity_properties is keyed by
+// the bare type name (matching ListCustomEntities' lookup), while
+// entity_children/entity_relations/entity_tags use the "custom_"-prefixed
+// key (matching how children/relations/tags are recorded elsewhere for
+// custom entities) — both conventions have to be cleaned here.
 func (s *sqliteStorage) DeleteCustomEntity(typeName string, id int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Remove associated entity_properties first
-	if _, err := s.db.Exec(`DELETE FROM entity_properties WHERE entity_type=? AND entity_id=?`, typeName, id); err != nil {
-		return err
+	prefixed := "custom_" + typeName
+	stmts := []struct {
+		q    string
+		args []any
+	}{
+		{`DELETE FROM entity_children   WHERE (parent_entity_type=? AND parent_entity_id=?) OR (child_entity_type=? AND child_entity_id=?)`, []any{prefixed, id, prefixed, id}},
+		{`DELETE FROM entity_relations  WHERE (type_a=? AND id_a=?) OR (type_b=? AND id_b=?)`, []any{prefixed, id, prefixed, id}},
+		{`DELETE FROM entity_tags       WHERE entity_type=? AND entity_id=?`, []any{prefixed, id}},
+		{`DELETE FROM entity_properties WHERE entity_type=? AND entity_id=?`, []any{typeName, id}},
+		{`DELETE FROM custom_entities   WHERE type_name=? AND id=?`, []any{typeName, id}},
 	}
-	_, err := s.db.Exec(`DELETE FROM custom_entities WHERE type_name=? AND id=?`, typeName, id)
-	return err
+	for _, st := range stmts {
+		if _, err := s.db.Exec(st.q, st.args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // listPropsNoLock queries entity_properties without acquiring the lock (caller must hold it).

@@ -6021,6 +6021,20 @@ func vaultSyncHandler(v *vault.Vault, dbPath string) http.HandlerFunc {
 
 // ── Custom Entity Types Handlers ──────────────────────────────────────────────
 
+// reservedEntityTypeNames are the built-in entity types' bare type-name
+// strings. Vault file paths (EntityFilePath) and entity_properties rows are
+// both keyed by this bare string with NO namespacing between "a built-in
+// entity" and "a custom entity type that happens to be named the same" — so
+// a custom type named e.g. "project" would silently share the exact same
+// {vault}/raibis/project/project-{id}.md file and entity_properties rows as
+// the real built-in Project with that id, corrupting both. Rejecting the
+// name at creation is far simpler than namespacing every vault/property
+// call site custom entities touch.
+var reservedEntityTypeNames = map[string]bool{
+	"task": true, "goal": true, "project": true, "sprint": true,
+	"note": true, "resource": true, "habit": true,
+}
+
 // customTypesHandler handles GET /api/custom-types and POST /api/custom-types
 func customTypesHandler(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -6044,6 +6058,10 @@ func customTypesHandler(store storage.Storage) http.HandlerFunc {
 			}
 			if t.Name == "" || t.DisplayName == "" {
 				errJSON(w, 400, "name and display_name are required")
+				return
+			}
+			if reservedEntityTypeNames[strings.ToLower(t.Name)] {
+				errJSON(w, 400, fmt.Sprintf("%q is a reserved built-in entity type name — pick a different name", t.Name))
 				return
 			}
 			if t.Icon == "" {
