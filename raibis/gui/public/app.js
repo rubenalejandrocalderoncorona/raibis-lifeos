@@ -4018,7 +4018,14 @@ function bindCustomPropCells() {
                 for (const id of curIds) if (!multiIds.map(String).includes(String(id))) api('DELETE', `/api/relations/sprint/${id}/task/${recordId}`, {}).catch(() => {});
               }
               if (def.bilateral !== false) {
-                const revKey = def.reverseKey ?? `${entity}_${propKey}`;
+                // Prefer the target entity's own canonical builtin key for this
+                // source type (e.g. task.project) over an auto-generated
+                // compound key — otherwise the reverse link is written under a
+                // key List/Card/Kanban views never read, making it invisible
+                // even though the relation data exists.
+                const builtinRevProps = ENTITY_ALL_PROPS[relEntity] || [];
+                const builtinRevMatch = builtinRevProps.find(p => p.key === entity);
+                const revKey = builtinRevMatch ? entity : (def.reverseKey ?? `${entity}_${propKey}`);
                 let sourceTitle = String(recordId);
                 try {
                   const isBuiltinSrc = ['task','goal','project','sprint','note','resource','habit'].includes(entity);

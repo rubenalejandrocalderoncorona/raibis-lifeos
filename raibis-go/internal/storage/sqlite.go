@@ -3,9 +3,11 @@ package storage
 import (
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -623,6 +625,65 @@ func (s *sqliteStorage) UpdateTask(t *domain.Task) error {
 	return err
 }
 
+// pruneRelationReferences removes any reference to (entityType, entityID)
+// from every OTHER entity's relation-type custom property values, so a
+// deleted record never lingers in some other entity's relation chips (e.g.
+// a deleted task still listed in a project's "Tasks" property) even after
+// that entity's own entity_children/entity_relations rows are cleaned.
+// Relation values are free-form JSON ([{"id":"..","label":".."}]) with no
+// declared target type in the row itself, so this only touches property
+// keys that conventionally and unambiguously name the deleted entity's
+// type — its bare singular name (task.project) or the auto-generated
+// plural (project.tasks) — never arbitrary custom key names.
+func (s *sqliteStorage) pruneRelationReferences(entityType string, entityID int64) error {
+	needle := strconv.FormatInt(entityID, 10)
+	rows, err := s.db.Query(
+		`SELECT entity_type, entity_id, key, value FROM entity_properties WHERE key=? OR key=?`,
+		entityType, entityType+"s",
+	)
+	if err != nil {
+		return err
+	}
+	type propRow struct {
+		et, key, val string
+		eid          int64
+	}
+	var toCheck []propRow
+	for rows.Next() {
+		var r propRow
+		if err := rows.Scan(&r.et, &r.eid, &r.key, &r.val); err == nil {
+			toCheck = append(toCheck, r)
+		}
+	}
+	rows.Close()
+	for _, r := range toCheck {
+		var items []map[string]any
+		if err := json.Unmarshal([]byte(r.val), &items); err != nil {
+			continue
+		}
+		changed := false
+		filtered := make([]map[string]any, 0, len(items))
+		for _, it := range items {
+			if fmt.Sprintf("%v", it["id"]) == needle {
+				changed = true
+				continue
+			}
+			filtered = append(filtered, it)
+		}
+		if !changed {
+			continue
+		}
+		newVal, _ := json.Marshal(filtered)
+		if _, err := s.db.Exec(
+			`UPDATE entity_properties SET value=? WHERE entity_type=? AND entity_id=? AND key=?`,
+			string(newVal), r.et, r.eid, r.key,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // DeleteTask removes the task and every generic-relation row that
 // references it — entity_children (both as parent and as child),
 // entity_relations (both sides), entity_properties, entity_tags — so a
@@ -647,7 +708,7 @@ func (s *sqliteStorage) DeleteTask(id int64) error {
 			return err
 		}
 	}
-	return nil
+	return s.pruneRelationReferences("task", id)
 }
 
 // taskSelectCols is the shared SELECT + JOIN for GetTask and ListTasks.
@@ -760,7 +821,7 @@ func (s *sqliteStorage) DeleteGoal(id int64) error {
 			return err
 		}
 	}
-	return nil
+	return s.pruneRelationReferences("goal", id)
 }
 
 const goalSelectCols = `
@@ -869,7 +930,7 @@ func (s *sqliteStorage) DeleteProject(id int64) error {
 			return err
 		}
 	}
-	return nil
+	return s.pruneRelationReferences("project", id)
 }
 
 const projSelectCols = `
@@ -990,7 +1051,7 @@ func (s *sqliteStorage) DeleteSprint(id int64) error {
 			return err
 		}
 	}
-	return nil
+	return s.pruneRelationReferences("sprint", id)
 }
 
 // ── Notes ─────────────────────────────────────────────────────────────────────
@@ -1096,7 +1157,7 @@ func (s *sqliteStorage) DeleteNote(id int64) error {
 			return err
 		}
 	}
-	return nil
+	return s.pruneRelationReferences("note", id)
 }
 
 const noteSelectCols = `
@@ -2298,7 +2359,7 @@ func (s *sqliteStorage) DeleteCustomEntity(typeName string, id int64) error {
 			return err
 		}
 	}
-	return nil
+	return s.pruneRelationReferences(typeName, id)
 }
 
 // listPropsNoLock queries entity_properties without acquiring the lock (caller must hold it).
