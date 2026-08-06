@@ -132,10 +132,15 @@ ifeq ($(or $(mode),$(MODE)),app)
 	@defaults delete com.raibis.lifeos 2>/dev/null || true
 	@cd $(GO_DIR) && GOOS=darwin GOARCH=arm64 \
 	    go build -o ../raibis-tauri/src-tauri/binaries/lifeos-aarch64-apple-darwin ./cmd/lifeos
-	@echo "→ Injecting sidecar into /Applications/Raibis LifeOS.app..."
+	@echo "→ Rebuilding Tauri shell..."
+	@cargo build --manifest-path $(TAURI_DIR)/Cargo.toml 2>&1 | tail -2
+	@echo "→ Injecting sidecar + shell into /Applications/Raibis LifeOS.app..."
 	@chown $(USER) "/Applications/Raibis LifeOS.app/Contents/MacOS/lifeos" 2>/dev/null || true
+	@chown $(USER) "/Applications/Raibis LifeOS.app/Contents/MacOS/raibis-lifeos" 2>/dev/null || true
 	@cp -f "$(GO_DIR)/../raibis-tauri/src-tauri/binaries/lifeos-aarch64-apple-darwin" \
 	    "/Applications/Raibis LifeOS.app/Contents/MacOS/lifeos"
+	@cp -f "$(TAURI_DIR)/target/debug/raibis-lifeos" \
+	    "/Applications/Raibis LifeOS.app/Contents/MacOS/raibis-lifeos"
 	@codesign --force --deep --sign - --no-strict "/Applications/Raibis LifeOS.app"
 	@echo "→ Launching app..."
 	@open "/Applications/Raibis LifeOS.app"
