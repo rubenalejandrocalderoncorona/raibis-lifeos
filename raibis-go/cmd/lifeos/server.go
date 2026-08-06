@@ -7233,11 +7233,11 @@ func loadMenubarConfig(store storage.Storage) menubarConfig {
 	return parsed
 }
 
-// menubarDateWindow returns the inclusive [from, to] "YYYY-MM-DD" window a
-// timeframe setting covers, anchored on today.
-func menubarDateWindow(timeframe string) (from, to string) {
+// menubarDateWindow returns today's date and the "YYYY-MM-DD" upper bound a
+// timeframe setting looks ahead to.
+func menubarDateWindow(timeframe string) (today, to string) {
 	now := time.Now()
-	from = now.Format("2006-01-02")
+	today = now.Format("2006-01-02")
 	days := 0
 	switch timeframe {
 	case "week":
@@ -7246,18 +7246,22 @@ func menubarDateWindow(timeframe string) (from, to string) {
 		days = 29
 	}
 	to = now.AddDate(0, 0, days).Format("2006-01-02")
-	return from, to
+	return today, to
 }
 
-func menubarDateInWindow(d, from, to string) bool {
+// menubarDateInWindow reports whether d falls on or before the window's
+// upper bound. Deliberately unbounded on the low end: an overdue task or
+// goal (due date already in the past) stays "in range" instead of
+// disappearing the moment its due date passes — the timeframe setting only
+// controls how far AHEAD the window looks, not how far back.
+func menubarDateInWindow(d, to string) bool {
 	if len(d) < 10 {
 		return false
 	}
-	d = d[:10]
-	return d >= from && d <= to
+	return d[:10] <= to
 }
 
-func menubarTaskSection(store storage.Storage, from, to string) (menubarSection, error) {
+func menubarTaskSection(store storage.Storage, to string) (menubarSection, error) {
 	tasks, err := store.ListTasks(domain.TaskFilter{})
 	if err != nil {
 		return menubarSection{}, err
@@ -7267,7 +7271,7 @@ func menubarTaskSection(store storage.Storage, from, to string) (menubarSection,
 		if t.Status == domain.Status("done") || t.DueDate == nil {
 			continue
 		}
-		if !menubarDateInWindow(t.DueDate.Format("2006-01-02"), from, to) {
+		if !menubarDateInWindow(t.DueDate.Format("2006-01-02"), to) {
 			continue
 		}
 		items = append(items, menubarItemSummary{ID: t.ID, Title: t.Title, Status: string(t.Status)})
@@ -7275,14 +7279,14 @@ func menubarTaskSection(store storage.Storage, from, to string) (menubarSection,
 	return menubarSection{Type: "task", Label: "Tasks", Items: items}, nil
 }
 
-func menubarGoalSection(store storage.Storage, from, to string) (menubarSection, error) {
+func menubarGoalSection(store storage.Storage, to string) (menubarSection, error) {
 	goals, err := store.ListGoals(domain.Status(""))
 	if err != nil {
 		return menubarSection{}, err
 	}
 	items := []menubarItemSummary{}
 	for _, g := range goals {
-		if g.DueDate == nil || *g.DueDate == "" || !menubarDateInWindow(*g.DueDate, from, to) {
+		if g.DueDate == nil || *g.DueDate == "" || !menubarDateInWindow(*g.DueDate, to) {
 			continue
 		}
 		items = append(items, menubarItemSummary{ID: g.ID, Title: g.Title, Status: string(g.Status)})
@@ -7290,7 +7294,7 @@ func menubarGoalSection(store storage.Storage, from, to string) (menubarSection,
 	return menubarSection{Type: "goal", Label: "Goals", Items: items}, nil
 }
 
-func menubarProjectSection(store storage.Storage, from, to string) (menubarSection, error) {
+func menubarProjectSection(store storage.Storage, to string) (menubarSection, error) {
 	projects, err := store.ListProjects(domain.Status(""))
 	if err != nil {
 		return menubarSection{}, err
@@ -7300,7 +7304,7 @@ func menubarProjectSection(store storage.Storage, from, to string) (menubarSecti
 		if p.Archived || p.DueDate == nil {
 			continue
 		}
-		if !menubarDateInWindow(p.DueDate.Format("2006-01-02"), from, to) {
+		if !menubarDateInWindow(p.DueDate.Format("2006-01-02"), to) {
 			continue
 		}
 		items = append(items, menubarItemSummary{ID: p.ID, Title: p.Title, Status: string(p.Status)})
@@ -7311,7 +7315,11 @@ func menubarProjectSection(store storage.Storage, from, to string) (menubarSecti
 // menubarSprintSection has no direct "list all sprints" storage method —
 // sprints are only ever listed per-project — so this walks every project.
 // Fine for a personal-scale app; would need a dedicated query at real scale.
-func menubarSprintSection(store storage.Storage, from, to string) (menubarSection, error) {
+// Unlike tasks/goals/projects, a sprint that already ENDED isn't kept
+// around forever (an "overdue" sprint isn't a meaningful concept the way an
+// overdue task is) — only sprints still running or starting within the
+// window show up.
+func menubarSprintSection(store storage.Storage, today, to string) (menubarSection, error) {
 	projects, err := store.ListProjects(domain.Status(""))
 	if err != nil {
 		return menubarSection{}, err
@@ -7331,8 +7339,9 @@ func menubarSprintSection(store storage.Storage, from, to string) (menubarSectio
 			if s.EndDate != nil {
 				endStr = s.EndDate.Format("2006-01-02")
 			}
-			// In-window if the sprint's [start,end] range overlaps [from,to] at all.
-			if startStr > to || endStr < from {
+			// In-window if it starts by the lookahead cutoff and hasn't
+			// already ended before today.
+			if startStr > to || endStr < today {
 				continue
 			}
 			items = append(items, menubarItemSummary{ID: s.ID, Title: s.Title, Status: string(s.Status)})
@@ -7365,7 +7374,7 @@ func menubarFindDateProp(propDefsJSON string) (key, kind string, ok bool) {
 // otherwise there's nothing to place on a timeframe, so it's just an empty
 // section rather than an error (a type someone selected before adding a
 // date property to it, say).
-func menubarCustomSection(store storage.Storage, ct *domain.CustomEntityType, from, to string) (menubarSection, error) {
+func menubarCustomSection(store storage.Storage, ct *domain.CustomEntityType, to string) (menubarSection, error) {
 	sectionType := "custom_" + ct.Name
 	label := ct.DisplayName
 	if label == "" {
@@ -7395,7 +7404,7 @@ func menubarCustomSection(store storage.Storage, ct *domain.CustomEntityType, fr
 			}
 			d = sv.Date
 		}
-		if !menubarDateInWindow(d, from, to) {
+		if !menubarDateInWindow(d, to) {
 			continue
 		}
 		items = append(items, menubarItemSummary{ID: e.ID, Title: e.Title})
@@ -7418,7 +7427,7 @@ func menubarTodayHandler(store storage.Storage) http.HandlerFunc {
 			return
 		}
 		cfg := loadMenubarConfig(store)
-		from, to := menubarDateWindow(cfg.Timeframe)
+		today, to := menubarDateWindow(cfg.Timeframe)
 
 		customTypes, _ := store.ListCustomEntityTypes()
 		customByName := map[string]*domain.CustomEntityType{}
@@ -7432,19 +7441,19 @@ func menubarTodayHandler(store storage.Storage) http.HandlerFunc {
 			var err error
 			switch {
 			case et == "task":
-				sec, err = menubarTaskSection(store, from, to)
+				sec, err = menubarTaskSection(store, to)
 			case et == "goal":
-				sec, err = menubarGoalSection(store, from, to)
+				sec, err = menubarGoalSection(store, to)
 			case et == "project":
-				sec, err = menubarProjectSection(store, from, to)
+				sec, err = menubarProjectSection(store, to)
 			case et == "sprint":
-				sec, err = menubarSprintSection(store, from, to)
+				sec, err = menubarSprintSection(store, today, to)
 			case strings.HasPrefix(et, "custom_"):
 				ct, found := customByName[strings.TrimPrefix(et, "custom_")]
 				if !found {
 					continue // type was renamed/deleted since the setting was saved
 				}
-				sec, err = menubarCustomSection(store, ct, from, to)
+				sec, err = menubarCustomSection(store, ct, to)
 			default:
 				continue
 			}
@@ -7455,7 +7464,7 @@ func menubarTodayHandler(store storage.Storage) http.HandlerFunc {
 		}
 
 		writeJSON(w, 200, map[string]any{
-			"date":      from,
+			"date":      today,
 			"timeframe": cfg.Timeframe,
 			"sections":  sections,
 		})
